@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import type { Env, Variables } from "../env";
 import type { CreatePOInput, POLine } from "../../shared/types";
 import { loadSettings, tierForApproval } from "../approval";
-import { emailApprovers } from "../notify";
+import { emailApprovers, emailRequesterDecision } from "../notify";
 
 export const pos = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -33,7 +33,13 @@ pos.get("/", async (c) => {
 pos.get("/:id", async (c) => {
   const id = c.req.param("id");
   const po = await c.env.DB.prepare(
-    `SELECT po.*, p.code AS project_code, p.name AS project_name
+    `SELECT po.*,
+            p.code AS project_code,
+            p.name AS project_name,
+            p.delivery_address      AS project_delivery_address,
+            p.site_contact_name     AS project_site_contact_name,
+            p.site_contact_phone    AS project_site_contact_phone,
+            p.delivery_instructions AS project_delivery_instructions
      FROM purchase_orders po
      JOIN projects p ON p.id = po.project_id
      WHERE po.id = ?`,
@@ -85,7 +91,7 @@ pos.post("/", async (c) => {
 
     if (ln.material_id != null && snap) {
       const mat = await c.env.DB.prepare(
-        "SELECT id, item, type, manufacturer, total_qty FROM materials WHERE id = ? AND snapshot_id = ?",
+        "SELECT id, item, type, manufacturer, total_units FROM materials WHERE id = ? AND snapshot_id = ?",
       )
         .bind(ln.material_id, snap.id)
         .first<{
@@ -93,14 +99,15 @@ pos.post("/", async (c) => {
           item: string;
           type: string;
           manufacturer: string | null;
-          total_qty: number | null;
+          total_units: number | null;
         }>();
       if (!mat) {
         return c.json({ error: `material ${ln.material_id} not in active snapshot` }, 400);
       }
       manufacturer = manufacturer ?? mat.manufacturer;
       type = type ?? mat.type;
-      pricedQty = mat.total_qty;
+      // Allowance is in pack units (col V) — same dimension as the PO qty.
+      pricedQty = mat.total_units;
 
       const committedRow = await c.env.DB.prepare(
         `SELECT COALESCE(SUM(pl.qty), 0) AS q
@@ -267,10 +274,18 @@ pos.post("/:id/approve", async (c) => {
   const id = c.req.param("id");
   const actor = c.get("userEmail");
   const po = await c.env.DB.prepare(
-    "SELECT id, status, approval_tier FROM purchase_orders WHERE id = ?",
+    `SELECT po.id, po.status, po.approval_tier, po.po_number, po.supplier, po.total_value, po.created_by,
+            p.code AS project_code, p.name AS project_name
+     FROM purchase_orders po
+     JOIN projects p ON p.id = po.project_id
+     WHERE po.id = ?`,
   )
     .bind(id)
-    .first<{ id: string; status: string; approval_tier: string | null }>();
+    .first<{
+      id: string; status: string; approval_tier: string | null;
+      po_number: string; supplier: string; total_value: number; created_by: string;
+      project_code: string; project_name: string;
+    }>();
   if (!po) return c.json({ error: "not found" }, 404);
   if (po.status !== "pending_approval") {
     return c.json({ error: `cannot approve a ${po.status} PO` }, 409);
@@ -295,6 +310,16 @@ pos.post("/:id/approve", async (c) => {
   )
     .bind(id, actor, now)
     .run();
+
+  c.executionCtx.waitUntil(
+    emailRequesterDecision(c.env, {
+      decision: "approved",
+      po: { id: po.id, po_number: po.po_number, supplier: po.supplier, total_value: po.total_value },
+      project: { code: po.project_code, name: po.project_name },
+      requesterEmail: po.created_by,
+      actorEmail: actor,
+    }),
+  );
   return c.json({ ok: true });
 });
 
@@ -303,10 +328,18 @@ pos.post("/:id/reject", async (c) => {
   const actor = c.get("userEmail");
   const body = await c.req.json<{ reason?: string }>();
   const po = await c.env.DB.prepare(
-    "SELECT id, status, approval_tier FROM purchase_orders WHERE id = ?",
+    `SELECT po.id, po.status, po.approval_tier, po.po_number, po.supplier, po.total_value, po.created_by,
+            p.code AS project_code, p.name AS project_name
+     FROM purchase_orders po
+     JOIN projects p ON p.id = po.project_id
+     WHERE po.id = ?`,
   )
     .bind(id)
-    .first<{ id: string; status: string; approval_tier: string | null }>();
+    .first<{
+      id: string; status: string; approval_tier: string | null;
+      po_number: string; supplier: string; total_value: number; created_by: string;
+      project_code: string; project_name: string;
+    }>();
   if (!po) return c.json({ error: "not found" }, 404);
   if (po.status !== "pending_approval") {
     return c.json({ error: `cannot reject a ${po.status} PO` }, 409);
@@ -333,6 +366,17 @@ pos.post("/:id/reject", async (c) => {
   )
     .bind(id, actor, JSON.stringify({ reason: body.reason ?? null }), now)
     .run();
+
+  c.executionCtx.waitUntil(
+    emailRequesterDecision(c.env, {
+      decision: "rejected",
+      po: { id: po.id, po_number: po.po_number, supplier: po.supplier, total_value: po.total_value },
+      project: { code: po.project_code, name: po.project_name },
+      requesterEmail: po.created_by,
+      actorEmail: actor,
+      reason: body.reason ?? null,
+    }),
+  );
   return c.json({ ok: true });
 });
 

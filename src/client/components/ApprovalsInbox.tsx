@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, fmtDate, fmtMoney } from "../lib/api";
+import { Topbar } from "./Shell";
 import type { CurrentUser, PurchaseOrder } from "../../shared/types";
 
 type Row = PurchaseOrder & { project_code: string; project_name: string };
@@ -19,42 +20,51 @@ export function ApprovalsInbox({ me }: { me: CurrentUser | null }) {
 
   return (
     <>
-      <h2>Approvals inbox</h2>
-      {err && <div className="flash error">{err}</div>}
-      {!me?.is_approver ? (
-        <div className="empty">You are not configured as an approver.</div>
-      ) : mine.length === 0 ? (
-        <div className="empty">Nothing waiting for your approval. 🎉</div>
-      ) : (
-        <table>
-          <thead>
-            <tr>
-              <th>PO</th>
-              <th>Project</th>
-              <th>Supplier</th>
-              <th className="num">Value</th>
-              <th>Tier</th>
-              <th>Reason</th>
-              <th>Raised</th>
-              <th>By</th>
-            </tr>
-          </thead>
-          <tbody>
-            {mine.map((r) => (
-              <tr key={r.id}>
-                <td><Link to={`/approvals/${r.id}`}>{r.po_number}</Link></td>
-                <td>{r.project_code}</td>
-                <td>{r.supplier}</td>
-                <td className="num">{fmtMoney(r.total_value)}</td>
-                <td>{r.approval_tier?.replace("_", " ")}</td>
-                <td>{r.approval_reason?.replace("_", " ")}</td>
-                <td>{fmtDate(r.created_at)}</td>
-                <td>{r.created_by}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
+      <Topbar
+        crumbs="Workspace"
+        title="Approvals"
+        status={mine.length > 0 ? <span className="pill pending dot" style={{ verticalAlign: "middle" }}>{mine.length} pending</span> : undefined}
+      />
+      <main>
+        {err && <div className="flash error">{err}</div>}
+        {!me?.is_approver ? (
+          <div className="empty">You are not configured as an approver.</div>
+        ) : mine.length === 0 ? (
+          <div className="empty">Nothing waiting for your approval.</div>
+        ) : (
+          <div className="card">
+            <div className="card-hd"><h2>Waiting on you</h2><span className="pill">{mine.length}</span></div>
+            <table>
+              <thead>
+                <tr>
+                  <th>PO</th>
+                  <th>Project</th>
+                  <th>Supplier</th>
+                  <th className="num">Value</th>
+                  <th>Tier</th>
+                  <th>Reason</th>
+                  <th>Raised</th>
+                  <th>By</th>
+                </tr>
+              </thead>
+              <tbody>
+                {mine.map((r) => (
+                  <tr key={r.id}>
+                    <td><Link to={`/approvals/${r.id}`}>{r.po_number}</Link></td>
+                    <td>{r.project_code}</td>
+                    <td>{r.supplier}</td>
+                    <td className="num">{fmtMoney(r.total_value)}</td>
+                    <td>{r.approval_tier?.replace("_", " ")}</td>
+                    <td>{r.approval_reason?.replace("_", " ")}</td>
+                    <td className="muted">{fmtDate(r.created_at)}</td>
+                    <td className="muted">{r.created_by}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </main>
     </>
   );
 }

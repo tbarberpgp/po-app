@@ -11,8 +11,9 @@ not_found_handling = "single-page-application"
 [[d1_databases]]
 binding = "DB"
 database_name = "po_app_db"
-# Replace this id after running `wrangler d1 create po_app_db`
-database_id = "REPLACE_ME"
+# Local-only placeholder. Replace with the real id from `wrangler d1 create po_app_db`
+# before the first `npm run db:migrate:remote` / `npm run deploy`.
+database_id = "00000000-0000-0000-0000-000000000000"
 migrations_dir = "./migrations"
 
 # Set in dashboard / `wrangler secret put` — do not commit values.

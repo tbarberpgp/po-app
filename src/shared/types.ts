@@ -4,6 +4,10 @@ export type Project = {
   name: string;
   client: string | null;
   currency: string;
+  delivery_address: string | null;
+  site_contact_name: string | null;
+  site_contact_phone: string | null;
+  delivery_instructions: string | null;
   created_at: string;
   created_by: string;
 };
@@ -25,6 +29,8 @@ export type Material = {
   rate_unit: string | null;
   total_qty: number | null;
   total_qty_unit: string | null;
+  total_units: number | null;
+  total_units_unit: string | null;
   material_total_cost: number | null;
 };
 

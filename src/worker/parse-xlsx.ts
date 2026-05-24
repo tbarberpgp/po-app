@@ -15,6 +15,8 @@ export type ParsedMaterial = {
   rate_unit: string | null;
   total_qty: number | null;
   total_qty_unit: string | null;
+  total_units: number | null;       // col V — qty to purchase in pack units (Rolls, Boxes, ea)
+  total_units_unit: string | null;  // col W — the pack unit suppliers sell in
   material_total_cost: number | null;
 };
 
@@ -38,7 +40,8 @@ const str = (v: unknown): string | null => {
  *   H  coverage_qty                  I  coverage_unit
  *   L  waste_pct                     M  coverage_inc_waste
  *   O  unit_rate (cost / coverage)   P  rate_unit
- *   T  total_qty (priced allowance)  U  total_qty_unit
+ *   T  total_qty (in measurement units, e.g. m²)   U  total_qty_unit
+ *   V  total_units (in pack units — what we order)  W  total_units_unit
  *   X  material_total_cost (priced material budget for line)
  */
 export function parseMaterialsSheet(buffer: ArrayBuffer): ParsedMaterial[] {
@@ -77,6 +80,8 @@ export function parseMaterialsSheet(buffer: ArrayBuffer): ParsedMaterial[] {
       rate_unit: str(r["P"]),
       total_qty: num(r["T"]),
       total_qty_unit: str(r["U"]),
+      total_units: num(r["V"]),
+      total_units_unit: str(r["W"]),
       material_total_cost: num(r["X"]),
     });
   }

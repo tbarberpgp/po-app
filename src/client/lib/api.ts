@@ -2,6 +2,7 @@ import type {
   CreatePOInput,
   CurrentUser,
   MaterialWithCommitment,
+  Project,
   PurchaseOrder,
   Settings,
 } from "../../shared/types";
@@ -31,8 +32,16 @@ export const api = {
       "/api/projects",
     ),
   getProject: (id: string) =>
-    jfetch<{ project: { id: string; code: string; name: string; client: string | null }; active_snapshot: { id: number; filename: string; uploaded_at: string } | null }>(
+    jfetch<{ project: Project; active_snapshot: { id: number; filename: string; uploaded_at: string } | null }>(
       `/api/projects/${id}`,
+    ),
+  updateProject: (
+    id: string,
+    input: Partial<Pick<Project, "name" | "client" | "delivery_address" | "site_contact_name" | "site_contact_phone" | "delivery_instructions">>,
+  ) => jfetch<{ ok: true }>(`/api/projects/${id}`, { method: "PUT", body: JSON.stringify(input) }),
+  getProjectSummary: (id: string) =>
+    jfetch<{ unpriced_spend: number; by_status: Array<{ status: string; n: number; v: number }> }>(
+      `/api/projects/${id}/summary`,
     ),
   createProject: (input: { code: string; name: string; client?: string }) =>
     jfetch<{ id: string }>("/api/projects", { method: "POST", body: JSON.stringify(input) }),
@@ -77,6 +86,8 @@ export const api = {
     ),
   addApprover: (input: { project_id?: string | null; tier: string; email: string; name?: string }) =>
     jfetch<{ id: number }>("/api/approvers", { method: "POST", body: JSON.stringify(input) }),
+  updateApprover: (id: number, input: { email?: string; name?: string | null; tier?: string }) =>
+    jfetch<{ ok: true }>(`/api/approvers/${id}`, { method: "PUT", body: JSON.stringify(input) }),
   removeApprover: (id: number) =>
     jfetch<{ ok: true }>(`/api/approvers/${id}`, { method: "DELETE" }),
 };

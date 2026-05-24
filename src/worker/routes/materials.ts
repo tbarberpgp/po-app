@@ -46,8 +46,8 @@ materials.post("/:projectId/upload", async (c) => {
       `INSERT INTO materials (
          snapshot_id, item, type, manufacturer, pack_qty, pack_unit, cost, cost_unit,
          coverage_qty, coverage_unit, waste_pct, unit_rate, rate_unit,
-         total_qty, total_qty_unit, material_total_cost
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         total_qty, total_qty_unit, total_units, total_units_unit, material_total_cost
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).bind(
       snapshotId,
       m.item,
@@ -64,6 +64,8 @@ materials.post("/:projectId/upload", async (c) => {
       m.rate_unit,
       m.total_qty,
       m.total_qty_unit,
+      m.total_units,
+      m.total_units_unit,
       m.material_total_cost,
     ),
   );
@@ -108,11 +110,13 @@ materials.get("/:projectId", async (c) => {
      ORDER BY m.type, m.item`,
   )
     .bind(projectId, snap.id)
-    .all<Record<string, unknown> & { committed_qty: number; total_qty: number | null }>();
+    .all<Record<string, unknown> & { committed_qty: number; total_units: number | null }>();
 
+  // Budget is tracked in pack units (col V) since POs are raised in pack units.
   const result = rows.results.map((r) => ({
     ...r,
-    remaining_qty: r.total_qty == null ? null : (r.total_qty ?? 0) - (r.committed_qty ?? 0),
+    remaining_qty:
+      r.total_units == null ? null : (r.total_units ?? 0) - (r.committed_qty ?? 0),
   }));
   return c.json(result);
 });

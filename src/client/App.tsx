@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link, NavLink, Route, Routes, useLocation } from "react-router-dom";
+import { Link, Route, Routes, useLocation } from "react-router-dom";
 import { ProjectsList } from "./components/ProjectsList";
 import { ProjectDetail } from "./components/ProjectDetail";
 import { NewPO } from "./components/NewPO";
@@ -7,11 +7,13 @@ import { POsList } from "./components/POsList";
 import { POView } from "./components/POView";
 import { ApprovalsInbox } from "./components/ApprovalsInbox";
 import { Admin } from "./components/Admin";
+import { Sidebar } from "./components/Shell";
 import { api } from "./lib/api";
 import type { CurrentUser } from "../shared/types";
 
 export function App() {
   const [me, setMe] = useState<CurrentUser | null>(null);
+  const [approvalsCount, setApprovalsCount] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const location = useLocation();
 
@@ -19,31 +21,30 @@ export function App() {
     api.me().then(setMe).catch((e) => setError(e.message));
   }, []);
 
+  // Refresh approvals count whenever the user navigates — cheap and accurate.
+  useEffect(() => {
+    if (!me?.is_approver) {
+      setApprovalsCount(0);
+      return;
+    }
+    api
+      .listPOs({ status: "pending_approval" })
+      .then((rs) => {
+        const mine = rs.filter((r) => r.approval_tier && me.approver_tiers.includes(r.approval_tier));
+        setApprovalsCount(mine.length);
+      })
+      .catch(() => setApprovalsCount(0));
+  }, [me, location.pathname]);
+
   return (
     <div className="app">
-      <aside className="sidebar">
-        <h1>PowerGrid POs</h1>
-        <nav>
-          <NavLink to="/" end>Projects</NavLink>
-          <NavLink to="/pos">Purchase Orders</NavLink>
-          {me?.is_approver && <NavLink to="/approvals">Approvals</NavLink>}
-          <NavLink to="/admin">Admin</NavLink>
-        </nav>
-        <div style={{ flex: 1 }} />
-        {me && (
-          <div className="user">
-            Signed in as<br />
-            <b>{me.email}</b>
-            {me.is_approver && (
-              <div style={{ marginTop: 4 }}>
-                Approver: {me.approver_tiers.join(", ")}
-              </div>
-            )}
+      <Sidebar me={me} approvalsCount={approvalsCount} />
+      <div>
+        {error && (
+          <div style={{ padding: "16px 28px" }}>
+            <div className="flash error">{error}</div>
           </div>
         )}
-      </aside>
-      <main key={location.pathname}>
-        {error && <div className="flash error">{error}</div>}
         <Routes>
           <Route path="/" element={<ProjectsList />} />
           <Route path="/projects/:id" element={<ProjectDetail />} />
@@ -55,15 +56,15 @@ export function App() {
           <Route path="/admin" element={<Admin />} />
           <Route path="*" element={<NoMatch />} />
         </Routes>
-      </main>
+      </div>
     </div>
   );
 }
 
 function NoMatch() {
   return (
-    <div className="empty">
-      Page not found. <Link to="/">Back to projects</Link>
+    <div style={{ padding: 48 }}>
+      <div className="empty">Page not found. <Link to="/">Back to projects</Link></div>
     </div>
   );
 }

@@ -1,14 +1,18 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api, fmtDate, fmtMoney } from "../lib/api";
-import type { MaterialWithCommitment } from "../../shared/types";
+import { Topbar } from "./Shell";
+import type { MaterialWithCommitment, Project } from "../../shared/types";
 
 export function ProjectDetail() {
   const { id } = useParams<{ id: string }>();
   const [info, setInfo] = useState<Awaited<ReturnType<typeof api.getProject>> | null>(null);
+  const [poSummary, setPoSummary] = useState<Awaited<ReturnType<typeof api.getProjectSummary>> | null>(null);
   const [mats, setMats] = useState<MaterialWithCommitment[]>([]);
   const [filter, setFilter] = useState("");
   const [typeFilter, setTypeFilter] = useState("");
+  const [supplierFilter, setSupplierFilter] = useState("");
+  const [showAll, setShowAll] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -17,14 +21,14 @@ export function ProjectDetail() {
     if (!id) return;
     api.getProject(id).then(setInfo).catch((e) => setErr(e.message));
     api.listMaterials(id).then(setMats).catch((e) => setErr(e.message));
+    api.getProjectSummary(id).then(setPoSummary).catch((e) => setErr(e.message));
   }
   useEffect(load, [id]);
 
   async function onUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0];
     if (!f || !id) return;
-    setBusy(true);
-    setErr(null);
+    setBusy(true); setErr(null);
     try {
       await api.uploadMaterials(id, f);
       load();
@@ -36,95 +40,319 @@ export function ProjectDetail() {
     }
   }
 
-  if (!info) return <div className="muted">Loading…</div>;
+  const summary = useMemo(() => summarise(mats, poSummary?.unpriced_spend ?? 0), [mats, poSummary]);
 
-  const types = [...new Set(mats.map((m) => m.type))].sort();
-  const visible = mats
+  const pricedCount = mats.filter((m) => (m.total_units ?? 0) > 0).length;
+  const baseList = showAll ? mats : mats.filter((m) => (m.total_units ?? 0) > 0);
+  const types = [...new Set(baseList.map((m) => m.type))].sort();
+  const suppliers = [...new Set(baseList.map((m) => m.manufacturer ?? "—"))].sort();
+  const visible = baseList
     .filter((m) => !typeFilter || m.type === typeFilter)
+    .filter((m) => !supplierFilter || (m.manufacturer ?? "—") === supplierFilter)
     .filter((m) => !filter || (m.item + (m.manufacturer ?? "")).toLowerCase().includes(filter.toLowerCase()));
+
+  if (!info) return <main className="muted">Loading…</main>;
 
   return (
     <>
-      <div className="row" style={{ marginBottom: 8 }}>
-        <h2 className="grow">{info.project.code} — {info.project.name}</h2>
-        <Link className="btn" to={`/projects/${id}/new-po`}>+ Raise PO</Link>
-      </div>
-      {info.project.client && <p className="muted">Client: {info.project.client}</p>}
-      {err && <div className="flash error">{err}</div>}
+      <Topbar
+        crumbs={<><Link to="/">Projects</Link> / {info.project.code}</>}
+        title={info.project.name}
+        actions={<Link className="btn accent" to={`/projects/${id}/new-po`}>+ Raise PO</Link>}
+      />
+      <main>
+        {err && <div className="flash error">{err}</div>}
+        {info.project.client && <p className="muted" style={{ marginTop: 0 }}>Client · {info.project.client}</p>}
 
-      <div className="card">
-        <div className="row">
-          <div className="grow">
-            <h3 style={{ margin: 0 }}>Pricing snapshot</h3>
+        <SiteDetailsCard project={info.project} onSaved={load} />
+
+        <div className="card">
+          <div className="card-hd">
+            <h3 style={{ flex: 1 }}>Pricing snapshot</h3>
+            <label className="btn secondary" style={{ cursor: "pointer", marginBottom: 0 }}>
+              {busy ? "Uploading…" : info.active_snapshot ? "Replace .xlsx" : "Upload .xlsx"}
+              <input ref={fileRef} type="file" accept=".xlsx,.xlsm" onChange={onUpload} hidden disabled={busy} />
+            </label>
+          </div>
+          <div className="card-bd">
             {info.active_snapshot ? (
-              <p className="muted" style={{ marginBottom: 0 }}>
-                {info.active_snapshot.filename} — uploaded {fmtDate(info.active_snapshot.uploaded_at)} · {mats.length} materials
-              </p>
+              <div className="muted">
+                {info.active_snapshot.filename} · uploaded {fmtDate(info.active_snapshot.uploaded_at)} · {mats.length} materials
+              </div>
             ) : (
-              <p className="muted" style={{ marginBottom: 0 }}>No pricing workbook uploaded yet.</p>
+              <div className="muted">No pricing workbook uploaded yet.</div>
             )}
           </div>
-          <label className="btn secondary" style={{ cursor: "pointer" }}>
-            {busy ? "Uploading…" : info.active_snapshot ? "Replace .xlsx" : "Upload .xlsx"}
-            <input ref={fileRef} type="file" accept=".xlsx,.xlsm" onChange={onUpload} hidden disabled={busy} />
-          </label>
         </div>
-      </div>
 
-      {mats.length > 0 && (
-        <>
-          <div className="row" style={{ margin: "16px 0" }}>
-            <input className="grow" placeholder="Filter…" value={filter} onChange={(e) => setFilter(e.target.value)} />
-            <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)}>
-              <option value="">All types</option>
-              {types.map((t) => <option key={t} value={t}>{t}</option>)}
-            </select>
-          </div>
-          <table>
-            <thead>
-              <tr>
-                <th>Type</th>
-                <th>Item</th>
-                <th>Manufacturer</th>
-                <th className="num">Priced qty</th>
-                <th className="num">Committed</th>
-                <th className="num">Remaining</th>
-                <th className="num">Unit rate</th>
-              </tr>
-            </thead>
-            <tbody>
-              {visible.map((m) => {
-                const priced = m.total_qty ?? 0;
-                const committed = m.committed_qty ?? 0;
-                const pct = priced > 0 ? Math.min(100, (committed / priced) * 100) : 0;
-                const remaining = m.remaining_qty;
-                const over = remaining != null && remaining < 0;
-                const nearly = remaining != null && !over && priced > 0 && remaining / priced < 0.1;
-                return (
-                  <tr key={m.id}>
-                    <td>{m.type}</td>
-                    <td>{m.item}</td>
-                    <td>{m.manufacturer ?? <span className="muted">—</span>}</td>
-                    <td className="num">{priced ? `${priced.toLocaleString()} ${m.total_qty_unit ?? ""}` : <span className="muted">not priced</span>}</td>
-                    <td className="num">{committed.toLocaleString()}</td>
-                    <td className="num">
-                      {remaining == null ? (
-                        <span className="muted">—</span>
-                      ) : (
-                        <>
-                          <div>{remaining.toLocaleString()} {m.total_qty_unit ?? ""}</div>
-                          <div className="bar"><div className={over ? "danger" : nearly ? "warn" : ""} style={{ width: `${pct}%` }} /></div>
-                        </>
-                      )}
-                    </td>
-                    <td className="num">{m.unit_rate != null ? fmtMoney(m.unit_rate) : <span className="muted">—</span>}</td>
+        {mats.length > 0 && (
+          <>
+            <div className="kpis">
+              <Kpi label="Priced material budget" value={fmtMoney(summary.priced_total)} />
+              <Kpi label="Committed" value={fmtMoney(summary.committed_total)} sub={`${summary.committed_pct.toFixed(0)}% of budget`} tone={summary.committed_total > summary.priced_total ? "danger" : "default"} />
+              <Kpi label="Remaining" value={fmtMoney(summary.remaining_total)} sub={summary.remaining_total < 0 ? `Over by ${fmtMoney(Math.abs(summary.remaining_total))}` : undefined} tone={summary.remaining_total < 0 ? "danger" : summary.remaining_total === 0 ? "success" : "default"} />
+              <Kpi label="Unpriced spend" value={fmtMoney(summary.unpriced_spend)} sub={summary.unpriced_spend > 0 ? "Outside the BOQ" : "None"} tone={summary.unpriced_spend > 0 ? "danger" : "default"} />
+            </div>
+
+            <div className="card">
+              <div className="card-hd"><h2>By supplier</h2></div>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Supplier</th>
+                    <th className="num">Items</th>
+                    <th className="num">Priced</th>
+                    <th className="num">Committed</th>
+                    <th className="num">Remaining</th>
+                    <th style={{ width: 200 }}>Usage</th>
                   </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </>
-      )}
+                </thead>
+                <tbody>
+                  {summary.by_supplier.map((s) => {
+                    const pct = s.priced > 0 ? Math.min(100, (s.committed / s.priced) * 100) : 0;
+                    const over = s.committed > s.priced && s.priced > 0;
+                    const exact = s.priced > 0 && Math.abs(s.committed - s.priced) < 0.005;
+                    return (
+                      <tr key={s.supplier}>
+                        <td>{s.supplier}</td>
+                        <td className="num">{s.items}</td>
+                        <td className="num">{fmtMoney(s.priced)}</td>
+                        <td className="num">{fmtMoney(s.committed)}</td>
+                        <td className="num">{s.priced > 0 ? fmtMoney(s.priced - s.committed) : <span className="muted">—</span>}</td>
+                        <td>
+                          <div className="bar"><div className={over ? "danger" : exact ? "ok" : ""} style={{ width: `${pct}%` }} /></div>
+                          <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>{pct.toFixed(0)}%</div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="card">
+              <div className="card-hd">
+                <h2 style={{ flex: 1 }}>
+                  Materials
+                  <span className="muted" style={{ fontWeight: 400, marginLeft: 10, fontSize: 13, fontFamily: "var(--font-sans)" }}>
+                    {showAll ? `${mats.length} in library` : `${pricedCount} priced for this job`}
+                  </span>
+                </h2>
+                <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--muted)", marginBottom: 0, textTransform: "none", letterSpacing: 0 }}>
+                  <input type="checkbox" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} style={{ minHeight: 0 }} />
+                  Show full library
+                </label>
+                <input placeholder="Filter…" value={filter} onChange={(e) => setFilter(e.target.value)} style={{ width: 220 }} />
+                <select value={supplierFilter} onChange={(e) => setSupplierFilter(e.target.value)}>
+                  <option value="">All suppliers</option>
+                  {suppliers.map((s) => <option key={s} value={s}>{s}</option>)}
+                </select>
+                <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)}>
+                  <option value="">All types</option>
+                  {types.map((t) => <option key={t} value={t}>{t}</option>)}
+                </select>
+              </div>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Type</th>
+                    <th>Item</th>
+                    <th>Supplier</th>
+                    <th className="num">Pack cost</th>
+                    <th>Unit</th>
+                    <th className="num">Priced</th>
+                    <th className="num">Committed</th>
+                    <th className="num">Remaining</th>
+                    <th style={{ width: 140 }}>Usage</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {visible.map((m) => {
+                    const priced = m.total_units ?? 0;
+                    const committed = m.committed_qty ?? 0;
+                    const isOriginallyUnpriced = priced === 0;
+                    const pct = priced > 0 ? Math.min(100, (committed / priced) * 100) : (committed > 0 ? 100 : 0);
+                    const remaining = m.remaining_qty;
+                    const over = remaining != null && remaining < 0;
+                    const exact = priced > 0 && Math.abs(committed - priced) < 0.005;
+                    const unit = m.total_units_unit ?? m.pack_unit ?? "";
+                    return (
+                      <tr key={m.id}>
+                        <td>{m.type}</td>
+                        <td>{m.item}</td>
+                        <td className="muted">{m.manufacturer ?? "—"}</td>
+                        <td className="num">{m.cost != null ? fmtMoney(m.cost) : <span className="muted">—</span>}</td>
+                        <td>{unit}</td>
+                        <td className="num">{priced ? `${priced.toLocaleString()}` : <span className="muted">not priced</span>}</td>
+                        <td className="num">{committed.toLocaleString()}</td>
+                        <td className="num">
+                          {remaining == null ? <span className="muted">—</span> : remaining.toLocaleString()}
+                        </td>
+                        <td>
+                          <div className="bar">
+                            <div
+                              className={over || (isOriginallyUnpriced && committed > 0) ? "danger" : exact ? "ok" : ""}
+                              style={{ width: `${pct}%` }}
+                            />
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+      </main>
     </>
   );
+}
+
+/* ── Site details card ─────────────────────────────────────────────────── */
+
+function SiteDetailsCard({ project, onSaved }: { project: Project; onSaved: () => void }) {
+  const [editing, setEditing] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [form, setForm] = useState({
+    delivery_address: project.delivery_address ?? "",
+    site_contact_name: project.site_contact_name ?? "",
+    site_contact_phone: project.site_contact_phone ?? "",
+    delivery_instructions: project.delivery_instructions ?? "",
+  });
+
+  useEffect(() => {
+    setForm({
+      delivery_address: project.delivery_address ?? "",
+      site_contact_name: project.site_contact_name ?? "",
+      site_contact_phone: project.site_contact_phone ?? "",
+      delivery_instructions: project.delivery_instructions ?? "",
+    });
+  }, [project.id, project.delivery_address, project.site_contact_name, project.site_contact_phone, project.delivery_instructions]);
+
+  async function save() {
+    setBusy(true); setErr(null);
+    try { await api.updateProject(project.id, form); setEditing(false); onSaved(); }
+    catch (e) { setErr(e instanceof Error ? e.message : "save failed"); }
+    finally { setBusy(false); }
+  }
+
+  const isEmpty =
+    !project.delivery_address && !project.site_contact_name && !project.site_contact_phone && !project.delivery_instructions;
+
+  return (
+    <div className="card">
+      <div className="card-hd">
+        <h3 style={{ flex: 1 }}>Site details</h3>
+        {!editing && <button className="ghost tiny" onClick={() => setEditing(true)}>Edit</button>}
+      </div>
+      <div className="card-bd">
+        {err && <div className="flash error">{err}</div>}
+        {!editing ? (
+          isEmpty ? (
+            <div className="muted">No site details yet — these appear on every PO PDF for this project.</div>
+          ) : (
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 24 }}>
+              <SiteField label="Delivery address" value={project.delivery_address} multiline />
+              <SiteField label="Site contact" value={[project.site_contact_name, project.site_contact_phone].filter(Boolean).join(" · ")} />
+              <SiteField label="Delivery instructions" value={project.delivery_instructions} multiline />
+            </div>
+          )
+        ) : (
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16 }}>
+            <div>
+              <label>Delivery address</label>
+              <textarea
+                rows={5}
+                value={form.delivery_address}
+                onChange={(e) => setForm({ ...form, delivery_address: e.target.value })}
+                placeholder={"Site name\nStreet\nTown\nPostcode"}
+                style={{ width: "100%" }}
+              />
+            </div>
+            <div>
+              <label>Site contact name</label>
+              <input value={form.site_contact_name} onChange={(e) => setForm({ ...form, site_contact_name: e.target.value })} style={{ width: "100%" }} />
+              <label style={{ marginTop: 12 }}>Telephone</label>
+              <input value={form.site_contact_phone} onChange={(e) => setForm({ ...form, site_contact_phone: e.target.value })} style={{ width: "100%" }} />
+            </div>
+            <div>
+              <label>Delivery instructions</label>
+              <textarea
+                rows={5}
+                value={form.delivery_instructions}
+                onChange={(e) => setForm({ ...form, delivery_instructions: e.target.value })}
+                placeholder="Access notes, opening hours, gate code, etc."
+                style={{ width: "100%" }}
+              />
+            </div>
+            <div className="row" style={{ gridColumn: "1 / -1" }}>
+              <button onClick={save} className="primary" disabled={busy}>Save</button>
+              <button className="ghost" onClick={() => setEditing(false)}>Cancel</button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function SiteField({ label, value, multiline }: { label: string; value: string | null | undefined; multiline?: boolean }) {
+  return (
+    <div>
+      <div className="eyebrow">{label}</div>
+      <div style={{ marginTop: 6, whiteSpace: multiline ? "pre-line" : undefined }}>
+        {value ? value : <span className="muted">—</span>}
+      </div>
+    </div>
+  );
+}
+
+function Kpi({ label, value, sub, tone }: { label: string; value: string; sub?: string; tone?: "default" | "success" | "warn" | "danger" }) {
+  return (
+    <div className={`kpi${tone && tone !== "default" ? ` tone-${tone}` : ""}`}>
+      <div className="kpi-label">{label}</div>
+      <div className="kpi-value">{value}</div>
+      {sub && <div className="kpi-sub">{sub}</div>}
+    </div>
+  );
+}
+
+type Summary = {
+  priced_total: number;
+  committed_total: number;
+  remaining_total: number;
+  committed_pct: number;
+  unpriced_spend: number;
+  by_supplier: Array<{ supplier: string; items: number; priced: number; committed: number }>;
+};
+
+function summarise(mats: MaterialWithCommitment[], unpricedSpend: number): Summary {
+  let priced = 0, committed = 0;
+  const bySup = new Map<string, { items: number; priced: number; committed: number }>();
+  for (const m of mats) {
+    const cost = m.cost ?? 0;
+    const matPriced = (m.total_units ?? 0) * cost;
+    const matCommitted = (m.committed_qty ?? 0) * cost;
+    priced += matPriced;
+    committed += matCommitted;
+    const sup = m.manufacturer?.trim() || "—";
+    const cur = bySup.get(sup) ?? { items: 0, priced: 0, committed: 0 };
+    cur.items += 1;
+    cur.priced += matPriced;
+    cur.committed += matCommitted;
+    bySup.set(sup, cur);
+  }
+  return {
+    priced_total: priced,
+    committed_total: committed,
+    remaining_total: priced - committed,
+    committed_pct: priced > 0 ? (committed / priced) * 100 : 0,
+    unpriced_spend: unpricedSpend,
+    by_supplier: [...bySup.entries()]
+      .map(([supplier, v]) => ({ supplier, ...v }))
+      .filter((s) => s.priced > 0)
+      .sort((a, b) => b.priced - a.priced),
+  };
 }
