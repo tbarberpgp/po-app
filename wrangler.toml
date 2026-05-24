@@ -1,0 +1,29 @@
+name = "po-app"
+main = "src/worker/index.ts"
+compatibility_date = "2025-01-15"
+compatibility_flags = ["nodejs_compat"]
+
+[assets]
+directory = "./dist/client"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "po_app_db"
+# Replace this id after running `wrangler d1 create po_app_db`
+database_id = "REPLACE_ME"
+migrations_dir = "./migrations"
+
+# Set in dashboard / `wrangler secret put` — do not commit values.
+# RESEND_API_KEY     — for transactional email
+# APP_BASE_URL       — e.g. https://po.yourdomain.com (used in email links)
+# DEV_USER_EMAIL     — only used in `wrangler dev` to fake Cloudflare Access identity
+
+[vars]
+APP_NAME = "PowerGrid Purchase Orders"
+DEFAULT_TIER_THRESHOLDS = "2000,10000,50000"
+DEFAULT_CURRENCY = "GBP"
+
+[observability]
+enabled = true

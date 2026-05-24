@@ -1,0 +1,90 @@
+import type {
+  CreatePOInput,
+  CurrentUser,
+  MaterialWithCommitment,
+  PurchaseOrder,
+  Settings,
+} from "../../shared/types";
+
+async function jfetch<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(path, {
+    ...init,
+    headers: {
+      ...(init?.body && !(init.body instanceof FormData) ? { "Content-Type": "application/json" } : {}),
+      ...init?.headers,
+    },
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(body || `Request failed: ${res.status}`);
+  }
+  if (res.status === 204) return undefined as T;
+  return res.json() as Promise<T>;
+}
+
+export const api = {
+  me: () => jfetch<CurrentUser>("/api/me"),
+  settings: () => jfetch<Settings>("/api/settings"),
+
+  listProjects: () =>
+    jfetch<Array<{ id: string; code: string; name: string; client: string | null; active_snapshot_id: number | null }>>(
+      "/api/projects",
+    ),
+  getProject: (id: string) =>
+    jfetch<{ project: { id: string; code: string; name: string; client: string | null }; active_snapshot: { id: number; filename: string; uploaded_at: string } | null }>(
+      `/api/projects/${id}`,
+    ),
+  createProject: (input: { code: string; name: string; client?: string }) =>
+    jfetch<{ id: string }>("/api/projects", { method: "POST", body: JSON.stringify(input) }),
+
+  listMaterials: (projectId: string) =>
+    jfetch<MaterialWithCommitment[]>(`/api/materials/${projectId}`),
+  uploadMaterials: (projectId: string, file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    return jfetch<{ snapshot_id: number; rows: number }>(`/api/materials/${projectId}/upload`, {
+      method: "POST",
+      body: fd,
+    });
+  },
+
+  listPOs: (q?: { project_id?: string; status?: string }) => {
+    const usp = new URLSearchParams();
+    if (q?.project_id) usp.set("project_id", q.project_id);
+    if (q?.status) usp.set("status", q.status);
+    return jfetch<Array<PurchaseOrder & { project_code: string; project_name: string }>>(
+      `/api/pos${usp.toString() ? "?" + usp.toString() : ""}`,
+    );
+  },
+  getPO: (id: string) =>
+    jfetch<PurchaseOrder & { project_code: string; project_name: string }>(`/api/pos/${id}`),
+  createPO: (input: CreatePOInput) =>
+    jfetch<{ id: string; po_number: string; status: string; requires_approval: boolean }>(
+      "/api/pos",
+      { method: "POST", body: JSON.stringify(input) },
+    ),
+  approvePO: (id: string) => jfetch<{ ok: true }>(`/api/pos/${id}/approve`, { method: "POST" }),
+  rejectPO: (id: string, reason: string) =>
+    jfetch<{ ok: true }>(`/api/pos/${id}/reject`, {
+      method: "POST",
+      body: JSON.stringify({ reason }),
+    }),
+  issuePO: (id: string) => jfetch<{ ok: true }>(`/api/pos/${id}/issue`, { method: "POST" }),
+
+  listApprovers: (projectId?: string) =>
+    jfetch<Array<{ id: number; project_id: string | null; tier: string; email: string; name: string | null }>>(
+      `/api/approvers${projectId ? "?project_id=" + projectId : ""}`,
+    ),
+  addApprover: (input: { project_id?: string | null; tier: string; email: string; name?: string }) =>
+    jfetch<{ id: number }>("/api/approvers", { method: "POST", body: JSON.stringify(input) }),
+  removeApprover: (id: number) =>
+    jfetch<{ ok: true }>(`/api/approvers/${id}`, { method: "DELETE" }),
+};
+
+export function fmtMoney(n: number, currency = "GBP") {
+  return new Intl.NumberFormat("en-GB", { style: "currency", currency }).format(n);
+}
+export function fmtDate(iso: string | null) {
+  if (!iso) return "";
+  return new Date(iso).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+}

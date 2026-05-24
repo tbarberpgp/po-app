@@ -1,0 +1,8 @@
+# Copy to .dev.vars (gitignored) for local development.
+# In production these are set as Worker secrets via `wrangler secret put`.
+
+RESEND_API_KEY=re_your_key_here
+APP_BASE_URL=http://localhost:5173
+
+# Local dev only: emulates the email Cloudflare Access would inject in prod.
+DEV_USER_EMAIL=you@powergridprojects.co.uk
