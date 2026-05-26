@@ -270,6 +270,19 @@ pos.post("/", async (c) => {
   return c.json({ id, po_number: poNumber, status, requires_approval: requiresApproval });
 });
 
+pos.get("/:id/activity", async (c) => {
+  const id = c.req.param("id");
+  const rows = await c.env.DB.prepare(
+    `SELECT id, action, actor, details, created_at
+     FROM audit_log
+     WHERE entity_type = 'po' AND entity_id = ?
+     ORDER BY created_at ASC`,
+  )
+    .bind(id)
+    .all<{ id: number; action: string; actor: string; details: string | null; created_at: string }>();
+  return c.json(rows.results);
+});
+
 pos.post("/:id/approve", async (c) => {
   const id = c.req.param("id");
   const actor = c.get("userEmail");

@@ -169,7 +169,7 @@ function ApproverRow({
   }
 
   return (
-    <tr style={{ background: "var(--row-hover)" }}>
+    <tr style={{ background: "var(--accent-soft)" }}>
       <td>{projectCode ?? "All"}</td>
       <td>
         <select value={tier} onChange={(e) => setTier(e.target.value)}>

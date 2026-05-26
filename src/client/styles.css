@@ -290,7 +290,16 @@ input, select, textarea {
   font-size: 13.5px;
   font-family: inherit;
   min-height: 36px;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
   transition: border-color var(--motion-fast), box-shadow var(--motion-fast);
+}
+input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; }
+input[readonly], textarea[readonly], select:disabled {
+  background: var(--card-2);
+  color: var(--ink-2);
+  cursor: not-allowed;
 }
 textarea { min-height: auto; font-family: inherit; line-height: 1.4; }
 input:focus, select:focus, textarea:focus {
@@ -446,7 +455,141 @@ td.num, th.num {
 .kpi.tone-warn .kpi-value { color: var(--warn); }
 .kpi.tone-success .kpi-value { color: var(--success); }
 
+/* ── Two-column layout with sticky inspector ──────────────────────────── */
+.split {
+  display: grid;
+  grid-template-columns: 1fr 340px;
+  gap: 20px;
+  align-items: start;
+}
+.split > .inspector {
+  position: sticky;
+  top: 84px; /* below topbar */
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+@media (max-width: 1100px) {
+  .split { grid-template-columns: 1fr; }
+  .split > .inspector { position: static; }
+}
+
+/* ── Decision card — accent border + soft tint gradient ──────────────── */
+.decision-card {
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-lg);
+  background: linear-gradient(180deg, var(--accent-soft) 0%, var(--card) 65%);
+  padding: 20px;
+}
+.decision-card .eyebrow { color: var(--accent-2); }
+.decision-card h3 { margin: 6px 0 4px; }
+.decision-card .explainer { font-size: 12.5px; color: var(--muted); margin-bottom: 12px; }
+.decision-card .action-stack { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+.decision-card .action-stack button { width: 100%; justify-content: center; padding: 10px 14px; }
+.decision-card .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+
+/* ── Activity timeline ─────────────────────────────────────────────────── */
+.activity { display: flex; flex-direction: column; }
+.activity-row {
+  display: grid;
+  grid-template-columns: 32px 1fr auto;
+  gap: 10px;
+  align-items: start;
+  padding: 14px 0;
+  border-top: 1px solid var(--line);
+}
+.activity-row:first-child { border-top: none; padding-top: 0; }
+.activity-row .avatar {
+  width: 28px; height: 28px;
+  border-radius: 50%;
+  background: var(--ink); color: var(--paper);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 600;
+  flex-shrink: 0;
+}
+.activity-row .avatar.accent { background: var(--accent); color: var(--accent-fg); }
+.activity-row .body { font-size: 13px; min-width: 0; }
+.activity-row .body b { color: var(--ink); }
+.activity-row .quote { color: var(--muted); font-style: italic; margin-top: 2px; }
+.activity-row .ts { color: var(--muted); font-size: 12px; white-space: nowrap; }
+
+/* ── Approval route avatars ─────────────────────────────────────────── */
+.approval-route { display: flex; flex-direction: column; gap: 10px; }
+.approval-step {
+  display: grid;
+  grid-template-columns: 28px 1fr auto;
+  gap: 10px;
+  align-items: center;
+}
+.approval-step .avatar {
+  width: 28px; height: 28px;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 600;
+  flex-shrink: 0;
+}
+.approval-step.done .avatar { background: var(--success); color: white; }
+.approval-step.now .avatar { background: var(--accent); color: var(--accent-fg); }
+.approval-step.next .avatar {
+  background: transparent; color: var(--muted);
+  border: 1px dashed var(--line-strong);
+}
+.approval-step .who { font-size: 13px; font-weight: 500; }
+.approval-step .role { font-size: 11.5px; color: var(--muted); }
+
+/* ── Inspector card body adjustments ─────────────────────────────────── */
+.inspector .card { margin-bottom: 0; }
+.inspector .card-bd { padding: 16px 18px; }
+.inspector .stat { padding: 4px 0; }
+.inspector .stat .label { font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+.inspector .stat .value {
+  font-family: var(--font-sans);
+  font-weight: 600;
+  font-size: 24px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+  margin-top: 4px;
+}
+.inspector .stat .sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
+
 /* Theme toggle in topbar */
+/* Additional items grid — used in NewPO. Tracks are sized for the widest
+ * realistic content of each column so labels and inputs can't overlap, and
+ * the Item column flexes to take the remaining space. */
+.add-row {
+  display: grid;
+  grid-template-columns:
+    minmax(140px, 0.9fr)   /* Type */
+    minmax(180px, 2fr)     /* Item */
+    minmax(130px, 1fr)     /* Manufacturer */
+    90px                   /* Qty */
+    72px                   /* Unit */
+    110px                  /* Unit cost */
+    100px                  /* Line total */
+    36px;                  /* Remove */
+  gap: 12px;
+  align-items: end;
+}
+.add-row .line-total {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  padding-top: 8px;
+}
+.add-row .remove-btn {
+  padding: 0;
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+@media (max-width: 1100px) {
+  .add-row {
+    grid-template-columns: 1fr 1fr;
+  }
+  .add-row > * { width: 100%; }
+}
+
 .theme-toggle {
   display: inline-flex;
   border: 1px solid var(--line-strong);

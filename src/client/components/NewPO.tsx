@@ -239,6 +239,27 @@ export function NewPO() {
     }
   }
 
+  // Budget context for the inspector — sum priced and committed material values.
+  const budget = useMemo(() => {
+    let priced = 0, committed = 0;
+    for (const m of mats) {
+      const cost = m.cost ?? 0;
+      priced += (m.total_units ?? 0) * cost;
+      committed += (m.committed_qty ?? 0) * cost;
+    }
+    return { priced, committed };
+  }, [mats]);
+  const projectedCommitted = budget.committed + pricedTotal; // additional items don't reduce the priced budget
+
+  // Live preview of approval tier — mirrors src/worker/approval.ts logic
+  const tierPreview = !needsApproval
+    ? null
+    : grandTotal <= 2000 && !hasAdditional
+      ? "Line Manager"
+      : grandTotal <= 10000
+        ? "Commercial Manager"
+        : "Director";
+
   if (!project) return <main className="muted">Loading…</main>;
 
   return (
@@ -246,14 +267,28 @@ export function NewPO() {
       <Topbar
         crumbs={<><Link to="/">Projects</Link> / <Link to={`/projects/${projectId}`}>{project.project.code}</Link> / New PO</>}
         title="New Purchase Order"
-        actions={<Link to={`/projects/${projectId}`} className="btn ghost">Cancel</Link>}
+        actions={
+          <>
+            <Link to={`/projects/${projectId}`} className="btn ghost">Cancel</Link>
+            <button
+              type="submit"
+              form="new-po-form"
+              className="accent"
+              disabled={busy || grandTotal <= 0}
+            >
+              {busy ? "Submitting…" : needsApproval ? "Submit for approval" : "Create PO"}
+            </button>
+          </>
+        }
       />
       <main>
       {err && <div className="flash error">{err}</div>}
 
-      <form onSubmit={submit}>
+      <form id="new-po-form" onSubmit={submit}>
+        <div className="split">
+          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
         {/* Supplier selection */}
-        <div className="card">
+        <div className="card card-padded">
           <div className="row">
             <div style={{ minWidth: 280 }}>
               <label>Supplier</label>
@@ -287,17 +322,17 @@ export function NewPO() {
         {/* TOP: priced items for this supplier */}
         {supplier && !isCustomSupplier && (
           <div className="card">
-            <div className="row" style={{ marginBottom: 12 }}>
-              <h3 style={{ margin: 0 }} className="grow">
-                Priced items <span className="muted" style={{ fontWeight: 400 }}>from {supplier}</span>
-              </h3>
+            <div className="card-hd">
+              <h2 style={{ flex: 1 }}>
+                Priced items <span className="muted" style={{ fontWeight: 400, fontFamily: "var(--font-sans)", fontSize: 13 }}>from {supplier}</span>
+              </h2>
               <input placeholder="Filter…" value={filter} onChange={(e) => setFilter(e.target.value)} style={{ width: 220 }} />
               <span className="muted">{pricedSelected.length} selected · {fmtMoney(pricedTotal)}</span>
             </div>
             {pricedForSupplier.length === 0 ? (
-              <div className="muted">
+              <div className="card-bd"><div className="muted">
                 No items priced for this job from {supplier}. Use the “Additional items” section below.
-              </div>
+              </div></div>
             ) : (
               <table>
                 <thead>
@@ -324,7 +359,7 @@ export function NewPO() {
                     const lineTotal = row ? row.qty * (m.cost ?? 0) : 0;
                     const isOver = row && row.qty > remaining;
                     return (
-                      <tr key={m.id} style={row ? { background: "var(--row-hover)" } : undefined}>
+                      <tr key={m.id} style={row ? { background: "var(--accent-soft)" } : undefined}>
                         <td><input type="checkbox" checked={!!row} onChange={() => toggleRow(m)} /></td>
                         <td>{m.item}</td>
                         <td>{m.type}</td>
@@ -363,70 +398,110 @@ export function NewPO() {
         {/* BOTTOM: additional / unpriced items — cascading Type→Item picker */}
         {(supplier || isCustomSupplier) && (
           <div className="card">
-            <div className="row" style={{ marginBottom: 12 }}>
+            <div className="card-hd">
               <div className="grow">
-                <h3 style={{ margin: 0 }}>Additional items</h3>
-                <div className="muted">Anything not priced in the BOQ for this job — picked from the materials library, or custom.</div>
+                <h2 style={{ margin: 0 }}>Additional items</h2>
+                <div className="muted" style={{ marginTop: 4 }}>Anything not priced in the BOQ for this job — picked from the materials library, or custom.</div>
               </div>
-              <button type="button" className="secondary" onClick={addAdditional}>+ Add item</button>
+              <button type="button" className="ghost" onClick={addAdditional}>+ Add item</button>
             </div>
-
-            {additional.length === 0 ? (
-              <div className="muted">None yet.</div>
-            ) : (
-              additional.map((row, idx) => (
-                <AdditionalRowEditor
-                  key={row.key}
-                  row={row}
-                  idx={idx}
-                  libraryTypes={libraryTypes}
-                  library={libraryUnpriced}
-                  onChange={(p) => updateAdditional(row.key, p)}
-                  onPick={(v) => pickLibraryItem(row.key, v)}
-                  onRemove={() => removeAdditional(row.key)}
-                />
-              ))
-            )}
+            <div className="card-bd">
+              {additional.length === 0 ? (
+                <div className="muted">None yet.</div>
+              ) : (
+                additional.map((row, idx) => (
+                  <AdditionalRowEditor
+                    key={row.key}
+                    row={row}
+                    idx={idx}
+                    libraryTypes={libraryTypes}
+                    library={libraryUnpriced}
+                    onChange={(p) => updateAdditional(row.key, p)}
+                    onPick={(v) => pickLibraryItem(row.key, v)}
+                    onRemove={() => removeAdditional(row.key)}
+                  />
+                ))
+              )}
+            </div>
           </div>
         )}
+          </div>
 
-        {/* Footer */}
-        {(supplier || isCustomSupplier) && (
-          <>
-            {needsApproval && (
-              <div className="flash info">
-                This PO will be sent for approval (
-                {hasAdditional && hasOver
-                  ? "additional/unpriced items + over priced allowance"
-                  : hasAdditional
-                    ? "contains items outside the priced BOQ"
-                    : "exceeds priced allowance"}
-                ).
+          {/* Right inspector ──────────────────────────────────────────────── */}
+          <div className="inspector">
+            <div className="card card-padded">
+              <div className="stat">
+                <div className="label">Running total</div>
+                <div className="value">{fmtMoney(grandTotal)}</div>
+                <div className="sub">
+                  {pricedSelected.length + validAdditional.length} lines · ex VAT
+                </div>
+              </div>
+              {(pricedTotal > 0 || additionalTotal > 0) && (
+                <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--line)", display: "grid", gap: 6 }}>
+                  <Split label="Priced" value={fmtMoney(pricedTotal)} />
+                  {additionalTotal > 0 && <Split label="Additional" value={fmtMoney(additionalTotal)} accent />}
+                </div>
+              )}
+            </div>
+
+            {budget.priced > 0 && (
+              <div className="card card-padded">
+                <div className="eyebrow">Budget · {project.project.code}</div>
+                <div className="bar" style={{ marginTop: 10 }}>
+                  <div style={{ width: `${Math.min(100, (budget.committed / budget.priced) * 100)}%` }} />
+                </div>
+                <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>Now · {((budget.committed / budget.priced) * 100).toFixed(0)}% committed</div>
+                <div className="bar" style={{ marginTop: 10 }}>
+                  <div className="accent" style={{ width: `${Math.min(100, (projectedCommitted / budget.priced) * 100)}%` }} />
+                </div>
+                <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
+                  If submitted · {((projectedCommitted / budget.priced) * 100).toFixed(0)}% · {fmtMoney(Math.max(0, budget.priced - projectedCommitted))} left
+                </div>
+                {hasAdditional && (
+                  <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>
+                    + {fmtMoney(additionalTotal)} in unpriced items (outside the BOQ)
+                  </div>
+                )}
               </div>
             )}
-            <div className="card">
-              <div className="row">
-                <div className="grow">
-                  <div className="muted">
-                    Priced: {fmtMoney(pricedTotal)} · Additional: {fmtMoney(additionalTotal)}
+
+            <div className="card card-padded">
+              <div className="eyebrow">Approval</div>
+              {needsApproval ? (
+                <>
+                  <div style={{ marginTop: 8, fontSize: 14, fontWeight: 500 }}>
+                    Goes to <b>{tierPreview}</b>
                   </div>
-                </div>
-                <div style={{ textAlign: "right" }}>
-                  <div className="muted">Total</div>
-                  <div style={{ fontSize: 22, fontWeight: 600 }}>{fmtMoney(grandTotal)}</div>
-                </div>
-              </div>
+                  <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+                    {hasAdditional && hasOver
+                      ? "Unpriced items + over allowance"
+                      : hasAdditional
+                        ? "Contains items outside the BOQ"
+                        : "Exceeds priced allowance"}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div style={{ marginTop: 8, fontSize: 14, fontWeight: 500 }}>Auto-approved</div>
+                  <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>All lines priced and within allowance</div>
+                </>
+              )}
             </div>
-            <div className="row">
-              <button type="submit" className="accent" disabled={busy || grandTotal <= 0}>
-                {busy ? "Submitting…" : needsApproval ? "Submit for approval" : "Create PO"}
-              </button>
-            </div>
-          </>
-        )}
+          </div>
+        </div>
       </form>
       </main>
     </>
+  );
+}
+
+function Split({ label, value, accent }: { label: string; value: string; accent?: boolean }) {
+  return (
+    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13 }}>
+      <span className="muted">{label}</span>
+      <span className="num" style={accent ? { color: "var(--accent-2)" } : undefined}>{value}</span>
+    </div>
   );
 }
 
@@ -448,20 +523,32 @@ function AdditionalRowEditor({
   const autoFilled = row.source === "library" && row.material_id != null;
 
   return (
-    <div style={{ borderTop: idx === 0 ? "none" : "1px solid var(--border)", paddingTop: idx === 0 ? 0 : 16, marginTop: idx === 0 ? 0 : 16 }}>
-      <div className="row" style={{ alignItems: "flex-end" }}>
-        <div style={{ width: 150 }}>
+    <div
+      style={{
+        borderTop: idx === 0 ? "none" : "1px solid var(--line)",
+        paddingTop: idx === 0 ? 0 : 16,
+        marginTop: idx === 0 ? 0 : 16,
+      }}
+    >
+      <div className="add-row">
+        <div>
           <label>Type</label>
           <select
             value={row.type}
-            onChange={(e) => onChange({ type: e.target.value, material_id: null, item: row.source === "library" ? "" : row.item })}
+            onChange={(e) =>
+              onChange({
+                type: e.target.value,
+                material_id: null,
+                item: row.source === "library" ? "" : row.item,
+              })
+            }
             disabled={row.source === "custom"}
           >
             <option value="">— select —</option>
             {libraryTypes.map((t) => <option key={t} value={t}>{t}</option>)}
           </select>
         </div>
-        <div className="grow">
+        <div>
           <label>Item</label>
           {row.source === "custom" ? (
             <input value={row.item} onChange={(e) => onChange({ item: e.target.value })} placeholder="Custom item description" />
@@ -479,45 +566,48 @@ function AdditionalRowEditor({
             </select>
           )}
         </div>
-        <div style={{ width: 140 }}>
+        <div>
           <label>Manufacturer</label>
           <input
             value={row.manufacturer}
             onChange={(e) => onChange({ manufacturer: e.target.value })}
             placeholder="—"
             readOnly={autoFilled}
-            style={autoFilled ? { background: "var(--header-bg)" } : undefined}
           />
         </div>
-        <div style={{ width: 100 }}>
+        <div>
           <label>Qty</label>
-          <input type="number" step="any" value={row.qty || ""} onChange={(e) => onChange({ qty: Number(e.target.value) })} />
+          <input
+            type="number"
+            step="any"
+            value={row.qty || ""}
+            onChange={(e) => onChange({ qty: Number(e.target.value) })}
+          />
         </div>
-        <div style={{ width: 80 }}>
+        <div>
           <label>Unit</label>
           <input
             value={row.unit}
             onChange={(e) => onChange({ unit: e.target.value })}
             placeholder="ea"
             readOnly={autoFilled}
-            style={autoFilled ? { background: "var(--header-bg)" } : undefined}
           />
         </div>
-        <div style={{ width: 110 }}>
+        <div>
           <label>Unit cost (£)</label>
           <input
-            type="number" step="0.01"
+            type="number"
+            step="0.01"
             value={row.unit_cost || ""}
             onChange={(e) => onChange({ unit_cost: Number(e.target.value) })}
             readOnly={autoFilled}
-            style={autoFilled ? { background: "var(--header-bg)" } : undefined}
           />
         </div>
-        <div style={{ width: 110, textAlign: "right" }}>
+        <div>
           <label>Line total</label>
-          <div style={{ padding: "8px 0" }}>{fmtMoney(row.qty * row.unit_cost)}</div>
+          <div className="line-total">{fmtMoney(row.qty * row.unit_cost)}</div>
         </div>
-        <button type="button" className="secondary" onClick={onRemove} title="Remove">×</button>
+        <button type="button" className="ghost remove-btn" onClick={onRemove} title="Remove">×</button>
       </div>
       <div style={{ marginTop: 6 }}>
         <span className="badge unpriced">unpriced</span>{" "}

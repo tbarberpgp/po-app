@@ -67,6 +67,10 @@ export const api = {
   },
   getPO: (id: string) =>
     jfetch<PurchaseOrder & { project_code: string; project_name: string }>(`/api/pos/${id}`),
+  getPOActivity: (id: string) =>
+    jfetch<Array<{ id: number; action: string; actor: string; details: string | null; created_at: string }>>(
+      `/api/pos/${id}/activity`,
+    ),
   createPO: (input: CreatePOInput) =>
     jfetch<{ id: string; po_number: string; status: string; requires_approval: boolean }>(
       "/api/pos",
