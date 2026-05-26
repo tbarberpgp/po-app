@@ -3,22 +3,27 @@ import type { Env, Variables } from "../env";
 import type { CreatePOInput, POLine } from "../../shared/types";
 import { loadSettings, tierForApproval } from "../approval";
 import { emailApprovers, emailRequesterDecision } from "../notify";
+import { requirePermission } from "../auth";
 
 export const pos = new Hono<{ Bindings: Env; Variables: Variables }>();
 
 pos.get("/", async (c) => {
   const projectId = c.req.query("project_id");
   const status = c.req.query("status");
+  const includeDeleted = c.req.query("include_deleted") === "1";
+  // Deleted POs are hidden by default everywhere; superadmins can pass
+  // ?include_deleted=1 if we ever build a "Deleted POs" view.
   const where: string[] = [];
   const binds: unknown[] = [];
   if (projectId) {
-    where.push("project_id = ?");
+    where.push("po.project_id = ?");
     binds.push(projectId);
   }
   if (status) {
-    where.push("status = ?");
+    where.push("po.status = ?");
     binds.push(status);
   }
+  if (!includeDeleted) where.push("po.status != 'deleted'");
   const sql = `SELECT po.*, p.code AS project_code, p.name AS project_name
      FROM purchase_orders po
      JOIN projects p ON p.id = po.project_id
@@ -56,6 +61,8 @@ pos.get("/:id", async (c) => {
 });
 
 pos.post("/", async (c) => {
+  const denied = requirePermission(c, "pos.create");
+  if (denied) return denied;
   const body = await c.req.json<CreatePOInput>();
   const actor = c.get("userEmail");
   if (!body.project_id || !body.supplier || !body.lines?.length) {
@@ -394,6 +401,8 @@ pos.post("/:id/reject", async (c) => {
 });
 
 pos.post("/:id/issue", async (c) => {
+  const denied = requirePermission(c, "pos.issue");
+  if (denied) return denied;
   const id = c.req.param("id");
   const actor = c.get("userEmail");
   const po = await c.env.DB.prepare("SELECT id, status, created_by FROM purchase_orders WHERE id = ?")
@@ -414,6 +423,46 @@ pos.post("/:id/issue", async (c) => {
      VALUES ('po', ?, 'issued', ?, NULL, ?)`,
   )
     .bind(id, actor, now)
+    .run();
+  return c.json({ ok: true });
+});
+
+/**
+ * Soft delete — superadmin only. Sets status='deleted' and records who,
+ * when, and why. The PO row stays so the audit trail is preserved, but it
+ * disappears from every list query (which all filter
+ * status IN ('approved','issued','pending_approval', ...)) and stops
+ * counting against project committed budget.
+ */
+pos.delete("/:id", async (c) => {
+  const denied = requirePermission(c, "pos.delete");
+  if (denied) return denied;
+  const id = c.req.param("id");
+  const actor = c.get("userEmail");
+  const body = await c.req.json<{ reason?: string }>().catch(() => ({ reason: undefined }));
+  const reason = (body.reason ?? "").trim();
+  if (!reason) return c.json({ error: "deletion reason is required" }, 400);
+
+  const po = await c.env.DB.prepare("SELECT id, status, po_number FROM purchase_orders WHERE id = ?")
+    .bind(id)
+    .first<{ id: string; status: string; po_number: string }>();
+  if (!po) return c.json({ error: "not found" }, 404);
+  if (po.status === "deleted") return c.json({ error: "already deleted" }, 409);
+
+  const now = new Date().toISOString();
+  await c.env.DB.prepare(
+    `UPDATE purchase_orders
+       SET status = 'deleted', deleted_at = ?, deleted_by = ?, deletion_reason = ?
+       WHERE id = ?`,
+  )
+    .bind(now, actor, reason, id)
+    .run();
+
+  await c.env.DB.prepare(
+    `INSERT INTO audit_log (entity_type, entity_id, action, actor, details, created_at)
+     VALUES ('po', ?, 'deleted', ?, ?, ?)`,
+  )
+    .bind(id, actor, JSON.stringify({ reason, previous_status: po.status }), now)
     .run();
   return c.json({ ok: true });
 });

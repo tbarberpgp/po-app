@@ -365,7 +365,9 @@ td.num, th.num {
   content: ''; width: 6px; height: 6px; border-radius: 50%;
   background: currentColor;
 }
-.badge.draft, .pill.draft { background: var(--line); color: var(--muted); }
+.badge.draft, .pill.draft,
+.badge.deleted, .pill.deleted { background: var(--line); color: var(--muted); }
+.pill.deleted { text-decoration: line-through; }
 .badge.pending_approval, .pill.pending_approval,
 .badge.pending, .pill.pending { background: var(--warn-soft); color: var(--warn); }
 .badge.approved, .pill.approved { background: var(--success-soft); color: var(--success); }

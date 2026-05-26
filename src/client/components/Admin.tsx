@@ -1,35 +1,41 @@
 import { useEffect, useState } from "react";
 import { api } from "../lib/api";
 import { Topbar } from "./Shell";
-import type { Settings } from "../../shared/types";
+import { can, outranks, ROLE_LABELS, ROLES, type Role } from "../../shared/permissions";
+import type { AppUser, CurrentUser, Settings } from "../../shared/types";
 
 type ApproverItem = { id: number; project_id: string | null; tier: string; email: string; name: string | null };
 
-export function Admin() {
+export function Admin({ me }: { me: CurrentUser | null }) {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [approvers, setApprovers] = useState<Awaited<ReturnType<typeof api.listApprovers>>>([]);
   const [projects, setProjects] = useState<Awaited<ReturnType<typeof api.listProjects>>>([]);
+  const [users, setUsers] = useState<AppUser[]>([]);
   const [err, setErr] = useState<string | null>(null);
-  const [form, setForm] = useState({ project_id: "", tier: "line_manager", email: "", name: "" });
+  const [approverForm, setApproverForm] = useState({ project_id: "", tier: "line_manager", email: "", name: "" });
+
+  const canManageUsers = can(me?.role, "users.write");
+  const canManageApprovers = can(me?.role, "approvers.manage");
 
   function refresh() {
     api.settings().then(setSettings).catch((e) => setErr(e.message));
     api.listApprovers().then(setApprovers).catch((e) => setErr(e.message));
     api.listProjects().then(setProjects).catch((e) => setErr(e.message));
+    if (canManageUsers) api.listUsers().then(setUsers).catch((e) => setErr(e.message));
   }
-  useEffect(refresh, []);
+  useEffect(refresh, [canManageUsers]);
 
   async function addApprover(e: React.FormEvent) {
     e.preventDefault();
     setErr(null);
     try {
       await api.addApprover({
-        project_id: form.project_id || null,
-        tier: form.tier,
-        email: form.email.trim(),
-        name: form.name.trim() || undefined,
+        project_id: approverForm.project_id || null,
+        tier: approverForm.tier,
+        email: approverForm.email.trim(),
+        name: approverForm.name.trim() || undefined,
       });
-      setForm({ project_id: "", tier: "line_manager", email: "", name: "" });
+      setApproverForm({ project_id: "", tier: "line_manager", email: "", name: "" });
       refresh();
     } catch (e) {
       setErr(e instanceof Error ? e.message : "failed");
@@ -40,92 +46,287 @@ export function Admin() {
     <>
       <Topbar crumbs="Master data" title="Admin" />
       <main>
-      {err && <div className="flash error">{err}</div>}
+        {err && <div className="flash error">{err}</div>}
 
-      <div className="card card-padded">
-        <h3 style={{ marginTop: 0 }}>Approval thresholds</h3>
-        <p className="muted">Configured in <code>wrangler.toml</code> / <code>settings</code> table. PO total value determines tier.</p>
-        {settings && (
-          <ul>
-            <li>Up to <b>£{settings.tier_threshold_line_manager.toLocaleString()}</b> → Line Manager</li>
-            <li>Up to <b>£{settings.tier_threshold_commercial_manager.toLocaleString()}</b> → Commercial Manager</li>
-            <li>Above <b>£{settings.tier_threshold_commercial_manager.toLocaleString()}</b> → Director</li>
-            <li>Any <b>unpriced material</b> escalates at least to Commercial Manager.</li>
-          </ul>
+        {canManageUsers && (
+          <UsersSection users={users} me={me} onChanged={refresh} />
         )}
-      </div>
 
-      <div className="card card-padded">
-        <h3 style={{ marginTop: 0 }}>Approvers</h3>
-        <p className="muted" style={{ marginTop: 0 }}>
-          People listed here receive approval emails and can approve/reject POs in the Approvals tab.
-          Click any name or email to edit in place.
-        </p>
-        <form onSubmit={addApprover} className="row" style={{ marginBottom: 16 }}>
-          <div>
-            <label>Project</label>
-            <select value={form.project_id} onChange={(e) => setForm({ ...form, project_id: e.target.value })}>
-              <option value="">All projects (default)</option>
-              {projects.map((p) => <option key={p.id} value={p.id}>{p.code}</option>)}
-            </select>
-          </div>
-          <div>
-            <label>Tier</label>
-            <select value={form.tier} onChange={(e) => setForm({ ...form, tier: e.target.value })}>
-              <option value="line_manager">Line Manager</option>
-              <option value="commercial_manager">Commercial Manager</option>
-              <option value="director">Director</option>
-            </select>
-          </div>
-          <div className="grow">
-            <label>Email</label>
-            <input type="email" required value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} placeholder="approver@powergridprojects.net" />
-          </div>
-          <div>
-            <label>Name</label>
-            <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
-          </div>
-          <button type="submit" className="primary" style={{ alignSelf: "flex-end" }}>Add</button>
-        </form>
-        {approvers.length === 0 ? (
-          <div className="muted">No approvers configured yet — POs needing approval will route nowhere.</div>
-        ) : (
-          <table>
-            <thead>
-              <tr>
-                <th>Scope</th>
-                <th>Tier</th>
-                <th>Name</th>
-                <th>Email</th>
-                <th style={{ width: 90 }}></th>
-              </tr>
-            </thead>
-            <tbody>
-              {approvers.map((a) => (
-                <ApproverRow
-                  key={a.id}
-                  approver={a}
-                  projectCode={a.project_id ? projects.find((p) => p.id === a.project_id)?.code ?? a.project_id : null}
-                  onSaved={refresh}
-                />
-              ))}
-            </tbody>
-          </table>
-        )}
-      </div>
+        <div className="card card-padded">
+          <h3 style={{ marginTop: 0 }}>Approval thresholds</h3>
+          <p className="muted" style={{ marginTop: 0 }}>
+            PO total value determines the tier when approval is required. Edit the values in
+            the <code>settings</code> table to adjust.
+          </p>
+          {settings && (
+            <ul style={{ marginBottom: 0 }}>
+              <li>Up to <b>£{settings.tier_threshold_line_manager.toLocaleString()}</b> → Line Manager</li>
+              <li>Up to <b>£{settings.tier_threshold_commercial_manager.toLocaleString()}</b> → Commercial Manager</li>
+              <li>Above <b>£{settings.tier_threshold_commercial_manager.toLocaleString()}</b> → Director</li>
+              <li>Any <b>unpriced material</b> escalates at least to Commercial Manager.</li>
+            </ul>
+          )}
+        </div>
+
+        <div className="card card-padded">
+          <h3 style={{ marginTop: 0 }}>Approvers</h3>
+          <p className="muted" style={{ marginTop: 0 }}>
+            People listed here receive approval emails and can approve/reject POs in the
+            Approvals tab. Edit any row in place.
+          </p>
+          {canManageApprovers && (
+            <form onSubmit={addApprover} className="row" style={{ marginBottom: 16 }}>
+              <div>
+                <label>Project</label>
+                <select value={approverForm.project_id} onChange={(e) => setApproverForm({ ...approverForm, project_id: e.target.value })}>
+                  <option value="">All projects (default)</option>
+                  {projects.map((p) => <option key={p.id} value={p.id}>{p.code}</option>)}
+                </select>
+              </div>
+              <div>
+                <label>Tier</label>
+                <select value={approverForm.tier} onChange={(e) => setApproverForm({ ...approverForm, tier: e.target.value })}>
+                  <option value="line_manager">Line Manager</option>
+                  <option value="commercial_manager">Commercial Manager</option>
+                  <option value="director">Director</option>
+                </select>
+              </div>
+              <div className="grow">
+                <label>Email</label>
+                <input type="email" required value={approverForm.email} onChange={(e) => setApproverForm({ ...approverForm, email: e.target.value })} placeholder="approver@powergridprojects.net" />
+              </div>
+              <div>
+                <label>Name</label>
+                <input value={approverForm.name} onChange={(e) => setApproverForm({ ...approverForm, name: e.target.value })} />
+              </div>
+              <button type="submit" className="primary" style={{ alignSelf: "flex-end" }}>Add</button>
+            </form>
+          )}
+          {approvers.length === 0 ? (
+            <div className="muted">No approvers configured yet — POs needing approval will route nowhere.</div>
+          ) : (
+            <table>
+              <thead>
+                <tr>
+                  <th>Scope</th>
+                  <th>Tier</th>
+                  <th>Name</th>
+                  <th>Email</th>
+                  <th style={{ width: 110 }}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {approvers.map((a) => (
+                  <ApproverRow
+                    key={a.id}
+                    approver={a}
+                    projectCode={a.project_id ? projects.find((p) => p.id === a.project_id)?.code ?? a.project_id : null}
+                    onSaved={refresh}
+                    canManage={canManageApprovers}
+                  />
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
       </main>
     </>
   );
 }
 
+/* ── Users section ──────────────────────────────────────────────────────── */
+
+function UsersSection({
+  users,
+  me,
+  onChanged,
+}: {
+  users: AppUser[];
+  me: CurrentUser | null;
+  onChanged: () => void;
+}) {
+  const [form, setForm] = useState<{ email: string; name: string; role: Role }>({
+    email: "", name: "", role: "viewer",
+  });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function add(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true); setErr(null);
+    try {
+      await api.addUser({
+        email: form.email.trim(),
+        name: form.name.trim() || undefined,
+        role: form.role,
+      });
+      setForm({ email: "", name: "", role: "viewer" });
+      onChanged();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const canPromoteSuper = can(me?.role, "users.promote_superadmin");
+
+  return (
+    <div className="card card-padded">
+      <h3 style={{ marginTop: 0 }}>Users & permissions</h3>
+      <p className="muted" style={{ marginTop: 0 }}>
+        Anyone past Cloudflare Access lands here as <b>Viewer</b> by default. Promote them to
+        Procurement to raise POs, Admin to manage users and projects, or Superadmin for full
+        control (incl. deleting POs).
+      </p>
+      {err && <div className="flash error">{err}</div>}
+
+      <form onSubmit={add} className="row" style={{ marginBottom: 16 }}>
+        <div className="grow">
+          <label>Email</label>
+          <input
+            type="email"
+            required
+            value={form.email}
+            onChange={(e) => setForm({ ...form, email: e.target.value })}
+            placeholder="person@powergridprojects.net"
+          />
+        </div>
+        <div className="grow">
+          <label>Name</label>
+          <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+        </div>
+        <div style={{ minWidth: 160 }}>
+          <label>Role</label>
+          <select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value as Role })}>
+            {ROLES.filter((r) => r !== "superadmin" || canPromoteSuper).map((r) => (
+              <option key={r} value={r}>{ROLE_LABELS[r]}</option>
+            ))}
+          </select>
+        </div>
+        <button type="submit" className="primary" style={{ alignSelf: "flex-end" }} disabled={busy}>Add</button>
+      </form>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Email</th>
+            <th>Role</th>
+            <th>Status</th>
+            <th style={{ width: 130 }}></th>
+          </tr>
+        </thead>
+        <tbody>
+          {users.map((u) => (
+            <UserRow key={u.email} user={u} me={me} onChanged={onChanged} />
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function UserRow({
+  user,
+  me,
+  onChanged,
+}: {
+  user: AppUser;
+  me: CurrentUser | null;
+  onChanged: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState(user.name ?? "");
+  const [role, setRole] = useState<Role>(user.role);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  // What this current user is allowed to do to this row.
+  const isSelf = me?.email === user.email;
+  const isProtected = me ? outranks(user.role, me.role) : true;
+  const canEdit = !isProtected;
+  const canPromoteSuper = can(me?.role, "users.promote_superadmin");
+  const allowedRoles = ROLES.filter((r) => r !== "superadmin" || canPromoteSuper || user.role === "superadmin");
+
+  async function save() {
+    setBusy(true); setErr(null);
+    try {
+      await api.updateUser(user.email, { name: name.trim() || undefined, role });
+      setEditing(false);
+      onChanged();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function toggleActive() {
+    if (!confirm(`${user.active ? "Deactivate" : "Reactivate"} ${user.email}?`)) return;
+    await api.updateUser(user.email, { active: !user.active });
+    onChanged();
+  }
+
+  async function remove() {
+    if (!confirm(`Permanently remove ${user.email}? They'll be re-created as a Viewer if they visit again.`)) return;
+    await api.removeUser(user.email);
+    onChanged();
+  }
+
+  if (editing) {
+    return (
+      <tr style={{ background: "var(--accent-soft)" }}>
+        <td><input value={name} onChange={(e) => setName(e.target.value)} /></td>
+        <td className="muted">{user.email}{isSelf && " (you)"}</td>
+        <td>
+          <select value={role} onChange={(e) => setRole(e.target.value as Role)} disabled={isSelf}>
+            {allowedRoles.map((r) => <option key={r} value={r}>{ROLE_LABELS[r]}</option>)}
+          </select>
+          {err && <div className="muted" style={{ fontSize: 11, color: "var(--danger)", marginTop: 4 }}>{err}</div>}
+        </td>
+        <td><span className={`pill ${user.active ? "approved" : "draft"}`}>{user.active ? "active" : "deactivated"}</span></td>
+        <td>
+          <button className="primary tiny" onClick={save} disabled={busy}>Save</button>{" "}
+          <button className="ghost tiny" onClick={() => { setEditing(false); setName(user.name ?? ""); setRole(user.role); }}>Cancel</button>
+        </td>
+      </tr>
+    );
+  }
+
+  return (
+    <tr>
+      <td>{user.name ?? <span className="muted">—</span>}</td>
+      <td className="muted">{user.email}{isSelf && " (you)"}</td>
+      <td><span className="pill">{ROLE_LABELS[user.role]}</span></td>
+      <td><span className={`pill ${user.active ? "approved" : "draft"}`}>{user.active ? "active" : "deactivated"}</span></td>
+      <td>
+        {canEdit && <button className="ghost tiny" onClick={() => setEditing(true)}>Edit</button>}{" "}
+        {canEdit && !isSelf && (
+          <button className="ghost tiny" onClick={toggleActive}>
+            {user.active ? "Deactivate" : "Reactivate"}
+          </button>
+        )}{" "}
+        {canEdit && !isSelf && (
+          <button className="ghost tiny" onClick={remove}>×</button>
+        )}
+      </td>
+    </tr>
+  );
+}
+
+/* ── Approver row (unchanged in behaviour, now takes canManage) ────────── */
+
 function ApproverRow({
   approver,
   projectCode,
   onSaved,
+  canManage,
 }: {
   approver: ApproverItem;
   projectCode: string | null;
   onSaved: () => void;
+  canManage: boolean;
 }) {
   const [editing, setEditing] = useState(false);
   const [email, setEmail] = useState(approver.email);
@@ -146,23 +347,25 @@ function ApproverRow({
 
   if (!editing) {
     return (
-      <tr onDoubleClick={() => setEditing(true)} style={{ cursor: "pointer" }}>
+      <tr onDoubleClick={() => canManage && setEditing(true)} style={canManage ? { cursor: "pointer" } : undefined}>
         <td>{projectCode ?? "All"}</td>
         <td>{approver.tier.replace("_", " ")}</td>
-        <td onClick={() => setEditing(true)}>{approver.name ?? <span className="muted">—</span>}</td>
-        <td onClick={() => setEditing(true)}>{approver.email}</td>
+        <td>{approver.name ?? <span className="muted">—</span>}</td>
+        <td>{approver.email}</td>
         <td>
-          <button className="ghost tiny" onClick={() => setEditing(true)}>Edit</button>{" "}
-          <button
-            className="ghost tiny"
-            onClick={async () => {
-              if (!confirm(`Remove ${approver.email}?`)) return;
-              await api.removeApprover(approver.id);
-              onSaved();
-            }}
-          >
-            ×
-          </button>
+          {canManage && <button className="ghost tiny" onClick={() => setEditing(true)}>Edit</button>}{" "}
+          {canManage && (
+            <button
+              className="ghost tiny"
+              onClick={async () => {
+                if (!confirm(`Remove ${approver.email}?`)) return;
+                await api.removeApprover(approver.id);
+                onSaved();
+              }}
+            >
+              ×
+            </button>
+          )}
         </td>
       </tr>
     );
@@ -178,11 +381,11 @@ function ApproverRow({
           <option value="director">Director</option>
         </select>
       </td>
-      <td><input value={name} onChange={(e) => setName(e.target.value)} style={{ width: "100%" }} /></td>
-      <td><input type="email" value={email} onChange={(e) => setEmail(e.target.value)} style={{ width: "100%" }} /></td>
+      <td><input value={name} onChange={(e) => setName(e.target.value)} /></td>
+      <td><input type="email" value={email} onChange={(e) => setEmail(e.target.value)} /></td>
       <td>
-        <button className="primary" disabled={busy} onClick={save}>Save</button>{" "}
-        <button className="ghost" onClick={() => { setEditing(false); setEmail(approver.email); setName(approver.name ?? ""); setTier(approver.tier); }}>Cancel</button>
+        <button className="primary tiny" disabled={busy} onClick={save}>Save</button>{" "}
+        <button className="ghost tiny" onClick={() => { setEditing(false); setEmail(approver.email); setName(approver.name ?? ""); setTier(approver.tier); }}>Cancel</button>
       </td>
     </tr>
   );

@@ -46,14 +46,14 @@ export function App() {
           </div>
         )}
         <Routes>
-          <Route path="/" element={<ProjectsList />} />
-          <Route path="/projects/:id" element={<ProjectDetail />} />
+          <Route path="/" element={<ProjectsList me={me} />} />
+          <Route path="/projects/:id" element={<ProjectDetail me={me} />} />
           <Route path="/projects/:id/new-po" element={<NewPO />} />
           <Route path="/pos" element={<POsList />} />
           <Route path="/pos/:id" element={<POView me={me} />} />
           <Route path="/approvals" element={<ApprovalsInbox me={me} />} />
           <Route path="/approvals/:id" element={<POView me={me} />} />
-          <Route path="/admin" element={<Admin />} />
+          <Route path="/admin" element={<Admin me={me} />} />
           <Route path="*" element={<NoMatch />} />
         </Routes>
       </div>

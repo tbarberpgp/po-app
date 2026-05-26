@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import type { Env, Variables } from "../env";
+import { requirePermission } from "../auth";
 
 export const projects = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -14,6 +15,8 @@ projects.get("/", async (c) => {
 });
 
 projects.post("/", async (c) => {
+  const denied = requirePermission(c, "projects.create");
+  if (denied) return denied;
   const body = await c.req.json<{ code: string; name: string; client?: string }>();
   if (!body.code || !body.name) {
     return c.json({ error: "code and name are required" }, 400);
@@ -57,6 +60,8 @@ projects.get("/:id", async (c) => {
 });
 
 projects.put("/:id", async (c) => {
+  const denied = requirePermission(c, "projects.edit");
+  if (denied) return denied;
   const id = c.req.param("id");
   const body = await c.req.json<{
     name?: string;

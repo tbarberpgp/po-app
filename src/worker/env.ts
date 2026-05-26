@@ -9,6 +9,10 @@ export type Env = {
   DEV_USER_EMAIL?: string;
 };
 
+import type { Role } from "../shared/permissions";
+
 export type Variables = {
   userEmail: string;
+  userRole: Role;
+  userName: string | null;
 };

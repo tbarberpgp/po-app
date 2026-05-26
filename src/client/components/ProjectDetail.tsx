@@ -2,9 +2,13 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api, fmtDate, fmtMoney } from "../lib/api";
 import { Topbar } from "./Shell";
-import type { MaterialWithCommitment, Project } from "../../shared/types";
+import { can } from "../../shared/permissions";
+import type { CurrentUser, MaterialWithCommitment, Project } from "../../shared/types";
 
-export function ProjectDetail() {
+export function ProjectDetail({ me }: { me: CurrentUser | null }) {
+  const canRaisePO = can(me?.role, "pos.create");
+  const canUploadMaterials = can(me?.role, "materials.upload");
+  const canEditProject = can(me?.role, "projects.edit");
   const { id } = useParams<{ id: string }>();
   const [info, setInfo] = useState<Awaited<ReturnType<typeof api.getProject>> | null>(null);
   const [poSummary, setPoSummary] = useState<Awaited<ReturnType<typeof api.getProjectSummary>> | null>(null);
@@ -58,21 +62,23 @@ export function ProjectDetail() {
       <Topbar
         crumbs={<><Link to="/">Projects</Link> / {info.project.code}</>}
         title={info.project.name}
-        actions={<Link className="btn accent" to={`/projects/${id}/new-po`}>+ Raise PO</Link>}
+        actions={canRaisePO ? <Link className="btn accent" to={`/projects/${id}/new-po`}>+ Raise PO</Link> : null}
       />
       <main>
         {err && <div className="flash error">{err}</div>}
         {info.project.client && <p className="muted" style={{ marginTop: 0 }}>Client · {info.project.client}</p>}
 
-        <SiteDetailsCard project={info.project} onSaved={load} />
+        <SiteDetailsCard project={info.project} onSaved={load} canEdit={canEditProject} />
 
         <div className="card">
           <div className="card-hd">
             <h3 style={{ flex: 1 }}>Pricing snapshot</h3>
-            <label className="btn secondary" style={{ cursor: "pointer", marginBottom: 0 }}>
-              {busy ? "Uploading…" : info.active_snapshot ? "Replace .xlsx" : "Upload .xlsx"}
-              <input ref={fileRef} type="file" accept=".xlsx,.xlsm" onChange={onUpload} hidden disabled={busy} />
-            </label>
+            {canUploadMaterials && (
+              <label className="btn secondary" style={{ cursor: "pointer", marginBottom: 0 }}>
+                {busy ? "Uploading…" : info.active_snapshot ? "Replace .xlsx" : "Upload .xlsx"}
+                <input ref={fileRef} type="file" accept=".xlsx,.xlsm" onChange={onUpload} hidden disabled={busy} />
+              </label>
+            )}
           </div>
           <div className="card-bd">
             {info.active_snapshot ? (
@@ -211,7 +217,7 @@ export function ProjectDetail() {
 
 /* ── Site details card ─────────────────────────────────────────────────── */
 
-function SiteDetailsCard({ project, onSaved }: { project: Project; onSaved: () => void }) {
+function SiteDetailsCard({ project, onSaved, canEdit }: { project: Project; onSaved: () => void; canEdit: boolean }) {
   const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -245,7 +251,7 @@ function SiteDetailsCard({ project, onSaved }: { project: Project; onSaved: () =
     <div className="card">
       <div className="card-hd">
         <h3 style={{ flex: 1 }}>Site details</h3>
-        {!editing && <button className="ghost tiny" onClick={() => setEditing(true)}>Edit</button>}
+        {!editing && canEdit && <button className="ghost tiny" onClick={() => setEditing(true)}>Edit</button>}
       </div>
       <div className="card-bd">
         {err && <div className="flash error">{err}</div>}

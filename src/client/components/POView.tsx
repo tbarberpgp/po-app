@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, fmtDate, fmtMoney } from "../lib/api";
 import { downloadPdf, generatePoPdf } from "../lib/po-pdf";
 import { Topbar } from "./Shell";
+import { can } from "../../shared/permissions";
 import type { CurrentUser, PurchaseOrder } from "../../shared/types";
 
 type Row = PurchaseOrder & { project_code: string; project_name: string };
@@ -10,6 +11,7 @@ type Activity = Awaited<ReturnType<typeof api.getPOActivity>>;
 
 export function POView({ me }: { me: CurrentUser | null }) {
   const { id } = useParams<{ id: string }>();
+  const nav = useNavigate();
   const [po, setPo] = useState<Row | null>(null);
   const [activity, setActivity] = useState<Activity>([]);
   const [err, setErr] = useState<string | null>(null);
@@ -17,6 +19,9 @@ export function POView({ me }: { me: CurrentUser | null }) {
   const [rejectReason, setRejectReason] = useState("");
   const [showReject, setShowReject] = useState(false);
   const [approveNote, setApproveNote] = useState("");
+  const [showDelete, setShowDelete] = useState(false);
+  const [deleteReason, setDeleteReason] = useState("");
+  const canDelete = can(me?.role, "pos.delete");
 
   function refresh() {
     if (!id) return;
@@ -50,7 +55,8 @@ export function POView({ me }: { me: CurrentUser | null }) {
     me?.is_approver &&
     po.approval_tier != null &&
     me.approver_tiers.includes(po.approval_tier);
-  const canIssue = po.status === "approved" && me?.email === po.created_by;
+  const canIssue = po.status === "approved" && me?.email === po.created_by && can(me?.role, "pos.issue");
+  const isDeleted = po.status === "deleted";
 
   return (
     <>
@@ -58,10 +64,59 @@ export function POView({ me }: { me: CurrentUser | null }) {
         crumbs={<><Link to="/pos">Purchase orders</Link> / {po.po_number}</>}
         title={po.po_number}
         status={<span className={`pill ${po.status} dot`} style={{ verticalAlign: "middle" }}>{po.status.replace("_", " ")}</span>}
-        actions={<button className="ghost" onClick={onDownloadPdf} disabled={busy}>Download PDF</button>}
+        actions={
+          <>
+            <button className="ghost" onClick={onDownloadPdf} disabled={busy}>Download PDF</button>
+            {canDelete && !isDeleted && (
+              <button className="danger" onClick={() => setShowDelete(true)} disabled={busy}>Delete PO</button>
+            )}
+          </>
+        }
       />
       <main>
         {err && <div className="flash error">{err}</div>}
+
+        {isDeleted && (
+          <div className="flash error">
+            <b>Deleted</b> by {po.deleted_by} on {fmtDate(po.deleted_at)}
+            {po.deletion_reason && <> — “{po.deletion_reason}”</>}.
+            This PO no longer counts against project committed budget.
+          </div>
+        )}
+
+        {showDelete && (
+          <div className="card">
+            <div className="card-hd"><h3>Delete {po.po_number}</h3></div>
+            <div className="card-bd">
+              <p className="muted" style={{ marginTop: 0 }}>
+                This soft-deletes the PO. It disappears from lists and stops counting against
+                the project's committed budget, but the audit trail is preserved. Only a
+                Superadmin can do this.
+              </p>
+              <label>Reason (required)</label>
+              <textarea
+                value={deleteReason}
+                onChange={(e) => setDeleteReason(e.target.value)}
+                rows={3}
+                placeholder="e.g. raised in error, duplicate of PO-XXX, supplier cancelled, etc."
+                style={{ resize: "vertical" }}
+              />
+              <div className="row" style={{ marginTop: 12 }}>
+                <button
+                  className="danger"
+                  disabled={busy || !deleteReason.trim()}
+                  onClick={() => act(async () => {
+                    await api.deletePO(po.id, deleteReason.trim());
+                    nav("/pos");
+                  })}
+                >
+                  Confirm delete
+                </button>
+                <button className="ghost" onClick={() => setShowDelete(false)}>Cancel</button>
+              </div>
+            </div>
+          </div>
+        )}
 
         <div className="split">
           {/* Left column ─ summary, lines, activity */}

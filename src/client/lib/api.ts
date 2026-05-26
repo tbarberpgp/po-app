@@ -1,4 +1,5 @@
 import type {
+  AppUser,
   CreatePOInput,
   CurrentUser,
   MaterialWithCommitment,
@@ -6,6 +7,7 @@ import type {
   PurchaseOrder,
   Settings,
 } from "../../shared/types";
+import type { Role } from "../../shared/permissions";
 
 async function jfetch<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
@@ -94,6 +96,25 @@ export const api = {
     jfetch<{ ok: true }>(`/api/approvers/${id}`, { method: "PUT", body: JSON.stringify(input) }),
   removeApprover: (id: number) =>
     jfetch<{ ok: true }>(`/api/approvers/${id}`, { method: "DELETE" }),
+
+  // Users
+  listUsers: () => jfetch<AppUser[]>("/api/users"),
+  addUser: (input: { email: string; name?: string; role: Role }) =>
+    jfetch<{ email: string }>("/api/users", { method: "POST", body: JSON.stringify(input) }),
+  updateUser: (email: string, input: { name?: string; role?: Role; active?: boolean }) =>
+    jfetch<{ ok: true }>(`/api/users/${encodeURIComponent(email)}`, {
+      method: "PUT",
+      body: JSON.stringify(input),
+    }),
+  removeUser: (email: string) =>
+    jfetch<{ ok: true }>(`/api/users/${encodeURIComponent(email)}`, { method: "DELETE" }),
+
+  // Soft delete a PO (superadmin only).
+  deletePO: (id: string, reason: string) =>
+    jfetch<{ ok: true }>(`/api/pos/${id}`, {
+      method: "DELETE",
+      body: JSON.stringify({ reason }),
+    }),
 };
 
 export function fmtMoney(n: number, currency = "GBP") {

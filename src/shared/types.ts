@@ -90,10 +90,24 @@ export type Approver = {
   name: string | null;
 };
 
+import type { Role } from "./permissions";
+
 export type CurrentUser = {
   email: string;
+  name: string | null;
+  role: Role;
+  active: boolean;
   is_approver: boolean;
   approver_tiers: ApprovalTier[];
+};
+
+export type AppUser = {
+  email: string;
+  name: string | null;
+  role: Role;
+  active: boolean;
+  created_at: string;
+  created_by: string | null;
 };
 
 export type CreatePOInput = {

@@ -2,6 +2,7 @@ import { type ReactNode } from "react";
 import { Link, NavLink } from "react-router-dom";
 import { useTheme } from "../lib/theme";
 import type { CurrentUser } from "../../shared/types";
+import { can, ROLE_LABELS } from "../../shared/permissions";
 
 export function Sidebar({ me, approvalsCount }: { me: CurrentUser | null; approvalsCount: number }) {
   return (
@@ -24,21 +25,26 @@ export function Sidebar({ me, approvalsCount }: { me: CurrentUser | null; approv
         </nav>
       </div>
 
-      <div className="sidebar-group">
-        <div className="sidebar-group-label">Master Data</div>
-        <nav>
-          <NavLink to="/admin">Admin</NavLink>
-        </nav>
-      </div>
+      {(can(me?.role, "users.read") || can(me?.role, "approvers.manage")) && (
+        <div className="sidebar-group">
+          <div className="sidebar-group-label">Master Data</div>
+          <nav>
+            <NavLink to="/admin">Admin</NavLink>
+          </nav>
+        </div>
+      )}
 
       <div style={{ flex: 1 }} />
 
       {me && (
         <div className="sidebar-user">
-          <div className="avatar">{initials(me.email)}</div>
+          <div className="avatar">{initials(me.name ?? me.email)}</div>
           <div className="meta">
-            <div className="name">{nameFromEmail(me.email)}</div>
-            <div className="role">{me.is_approver ? "Approver" : "Procurement"}</div>
+            <div className="name">{me.name?.trim() || nameFromEmail(me.email)}</div>
+            <div className="role">
+              {ROLE_LABELS[me.role]}
+              {me.is_approver && " · Approver"}
+            </div>
           </div>
         </div>
       )}

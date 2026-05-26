@@ -5,6 +5,7 @@ import { projects } from "./routes/projects";
 import { materials } from "./routes/materials";
 import { pos } from "./routes/pos";
 import { approvers } from "./routes/approvers";
+import { users } from "./routes/users";
 import { loadSettings } from "./approval";
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -18,6 +19,7 @@ app.route("/api/projects", projects);
 app.route("/api/materials", materials);
 app.route("/api/pos", pos);
 app.route("/api/approvers", approvers);
+app.route("/api/users", users);
 
 app.onError((err, c) => {
   console.error(err);

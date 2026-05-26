@@ -2,14 +2,17 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, fmtMoney } from "../lib/api";
 import { Topbar } from "./Shell";
+import { can } from "../../shared/permissions";
+import type { CurrentUser } from "../../shared/types";
 
 type Row = { id: string; code: string; name: string; client: string | null; active_snapshot_id: number | null };
 
-export function ProjectsList() {
+export function ProjectsList({ me }: { me: CurrentUser | null }) {
   const [rows, setRows] = useState<Row[]>([]);
   const [showNew, setShowNew] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pos, setPos] = useState<Awaited<ReturnType<typeof api.listPOs>>>([]);
+  const canCreate = can(me?.role, "projects.create");
 
   function refresh() {
     api.listProjects().then(setRows).catch((e) => setError(e.message));
@@ -28,7 +31,7 @@ export function ProjectsList() {
       <Topbar
         crumbs="Workspace"
         title="Projects"
-        actions={<button className="accent" onClick={() => setShowNew(true)}>+ New project</button>}
+        actions={canCreate ? <button className="accent" onClick={() => setShowNew(true)}>+ New project</button> : null}
       />
       <main>
         {error && <div className="flash error">{error}</div>}

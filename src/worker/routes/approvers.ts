@@ -1,7 +1,16 @@
 import { Hono } from "hono";
 import type { Env, Variables } from "../env";
+import { requirePermission } from "../auth";
 
 export const approvers = new Hono<{ Bindings: Env; Variables: Variables }>();
+
+// All mutating endpoints require approvers.manage. Reads are open.
+approvers.use("/*", async (c, next) => {
+  if (c.req.method === "GET") return next();
+  const denied = requirePermission(c, "approvers.manage");
+  if (denied) return denied;
+  await next();
+});
 
 approvers.get("/", async (c) => {
   const projectId = c.req.query("project_id");

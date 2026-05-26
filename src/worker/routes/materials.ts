@@ -1,11 +1,14 @@
 import { Hono } from "hono";
 import type { Env, Variables } from "../env";
 import { parseMaterialsSheet } from "../parse-xlsx";
+import { requirePermission } from "../auth";
 
 export const materials = new Hono<{ Bindings: Env; Variables: Variables }>();
 
 /** Upload a pricing workbook for a project. Replaces the active snapshot. */
 materials.post("/:projectId/upload", async (c) => {
+  const denied = requirePermission(c, "materials.upload");
+  if (denied) return denied;
   const projectId = c.req.param("projectId");
   const actor = c.get("userEmail");
 
