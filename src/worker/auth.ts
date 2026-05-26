@@ -28,22 +28,50 @@ export async function authMiddleware(
   }
 
   const now = new Date().toISOString();
-  let user = await c.env.DB.prepare(
-    "SELECT email, name, role, active FROM users WHERE lower(email) = ?",
-  )
-    .bind(email)
-    .first<{ email: string; name: string | null; role: Role; active: number }>();
+  let user: { email: string; name: string | null; role: Role; active: number } | null = null;
+  let tableMissing = false;
+  try {
+    user = await c.env.DB.prepare(
+      "SELECT email, name, role, active FROM users WHERE lower(email) = ?",
+    )
+      .bind(email)
+      .first<{ email: string; name: string | null; role: Role; active: number }>();
+  } catch (e) {
+    // The users table doesn't exist yet — migration 0005 hasn't been
+    // applied to this database. Fall back to the bootstrap behaviour
+    // (bootstrap email = superadmin, everyone else = viewer) so the app
+    // is usable until the migration runs.
+    const msg = e instanceof Error ? e.message : String(e);
+    if (!/no such table: users/i.test(msg)) throw e;
+    tableMissing = true;
+    console.warn("users table missing — using bootstrap fallback. Apply migration 0005.");
+  }
+
+  const BOOTSTRAP_SUPERADMIN = "tbarber@powergridprojects.net";
 
   if (!user) {
-    // Auto-provision unknown users as viewers — they got past Cloudflare Access
-    // so we trust the identity, but they can't change anything until promoted.
-    await c.env.DB.prepare(
-      `INSERT INTO users (email, name, role, active, created_at, created_by)
-       VALUES (?, NULL, 'viewer', 1, ?, 'auto')`,
-    )
-      .bind(email, now)
-      .run();
-    user = { email, name: null, role: "viewer", active: 1 };
+    if (tableMissing) {
+      // Pre-migration: don't try to INSERT, just synthesize a session.
+      user = {
+        email,
+        name: null,
+        role: email === BOOTSTRAP_SUPERADMIN ? "superadmin" : "viewer",
+        active: 1,
+      };
+    } else {
+      // Auto-provision unknown users as viewers.
+      try {
+        await c.env.DB.prepare(
+          `INSERT INTO users (email, name, role, active, created_at, created_by)
+           VALUES (?, NULL, 'viewer', 1, ?, 'auto')`,
+        )
+          .bind(email, now)
+          .run();
+      } catch (e) {
+        console.warn("user auto-provision failed", e);
+      }
+      user = { email, name: null, role: "viewer", active: 1 };
+    }
   } else if (!user.active) {
     return c.json({ error: "Your account has been deactivated." }, 403);
   }
