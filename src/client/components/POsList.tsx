@@ -111,6 +111,7 @@ export function POsList({ me }: { me: CurrentUser | null }) {
                   <th>Supplier</th>
                   <th className="num">Value</th>
                   <th>Status</th>
+                  <th>Xero</th>
                   <th>Raised</th>
                   <th>By</th>
                 </tr>
@@ -123,6 +124,31 @@ export function POsList({ me }: { me: CurrentUser | null }) {
                     <td>{r.supplier}</td>
                     <td className="num">{fmtMoney(r.total_value)}</td>
                     <td><span className={`pill ${r.status}`}>{r.status.replace("_", " ")}</span></td>
+                    <td>
+                      {r.xero_sync_status === "synced" ? (
+                        <span
+                          className="pill approved"
+                          style={{ fontSize: 10 }}
+                          title={r.xero_po_number ? `Xero PO ${r.xero_po_number}` : "Synced to Xero"}
+                        >
+                          ✓ {r.xero_po_number ?? "synced"}
+                        </span>
+                      ) : r.xero_sync_status === "failed" ? (
+                        <span
+                          className="pill rejected"
+                          style={{ fontSize: 10 }}
+                          title={r.xero_sync_error ?? "Last Xero push failed"}
+                        >
+                          failed
+                        </span>
+                      ) : r.status === "approved" || r.status === "issued" ? (
+                        <span className="pill draft" style={{ fontSize: 10 }} title="Not yet pushed to Xero">
+                          pending
+                        </span>
+                      ) : (
+                        <span className="muted" style={{ fontSize: 11 }}>—</span>
+                      )}
+                    </td>
                     <td className="muted">{fmtDate(r.created_at)}</td>
                     <td className="muted">{r.created_by}</td>
                   </tr>
