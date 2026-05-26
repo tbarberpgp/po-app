@@ -18,8 +18,8 @@ export type ParsedMaterial = {
   rate_unit: string | null;
   total_qty: number | null;
   total_qty_unit: string | null;
-  total_units: number | null;       // col V — qty to purchase in pack units (Rolls, Boxes, ea)
-  total_units_unit: string | null;  // col W — the pack unit suppliers sell in
+  total_units: number | null;       // pack-unit qty to purchase (Rolls, Boxes, ea)
+  total_units_unit: string | null;  // the pack unit suppliers sell in
   material_total_cost: number | null;
 };
 
@@ -41,27 +41,94 @@ const looksLikeElementCode = (v: unknown): boolean => {
   return /^\d{1,4}$/.test(s);
 };
 
+/** Normalise a header cell for comparison: lowercase, strip spaces and hyphens. */
+const normHeader = (v: unknown): string =>
+  String(v ?? "").toLowerCase().replace(/[\s-]+/g, "");
+
 /**
- * Parse the Materials sheet of a PowerGrid pricing workbook.
+ * Column letter map for a single layout of the Materials sheet. We support
+ * three layouts so spreadsheet revisions don't require code changes here:
  *
- * Two layouts are supported and auto-detected by scanning for the header row:
- *
- * Legacy (BNC001-era): headers on row 5, data row 6+, col B = free-text "Type",
- * no element-name column.
- *
- * New (MCR007+): headers on row 4, data row 5+, col B = numeric Element Code
- * that matches the `elements` master table; col Z = Element Name.
- *
- * Data columns (identical between layouts apart from B/Z):
- *   A  item (full descriptor)        B  type / element code
- *   C  manufacturer                  D  pack_qty       E  pack_unit
- *   F  cost                          G  cost_unit
- *   H  coverage_qty                  I  coverage_unit
- *   L  waste_pct                     M  coverage_inc_waste
- *   O  unit_rate (cost / coverage)   P  rate_unit
- *   T  total_qty                     U  total_qty_unit
- *   V  total_units (pack units)      W  total_units_unit
- *   X  material_total_cost           Z  element_name (new layout only)
+ *   "legacy"  BNC001-era: col B was a free-text "Type" label and there was
+ *             no element-name column at all.
+ *   "v1"      MCR007 (initial): col B became the numeric Element Code, col Z
+ *             held the descriptive Element Name. Manufacturer stayed in C.
+ *   "v2"      MCR007 (current): Element Name moved next to Element Code at
+ *             col C, pushing Manufacturer to D and shifting every numeric
+ *             column right by one letter.
+ */
+type Layout = "legacy" | "v1" | "v2";
+
+type ColumnMap = {
+  item: string;
+  type_or_code: string;      // col B in all three layouts
+  hasElementCode: boolean;   // true when col B is numeric, not free-text
+  element_name?: string;     // C in v2, Z in v1, absent in legacy
+  manufacturer: string;
+  pack_qty: string;
+  pack_unit: string;
+  cost: string;
+  cost_unit: string;
+  coverage_qty: string;
+  coverage_unit: string;
+  waste_pct: string;
+  unit_rate: string;
+  rate_unit: string;
+  total_qty: string;
+  total_qty_unit: string;
+  total_units: string;
+  total_units_unit: string;
+  material_total_cost: string;
+};
+
+const LEGACY: ColumnMap = {
+  item: "A", type_or_code: "B", hasElementCode: false,
+  manufacturer: "C",
+  pack_qty: "D", pack_unit: "E",
+  cost: "F", cost_unit: "G",
+  coverage_qty: "H", coverage_unit: "I",
+  waste_pct: "L",
+  unit_rate: "O", rate_unit: "P",
+  total_qty: "T", total_qty_unit: "U",
+  total_units: "V", total_units_unit: "W",
+  material_total_cost: "X",
+};
+
+const V1: ColumnMap = { ...LEGACY, hasElementCode: true, element_name: "Z" };
+
+const V2: ColumnMap = {
+  item: "A", type_or_code: "B", hasElementCode: true,
+  element_name: "C",
+  manufacturer: "D",
+  pack_qty: "E", pack_unit: "F",
+  cost: "G", cost_unit: "H",
+  coverage_qty: "I", coverage_unit: "J",
+  waste_pct: "M",
+  unit_rate: "P", rate_unit: "Q",
+  total_qty: "U", total_qty_unit: "V",
+  total_units: "W", total_units_unit: "X",
+  material_total_cost: "Y",
+};
+
+/** Detect the layout from the header row's cell contents. */
+function detectLayout(headerRow: Record<string, unknown>): Layout {
+  const b = normHeader(headerRow["B"]);
+  const c = normHeader(headerRow["C"]);
+  // v2: Element Name landed in col C.
+  if (c === "elementname") return "v2";
+  // v1: Element Code in B but C is still the Manufacturer column.
+  if (b === "elementcode") return "v1";
+  // legacy: free-text Type in B.
+  return "legacy";
+}
+
+function mapFor(layout: Layout): ColumnMap {
+  return layout === "v2" ? V2 : layout === "v1" ? V1 : LEGACY;
+}
+
+/**
+ * Parse the Materials sheet of a PowerGrid pricing workbook. See the {@link Layout}
+ * comments above for the supported revisions and how column letters shift.
  */
 export function parseMaterialsSheet(buffer: ArrayBuffer): ParsedMaterial[] {
   const wb = XLSX.read(buffer, { type: "array" });
@@ -76,62 +143,58 @@ export function parseMaterialsSheet(buffer: ArrayBuffer): ParsedMaterial[] {
     raw: true,
   });
 
-  // Find the header row. It's the first row in the top ~15 rows whose col B
-  // contains "Type" or "Element Code" (case-insensitive, hyphens stripped).
+  // Find the header row by scanning the top of the sheet for "Type" or
+  // "Element Code" in col B.
   let headerRowIdx = -1;
   for (let i = 0; i < Math.min(15, rows.length); i++) {
-    const b = String(rows[i]["B"] ?? "")
-      .toLowerCase()
-      .replace(/[\s-]+/g, "");
+    const b = normHeader(rows[i]["B"]);
     if (b === "type" || b === "elementcode") {
       headerRowIdx = i;
       break;
     }
   }
-  if (headerRowIdx < 0) {
-    // Fall back to the legacy assumption (row 5 → index 4).
-    headerRowIdx = 4;
-  }
+  if (headerRowIdx < 0) headerRowIdx = 4; // fall back to legacy row 5 (0-indexed 4)
+
+  const layout = detectLayout(rows[headerRowIdx]);
+  const m = mapFor(layout);
 
   const out: ParsedMaterial[] = [];
   for (let i = headerRowIdx + 1; i < rows.length; i++) {
     const r = rows[i];
-    const item = str(r["A"]);
-    const b = r["B"];
-    if (!item || b === null || b === undefined || String(b).trim() === "") continue;
+    const item = str(r[m.item]);
+    const code = r[m.type_or_code];
+    if (!item || code === null || code === undefined || String(code).trim() === "") continue;
 
-    // New layout: col B is a numeric code, col Z is the descriptive element
-    // name. Display column ("type") comes from Z; element_code captures B.
-    // Legacy layout: col B is the descriptive label; no element code is known.
     let displayType: string;
     let elementCode: string | null;
-    if (looksLikeElementCode(b)) {
-      elementCode = String(b).trim();
-      displayType = str(r["Z"]) ?? elementCode;
+    if (m.hasElementCode && looksLikeElementCode(code)) {
+      elementCode = String(code).trim();
+      const nameCol = m.element_name;
+      displayType = (nameCol ? str(r[nameCol]) : null) ?? elementCode;
     } else {
       elementCode = null;
-      displayType = String(b).trim();
+      displayType = String(code).trim();
     }
 
     out.push({
       item,
       type: displayType,
       element_code: elementCode,
-      manufacturer: str(r["C"]),
-      pack_qty: num(r["D"]),
-      pack_unit: str(r["E"]),
-      cost: num(r["F"]),
-      cost_unit: str(r["G"]),
-      coverage_qty: num(r["H"]),
-      coverage_unit: str(r["I"]),
-      waste_pct: num(r["L"]),
-      unit_rate: num(r["O"]),
-      rate_unit: str(r["P"]),
-      total_qty: num(r["T"]),
-      total_qty_unit: str(r["U"]),
-      total_units: num(r["V"]),
-      total_units_unit: str(r["W"]),
-      material_total_cost: num(r["X"]),
+      manufacturer: str(r[m.manufacturer]),
+      pack_qty: num(r[m.pack_qty]),
+      pack_unit: str(r[m.pack_unit]),
+      cost: num(r[m.cost]),
+      cost_unit: str(r[m.cost_unit]),
+      coverage_qty: num(r[m.coverage_qty]),
+      coverage_unit: str(r[m.coverage_unit]),
+      waste_pct: num(r[m.waste_pct]),
+      unit_rate: num(r[m.unit_rate]),
+      rate_unit: str(r[m.rate_unit]),
+      total_qty: num(r[m.total_qty]),
+      total_qty_unit: str(r[m.total_qty_unit]),
+      total_units: num(r[m.total_units]),
+      total_units_unit: str(r[m.total_units_unit]),
+      material_total_cost: num(r[m.material_total_cost]),
     });
   }
   return out;
