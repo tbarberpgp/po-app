@@ -35,4 +35,10 @@ app.onError((err, c) => {
   return c.json({ error: err.message }, 500);
 });
 
+// Any non-API route falls back to the SPA shell so React Router can take
+// over (e.g. /admin, /admin?xero=connected, /pos/abc, /projects/xyz).
+// Without this, server-side requests to client-side routes return Hono's
+// default 404 text — which is what was happening after the OAuth redirect.
+app.notFound((c) => c.env.ASSETS.fetch(c.req.raw));
+
 export default app;
