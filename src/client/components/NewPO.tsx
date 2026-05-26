@@ -526,88 +526,109 @@ function AdditionalRowEditor({
     <div
       style={{
         borderTop: idx === 0 ? "none" : "1px solid var(--line)",
-        paddingTop: idx === 0 ? 0 : 16,
-        marginTop: idx === 0 ? 0 : 16,
+        paddingTop: idx === 0 ? 0 : 20,
+        marginTop: idx === 0 ? 0 : 20,
       }}
     >
       <div className="add-row">
-        <div>
-          <label>Type</label>
-          <select
-            value={row.type}
-            onChange={(e) =>
-              onChange({
-                type: e.target.value,
-                material_id: null,
-                item: row.source === "library" ? "" : row.item,
-              })
-            }
-            disabled={row.source === "custom"}
-          >
-            <option value="">— select —</option>
-            {libraryTypes.map((t) => <option key={t} value={t}>{t}</option>)}
-          </select>
-        </div>
-        <div>
-          <label>Item</label>
-          {row.source === "custom" ? (
-            <input value={row.item} onChange={(e) => onChange({ item: e.target.value })} placeholder="Custom item description" />
-          ) : (
+        {/* Row 1: Type · Item · Manufacturer */}
+        <div className="add-row-top">
+          <div>
+            <label>Type</label>
             <select
-              value={row.material_id ?? ""}
-              onChange={(e) => onPick(e.target.value)}
-              disabled={!row.type}
+              value={row.type}
+              onChange={(e) =>
+                onChange({
+                  type: e.target.value,
+                  material_id: null,
+                  item: row.source === "library" ? "" : row.item,
+                })
+              }
+              disabled={row.source === "custom"}
             >
-              <option value="">{row.type ? "— select item —" : "Choose type first"}</option>
-              {itemsInType.map((m) => (
-                <option key={m.id} value={m.id}>{m.item}</option>
-              ))}
-              <option value="__custom__">+ Custom item (not in database)…</option>
+              <option value="">— select —</option>
+              {libraryTypes.map((t) => <option key={t} value={t}>{t}</option>)}
             </select>
-          )}
+          </div>
+          <div>
+            <label>Item</label>
+            {row.source === "custom" ? (
+              <input
+                value={row.item}
+                onChange={(e) => onChange({ item: e.target.value })}
+                placeholder="Custom item description"
+              />
+            ) : (
+              <select
+                value={row.material_id ?? ""}
+                onChange={(e) => onPick(e.target.value)}
+                disabled={!row.type}
+              >
+                <option value="">{row.type ? "— select item —" : "Choose type first"}</option>
+                {itemsInType.map((m) => (
+                  <option key={m.id} value={m.id}>{m.item}</option>
+                ))}
+                <option value="__custom__">+ Custom item (not in database)…</option>
+              </select>
+            )}
+          </div>
+          <div>
+            <label>Manufacturer</label>
+            <input
+              value={row.manufacturer}
+              onChange={(e) => onChange({ manufacturer: e.target.value })}
+              placeholder={autoFilled ? "" : "—"}
+              readOnly={autoFilled}
+            />
+          </div>
         </div>
-        <div>
-          <label>Manufacturer</label>
-          <input
-            value={row.manufacturer}
-            onChange={(e) => onChange({ manufacturer: e.target.value })}
-            placeholder="—"
-            readOnly={autoFilled}
-          />
+
+        {/* Row 2: Qty · Unit · Unit cost · Line total · Remove */}
+        <div className="add-row-bottom">
+          <div>
+            <label>Qty</label>
+            <input
+              type="number"
+              step="any"
+              className="num"
+              value={row.qty || ""}
+              onChange={(e) => onChange({ qty: Number(e.target.value) })}
+            />
+          </div>
+          <div>
+            <label>Unit</label>
+            <input
+              value={row.unit}
+              onChange={(e) => onChange({ unit: e.target.value })}
+              placeholder="ea"
+              readOnly={autoFilled}
+            />
+          </div>
+          <div>
+            <label>Unit cost (£)</label>
+            <input
+              type="number"
+              step="0.01"
+              className="num"
+              value={row.unit_cost || ""}
+              onChange={(e) => onChange({ unit_cost: Number(e.target.value) })}
+              readOnly={autoFilled}
+            />
+          </div>
+          <div>
+            <label>Line total</label>
+            <div className="line-total">{fmtMoney(row.qty * row.unit_cost)}</div>
+          </div>
+          <button
+            type="button"
+            className="ghost remove-btn"
+            onClick={onRemove}
+            title="Remove"
+            aria-label="Remove item"
+          >
+            ×
+          </button>
         </div>
-        <div>
-          <label>Qty</label>
-          <input
-            type="number"
-            step="any"
-            value={row.qty || ""}
-            onChange={(e) => onChange({ qty: Number(e.target.value) })}
-          />
-        </div>
-        <div>
-          <label>Unit</label>
-          <input
-            value={row.unit}
-            onChange={(e) => onChange({ unit: e.target.value })}
-            placeholder="ea"
-            readOnly={autoFilled}
-          />
-        </div>
-        <div>
-          <label>Unit cost (£)</label>
-          <input
-            type="number"
-            step="0.01"
-            value={row.unit_cost || ""}
-            onChange={(e) => onChange({ unit_cost: Number(e.target.value) })}
-            readOnly={autoFilled}
-          />
-        </div>
-        <div>
-          <label>Line total</label>
-          <div className="line-total">{fmtMoney(row.qty * row.unit_cost)}</div>
-        </div>
-        <button type="button" className="ghost remove-btn" onClick={onRemove} title="Remove">×</button>
       </div>
       <div style={{ marginTop: 6 }}>
         <span className="badge unpriced">unpriced</span>{" "}

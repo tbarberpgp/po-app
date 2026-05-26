@@ -553,26 +553,33 @@ td.num, th.num {
 .inspector .stat .sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
 
 /* Theme toggle in topbar */
-/* Additional items grid — used in NewPO. Tracks are sized for the widest
- * realistic content of each column so labels and inputs can't overlap, and
- * the Item column flexes to take the remaining space. */
+/* Additional items — two-row layout per item.
+ *   Row 1: Type · Item (wide) · Manufacturer
+ *   Row 2: Qty · Unit · Unit cost · Line total · Remove
+ * Spread across two grids gives every field comfortable space and stops
+ * narrow numeric columns from feeling cramped against the wider fields. */
 .add-row {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.add-row-top {
   display: grid;
-  grid-template-columns:
-    minmax(140px, 0.9fr)   /* Type */
-    minmax(180px, 2fr)     /* Item */
-    minmax(130px, 1fr)     /* Manufacturer */
-    90px                   /* Qty */
-    72px                   /* Unit */
-    110px                  /* Unit cost */
-    100px                  /* Line total */
-    36px;                  /* Remove */
-  gap: 12px;
+  grid-template-columns: 200px 1fr 220px;
+  gap: 16px;
   align-items: end;
 }
-.add-row .line-total {
+.add-row-bottom {
+  display: grid;
+  grid-template-columns: 110px 90px 140px 1fr 36px;
+  gap: 16px;
+  align-items: end;
+}
+.add-row-bottom .line-total {
   text-align: right;
   font-variant-numeric: tabular-nums;
+  font-size: 16px;
+  font-weight: 600;
   padding-top: 8px;
 }
 .add-row .remove-btn {
@@ -582,13 +589,28 @@ td.num, th.num {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  font-size: 18px;
+  line-height: 1;
 }
-@media (max-width: 1100px) {
-  .add-row {
-    grid-template-columns: 1fr 1fr;
-  }
-  .add-row > * { width: 100%; }
+@media (max-width: 900px) {
+  .add-row-top    { grid-template-columns: 1fr 1fr; }
+  .add-row-bottom { grid-template-columns: 1fr 1fr; }
 }
+
+/* Numeric inputs sit right-aligned with tabular numbers for a clean column. */
+input.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Hide native number-input spinner arrows — they're not in our visual style
+ * and they steal horizontal space inside narrow columns. */
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type="number"] { appearance: textfield; -moz-appearance: textfield; }
 
 .theme-toggle {
   display: inline-flex;
