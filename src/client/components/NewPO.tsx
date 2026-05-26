@@ -365,20 +365,43 @@ export function NewPO() {
               <label>Supplier</label>
               <select value={supplier} onChange={(e) => setSupplier(e.target.value)}>
                 <option value="">— select supplier —</option>
-                {suppliers.map((s) => {
-                  const statusBit =
+                {(() => {
+                  // Split into two optgroups so the suppliers actually relevant
+                  // to this project sit at the top and don't get lost among the
+                  // org-wide approved register (which can run to hundreds when
+                  // synced from Xero).
+                  const onProject = suppliers.filter((s) => s.priced > 0 || s.total > 0);
+                  const offProject = suppliers.filter((s) => s.priced === 0 && s.total === 0);
+                  const statusBit = (s: typeof suppliers[number]) =>
                     s.status === "preferred" ? "⭐ preferred"
                     : s.status === "approved" ? "approved"
                     : s.status === "pending" ? "pending"
                     : s.status === "suspended" ? "⛔ suspended"
                     : "not in register";
                   return (
-                    <option key={s.name} value={s.name}>
-                      {s.name} · {statusBit}
-                      {s.priced > 0 && ` · ${s.priced} priced`}
-                    </option>
+                    <>
+                      {onProject.length > 0 && (
+                        <optgroup label={`On this project (${onProject.length})`}>
+                          {onProject.map((s) => (
+                            <option key={s.name} value={s.name}>
+                              {s.name} · {statusBit(s)}
+                              {s.priced > 0 && ` · ${s.priced} priced`}
+                            </option>
+                          ))}
+                        </optgroup>
+                      )}
+                      {offProject.length > 0 && (
+                        <optgroup label={`Other approved suppliers (${offProject.length})`}>
+                          {offProject.map((s) => (
+                            <option key={s.name} value={s.name}>
+                              {s.name} · {statusBit(s)}
+                            </option>
+                          ))}
+                        </optgroup>
+                      )}
+                    </>
                   );
-                })}
+                })()}
                 <option value="__other__">+ Other supplier (custom)…</option>
               </select>
               {supplierRecord && (
