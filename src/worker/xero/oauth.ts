@@ -16,15 +16,14 @@ const TOKEN_URL = "https://identity.xero.com/connect/token";
 const CONNECTIONS_URL = "https://api.xero.com/connections";
 
 // Scopes we ask Xero to consent to.
+//   openid                     — REQUIRED by Xero for OAuth 2.0 conformance,
+//                                even when we don't read the id_token
 //   accounting.contacts        — read + write supplier contacts
-//   accounting.transactions    — read + write purchase orders
+//   accounting.transactions    — read + write purchase orders (incl. POs)
 //   offline_access             — gives us a refresh_token (otherwise we lose
 //                                access after the 30-minute token expiry)
-//
-// We deliberately omit openid/profile/email — those are OIDC scopes that
-// require the Xero app to be configured as OIDC-conformant, and we don't
-// need them anyway (Cloudflare Access tells us who the user is).
 export const XERO_SCOPES = [
+  "openid",
   "accounting.contacts",
   "accounting.transactions",
   "offline_access",
