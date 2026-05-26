@@ -15,6 +15,71 @@ projects.get("/", async (c) => {
   return c.json(rows.results);
 });
 
+/** Soft-deleted projects, with PO counts. Superadmin only. */
+projects.get("/deleted", async (c) => {
+  const denied = requirePermission(c, "projects.delete");
+  if (denied) return denied;
+  const rows = await c.env.DB.prepare(
+    `SELECT p.*,
+            (SELECT COUNT(*) FROM purchase_orders po
+             WHERE po.project_id = p.id AND po.status != 'deleted') AS po_count
+     FROM projects p
+     WHERE p.deleted_at IS NOT NULL
+     ORDER BY p.deleted_at DESC`,
+  ).all();
+  return c.json(rows.results);
+});
+
+/** Undo a project soft-delete. Restores the original code if it's free,
+ * otherwise appends -1, -2, etc until a free slot opens up. */
+projects.post("/:id/restore", async (c) => {
+  const denied = requirePermission(c, "projects.delete");
+  if (denied) return denied;
+
+  const id = c.req.param("id");
+  const project = await c.env.DB.prepare(
+    "SELECT id, code FROM projects WHERE id = ? AND deleted_at IS NOT NULL",
+  )
+    .bind(id)
+    .first<{ id: string; code: string }>();
+  if (!project) return c.json({ error: "not found or not deleted" }, 404);
+
+  // Strip the "#deleted-<timestamp>" suffix we added on delete.
+  const original = project.code.split("#deleted-")[0];
+
+  // Find a free code.
+  let candidate = original;
+  let suffix = 1;
+  while (true) {
+    const conflict = await c.env.DB.prepare(
+      "SELECT 1 AS x FROM projects WHERE code = ? AND deleted_at IS NULL AND id != ?",
+    )
+      .bind(candidate, id)
+      .first();
+    if (!conflict) break;
+    candidate = `${original}-${suffix++}`;
+    if (suffix > 50) return c.json({ error: "too many code conflicts; please rename manually" }, 409);
+  }
+
+  const now = new Date().toISOString();
+  await c.env.DB.prepare(
+    `UPDATE projects
+       SET deleted_at = NULL, deleted_by = NULL, deletion_reason = NULL, code = ?
+       WHERE id = ?`,
+  )
+    .bind(candidate, id)
+    .run();
+
+  await c.env.DB.prepare(
+    `INSERT INTO audit_log (entity_type, entity_id, action, actor, details, created_at)
+     VALUES ('project', ?, 'restored', ?, ?, ?)`,
+  )
+    .bind(id, c.get("userEmail"), JSON.stringify({ restored_code: candidate, original_code: original }), now)
+    .run();
+
+  return c.json({ ok: true, code: candidate });
+});
+
 projects.post("/", async (c) => {
   const denied = requirePermission(c, "projects.create");
   if (denied) return denied;

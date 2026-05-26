@@ -43,6 +43,12 @@ export const api = {
   ) => jfetch<{ ok: true }>(`/api/projects/${id}`, { method: "PUT", body: JSON.stringify(input) }),
   deleteProject: (id: string, reason: string) =>
     jfetch<{ ok: true }>(`/api/projects/${id}`, { method: "DELETE", body: JSON.stringify({ reason }) }),
+  listDeletedProjects: () =>
+    jfetch<Array<Project & { po_count: number; deleted_at: string; deleted_by: string; deletion_reason: string }>>(
+      "/api/projects/deleted",
+    ),
+  restoreProject: (id: string) =>
+    jfetch<{ ok: true; code: string }>(`/api/projects/${id}/restore`, { method: "POST" }),
   getProjectSummary: (id: string) =>
     jfetch<{ unpriced_spend: number; by_status: Array<{ status: string; n: number; v: number }> }>(
       `/api/projects/${id}/summary`,

@@ -30,6 +30,9 @@ export function Sidebar({ me, approvalsCount }: { me: CurrentUser | null; approv
           <div className="sidebar-group-label">Master Data</div>
           <nav>
             <NavLink to="/admin">Admin</NavLink>
+            {can(me?.role, "projects.delete") && (
+              <NavLink to="/deleted-projects">Deleted projects</NavLink>
+            )}
           </nav>
         </div>
       )}
