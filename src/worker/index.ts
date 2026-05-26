@@ -9,6 +9,7 @@ import { users } from "./routes/users";
 import { products } from "./routes/products";
 import { suppliers } from "./routes/suppliers";
 import { elements, resourceTypes } from "./routes/taxonomy";
+import { xero } from "./routes/xero";
 import { loadSettings } from "./approval";
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -27,6 +28,7 @@ app.route("/api/products", products);
 app.route("/api/suppliers", suppliers);
 app.route("/api/elements", elements);
 app.route("/api/resource-types", resourceTypes);
+app.route("/api/xero", xero);
 
 app.onError((err, c) => {
   console.error(err);

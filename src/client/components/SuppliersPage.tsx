@@ -40,18 +40,36 @@ export function SuppliersPage({ me }: { me: CurrentUser | null }) {
   const [rows, setRows] = useState<Supplier[]>([]);
   const [elements, setElements] = useState<Element[]>([]);
   const [err, setErr] = useState<string | null>(null);
+  const [info, setInfo] = useState<string | null>(null);
   const [showAdd, setShowAdd] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [statusFilter, setStatusFilter] = useState<"all" | SupplierStatus>("all");
   const [filter, setFilter] = useState("");
+  const [xeroConnected, setXeroConnected] = useState(false);
+  const [syncing, setSyncing] = useState(false);
 
   const canManage = can(me?.role, "approvers.manage");
 
   function refresh() {
     api.listSuppliers().then(setRows).catch((e) => setErr(e.message));
     api.listElements().then(setElements).catch((e) => setErr(e.message));
+    api.xeroStatus().then((s) => setXeroConnected(s.connected)).catch(() => setXeroConnected(false));
   }
   useEffect(refresh, []);
+
+  async function syncFromXero() {
+    if (!confirm("Pull supplier contacts from Xero? Existing suppliers will be matched by Xero ID or name and updated; unknown ones will be created as 'approved'.")) return;
+    setSyncing(true); setErr(null); setInfo(null);
+    try {
+      const res = await api.xeroSyncSuppliers();
+      setInfo(`Synced from Xero: ${res.created} created, ${res.updated} updated${res.skipped ? `, ${res.skipped} skipped (no name)` : ""}. ${res.total_from_xero} contacts pulled.`);
+      refresh();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "sync failed");
+    } finally {
+      setSyncing(false);
+    }
+  }
 
   const visible = rows
     .filter((s) => statusFilter === "all" || s.status === statusFilter)
@@ -68,10 +86,20 @@ export function SuppliersPage({ me }: { me: CurrentUser | null }) {
       <Topbar
         crumbs="Master data"
         title="Approved suppliers"
-        actions={canManage ? <button className="accent" onClick={() => setShowAdd(true)}>+ New supplier</button> : null}
+        actions={
+          <>
+            {canManage && xeroConnected && (
+              <button className="ghost" onClick={syncFromXero} disabled={syncing}>
+                {syncing ? "Syncing…" : "↻ Sync from Xero"}
+              </button>
+            )}
+            {canManage && <button className="accent" onClick={() => setShowAdd(true)}>+ New supplier</button>}
+          </>
+        }
       />
       <main>
         {err && <div className="flash error">{err}</div>}
+        {info && <div className="flash success">{info}</div>}
 
         <div className="kpis" style={{ gridTemplateColumns: "repeat(4, 1fr)" }}>
           <KpiSmall label="Preferred" value={byStatus.preferred} tone="accent" />
@@ -146,7 +174,12 @@ export function SuppliersPage({ me }: { me: CurrentUser | null }) {
                         <div style={{ fontWeight: 500 }}>{s.name}</div>
                         {s.scope_notes && <div className="muted" style={{ fontSize: 12, marginTop: 2 }}>{s.scope_notes}</div>}
                       </td>
-                      <td><span className={`pill ${STATUS_PILL[s.status]}`}>{STATUS_LABEL[s.status]}</span></td>
+                      <td>
+                        <span className={`pill ${STATUS_PILL[s.status]}`}>{STATUS_LABEL[s.status]}</span>
+                        {s.xero_contact_id && (
+                          <span className="pill issued" style={{ marginLeft: 6, fontSize: 10 }} title={`Xero Contact ID: ${s.xero_contact_id}`}>Xero</span>
+                        )}
+                      </td>
                       <td>
                         {s.approved_elements.length === 0 ? (
                           <span className="muted" style={{ fontSize: 12 }}>—</span>

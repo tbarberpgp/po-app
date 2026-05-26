@@ -83,6 +83,16 @@ export type PurchaseOrder = {
   rejected_by: string | null;
   rejection_reason: string | null;
   issued_at: string | null;
+  // Xero push state
+  xero_po_id?: string | null;
+  xero_po_number?: string | null;
+  xero_synced_at?: string | null;
+  xero_sync_status?: "synced" | "failed" | "pending" | null;
+  xero_sync_error?: string | null;
+  // Soft delete
+  deleted_at?: string | null;
+  deleted_by?: string | null;
+  deletion_reason?: string | null;
   lines: POLine[];
 };
 
@@ -179,6 +189,9 @@ export type Supplier = {
   notes: string | null;
   created_at: string;
   created_by: string | null;
+  // Xero sync — populated when this supplier maps to a Xero Contact
+  xero_contact_id?: string | null;
+  xero_last_synced_at?: string | null;
   // computed on read
   approved_elements: string[];           // array of element codes
   product_supplier_count: number;        // # of products listing them as an alternate supplier

@@ -60,6 +60,20 @@ export function POView({ me }: { me: CurrentUser | null }) {
     } finally { setBusy(false); }
   }
 
+  async function onPushToXero() {
+    if (!po) return;
+    setBusy(true); setErr(null);
+    try {
+      await api.xeroPushPO(po.id);
+      refresh();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Xero push failed");
+      refresh();
+    } finally { setBusy(false); }
+  }
+
+  const canPushToXero = po && (po.status === "approved" || po.status === "issued") && po.xero_sync_status !== "synced" && can(me?.role, "pos.issue");
+
   if (!po) return <main className="muted">Loading…</main>;
 
   const canApprove =
@@ -79,6 +93,11 @@ export function POView({ me }: { me: CurrentUser | null }) {
         actions={
           <>
             <button className="ghost" onClick={onDownloadPdf} disabled={busy}>Download PDF</button>
+            {canPushToXero && (
+              <button className="ghost" onClick={onPushToXero} disabled={busy} title="Send this PO to Xero as a draft purchase order">
+                {po.xero_sync_status === "failed" ? "Retry Xero push" : "Push to Xero"}
+              </button>
+            )}
             {canDelete && !isDeleted && (
               <button className="danger" onClick={() => setShowDelete(true)} disabled={busy}>Delete PO</button>
             )}
@@ -93,6 +112,20 @@ export function POView({ me }: { me: CurrentUser | null }) {
             <b>Deleted</b> by {po.deleted_by} on {fmtDate(po.deleted_at)}
             {po.deletion_reason && <> — “{po.deletion_reason}”</>}.
             This PO no longer counts against project committed budget.
+          </div>
+        )}
+
+        {po.xero_sync_status === "synced" && po.xero_po_number && (
+          <div className="flash success" style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <span className="pill issued" style={{ fontSize: 11 }}>Xero</span>
+            <span>Posted to Xero as <b>{po.xero_po_number}</b> on {fmtDate(po.xero_synced_at)} — AP can match incoming invoices to it.</span>
+          </div>
+        )}
+        {po.xero_sync_status === "failed" && (
+          <div className="flash error" style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <span className="pill rejected" style={{ fontSize: 11 }}>Xero</span>
+            <span>Xero push failed: {po.xero_sync_error}</span>
+            <span className="muted" style={{ fontSize: 12 }}>Click <b>Retry Xero push</b> above when fixed.</span>
           </div>
         )}
 

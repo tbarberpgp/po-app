@@ -48,6 +48,8 @@ export function Admin({ me }: { me: CurrentUser | null }) {
       <main>
         {err && <div className="flash error">{err}</div>}
 
+        {canManageApprovers && <XeroSection />}
+
         {canManageUsers && (
           <UsersSection users={users} me={me} onChanged={refresh} />
         )}
@@ -131,6 +133,104 @@ export function Admin({ me }: { me: CurrentUser | null }) {
         </div>
       </main>
     </>
+  );
+}
+
+/* ── Xero integration ───────────────────────────────────────────────────── */
+
+function XeroSection() {
+  const [status, setStatus] = useState<Awaited<ReturnType<typeof api.xeroStatus>> | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  function refresh() {
+    api.xeroStatus().then(setStatus).catch((e) => setErr(e.message));
+  }
+  useEffect(() => {
+    refresh();
+    // If we came back from the OAuth callback, the URL has ?xero=connected or
+    // ?xero_error=… — peel those off and show a notification.
+    const url = new URL(window.location.href);
+    if (url.searchParams.get("xero") === "connected") {
+      url.searchParams.delete("xero");
+      window.history.replaceState(null, "", url.toString());
+    }
+    const xeroErr = url.searchParams.get("xero_error");
+    if (xeroErr) {
+      setErr(`Xero connect failed: ${xeroErr}`);
+      url.searchParams.delete("xero_error");
+      window.history.replaceState(null, "", url.toString());
+    }
+  }, []);
+
+  if (!status) return null;
+
+  async function disconnect() {
+    if (!confirm("Disconnect from Xero? You'll need to re-authorise to sync again.")) return;
+    setBusy(true); setErr(null);
+    try { await api.xeroDisconnect(); refresh(); }
+    catch (e) { setErr(e instanceof Error ? e.message : "disconnect failed"); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <div className="card card-padded">
+      <h3 style={{ marginTop: 0 }}>Xero integration</h3>
+      {err && <div className="flash error">{err}</div>}
+
+      {!status.configured && (
+        <div className="muted">
+          Xero isn't configured on this environment. An admin needs to:
+          <ol style={{ marginTop: 4 }}>
+            <li>Register an app at <a href="https://developer.xero.com/myapps" target="_blank" rel="noreferrer">developer.xero.com/myapps</a></li>
+            <li>Set the redirect URI to <code style={{ background: "var(--card-2)", padding: "1px 4px", borderRadius: 4 }}>{window.location.origin}/api/xero/callback</code></li>
+            <li>From the terminal: <code style={{ background: "var(--card-2)", padding: "1px 4px", borderRadius: 4 }}>npx wrangler secret put XERO_CLIENT_ID</code> and <code style={{ background: "var(--card-2)", padding: "1px 4px", borderRadius: 4 }}>npx wrangler secret put XERO_CLIENT_SECRET</code> using the values from the Xero app</li>
+          </ol>
+        </div>
+      )}
+
+      {status.configured && !status.connected && (
+        <>
+          <p className="muted" style={{ marginTop: 0 }}>
+            Not connected. Click below to authorise the app with one of your Xero organisations.
+            You'll be redirected to Xero to choose a tenant and approve the requested scopes.
+          </p>
+          <a href={api.xeroConnectUrl()} className="btn accent">Connect to Xero</a>
+        </>
+      )}
+
+      {status.configured && status.connected && status.connection && (
+        <>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16, marginBottom: 12 }}>
+            <div>
+              <div className="eyebrow">Organisation</div>
+              <div style={{ fontWeight: 500 }}>{status.connection.tenant_name ?? status.connection.tenant_id}</div>
+              <div className="muted" style={{ fontSize: 12 }}>{status.connection.tenant_type}</div>
+            </div>
+            <div>
+              <div className="eyebrow">Connected by</div>
+              <div style={{ fontSize: 13 }}>{status.connection.connected_by}</div>
+              <div className="muted" style={{ fontSize: 12 }}>
+                {new Date(status.connection.connected_at).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}
+              </div>
+            </div>
+            <div>
+              <div className="eyebrow">Token expires</div>
+              <div style={{ fontSize: 13 }}>{new Date(status.connection.expires_at).toLocaleString("en-GB")}</div>
+              <div className="muted" style={{ fontSize: 12 }}>auto-refreshes</div>
+            </div>
+          </div>
+          <div className="row">
+            <a href={api.xeroConnectUrl()} className="btn ghost">Re-authorise / switch organisation</a>
+            <button className="danger" onClick={disconnect} disabled={busy}>Disconnect</button>
+          </div>
+          <p className="muted" style={{ marginTop: 16, fontSize: 12 }}>
+            Approved POs are automatically pushed into Xero as draft Purchase Orders for AP to match against incoming invoices.
+            Supplier contacts can be synced from the Approved Suppliers page.
+          </p>
+        </>
+      )}
+    </div>
   );
 }
 

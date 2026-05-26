@@ -256,6 +256,34 @@ export const api = {
   }>) => jfetch<{ ok: true }>(`/api/suppliers/${id}`, { method: "PUT", body: JSON.stringify(input) }),
   removeSupplier: (id: number) =>
     jfetch<{ ok: true }>(`/api/suppliers/${id}`, { method: "DELETE" }),
+
+  // Xero
+  xeroStatus: () =>
+    jfetch<{
+      configured: boolean;
+      connected: boolean;
+      connection: {
+        tenant_id: string;
+        tenant_name: string | null;
+        tenant_type: string | null;
+        expires_at: string;
+        scopes: string | null;
+        connected_at: string;
+        connected_by: string;
+      } | null;
+    }>("/api/xero/status"),
+  xeroConnectUrl: () => "/api/xero/connect",
+  xeroDisconnect: () => jfetch<{ ok: true }>("/api/xero/disconnect", { method: "POST" }),
+  xeroSyncSuppliers: () =>
+    jfetch<{ created: number; updated: number; skipped: number; total_from_xero: number }>(
+      "/api/xero/sync-suppliers",
+      { method: "POST" },
+    ),
+  xeroPushPO: (id: string) =>
+    jfetch<{ ok: true; xero_po_id: string; xero_po_number: string }>(
+      `/api/xero/push-po/${id}`,
+      { method: "POST" },
+    ),
 };
 
 export function fmtMoney(n: number, currency = "GBP") {

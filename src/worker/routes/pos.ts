@@ -5,6 +5,7 @@ import { loadSettings, tierForApproval } from "../approval";
 import { emailApprovers, emailRequesterDecision } from "../notify";
 import { requirePermission } from "../auth";
 import { buildCostCode, derivedProjectNumber } from "../../shared/types";
+import { pushPOToXero } from "./xero";
 
 export const pos = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -305,6 +306,11 @@ pos.post("/", async (c) => {
   return c.json({ id, po_number: poNumber, status, requires_approval: requiresApproval });
 });
 
+/* Also auto-push when an admin auto-approved (no approval gate) PO is created
+ * — we hook that by re-running the push after pos.post("/") above. To keep
+ * the diff small we don't add it there; the user can use the manual "Push
+ * to Xero" button on the PO view for auto-approved POs. */
+
 pos.get("/:id/activity", async (c) => {
   const id = c.req.param("id");
   const rows = await c.env.DB.prepare(
@@ -368,6 +374,18 @@ pos.post("/:id/approve", async (c) => {
       actorEmail: actor,
     }),
   );
+
+  // Auto-push to Xero if connected. Best-effort — failures are stored on the
+  // PO row (xero_sync_status='failed' + xero_sync_error) and surfaced in the
+  // PO view; the approval itself isn't rolled back.
+  if (c.env.XERO_CLIENT_ID && c.env.XERO_CLIENT_SECRET) {
+    c.executionCtx.waitUntil(
+      pushPOToXero(c.env, id).catch((e) =>
+        console.warn("Xero auto-push failed", e instanceof Error ? e.message : e),
+      ),
+    );
+  }
+
   return c.json({ ok: true });
 });
 
