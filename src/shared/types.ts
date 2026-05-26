@@ -42,6 +42,12 @@ export type MaterialWithCommitment = Material & {
   product_element_code?: string | null;  // when linked to a master product
   /** Joined from elements table when element_code is set — canonical name for display. */
   element_name?: string | null;
+  /** Latest applied/approved quote-driven unit price for this material on this project. */
+  live_unit_price?: number | null;
+  /** Supplier name behind the live price, when applicable. */
+  live_supplier_name?: string | null;
+  /** Number of pending price approvals for this material — surfaced on the row. */
+  pending_price_count?: number;
 };
 
 export type ApprovalTier = "line_manager" | "commercial_manager" | "director";
@@ -227,11 +233,35 @@ export function derivedProjectNumber(projectCode: string): string {
   return digits.slice(-4).padStart(4, "0");
 }
 
+/** A pending price approval surfaced on the approvals inbox. */
+export type PendingPriceApproval = {
+  id: number;
+  material_id: number;
+  quote_id: number;
+  project_id: string;
+  unit_price: number;
+  boq_unit_cost: number | null;
+  boq_qty: number | null;
+  over_amount: number;
+  status: "pending_approval";
+  approval_tier: ApprovalTier | null;
+  applied_at: string;
+  applied_by: string;
+  // joined
+  material_item: string;
+  material_element_code: string | null;
+  project_code: string;
+  project_name: string;
+  supplier_name: string;
+  quote_filename: string;
+};
+
 /** A supplier quote uploaded as a PDF and parsed by Claude. */
 export type SupplierQuote = {
   id: number;
   supplier_id: number;
   supplier_name?: string;
+  project_id?: string | null;
   filename: string;
   uploaded_at: string;
   uploaded_by: string;
@@ -259,17 +289,29 @@ export type SupplierQuoteLine = {
   unit_price: number | null;
   matched_product_id: number | null;
   matched_product_supplier_id: number | null;
+  matched_material_id: number | null;
+  boq_unit_cost: number | null;
+  boq_qty: number | null;
   match_confidence: number | null;
   old_unit_price: number | null;
   is_applied: 0 | 1;
   skip_reason: string | null;
-  // joined fields (when fetched via detail endpoint)
+  // joined fields (catalogue-quote context)
   product_code?: string | null;
   product_description?: string | null;
   product_unit?: string | null;
   product_primary_cost?: number | null;
   supplier_current_cost?: number | null;
   supplier_current_sku?: string | null;
+  // joined fields (project-quote context)
+  material_item?: string | null;
+  material_boq_cost?: number | null;
+  material_total_units?: number | null;
+  material_total_units_unit?: string | null;
+  material_element_code?: string | null;
+  live_status?: "applied" | "pending_approval" | "approved" | "rejected" | null;
+  live_over_amount?: number | null;
+  live_approval_tier?: ApprovalTier | null;
 };
 
 export type CreatePOInput = {

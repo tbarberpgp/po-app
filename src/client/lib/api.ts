@@ -311,15 +311,17 @@ export const api = {
    * after the user confirmed which supplier to use following a 422), it skips
    * auto-detection and uses that supplier directly.
    */
-  uploadQuote: (file: File, opts?: { supplierId?: number; notes?: string }) => {
+  uploadQuote: (file: File, opts?: { supplierId?: number; notes?: string; projectId?: string }) => {
     const fd = new FormData();
     fd.append("file", file);
     if (opts?.notes) fd.append("notes", opts.notes);
     if (opts?.supplierId != null) fd.append("supplier_id", String(opts.supplierId));
+    if (opts?.projectId) fd.append("project_id", opts.projectId);
     return jfetch<{
       quote_id: number;
       supplier_id: number;
       supplier_name: string;
+      project_id: string | null;
       detected_name: string | null;
       auto_matched: boolean;
       extracted_lines: number;
@@ -346,11 +348,30 @@ export const api = {
     }),
   applyQuote: (quoteId: number) =>
     jfetch<{
+      scope: "catalogue" | "project";
       applied: number;
       total_applied_value: number;
       total_old_value: number;
       delta_value: number;
+      // project-scope only
+      pending_approval?: number;
+      savings?: number;
+      pending_overspend?: number;
     }>(`/api/quotes/${quoteId}/apply`, { method: "POST" }),
+  listPendingPriceApprovals: (opts?: { project_id?: string; tier?: string }) => {
+    const q = new URLSearchParams();
+    if (opts?.project_id) q.set("project_id", opts.project_id);
+    if (opts?.tier) q.set("tier", opts.tier);
+    const qs = q.toString();
+    return jfetch<import("../../shared/types").PendingPriceApproval[]>(
+      `/api/quotes/_pending-prices${qs ? `?${qs}` : ""}`,
+    );
+  },
+  decidePendingPrice: (id: number, action: "approve" | "reject", reason?: string) =>
+    jfetch<{ ok: true }>(`/api/quotes/_pending-prices/${id}/decide`, {
+      method: "POST",
+      body: JSON.stringify({ action, reason }),
+    }),
   discardQuote: (quoteId: number) =>
     jfetch<{ ok: true }>(`/api/quotes/${quoteId}`, { method: "DELETE" }),
   searchProductsForQuote: (q: string) =>

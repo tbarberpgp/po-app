@@ -5,7 +5,7 @@ import { Topbar } from "./Shell";
 import { can } from "../../shared/permissions";
 import type { CurrentUser, MaterialWithCommitment, Project, PurchaseOrder } from "../../shared/types";
 
-type Tab = "overview" | "pos";
+type Tab = "overview" | "materials" | "pos";
 
 type ProjectPORow = PurchaseOrder & { project_code: string; project_name: string };
 
@@ -146,6 +146,16 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
           <button
             type="button"
             role="tab"
+            aria-selected={tab === "materials"}
+            className={`tab-btn${tab === "materials" ? " active" : ""}`}
+            onClick={() => setTab("materials")}
+          >
+            Materials
+            <span className="count">{mats.length}</span>
+          </button>
+          <button
+            type="button"
+            role="tab"
             aria-selected={tab === "pos"}
             className={`tab-btn${tab === "pos" ? " active" : ""}`}
             onClick={() => setTab("pos")}
@@ -153,6 +163,10 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
             Purchase orders
             <span className="count">{projectPOs.length}</span>
           </button>
+          <div style={{ flex: 1 }} />
+          {canUploadMaterials && id && (
+            <ProjectQuoteUpload projectId={id} disabled={mats.length === 0} />
+          )}
         </nav>
 
         {tab === "pos" ? (
@@ -225,78 +239,99 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
               </table>
             </div>
 
-            <div className="card">
-              <div className="card-hd">
-                <h2 style={{ flex: 1 }}>
-                  Materials
-                  <span className="muted" style={{ fontWeight: 400, marginLeft: 10, fontSize: 13, fontFamily: "var(--font-sans)" }}>
-                    {showAll ? `${mats.length} in library` : `${pricedCount} priced for this job`}
-                  </span>
-                </h2>
-                <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--muted)", marginBottom: 0, textTransform: "none", letterSpacing: 0 }}>
-                  <input type="checkbox" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} style={{ minHeight: 0 }} />
-                  Show full library
-                </label>
-                <input placeholder="Filter…" value={filter} onChange={(e) => setFilter(e.target.value)} style={{ width: 220 }} />
-                <select value={supplierFilter} onChange={(e) => setSupplierFilter(e.target.value)}>
-                  <option value="">All suppliers</option>
-                  {suppliers.map((s) => <option key={s} value={s}>{s}</option>)}
-                </select>
-                <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)}>
-                  <option value="">All types</option>
-                  {types.map((t) => <option key={t} value={t}>{t}</option>)}
-                </select>
+            {tab === "materials" && (
+              <div className="card">
+                <div className="card-hd">
+                  <h2 style={{ flex: 1 }}>
+                    Materials
+                    <span className="muted" style={{ fontWeight: 400, marginLeft: 10, fontSize: 13, fontFamily: "var(--font-sans)" }}>
+                      {showAll ? `${mats.length} in library` : `${pricedCount} priced for this job`}
+                    </span>
+                  </h2>
+                  <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--muted)", marginBottom: 0, textTransform: "none", letterSpacing: 0 }}>
+                    <input type="checkbox" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} style={{ minHeight: 0 }} />
+                    Show full library
+                  </label>
+                  <input placeholder="Filter…" value={filter} onChange={(e) => setFilter(e.target.value)} style={{ width: 220 }} />
+                  <select value={supplierFilter} onChange={(e) => setSupplierFilter(e.target.value)}>
+                    <option value="">All suppliers</option>
+                    {suppliers.map((s) => <option key={s} value={s}>{s}</option>)}
+                  </select>
+                  <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)}>
+                    <option value="">All types</option>
+                    {types.map((t) => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                </div>
+                <table>
+                  <thead>
+                    <tr>
+                      <th className="center">Type</th>
+                      <th>Item</th>
+                      <th className="center">Supplier</th>
+                      <th className="num">BOQ cost</th>
+                      <th className="num">Live</th>
+                      <th className="center">Unit</th>
+                      <th className="num">Priced</th>
+                      <th className="num">Committed</th>
+                      <th className="num">Remaining</th>
+                      <th className="center" style={{ width: 140 }}>Usage</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {visible.map((m) => {
+                      const priced = m.total_units ?? 0;
+                      const committed = m.committed_qty ?? 0;
+                      const isOriginallyUnpriced = priced === 0;
+                      const pct = priced > 0 ? Math.min(100, (committed / priced) * 100) : (committed > 0 ? 100 : 0);
+                      const remaining = m.remaining_qty;
+                      const over = remaining != null && remaining < 0;
+                      const exact = priced > 0 && Math.abs(committed - priced) < 0.005;
+                      const unit = m.total_units_unit ?? m.pack_unit ?? "";
+                      const live = m.live_unit_price ?? null;
+                      const delta = live != null && m.cost != null ? live - m.cost : null;
+                      return (
+                        <tr key={m.id}>
+                          <td className="center">{m.type}</td>
+                          <td>{m.item}</td>
+                          <td className="muted center">{m.manufacturer ?? "—"}</td>
+                          <td className="num">{m.cost != null ? fmtMoney(m.cost) : <span className="muted">—</span>}</td>
+                          <td className="num">
+                            {live != null ? (
+                              <>
+                                <div>{fmtMoney(live)}</div>
+                                {delta != null && Math.abs(delta) >= 0.005 && (
+                                  <div className="muted" style={{ fontSize: 10, color: delta < 0 ? "var(--success)" : "var(--danger)" }}>
+                                    {delta < 0 ? "↓" : "↑"} {fmtMoney(Math.abs(delta))}
+                                  </div>
+                                )}
+                              </>
+                            ) : (m.pending_price_count ?? 0) > 0 ? (
+                              <span className="pill pending" style={{ fontSize: 10 }}>{m.pending_price_count} pending</span>
+                            ) : (
+                              <span className="muted">—</span>
+                            )}
+                          </td>
+                          <td className="center">{unit}</td>
+                          <td className="num">{priced ? `${priced.toLocaleString()}` : <span className="muted">not priced</span>}</td>
+                          <td className="num">{committed.toLocaleString()}</td>
+                          <td className="num">
+                            {remaining == null ? <span className="muted">—</span> : remaining.toLocaleString()}
+                          </td>
+                          <td className="center">
+                            <div className="bar">
+                              <div
+                                className={over || (isOriginallyUnpriced && committed > 0) ? "danger" : exact ? "ok" : ""}
+                                style={{ width: `${pct}%` }}
+                              />
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
               </div>
-              <table>
-                <thead>
-                  <tr>
-                    <th className="center">Type</th>
-                    <th>Item</th>
-                    <th className="center">Supplier</th>
-                    <th className="num">Pack cost</th>
-                    <th className="center">Unit</th>
-                    <th className="num">Priced</th>
-                    <th className="num">Committed</th>
-                    <th className="num">Remaining</th>
-                    <th className="center" style={{ width: 140 }}>Usage</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {visible.map((m) => {
-                    const priced = m.total_units ?? 0;
-                    const committed = m.committed_qty ?? 0;
-                    const isOriginallyUnpriced = priced === 0;
-                    const pct = priced > 0 ? Math.min(100, (committed / priced) * 100) : (committed > 0 ? 100 : 0);
-                    const remaining = m.remaining_qty;
-                    const over = remaining != null && remaining < 0;
-                    const exact = priced > 0 && Math.abs(committed - priced) < 0.005;
-                    const unit = m.total_units_unit ?? m.pack_unit ?? "";
-                    return (
-                      <tr key={m.id}>
-                        <td className="center">{m.type}</td>
-                        <td>{m.item}</td>
-                        <td className="muted center">{m.manufacturer ?? "—"}</td>
-                        <td className="num">{m.cost != null ? fmtMoney(m.cost) : <span className="muted">—</span>}</td>
-                        <td className="center">{unit}</td>
-                        <td className="num">{priced ? `${priced.toLocaleString()}` : <span className="muted">not priced</span>}</td>
-                        <td className="num">{committed.toLocaleString()}</td>
-                        <td className="num">
-                          {remaining == null ? <span className="muted">—</span> : remaining.toLocaleString()}
-                        </td>
-                        <td className="center">
-                          <div className="bar">
-                            <div
-                              className={over || (isOriginallyUnpriced && committed > 0) ? "danger" : exact ? "ok" : ""}
-                              style={{ width: `${pct}%` }}
-                            />
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
+            )}
           </>
         )}
         </>
@@ -549,4 +584,49 @@ function summarise(mats: MaterialWithCommitment[], unpricedSpend: number): Summa
       .filter((s) => s.priced > 0)
       .sort((a, b) => b.priced - a.priced),
   };
+}
+
+/* ── Project-scoped quote upload button (Overview + Materials tab) ─────── */
+
+function ProjectQuoteUpload({ projectId, disabled }: { projectId: string; disabled?: boolean }) {
+  const navigate = useNavigate();
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function onPick(e: React.ChangeEvent<HTMLInputElement>) {
+    const f = e.target.files?.[0];
+    if (fileRef.current) fileRef.current.value = "";
+    if (!f) return;
+    setBusy(true); setErr(null);
+    try {
+      const r = await api.uploadQuote(f, { projectId });
+      navigate(`/quotes/${r.quote_id}`);
+    } catch (e) {
+      // 422 (supplier_unmatched) flows up here too — the supplier picker UX
+      // lives on the suppliers page; here we just surface the message and tell
+      // the user to add the supplier to the register first.
+      setErr(e instanceof Error ? e.message : "upload failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      <input ref={fileRef} type="file" accept="application/pdf" style={{ display: "none" }} onChange={onPick} />
+      <button
+        className="ghost"
+        onClick={() => fileRef.current?.click()}
+        disabled={busy || disabled}
+        title={disabled
+          ? "Upload a pricing workbook first so quotes can be matched to BOQ lines"
+          : "Upload a supplier quote PDF for this project — Claude auto-detects the supplier and matches lines against the BOQ"}
+        style={{ marginLeft: "auto" }}
+      >
+        {busy ? "Reading PDF…" : "↑ Upload quote"}
+      </button>
+      {err && <span style={{ color: "var(--danger)", fontSize: 11, marginLeft: 8 }}>{err}</span>}
+    </>
+  );
 }

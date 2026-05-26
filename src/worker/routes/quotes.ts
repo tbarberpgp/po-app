@@ -7,6 +7,8 @@ import Anthropic from "@anthropic-ai/sdk";
 import type { Env, Variables } from "../env";
 import { requirePermission } from "../auth";
 import { buildProductCode } from "../../shared/types";
+import { loadSettings } from "../approval";
+import type { ApprovalTier } from "../../shared/types";
 
 export const quotes = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -132,6 +134,90 @@ async function matchLines(
     out.set(line.line_no, best && best.score >= 0.25 ? best : null);
   }
   return out;
+}
+
+/** For project-scoped quotes: match each line against the project's active
+ *  material snapshot rows (by description token overlap, with element-code
+ *  bonus when both sides have one). Returns the best candidate per line, or
+ *  null if no candidate scored above threshold. */
+type MaterialCandidate = {
+  material_id: number;
+  item: string;
+  cost: number | null;
+  total_units: number | null;
+  total_units_unit: string | null;
+  element_code: string | null;
+  score: number;
+};
+
+async function matchProjectMaterials(
+  db: D1Database,
+  projectId: string,
+  lines: ExtractedLine[],
+): Promise<Map<number, MaterialCandidate | null>> {
+  const snap = await db
+    .prepare(
+      "SELECT id FROM material_snapshots WHERE project_id = ? AND is_active = 1",
+    )
+    .bind(projectId)
+    .first<{ id: number }>();
+  const out = new Map<number, MaterialCandidate | null>();
+  if (!snap) {
+    for (const l of lines) out.set(l.line_no, null);
+    return out;
+  }
+  const mats = await db
+    .prepare(
+      `SELECT id, item, cost, total_units, total_units_unit, element_code
+       FROM materials WHERE snapshot_id = ?`,
+    )
+    .bind(snap.id)
+    .all<{
+      id: number;
+      item: string;
+      cost: number | null;
+      total_units: number | null;
+      total_units_unit: string | null;
+      element_code: string | null;
+    }>();
+
+  const norm = (s: string) =>
+    s.toLowerCase().replace(/[^a-z0-9 ]+/g, " ").split(/\s+/).filter(Boolean);
+  for (const line of lines) {
+    const lineTokens = new Set(norm(line.description));
+    if (lineTokens.size === 0) { out.set(line.line_no, null); continue; }
+    let best: MaterialCandidate | null = null;
+    for (const m of mats.results) {
+      const matTokens = new Set(norm(m.item));
+      if (matTokens.size === 0) continue;
+      let overlap = 0;
+      for (const t of lineTokens) if (matTokens.has(t)) overlap++;
+      const jaccard = overlap === 0 ? 0 : overlap / (lineTokens.size + matTokens.size - overlap);
+      if (jaccard > (best?.score ?? 0)) {
+        best = {
+          material_id: m.id,
+          item: m.item,
+          cost: m.cost,
+          total_units: m.total_units,
+          total_units_unit: m.total_units_unit,
+          element_code: m.element_code,
+          score: jaccard,
+        };
+      }
+    }
+    out.set(line.line_no, best && best.score >= 0.25 ? best : null);
+  }
+  return out;
+}
+
+/** Tier the overspend amount using the configured PO thresholds. */
+function tierForOverspend(
+  over: number,
+  s: { tier_threshold_line_manager: number; tier_threshold_commercial_manager: number; tier_threshold_director: number },
+): ApprovalTier {
+  if (over <= s.tier_threshold_line_manager) return "line_manager";
+  if (over <= s.tier_threshold_commercial_manager) return "commercial_manager";
+  return "director";
 }
 
 // ── Routes ──────────────────────────────────────────────────────────────────
@@ -315,7 +401,11 @@ function rankSupplierCandidates(
 }
 
 /**
- * Persist extracted lines for a known supplier and run initial product matching.
+ * Persist extracted lines for a known supplier. If a project_id is provided,
+ * lines are matched against that project's BOQ materials and the BOQ
+ * baseline (cost + qty) is snapshotted onto each line for delta calculations.
+ * Otherwise lines are matched against the master catalogue as before.
+ *
  * Returns the new quote_id.
  */
 async function persistExtractedQuote(
@@ -325,41 +415,73 @@ async function persistExtractedQuote(
   notes: string | null,
   actor: string,
   lines: ExtractedLine[],
+  projectId: string | null,
 ): Promise<number> {
   const now = new Date().toISOString();
   const quoteRow = await db
     .prepare(
-      `INSERT INTO supplier_quotes (supplier_id, filename, uploaded_at, uploaded_by, status, notes)
-       VALUES (?, ?, ?, ?, 'ready', ?) RETURNING id`,
+      `INSERT INTO supplier_quotes (supplier_id, project_id, filename, uploaded_at, uploaded_by, status, notes)
+       VALUES (?, ?, ?, ?, ?, 'ready', ?) RETURNING id`,
     )
-    .bind(supplier.id, filename, now, actor, notes)
+    .bind(supplier.id, projectId, filename, now, actor, notes)
     .first<{ id: number }>();
   const quoteId = quoteRow!.id;
 
-  const matches = await matchLines(db, supplier.name, lines);
-  const stmts = lines.map((l) => {
-    const m = matches.get(l.line_no) ?? null;
-    return db
-      .prepare(
-        `INSERT INTO supplier_quote_lines
-           (quote_id, line_no, raw_description, raw_sku, raw_qty, raw_unit, unit_price,
-            matched_product_id, matched_product_supplier_id, match_confidence)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .bind(
-        quoteId,
-        l.line_no,
-        l.description,
-        l.sku,
-        l.qty,
-        l.unit,
-        l.unit_price,
-        m?.product_id ?? null,
-        m?.product_supplier_id ?? null,
-        m?.score ?? null,
-      );
-  });
-  await db.batch(stmts);
+  if (projectId) {
+    // Project-scoped: match against the project's BOQ materials.
+    const matches = await matchProjectMaterials(db, projectId, lines);
+    const stmts = lines.map((l) => {
+      const m = matches.get(l.line_no) ?? null;
+      const boqCost = m?.cost ?? null;
+      return db
+        .prepare(
+          `INSERT INTO supplier_quote_lines
+             (quote_id, line_no, raw_description, raw_sku, raw_qty, raw_unit, unit_price,
+              matched_material_id, match_confidence, boq_unit_cost, boq_qty)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .bind(
+          quoteId,
+          l.line_no,
+          l.description,
+          l.sku,
+          l.qty,
+          l.unit,
+          l.unit_price,
+          m?.material_id ?? null,
+          m?.score ?? null,
+          boqCost,
+          l.qty,
+        );
+    });
+    await db.batch(stmts);
+  } else {
+    // Catalogue scope: match against products + existing supplier prices.
+    const matches = await matchLines(db, supplier.name, lines);
+    const stmts = lines.map((l) => {
+      const m = matches.get(l.line_no) ?? null;
+      return db
+        .prepare(
+          `INSERT INTO supplier_quote_lines
+             (quote_id, line_no, raw_description, raw_sku, raw_qty, raw_unit, unit_price,
+              matched_product_id, matched_product_supplier_id, match_confidence)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .bind(
+          quoteId,
+          l.line_no,
+          l.description,
+          l.sku,
+          l.qty,
+          l.unit,
+          l.unit_price,
+          m?.product_id ?? null,
+          m?.product_supplier_id ?? null,
+          m?.score ?? null,
+        );
+    });
+    await db.batch(stmts);
+  }
   return quoteId;
 }
 
@@ -381,9 +503,18 @@ quotes.post("/upload", async (c) => {
   const notes = (form.get("notes") as string | null) ?? null;
   const forcedSupplierIdRaw = form.get("supplier_id") as string | null;
   const forcedSupplierId = forcedSupplierIdRaw ? Number(forcedSupplierIdRaw) : null;
+  const projectId = (form.get("project_id") as string | null) || null;
   if (!(file instanceof File)) return c.json({ error: "file required" }, 400);
   if (!file.name.toLowerCase().endsWith(".pdf")) {
     return c.json({ error: "PDF required" }, 400);
+  }
+
+  // If the upload is scoped to a project, make sure it exists.
+  if (projectId) {
+    const p = await c.env.DB.prepare("SELECT id FROM projects WHERE id = ?")
+      .bind(projectId)
+      .first();
+    if (!p) return c.json({ error: "project not found" }, 404);
   }
 
   const suppliers = await c.env.DB.prepare(
@@ -445,12 +576,14 @@ quotes.post("/upload", async (c) => {
     notes,
     c.get("userEmail"),
     extraction.lines,
+    projectId,
   );
 
   return c.json({
     quote_id: quoteId,
     supplier_id: resolved.id,
     supplier_name: resolved.name,
+    project_id: projectId,
     detected_name: extraction.supplier_name_as_written,
     auto_matched: !forcedSupplierId,
     extracted_lines: extraction.lines.length,
@@ -567,13 +700,23 @@ quotes.get("/detail/:quoteId", async (c) => {
   const lines = await c.env.DB.prepare(
     `SELECT l.*,
             p.element_code AS p_element_code, p.item_no AS p_item_no, p.variant AS p_variant,
-            p.description AS product_description, p.unit AS product_unit,
-            p.unit_cost   AS product_primary_cost,
-            ps.unit_cost  AS supplier_current_cost,
-            ps.supplier_sku AS supplier_current_sku
+            p.description  AS product_description, p.unit AS product_unit,
+            p.unit_cost    AS product_primary_cost,
+            ps.unit_cost   AS supplier_current_cost,
+            ps.supplier_sku AS supplier_current_sku,
+            mat.item       AS material_item,
+            mat.cost       AS material_boq_cost,
+            mat.total_units AS material_total_units,
+            mat.total_units_unit AS material_total_units_unit,
+            mat.element_code AS material_element_code,
+            mlp.status     AS live_status,
+            mlp.over_amount AS live_over_amount,
+            mlp.approval_tier AS live_approval_tier
      FROM supplier_quote_lines l
-     LEFT JOIN products p          ON p.id  = l.matched_product_id
-     LEFT JOIN product_suppliers ps ON ps.id = l.matched_product_supplier_id
+     LEFT JOIN products p             ON p.id  = l.matched_product_id
+     LEFT JOIN product_suppliers ps   ON ps.id = l.matched_product_supplier_id
+     LEFT JOIN materials mat          ON mat.id = l.matched_material_id
+     LEFT JOIN material_live_prices mlp ON mlp.quote_line_id = l.id
      WHERE l.quote_id = ?
      ORDER BY l.line_no`,
   )
@@ -655,10 +798,17 @@ quotes.patch("/lines/:lineId/skip", async (c) => {
 });
 
 /**
- * Apply the quote: for every line that has a matched product and isn't skipped,
- * write the new unit_cost into product_suppliers (upserting on the supplier
- * name), snapshot the old price on the quote line, and stamp the totals on
- * the quote row so the savings/loss summary survives.
+ * Apply the quote. Splits by quote scope:
+ *
+ *  - Catalogue quotes (project_id IS NULL): every matched line writes its
+ *    new unit_cost into product_suppliers (upserting on the supplier name).
+ *
+ *  - Project quotes (project_id set): each matched line is compared against
+ *    the BOQ unit cost snapshotted on the line. Cheaper-or-equal lines apply
+ *    immediately (status 'applied'); pricier lines get a pending row in
+ *    material_live_prices with an approval_tier banded by the overspend £.
+ *
+ * Either way the quote ends up in status='applied' with totals recorded.
  */
 quotes.post("/:quoteId/apply", async (c) => {
   const denied = requirePermission(c, "suppliers.manage");
@@ -666,18 +816,112 @@ quotes.post("/:quoteId/apply", async (c) => {
   const quoteId = Number(c.req.param("quoteId"));
 
   const quote = await c.env.DB.prepare(
-    `SELECT q.id, q.supplier_id, q.status, s.name AS supplier_name
+    `SELECT q.id, q.supplier_id, q.project_id, q.status, s.name AS supplier_name
      FROM supplier_quotes q
      JOIN suppliers s ON s.id = q.supplier_id
      WHERE q.id = ?`,
   )
     .bind(quoteId)
-    .first<{ id: number; supplier_id: number; status: string; supplier_name: string }>();
+    .first<{ id: number; supplier_id: number; project_id: string | null; status: string; supplier_name: string }>();
   if (!quote) return c.json({ error: "not found" }, 404);
   if (quote.status === "applied") {
     return c.json({ error: "already applied" }, 409);
   }
 
+  const actor = c.get("userEmail");
+  const now = new Date().toISOString();
+
+  // ── Project-scoped apply: live prices + tiered approval for overspend ──
+  if (quote.project_id) {
+    const settings = await loadSettings(c.env.DB);
+    const lines = await c.env.DB.prepare(
+      `SELECT id, raw_qty, unit_price, matched_material_id, boq_unit_cost, boq_qty, skip_reason
+       FROM supplier_quote_lines
+       WHERE quote_id = ? AND matched_material_id IS NOT NULL AND skip_reason IS NULL`,
+    )
+      .bind(quoteId)
+      .all<{
+        id: number;
+        raw_qty: number | null;
+        unit_price: number | null;
+        matched_material_id: number;
+        boq_unit_cost: number | null;
+        boq_qty: number | null;
+        skip_reason: string | null;
+      }>();
+    if (lines.results.length === 0) {
+      return c.json({ error: "no lines matched to BOQ materials" }, 400);
+    }
+
+    let savings = 0;
+    let pendingOverspend = 0;
+    let appliedCount = 0;
+    let pendingCount = 0;
+    let totalNew = 0;
+    let totalOld = 0;
+
+    for (const l of lines.results) {
+      if (l.unit_price == null || l.raw_qty == null) continue;
+      const boqCost = l.boq_unit_cost;
+      const qty = l.raw_qty;
+      const newTotal = qty * l.unit_price;
+      const boqTotal = boqCost != null ? qty * boqCost : 0;
+      const over = newTotal - boqTotal; // negative = saving, positive = overspend
+      totalNew += newTotal;
+      totalOld += boqTotal;
+      const status: "applied" | "pending_approval" = over > 0 ? "pending_approval" : "applied";
+      const tier: ApprovalTier | null =
+        status === "pending_approval" ? tierForOverspend(over, settings) : null;
+
+      await c.env.DB.prepare(
+        `INSERT INTO material_live_prices
+           (material_id, quote_line_id, quote_id, project_id, unit_price, boq_unit_cost,
+            boq_qty, over_amount, status, approval_tier, applied_at, applied_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+        .bind(
+          l.matched_material_id, l.id, quoteId, quote.project_id,
+          l.unit_price, boqCost, qty, over,
+          status, tier, now, actor,
+        )
+        .run();
+      await c.env.DB.prepare(
+        "UPDATE supplier_quote_lines SET is_applied = 1, old_unit_price = ? WHERE id = ?",
+      )
+        .bind(boqCost, l.id)
+        .run();
+
+      if (status === "applied") {
+        appliedCount++;
+        if (over < 0) savings += -over;
+      } else {
+        pendingCount++;
+        pendingOverspend += over;
+      }
+    }
+
+    await c.env.DB.prepare(
+      `UPDATE supplier_quotes
+       SET status = 'applied', applied_at = ?, applied_by = ?,
+           total_applied_value = ?, total_old_value = ?
+       WHERE id = ?`,
+    )
+      .bind(now, actor, totalNew, totalOld, quoteId)
+      .run();
+
+    return c.json({
+      scope: "project",
+      applied: appliedCount,
+      pending_approval: pendingCount,
+      total_applied_value: totalNew,
+      total_old_value: totalOld,
+      delta_value: totalNew - totalOld,
+      savings,
+      pending_overspend: pendingOverspend,
+    });
+  }
+
+  // ── Catalogue-scoped apply: write new unit_cost to product_suppliers ──
   const lines = await c.env.DB.prepare(
     `SELECT id, raw_qty, unit_price, matched_product_id, matched_product_supplier_id, skip_reason
      FROM supplier_quote_lines
@@ -697,15 +941,10 @@ quotes.post("/:quoteId/apply", async (c) => {
     return c.json({ error: "no lines selected to apply" }, 400);
   }
 
-  const actor = c.get("userEmail");
-  const now = new Date().toISOString();
-
   let totalApplied = 0;
   let totalOld = 0;
   let appliedCount = 0;
 
-  // Apply each line individually so we can capture per-line old_price snapshots.
-  // The number of lines per quote is small (tens), so individual writes are fine.
   for (const l of lines.results) {
     if (l.unit_price == null) continue;
 
@@ -723,8 +962,6 @@ quotes.post("/:quoteId/apply", async (c) => {
         .bind(l.unit_price, l.matched_product_supplier_id)
         .run();
     } else {
-      // Supplier doesn't yet offer this product — insert a new product_suppliers row.
-      // oldPrice stays null (no prior price from this supplier).
       const ins = await c.env.DB.prepare(
         `INSERT INTO product_suppliers
            (product_id, supplier_name, unit_cost, created_at, created_by)
@@ -762,11 +999,79 @@ quotes.post("/:quoteId/apply", async (c) => {
     .run();
 
   return c.json({
+    scope: "catalogue",
     applied: appliedCount,
     total_applied_value: totalApplied,
     total_old_value: totalOld,
     delta_value: totalApplied - totalOld,
   });
+});
+
+/** List pending price approvals (optionally filter by tier and/or project). */
+quotes.get("/_pending-prices", async (c) => {
+  const tier = c.req.query("tier");
+  const projectId = c.req.query("project_id");
+  const where: string[] = ["mlp.status = 'pending_approval'"];
+  const params: (string | number)[] = [];
+  if (tier) { where.push("mlp.approval_tier = ?"); params.push(tier); }
+  if (projectId) { where.push("mlp.project_id = ?"); params.push(projectId); }
+
+  const rows = await c.env.DB.prepare(
+    `SELECT mlp.*,
+            m.item AS material_item,
+            m.element_code AS material_element_code,
+            p.code AS project_code, p.name AS project_name,
+            s.name AS supplier_name,
+            q.filename AS quote_filename
+     FROM material_live_prices mlp
+     JOIN materials m         ON m.id  = mlp.material_id
+     JOIN projects  p         ON p.id  = mlp.project_id
+     JOIN supplier_quotes  q  ON q.id  = mlp.quote_id
+     JOIN suppliers s         ON s.id  = q.supplier_id
+     WHERE ${where.join(" AND ")}
+     ORDER BY mlp.applied_at DESC`,
+  )
+    .bind(...params)
+    .all();
+  return c.json(rows.results);
+});
+
+/** Approve a single pending price (or reject). */
+quotes.post("/_pending-prices/:id/decide", async (c) => {
+  // Decision happens server-side as the same approver flow used for POs —
+  // any user who can manage suppliers + is configured as an approver can act.
+  const denied = requirePermission(c, "suppliers.manage");
+  if (denied) return denied;
+  const id = Number(c.req.param("id"));
+  const body = await c.req.json<{ action: "approve" | "reject"; reason?: string }>();
+  if (body.action !== "approve" && body.action !== "reject") {
+    return c.json({ error: "action must be 'approve' or 'reject'" }, 400);
+  }
+  const actor = c.get("userEmail");
+  const now = new Date().toISOString();
+  const row = await c.env.DB.prepare(
+    "SELECT id, status FROM material_live_prices WHERE id = ?",
+  )
+    .bind(id)
+    .first<{ id: number; status: string }>();
+  if (!row) return c.json({ error: "not found" }, 404);
+  if (row.status !== "pending_approval") {
+    return c.json({ error: "already decided" }, 409);
+  }
+  if (body.action === "approve") {
+    await c.env.DB.prepare(
+      "UPDATE material_live_prices SET status = 'approved', approved_at = ?, approved_by = ? WHERE id = ?",
+    )
+      .bind(now, actor, id)
+      .run();
+  } else {
+    await c.env.DB.prepare(
+      "UPDATE material_live_prices SET status = 'rejected', rejected_at = ?, rejected_by = ?, rejection_reason = ? WHERE id = ?",
+    )
+      .bind(now, actor, body.reason ?? null, id)
+      .run();
+  }
+  return c.json({ ok: true });
 });
 
 /** Discard a quote (soft — keeps the row + lines for audit, just hides it). */

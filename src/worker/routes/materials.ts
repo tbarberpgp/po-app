@@ -110,14 +110,33 @@ materials.get("/:projectId", async (c) => {
                 AND pl.is_unpriced = 0
             ), 0) AS committed_qty,
             pr.element_code AS product_element_code,
-            e.name        AS element_name
+            e.name        AS element_name,
+            -- Latest applied live price (cheapest wins if multiple)
+            (SELECT mlp.unit_price
+             FROM material_live_prices mlp
+             WHERE mlp.material_id = m.id
+               AND mlp.project_id = ?
+               AND mlp.status IN ('applied', 'approved')
+             ORDER BY mlp.applied_at DESC LIMIT 1) AS live_unit_price,
+            (SELECT s.name
+             FROM material_live_prices mlp
+             JOIN supplier_quotes q ON q.id = mlp.quote_id
+             JOIN suppliers s       ON s.id = q.supplier_id
+             WHERE mlp.material_id = m.id
+               AND mlp.project_id = ?
+               AND mlp.status IN ('applied', 'approved')
+             ORDER BY mlp.applied_at DESC LIMIT 1) AS live_supplier_name,
+            (SELECT COUNT(*) FROM material_live_prices mlp
+             WHERE mlp.material_id = m.id
+               AND mlp.project_id = ?
+               AND mlp.status = 'pending_approval') AS pending_price_count
      FROM materials m
      LEFT JOIN products pr ON pr.id = m.product_id
      LEFT JOIN elements e ON e.code = m.element_code
      WHERE m.snapshot_id = ?
      ORDER BY COALESCE(m.element_code, m.type), m.item`,
   )
-    .bind(projectId, snap.id)
+    .bind(projectId, projectId, projectId, projectId, snap.id)
     .all<Record<string, unknown> & { committed_qty: number; total_units: number | null }>();
 
   // Budget is tracked in pack units (col V) since POs are raised in pack units.
