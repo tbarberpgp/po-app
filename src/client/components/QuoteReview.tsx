@@ -96,7 +96,12 @@ export function QuoteReview({ me }: { me: CurrentUser | null }) {
       const matched = isProjectQuote ? l.matched_material_id : l.matched_product_id;
       if (!matched) { unmatched++; continue; }
       if (l.unit_price == null) continue;
-      const qty = l.raw_qty ?? 0;
+      // Project quotes: use the BOQ allowance qty (the full quantity we plan
+      // to buy) so the saving reflects the whole line, not just one unit.
+      // Catalogue quotes: stick with the qty written on the quote.
+      const qty = isProjectQuote
+        ? (l.boq_qty ?? l.raw_qty ?? 0)
+        : (l.raw_qty ?? 0);
       const newLine = qty * l.unit_price;
       const old = isProjectQuote
         ? (l.boq_unit_cost ?? 0) * qty
@@ -336,7 +341,12 @@ function QuoteLineRow({
     ? line.boq_unit_cost ?? null
     : (line.supplier_current_cost ?? line.product_primary_cost ?? null);
   const newP = line.unit_price;
-  const delta = old != null && newP != null ? (line.raw_qty ?? 0) * (newP - old) : null;
+  // Per-row delta uses BOQ qty for project quotes (full project exposure) so
+  // the row Δ matches what the apply summary will actually save / overspend.
+  const deltaQty = isProjectQuote
+    ? (line.boq_qty ?? line.raw_qty ?? 0)
+    : (line.raw_qty ?? 0);
+  const delta = old != null && newP != null ? deltaQty * (newP - old) : null;
   const skipped = !!line.skip_reason;
   const matched = isProjectQuote ? line.matched_material_id : line.matched_product_id;
 
@@ -385,7 +395,14 @@ function QuoteLineRow({
           <ProductPicker readonly={readonly} onPick={(id) => onMatch(id)} />
         )}
       </td>
-      <td className="num">{line.raw_qty ?? <span className="muted">—</span>}</td>
+      <td className="num">
+        {line.raw_qty ?? <span className="muted">—</span>}
+        {isProjectQuote && line.boq_qty != null && line.boq_qty !== line.raw_qty && (
+          <div className="muted" style={{ fontSize: 10, marginTop: 2 }}>
+            BOQ: {line.boq_qty.toLocaleString()}
+          </div>
+        )}
+      </td>
       <td className="num">{newP != null ? fmtMoney(newP) : <span className="muted">—</span>}</td>
       <td className="num">{old != null ? fmtMoney(old) : <span className="muted">—</span>}</td>
       <td className="center">

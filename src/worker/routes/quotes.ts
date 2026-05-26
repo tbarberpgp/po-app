@@ -428,11 +428,15 @@ async function persistExtractedQuote(
   const quoteId = quoteRow!.id;
 
   if (projectId) {
-    // Project-scoped: match against the project's BOQ materials.
+    // Project-scoped: match against the project's BOQ materials. Snapshot the
+    // BOQ unit cost and the BOQ ALLOWED qty (not the qty written on the quote
+    // line) so savings/overspend are calculated against the full project
+    // exposure — e.g. "1,326 sheets × £5 saved" rather than "1 unit × £5".
     const matches = await matchProjectMaterials(db, projectId, lines);
     const stmts = lines.map((l) => {
       const m = matches.get(l.line_no) ?? null;
       const boqCost = m?.cost ?? null;
+      const boqQty = m?.total_units ?? null;
       return db
         .prepare(
           `INSERT INTO supplier_quote_lines
@@ -451,7 +455,7 @@ async function persistExtractedQuote(
           m?.material_id ?? null,
           m?.score ?? null,
           boqCost,
-          l.qty,
+          boqQty,
         );
     });
     await db.batch(stmts);
@@ -861,9 +865,13 @@ quotes.post("/:quoteId/apply", async (c) => {
     let totalOld = 0;
 
     for (const l of lines.results) {
-      if (l.unit_price == null || l.raw_qty == null) continue;
+      if (l.unit_price == null) continue;
       const boqCost = l.boq_unit_cost;
-      const qty = l.raw_qty;
+      // Savings/overspend are calculated against the BOQ allowance qty (the
+      // full quantity the project plans to buy), not the qty written on the
+      // quote line. If the BOQ qty is missing we fall back to the quote qty
+      // so we don't lose the line entirely.
+      const qty = l.boq_qty ?? l.raw_qty ?? 0;
       const newTotal = qty * l.unit_price;
       const boqTotal = boqCost != null ? qty * boqCost : 0;
       const over = newTotal - boqTotal; // negative = saving, positive = overspend
