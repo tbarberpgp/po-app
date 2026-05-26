@@ -16,17 +16,24 @@ const TOKEN_URL = "https://identity.xero.com/connect/token";
 const CONNECTIONS_URL = "https://api.xero.com/connections";
 
 // Scopes we ask Xero to consent to.
-//   openid                     — REQUIRED by Xero for OAuth 2.0 conformance,
-//                                even when we don't read the id_token
-//   accounting.contacts        — read + write supplier contacts
-//   accounting.transactions    — read + write purchase orders (incl. POs)
-//   offline_access             — gives us a refresh_token (otherwise we lose
-//                                access after the 30-minute token expiry)
+//
+// Xero moved to granular scopes on 2 March 2026 — apps created after that
+// date (ours included) can only request the new specific scopes, not the
+// old umbrella ones like `accounting.transactions`.
+//
+//   openid                     — REQUIRED by Xero for OAuth 2.0 conformance
+//   offline_access             — gives us a refresh_token (otherwise we
+//                                lose access after the 30-min token expiry)
+//   accounting.contacts.read   — read supplier contacts (for sync FROM Xero)
+//   accounting.invoices        — read + write (POs sit under the
+//                                Invoices/Bills branch of Xero's data model;
+//                                this is the closest granular scope that
+//                                covers POST /PurchaseOrders)
 export const XERO_SCOPES = [
   "openid",
-  "accounting.contacts",
-  "accounting.transactions",
   "offline_access",
+  "accounting.contacts.read",
+  "accounting.invoices",
 ].join(" ");
 
 export function getRedirectUri(env: Env): string {
