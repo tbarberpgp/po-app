@@ -5,7 +5,9 @@ import {
   buildAuthorizeUrl,
   exchangeCodeForTokens,
   expiresAtFromNow,
+  getRedirectUri,
   listTenants,
+  XERO_SCOPES,
 } from "../xero/oauth";
 import {
   contactAddressLine,
@@ -29,6 +31,26 @@ function notConfigured(env: Env): Response | null {
     { status: 503, headers: { "Content-Type": "application/json" } },
   );
 }
+
+/** Diagnostic — returns the exact authorize URL the connect handler would
+ *  redirect to, plus the redirect_uri and scope string the worker computes.
+ *  Useful for debugging "invalid_scope" / "redirect_uri mismatch" errors. */
+xero.get("/debug", async (c) => {
+  const denied = requirePermission(c, "approvers.manage");
+  if (denied) return denied;
+  try {
+    return c.json({
+      configured: !!(c.env.XERO_CLIENT_ID && c.env.XERO_CLIENT_SECRET),
+      client_id_prefix: c.env.XERO_CLIENT_ID?.slice(0, 6) ?? null,
+      redirect_uri: getRedirectUri(c.env),
+      scopes_string: XERO_SCOPES,
+      scopes_array: XERO_SCOPES.split(" "),
+      authorize_url_preview: buildAuthorizeUrl(c.env, "debug-state"),
+    });
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : String(e) }, 500);
+  }
+});
 
 /* ── Connect / disconnect / status ─────────────────────────────────── */
 
