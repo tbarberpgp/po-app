@@ -383,11 +383,12 @@ Variant guidance: use a short alphanumeric flag (e.g. "KS1000-80", "ANTH", "100m
 
   const client = new Anthropic({ apiKey: c.env.ANTHROPIC_API_KEY });
 
+  // Claude rejects `thinking` and `output_config.effort` when tool_choice
+  // forces a specific tool. We need structured output here so we keep the
+  // forced tool_choice and drop the thinking knobs.
   const response = await client.messages.create({
     model: "claude-opus-4-7",
     max_tokens: 1024,
-    thinking: { type: "adaptive" },
-    output_config: { effort: "medium" },
     system: systemPrompt,
     tools: [
       {

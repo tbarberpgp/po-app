@@ -182,11 +182,11 @@ quotes.post("/:supplierId/upload", async (c) => {
     const pdfBase64 = bufToBase64(await file.arrayBuffer());
     const client = new Anthropic({ apiKey: c.env.ANTHROPIC_API_KEY });
 
+    // Note: when tool_choice forces a specific tool, Claude disallows `thinking`
+    // and `output_config.effort` — so we omit them here.
     const response = await client.messages.create({
       model: "claude-opus-4-7",
       max_tokens: 4096,
-      thinking: { type: "adaptive" },
-      output_config: { effort: "medium" },
       system:
         "You are processing a UK construction-supplier quote PDF. Extract every priced line item into the provided tool. Skip headers, footers, terms, totals, and any line without a quantity AND a unit price. Numeric fields must be plain numbers (no currency symbols, no thousands separators). Preserve the line ordering from the document.",
       tools: [
