@@ -305,15 +305,31 @@ export const api = {
   // Supplier quote upload pipeline ────────────────────────────────────────
   listSupplierQuotes: (supplierId: number) =>
     jfetch<SupplierQuote[]>(`/api/quotes/${supplierId}`),
-  uploadSupplierQuote: (supplierId: number, file: File, notes?: string) => {
+  /**
+   * Upload a PDF quote. Claude detects the supplier from the letterhead and
+   * matches against the approved register. If `supplierId` is provided (e.g.
+   * after the user confirmed which supplier to use following a 422), it skips
+   * auto-detection and uses that supplier directly.
+   */
+  uploadQuote: (file: File, opts?: { supplierId?: number; notes?: string }) => {
     const fd = new FormData();
     fd.append("file", file);
-    if (notes) fd.append("notes", notes);
-    return jfetch<{ quote_id: number; extracted_lines: number }>(
-      `/api/quotes/${supplierId}/upload`,
-      { method: "POST", body: fd },
-    );
+    if (opts?.notes) fd.append("notes", opts.notes);
+    if (opts?.supplierId != null) fd.append("supplier_id", String(opts.supplierId));
+    return jfetch<{
+      quote_id: number;
+      supplier_id: number;
+      supplier_name: string;
+      detected_name: string | null;
+      auto_matched: boolean;
+      extracted_lines: number;
+    }>("/api/quotes/upload", { method: "POST", body: fd });
   },
+  reassignQuoteSupplier: (quoteId: number, supplierId: number) =>
+    jfetch<{ ok: true; supplier_id: number; supplier_name: string }>(
+      `/api/quotes/${quoteId}/supplier`,
+      { method: "PATCH", body: JSON.stringify({ supplier_id: supplierId }) },
+    ),
   getQuote: (quoteId: number) =>
     jfetch<{ quote: SupplierQuote; lines: SupplierQuoteLine[] }>(
       `/api/quotes/detail/${quoteId}`,

@@ -136,193 +136,399 @@ async function matchLines(
 
 // ── Routes ──────────────────────────────────────────────────────────────────
 
+type ExtractionResult = {
+  supplier_name_as_written: string | null;
+  supplier_register_id: number | null;
+  lines: ExtractedLine[];
+};
+
 /**
- * Upload a PDF quote for a supplier. Calls Claude with the PDF and a tool_use
- * schema to get structured line items, then runs initial matching against the
- * product catalogue.
+ * Single Claude pass that identifies the supplier from the PDF's letterhead
+ * AND extracts the priced line items. We pass the list of approved suppliers
+ * so Claude can match against IDs directly; the server still does a fuzzy
+ * fallback in case Claude couldn't pick.
  */
-quotes.post("/:supplierId/upload", async (c) => {
+async function extractQuoteWithClaude(
+  env: Env,
+  pdf: ArrayBuffer,
+  approvedSuppliers: Array<{ id: number; name: string }>,
+): Promise<ExtractionResult> {
+  const pdfBase64 = bufToBase64(pdf);
+  const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
+
+  const supplierListing = approvedSuppliers
+    .map((s) => `  ${s.id}: ${s.name}`)
+    .join("\n");
+
+  const system = `You are processing a UK construction-supplier quote PDF.
+
+Two jobs in one go:
+1. Identify which supplier issued this quote (read the letterhead, header, footer,
+   sender details, VAT no., and look at the email signature / company block).
+2. Extract every priced line item.
+
+The user's approved supplier register contains these companies — match the
+quote to one of them by their numeric id when you can. Use partial-name matches
+intelligently (e.g. "Alumasc Water Management Solutions Ltd" on the quote ↔
+"Alumasc Water Management Solutions" in the register). If the issuer is clearly
+not on this list, return supplier_register_id = 0 and put the as-written name
+in supplier_name_as_written so we can ask the user.
+
+Approved supplier register:
+${supplierListing || "  (none)"}
+
+Line item rules: skip headers, footers, terms, totals, and any line without
+both a quantity and a unit price. Numeric fields must be plain numbers (no
+currency symbols, no thousands separators). Preserve document order.`;
+
+  const response = await client.messages.create({
+    model: "claude-opus-4-7",
+    max_tokens: 4096,
+    system,
+    tools: [
+      {
+        name: "extract_supplier_quote",
+        description:
+          "Return the issuing supplier (matched to the register if possible) and the structured line items from the quote PDF.",
+        input_schema: {
+          type: "object" as const,
+          properties: {
+            supplier_name_as_written: {
+              type: "string",
+              description:
+                "The supplier/company name exactly as it appears on the quote letterhead. Empty string only if truly unidentifiable.",
+            },
+            supplier_register_id: {
+              type: "integer",
+              description:
+                "The numeric id of the best-matching supplier from the approved register listed in the system prompt. Use 0 if the issuer is not in the register or you can't confidently match.",
+            },
+            lines: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  description: {
+                    type: "string",
+                    description:
+                      "Full description of the product as written on the quote.",
+                  },
+                  sku: {
+                    type: "string",
+                    description:
+                      "Supplier or manufacturer SKU/part number. Empty string if none.",
+                  },
+                  qty: {
+                    type: "number",
+                    description: "Quantity ordered/quoted (numeric).",
+                  },
+                  unit: {
+                    type: "string",
+                    description:
+                      "Unit of measure as written (e.g. 'each', 'm²', 'Roll', 'Box', 'lm').",
+                  },
+                  unit_price: {
+                    type: "number",
+                    description:
+                      "Price per unit in GBP excluding VAT. Plain number.",
+                  },
+                },
+                required: ["description", "qty", "unit_price"],
+              },
+            },
+          },
+          required: ["supplier_name_as_written", "supplier_register_id", "lines"],
+        },
+      },
+    ],
+    tool_choice: { type: "tool", name: "extract_supplier_quote" },
+    messages: [
+      {
+        role: "user",
+        content: [
+          {
+            type: "document",
+            source: { type: "base64", media_type: "application/pdf", data: pdfBase64 },
+          },
+          {
+            type: "text",
+            text:
+              "Identify the supplier and extract the priced line items via extract_supplier_quote. One entry per priced line, in document order.",
+          },
+        ],
+      },
+    ],
+  });
+
+  const toolUse = response.content.find(
+    (b): b is Anthropic.ToolUseBlock => b.type === "tool_use",
+  );
+  if (!toolUse) throw new Error("Claude did not return structured output");
+
+  const input = toolUse.input as {
+    supplier_name_as_written?: string;
+    supplier_register_id?: number;
+    lines?: Array<Record<string, unknown>>;
+  };
+  const rawLines = Array.isArray(input.lines) ? input.lines : [];
+  const lines: ExtractedLine[] = rawLines.map((r, i) => ({
+    line_no: i + 1,
+    description: String(r.description ?? "").trim(),
+    sku: r.sku && String(r.sku).trim() ? String(r.sku).trim() : null,
+    qty: typeof r.qty === "number" ? r.qty : null,
+    unit: r.unit && String(r.unit).trim() ? String(r.unit).trim() : null,
+    unit_price: typeof r.unit_price === "number" ? r.unit_price : null,
+  })).filter((l) => l.description.length > 0);
+
+  const claudeId = Number.isInteger(input.supplier_register_id) ? Number(input.supplier_register_id) : 0;
+  return {
+    supplier_name_as_written: input.supplier_name_as_written?.trim() || null,
+    supplier_register_id: claudeId > 0 ? claudeId : null,
+    lines,
+  };
+}
+
+/**
+ * Server-side fallback name match when Claude couldn't pick a register id.
+ * Returns the highest-scoring candidates by token overlap on the supplier name.
+ */
+function rankSupplierCandidates(
+  detectedName: string | null,
+  suppliers: Array<{ id: number; name: string }>,
+): Array<{ id: number; name: string; score: number }> {
+  if (!detectedName) return [];
+  const tokens = (s: string) =>
+    new Set(s.toLowerCase().replace(/[^a-z0-9 ]+/g, " ").split(/\s+/).filter(Boolean));
+  const target = tokens(detectedName);
+  return suppliers
+    .map((s) => {
+      const cand = tokens(s.name);
+      let overlap = 0;
+      for (const t of target) if (cand.has(t)) overlap++;
+      const score =
+        overlap === 0 ? 0 : overlap / (target.size + cand.size - overlap);
+      return { id: s.id, name: s.name, score };
+    })
+    .filter((c) => c.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 5);
+}
+
+/**
+ * Persist extracted lines for a known supplier and run initial product matching.
+ * Returns the new quote_id.
+ */
+async function persistExtractedQuote(
+  db: D1Database,
+  supplier: { id: number; name: string },
+  filename: string,
+  notes: string | null,
+  actor: string,
+  lines: ExtractedLine[],
+): Promise<number> {
+  const now = new Date().toISOString();
+  const quoteRow = await db
+    .prepare(
+      `INSERT INTO supplier_quotes (supplier_id, filename, uploaded_at, uploaded_by, status, notes)
+       VALUES (?, ?, ?, ?, 'ready', ?) RETURNING id`,
+    )
+    .bind(supplier.id, filename, now, actor, notes)
+    .first<{ id: number }>();
+  const quoteId = quoteRow!.id;
+
+  const matches = await matchLines(db, supplier.name, lines);
+  const stmts = lines.map((l) => {
+    const m = matches.get(l.line_no) ?? null;
+    return db
+      .prepare(
+        `INSERT INTO supplier_quote_lines
+           (quote_id, line_no, raw_description, raw_sku, raw_qty, raw_unit, unit_price,
+            matched_product_id, matched_product_supplier_id, match_confidence)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        quoteId,
+        l.line_no,
+        l.description,
+        l.sku,
+        l.qty,
+        l.unit,
+        l.unit_price,
+        m?.product_id ?? null,
+        m?.product_supplier_id ?? null,
+        m?.score ?? null,
+      );
+  });
+  await db.batch(stmts);
+  return quoteId;
+}
+
+/**
+ * Top-level upload: auto-detect the supplier from the PDF letterhead and
+ * match against the approved register. Optionally accepts `supplier_id` in
+ * the form data to skip auto-detection (used when the user has just confirmed
+ * which supplier this quote is from after a previous 422).
+ */
+quotes.post("/upload", async (c) => {
   const denied = requirePermission(c, "suppliers.manage");
   if (denied) return denied;
   if (!c.env.ANTHROPIC_API_KEY) {
     return c.json({ error: "ANTHROPIC_API_KEY not configured" }, 500);
   }
 
-  const supplierId = Number(c.req.param("supplierId"));
-  if (!Number.isInteger(supplierId)) {
-    return c.json({ error: "invalid supplier id" }, 400);
-  }
-  const supplier = await c.env.DB.prepare("SELECT id, name FROM suppliers WHERE id = ?")
-    .bind(supplierId)
-    .first<{ id: number; name: string }>();
-  if (!supplier) return c.json({ error: "supplier not found" }, 404);
-
   const form = await c.req.formData();
   const file = form.get("file");
   const notes = (form.get("notes") as string | null) ?? null;
+  const forcedSupplierIdRaw = form.get("supplier_id") as string | null;
+  const forcedSupplierId = forcedSupplierIdRaw ? Number(forcedSupplierIdRaw) : null;
   if (!(file instanceof File)) return c.json({ error: "file required" }, 400);
   if (!file.name.toLowerCase().endsWith(".pdf")) {
     return c.json({ error: "PDF required" }, 400);
   }
 
-  const actor = c.get("userEmail");
-  const now = new Date().toISOString();
-
-  // Create the quote row up front so we can record extraction errors on it.
-  const quoteRow = await c.env.DB.prepare(
-    `INSERT INTO supplier_quotes (supplier_id, filename, uploaded_at, uploaded_by, status, notes)
-     VALUES (?, ?, ?, ?, 'extracting', ?) RETURNING id`,
+  const suppliers = await c.env.DB.prepare(
+    "SELECT id, name FROM suppliers ORDER BY name",
   )
-    .bind(supplierId, file.name, now, actor, notes)
-    .first<{ id: number }>();
-  const quoteId = quoteRow!.id;
+    .all<{ id: number; name: string }>();
+  if (suppliers.results.length === 0) {
+    return c.json({ error: "No approved suppliers in the register yet — add one first" }, 400);
+  }
 
-  let extracted: ExtractedLine[] = [];
+  let extraction: ExtractionResult;
   try {
-    const pdfBase64 = bufToBase64(await file.arrayBuffer());
-    const client = new Anthropic({ apiKey: c.env.ANTHROPIC_API_KEY });
-
-    // Note: when tool_choice forces a specific tool, Claude disallows `thinking`
-    // and `output_config.effort` — so we omit them here.
-    const response = await client.messages.create({
-      model: "claude-opus-4-7",
-      max_tokens: 4096,
-      system:
-        "You are processing a UK construction-supplier quote PDF. Extract every priced line item into the provided tool. Skip headers, footers, terms, totals, and any line without a quantity AND a unit price. Numeric fields must be plain numbers (no currency symbols, no thousands separators). Preserve the line ordering from the document.",
-      tools: [
-        {
-          name: "extract_quote_lines",
-          description:
-            "Return the structured line items from the quote PDF, one entry per priced line in document order.",
-          input_schema: {
-            type: "object" as const,
-            properties: {
-              lines: {
-                type: "array",
-                items: {
-                  type: "object",
-                  properties: {
-                    description: {
-                      type: "string",
-                      description:
-                        "Full description of the product as written on the quote.",
-                    },
-                    sku: {
-                      type: "string",
-                      description:
-                        "Supplier or manufacturer SKU/part number. Empty string if none.",
-                    },
-                    qty: {
-                      type: "number",
-                      description: "Quantity ordered/quoted (numeric).",
-                    },
-                    unit: {
-                      type: "string",
-                      description:
-                        "Unit of measure as written (e.g. 'each', 'm²', 'Roll', 'Box', 'lm').",
-                    },
-                    unit_price: {
-                      type: "number",
-                      description:
-                        "Price per unit in GBP excluding VAT. Plain number.",
-                    },
-                  },
-                  required: ["description", "qty", "unit_price"],
-                },
-              },
-            },
-            required: ["lines"],
-          },
-        },
-      ],
-      tool_choice: { type: "tool", name: "extract_quote_lines" },
-      messages: [
-        {
-          role: "user",
-          content: [
-            {
-              type: "document",
-              source: {
-                type: "base64",
-                media_type: "application/pdf",
-                data: pdfBase64,
-              },
-            },
-            {
-              type: "text",
-              text:
-                "Extract the priced line items from this quote. Use the extract_quote_lines tool with one entry per line in document order.",
-            },
-          ],
-        },
-      ],
-    });
-
-    const toolUse = response.content.find(
-      (b): b is Anthropic.ToolUseBlock => b.type === "tool_use",
-    );
-    if (!toolUse) throw new Error("Claude did not return structured lines");
-
-    const input = toolUse.input as { lines?: Array<Record<string, unknown>> };
-    const rawLines = Array.isArray(input.lines) ? input.lines : [];
-    extracted = rawLines.map((r, i) => ({
-      line_no: i + 1,
-      description: String(r.description ?? "").trim(),
-      sku: r.sku && String(r.sku).trim() ? String(r.sku).trim() : null,
-      qty: typeof r.qty === "number" ? r.qty : null,
-      unit: r.unit && String(r.unit).trim() ? String(r.unit).trim() : null,
-      unit_price: typeof r.unit_price === "number" ? r.unit_price : null,
-    })).filter((l) => l.description.length > 0);
+    extraction = await extractQuoteWithClaude(c.env, await file.arrayBuffer(), suppliers.results);
   } catch (e) {
-    const msg = e instanceof Error ? e.message : "extraction failed";
-    await c.env.DB.prepare(
-      "UPDATE supplier_quotes SET status='failed', extraction_error=? WHERE id=?",
-    )
-      .bind(msg, quoteId)
-      .run();
-    return c.json({ error: msg }, 502);
+    return c.json({ error: e instanceof Error ? e.message : "extraction failed" }, 502);
+  }
+  if (extraction.lines.length === 0) {
+    return c.json({ error: "No line items found in the PDF" }, 400);
   }
 
-  if (extracted.length === 0) {
-    await c.env.DB.prepare(
-      "UPDATE supplier_quotes SET status='failed', extraction_error='No line items found' WHERE id=?",
-    )
-      .bind(quoteId)
-      .run();
-    return c.json({ error: "No line items found in PDF" }, 400);
+  // Resolve the supplier: forced override > Claude's pick > server fuzzy match.
+  let resolved: { id: number; name: string } | null = null;
+  if (forcedSupplierId) {
+    const s = suppliers.results.find((x) => x.id === forcedSupplierId);
+    if (!s) return c.json({ error: "supplier not in register" }, 400);
+    resolved = s;
+  } else if (extraction.supplier_register_id) {
+    const s = suppliers.results.find((x) => x.id === extraction.supplier_register_id);
+    if (s) resolved = s;
+  }
+  if (!resolved && extraction.supplier_name_as_written) {
+    const candidates = rankSupplierCandidates(extraction.supplier_name_as_written, suppliers.results);
+    if (candidates[0] && candidates[0].score >= 0.6) {
+      const s = suppliers.results.find((x) => x.id === candidates[0].id);
+      if (s) resolved = s;
+    }
   }
 
-  // Initial matching pass — best effort; PM corrects in the review screen.
+  if (!resolved) {
+    // No confident match — surface the detected name and top candidates so the
+    // UI can prompt the user to pick. We DON'T persist; the user will resubmit
+    // with supplier_id set.
+    const candidates = rankSupplierCandidates(extraction.supplier_name_as_written, suppliers.results);
+    return c.json(
+      {
+        error: "supplier_unmatched",
+        detected_name: extraction.supplier_name_as_written,
+        candidates,
+        extracted_count: extraction.lines.length,
+      },
+      422,
+    );
+  }
+
+  const quoteId = await persistExtractedQuote(
+    c.env.DB,
+    resolved,
+    file.name,
+    notes,
+    c.get("userEmail"),
+    extraction.lines,
+  );
+
+  return c.json({
+    quote_id: quoteId,
+    supplier_id: resolved.id,
+    supplier_name: resolved.name,
+    detected_name: extraction.supplier_name_as_written,
+    auto_matched: !forcedSupplierId,
+    extracted_lines: extraction.lines.length,
+  });
+});
+
+/**
+ * Reassign a quote to a different supplier — re-runs product matching against
+ * the new supplier's existing prices. Used when the auto-detection picked the
+ * wrong company.
+ */
+quotes.patch("/:quoteId/supplier", async (c) => {
+  const denied = requirePermission(c, "suppliers.manage");
+  if (denied) return denied;
+  const quoteId = Number(c.req.param("quoteId"));
+  const body = await c.req.json<{ supplier_id: number }>();
+  if (!Number.isInteger(body.supplier_id)) {
+    return c.json({ error: "supplier_id required" }, 400);
+  }
+
+  const quote = await c.env.DB.prepare(
+    "SELECT id, status FROM supplier_quotes WHERE id = ?",
+  )
+    .bind(quoteId)
+    .first<{ id: number; status: string }>();
+  if (!quote) return c.json({ error: "not found" }, 404);
+  if (quote.status === "applied") {
+    return c.json({ error: "quote already applied" }, 409);
+  }
+
+  const supplier = await c.env.DB.prepare(
+    "SELECT id, name FROM suppliers WHERE id = ?",
+  )
+    .bind(body.supplier_id)
+    .first<{ id: number; name: string }>();
+  if (!supplier) return c.json({ error: "supplier not found" }, 404);
+
+  const lines = await c.env.DB.prepare(
+    "SELECT id, line_no, raw_description, raw_sku, raw_qty, raw_unit, unit_price FROM supplier_quote_lines WHERE quote_id = ? ORDER BY line_no",
+  )
+    .bind(quoteId)
+    .all<{
+      id: number;
+      line_no: number;
+      raw_description: string;
+      raw_sku: string | null;
+      raw_qty: number | null;
+      raw_unit: string | null;
+      unit_price: number | null;
+    }>();
+
+  const extracted: ExtractedLine[] = lines.results.map((l) => ({
+    line_no: l.line_no,
+    description: l.raw_description,
+    sku: l.raw_sku,
+    qty: l.raw_qty,
+    unit: l.raw_unit,
+    unit_price: l.unit_price,
+  }));
   const matches = await matchLines(c.env.DB, supplier.name, extracted);
 
-  // Batch-insert lines with their pre-computed matches.
-  const stmts = extracted.map((l) => {
-    const m = matches.get(l.line_no) ?? null;
-    return c.env.DB.prepare(
-      `INSERT INTO supplier_quote_lines
-         (quote_id, line_no, raw_description, raw_sku, raw_qty, raw_unit, unit_price,
-          matched_product_id, matched_product_supplier_id, match_confidence)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).bind(
-      quoteId,
-      l.line_no,
-      l.description,
-      l.sku,
-      l.qty,
-      l.unit,
-      l.unit_price,
-      m?.product_id ?? null,
-      m?.product_supplier_id ?? null,
-      m?.score ?? null,
-    );
-  });
-  await c.env.DB.batch(stmts);
-
-  await c.env.DB.prepare("UPDATE supplier_quotes SET status='ready' WHERE id=?")
-    .bind(quoteId)
+  await c.env.DB.prepare(
+    "UPDATE supplier_quotes SET supplier_id = ? WHERE id = ?",
+  )
+    .bind(supplier.id, quoteId)
     .run();
 
-  return c.json({ quote_id: quoteId, extracted_lines: extracted.length });
+  // Reset matches on every line — the new supplier has its own product_suppliers rows.
+  for (const l of lines.results) {
+    const m = matches.get(l.line_no) ?? null;
+    await c.env.DB.prepare(
+      "UPDATE supplier_quote_lines SET matched_product_id = ?, matched_product_supplier_id = ?, match_confidence = ?, skip_reason = NULL, is_applied = 0, old_unit_price = NULL WHERE id = ?",
+    )
+      .bind(m?.product_id ?? null, m?.product_supplier_id ?? null, m?.score ?? null, l.id)
+      .run();
+  }
+
+  return c.json({ ok: true, supplier_id: supplier.id, supplier_name: supplier.name });
 });
 
 /** List quotes for a supplier (newest first). */

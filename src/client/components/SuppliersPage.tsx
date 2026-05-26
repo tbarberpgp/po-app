@@ -38,6 +38,7 @@ const STATUS_PILL: Record<SupplierStatus, string> = {
 };
 
 export function SuppliersPage({ me }: { me: CurrentUser | null }) {
+  const navigate = useNavigate();
   const [rows, setRows] = useState<Supplier[]>([]);
   const [elements, setElements] = useState<Element[]>([]);
   const [err, setErr] = useState<string | null>(null);
@@ -48,8 +49,55 @@ export function SuppliersPage({ me }: { me: CurrentUser | null }) {
   const [filter, setFilter] = useState("");
   const [xeroConnected, setXeroConnected] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const uploadRef = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState(false);
+  const [supplierPicker, setSupplierPicker] = useState<{
+    file: File;
+    detectedName: string | null;
+    candidates: Array<{ id: number; name: string; score: number }>;
+    extractedCount: number;
+  } | null>(null);
 
   const canManage = can(me?.role, "approvers.manage");
+  const canUploadQuotes = can(me?.role, "suppliers.manage");
+
+  async function handleUpload(file: File, supplierId?: number) {
+    setUploading(true); setErr(null);
+    try {
+      const r = await api.uploadQuote(file, supplierId != null ? { supplierId } : undefined);
+      setSupplierPicker(null);
+      navigate(`/quotes/${r.quote_id}`);
+    } catch (e) {
+      // 422 = supplier couldn't be matched — surface the picker.
+      const msg = e instanceof Error ? e.message : "upload failed";
+      try {
+        const parsed = JSON.parse(msg) as {
+          error?: string;
+          detected_name?: string | null;
+          candidates?: Array<{ id: number; name: string; score: number }>;
+          extracted_count?: number;
+        };
+        if (parsed.error === "supplier_unmatched") {
+          setSupplierPicker({
+            file,
+            detectedName: parsed.detected_name ?? null,
+            candidates: parsed.candidates ?? [],
+            extractedCount: parsed.extracted_count ?? 0,
+          });
+          return;
+        }
+      } catch {/* not JSON — fall through */}
+      setErr(msg);
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  function onPickFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const f = e.target.files?.[0];
+    if (uploadRef.current) uploadRef.current.value = "";
+    if (f) handleUpload(f);
+  }
 
   function refresh() {
     api.listSuppliers().then(setRows).catch((e) => setErr(e.message));
@@ -89,6 +137,25 @@ export function SuppliersPage({ me }: { me: CurrentUser | null }) {
         title="Approved suppliers"
         actions={
           <>
+            {canUploadQuotes && (
+              <>
+                <input
+                  ref={uploadRef}
+                  type="file"
+                  accept="application/pdf"
+                  style={{ display: "none" }}
+                  onChange={onPickFile}
+                />
+                <button
+                  className="ghost"
+                  onClick={() => uploadRef.current?.click()}
+                  disabled={uploading}
+                  title="Upload a supplier quote PDF — Claude auto-detects the supplier and extracts line items"
+                >
+                  {uploading ? "Reading PDF…" : "↑ Upload quote"}
+                </button>
+              </>
+            )}
             {canManage && xeroConnected && (
               <button className="ghost" onClick={syncFromXero} disabled={syncing}>
                 {syncing ? "Syncing…" : "↻ Sync from Xero"}
@@ -227,6 +294,18 @@ export function SuppliersPage({ me }: { me: CurrentUser | null }) {
           )}
         </div>
       </main>
+
+      {supplierPicker && (
+        <SupplierConfirmModal
+          detectedName={supplierPicker.detectedName}
+          candidates={supplierPicker.candidates}
+          extractedCount={supplierPicker.extractedCount}
+          suppliers={rows}
+          busy={uploading}
+          onCancel={() => setSupplierPicker(null)}
+          onConfirm={(supplierId) => handleUpload(supplierPicker.file, supplierId)}
+        />
+      )}
     </>
   );
 }
@@ -428,65 +507,149 @@ function SupplierForm({
   );
 }
 
-/* ── Per-row quote actions (upload + jump to most recent unapplied) ──────── */
+/* ── Per-row quote indicator (jump to pending review only) ─────────────── */
 
 function QuoteActionsCell({ supplier }: { supplier: Supplier }) {
   const navigate = useNavigate();
-  const fileRef = useRef<HTMLInputElement>(null);
   const [quotes, setQuotes] = useState<SupplierQuote[]>([]);
-  const [uploading, setUploading] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
     api.listSupplierQuotes(supplier.id).then(setQuotes).catch(() => setQuotes([]));
   }, [supplier.id]);
 
   const readyToReview = quotes.find((q) => q.status === "ready");
-
-  async function onPick(e: React.ChangeEvent<HTMLInputElement>) {
-    const f = e.target.files?.[0];
-    if (!f) return;
-    setUploading(true); setErr(null);
-    try {
-      const r = await api.uploadSupplierQuote(supplier.id, f);
-      navigate(`/quotes/${r.quote_id}`);
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : "upload failed");
-    } finally {
-      setUploading(false);
-      if (fileRef.current) fileRef.current.value = "";
-    }
-  }
+  if (!readyToReview) return null;
 
   return (
     <>
-      <input
-        ref={fileRef}
-        type="file"
-        accept="application/pdf"
-        style={{ display: "none" }}
-        onChange={onPick}
-      />
-      {readyToReview ? (
-        <button
-          className="ghost tiny"
-          title={`Quote uploaded ${readyToReview.uploaded_at?.slice(0, 10) ?? ""} awaiting review`}
-          onClick={() => navigate(`/quotes/${readyToReview.id}`)}
-          style={{ color: "var(--warn)" }}
-        >
-          Review quote
-        </button>
-      ) : (
-        <button
-          className="ghost tiny"
-          onClick={() => fileRef.current?.click()}
-          disabled={uploading}
-          title="Upload a supplier quote PDF — Claude extracts the lines and you confirm matches before applying"
-        >
-          {uploading ? "Uploading…" : "Upload quote"}
-        </button>
-      )}{" "}
-      {err && <span style={{ color: "var(--danger)", fontSize: 11 }}>{err}</span>}
+      <button
+        className="ghost tiny"
+        title={`Quote uploaded ${readyToReview.uploaded_at?.slice(0, 10) ?? ""} awaiting review`}
+        onClick={() => navigate(`/quotes/${readyToReview.id}`)}
+        style={{ color: "var(--warn)" }}
+      >
+        Review quote
+      </button>{" "}
     </>
+  );
+}
+
+/* ── Supplier-confirmation modal shown after a 422 from auto-detect ──── */
+
+function SupplierConfirmModal({
+  detectedName, candidates, extractedCount, suppliers, busy, onConfirm, onCancel,
+}: {
+  detectedName: string | null;
+  candidates: Array<{ id: number; name: string; score: number }>;
+  extractedCount: number;
+  suppliers: Supplier[];
+  busy: boolean;
+  onConfirm: (supplierId: number) => void;
+  onCancel: () => void;
+}) {
+  const [picked, setPicked] = useState<number | null>(candidates[0]?.id ?? null);
+  const [search, setSearch] = useState("");
+  const [showAll, setShowAll] = useState(false);
+
+  const filteredAll = suppliers
+    .filter((s) => !search || s.name.toLowerCase().includes(search.toLowerCase()))
+    .slice(0, 50);
+
+  return (
+    <div
+      style={{
+        position: "fixed", inset: 0, background: "rgba(15,17,48,0.45)",
+        display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100,
+      }}
+      onClick={onCancel}
+    >
+      <div
+        className="card"
+        style={{ maxWidth: 560, width: "calc(100% - 32px)", maxHeight: "calc(100vh - 64px)", overflow: "auto" }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="card-hd"><h3 style={{ flex: 1 }}>Which supplier is this quote from?</h3></div>
+        <div className="card-bd">
+          <p style={{ marginTop: 0 }}>
+            Claude read{" "}
+            {detectedName ? <><b>"{detectedName}"</b> off the letterhead</> : <>the letterhead</>}
+            {" "}but couldn't confidently match it to a supplier in your register
+            ({extractedCount} line item{extractedCount === 1 ? "" : "s"} were extracted).
+          </p>
+
+          {candidates.length > 0 && !showAll && (
+            <>
+              <div className="eyebrow" style={{ marginTop: 12 }}>Best guesses</div>
+              <div style={{ display: "grid", gap: 6, marginTop: 6 }}>
+                {candidates.map((c) => (
+                  <label
+                    key={c.id}
+                    style={{
+                      display: "flex", alignItems: "center", gap: 10, padding: "8px 10px",
+                      border: `1px solid ${picked === c.id ? "var(--accent)" : "var(--line)"}`,
+                      background: picked === c.id ? "var(--accent-soft)" : "transparent",
+                      borderRadius: "var(--radius-md)", cursor: "pointer",
+                    }}
+                  >
+                    <input type="radio" name="supplier" checked={picked === c.id} onChange={() => setPicked(c.id)} />
+                    <span style={{ flex: 1 }}>{c.name}</span>
+                    <span className="muted" style={{ fontSize: 11 }}>{Math.round(c.score * 100)}% match</span>
+                  </label>
+                ))}
+              </div>
+              <button className="ghost tiny" onClick={() => setShowAll(true)} style={{ marginTop: 10 }}>
+                None of these — show all suppliers
+              </button>
+            </>
+          )}
+
+          {(showAll || candidates.length === 0) && (
+            <>
+              <div className="eyebrow" style={{ marginTop: 12 }}>Pick from the register</div>
+              <input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Filter by name…"
+                style={{ width: "100%", marginTop: 6 }}
+              />
+              <div style={{ maxHeight: 260, overflowY: "auto", marginTop: 8, border: "1px solid var(--line)", borderRadius: "var(--radius-md)" }}>
+                {filteredAll.map((s) => (
+                  <div
+                    key={s.id}
+                    onClick={() => setPicked(s.id)}
+                    style={{
+                      padding: "8px 10px", cursor: "pointer", fontSize: 13,
+                      background: picked === s.id ? "var(--accent-soft)" : "transparent",
+                      borderBottom: "1px solid var(--line)",
+                    }}
+                  >
+                    {s.name}
+                  </div>
+                ))}
+                {filteredAll.length === 0 && (
+                  <div className="muted" style={{ padding: 14, fontSize: 13 }}>No suppliers match.</div>
+                )}
+              </div>
+            </>
+          )}
+
+          <div className="muted" style={{ fontSize: 12, marginTop: 12 }}>
+            Don't see them?{" "}
+            <span>Add the supplier to the register first, then upload again.</span>
+          </div>
+        </div>
+        <div className="card-hd" style={{ borderTop: "1px solid var(--line)", borderBottom: "none" }}>
+          <div className="grow" />
+          <button className="ghost" onClick={onCancel} disabled={busy}>Cancel</button>{" "}
+          <button
+            className="accent"
+            disabled={busy || picked == null}
+            onClick={() => picked != null && onConfirm(picked)}
+          >
+            {busy ? "Uploading…" : "Confirm supplier"}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
