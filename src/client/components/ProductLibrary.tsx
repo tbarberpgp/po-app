@@ -846,8 +846,15 @@ function AlternateSupplierForm({
     notes: "",
     is_preferred: false,
   });
+  const [approvedSupplierNames, setApprovedSupplierNames] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    api.listSuppliers()
+      .then((rs) => setApprovedSupplierNames(rs.map((s) => s.name).sort()))
+      .catch(() => setApprovedSupplierNames([]));
+  }, []);
 
   async function save() {
     setBusy(true); setErr(null);
@@ -875,7 +882,15 @@ function AlternateSupplierForm({
         <div style={{ display: "grid", gridTemplateColumns: "1.5fr 1fr 120px 110px auto", gap: 12 }}>
           <div>
             <label>Supplier name</label>
-            <input value={form.supplier_name} onChange={(e) => setForm({ ...form, supplier_name: e.target.value })} placeholder="e.g. SIG Roofing" />
+            <input
+              value={form.supplier_name}
+              onChange={(e) => setForm({ ...form, supplier_name: e.target.value })}
+              placeholder="e.g. SIG Roofing"
+              list="approved-supplier-names"
+            />
+            <datalist id="approved-supplier-names">
+              {approvedSupplierNames.map((n) => <option key={n} value={n} />)}
+            </datalist>
           </div>
           <div>
             <label>Their SKU (optional)</label>

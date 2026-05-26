@@ -11,6 +11,24 @@ const STATUS_LABEL: Record<SupplierStatus, string> = {
   pending: "Pending",
 };
 
+/** UK trade payment terms. Anything stored on a supplier outside this list is
+ * preserved by prepending it as a one-off "(custom)" option in the dropdown. */
+const PAYMENT_TERMS_OPTIONS = [
+  "Pro forma",
+  "COD",
+  "Net 7 days",
+  "Net 14 days",
+  "Net 21 days",
+  "Net 30 days",
+  "Net 30 days EOM",
+  "Net 45 days",
+  "Net 60 days",
+  "Net 60 days EOM",
+  "Net 75 days",
+  "Net 90 days",
+  "2/10 Net 30",
+];
+
 const STATUS_PILL: Record<SupplierStatus, string> = {
   approved: "approved",
   preferred: "issued",     // accent-tinted pill style
@@ -274,7 +292,19 @@ function SupplierForm({
         </div>
         <div>
           <label>Payment terms</label>
-          <input value={form.payment_terms} onChange={(e) => setForm({ ...form, payment_terms: e.target.value })} placeholder="e.g. Net 30, Pro forma" />
+          <select
+            value={form.payment_terms}
+            onChange={(e) => setForm({ ...form, payment_terms: e.target.value })}
+          >
+            <option value="">— Not set —</option>
+            {/* Preserve any existing custom value (legacy free-text entries) */}
+            {form.payment_terms && !PAYMENT_TERMS_OPTIONS.includes(form.payment_terms) && (
+              <option value={form.payment_terms}>{form.payment_terms} (custom)</option>
+            )}
+            {PAYMENT_TERMS_OPTIONS.map((t) => (
+              <option key={t} value={t}>{t}</option>
+            ))}
+          </select>
         </div>
       </div>
 

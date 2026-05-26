@@ -35,8 +35,10 @@ export type Material = {
 };
 
 export type MaterialWithCommitment = Material & {
-  committed_qty: number;       // sum of approved/issued PO line qty for this item
-  remaining_qty: number | null; // total_qty - committed_qty (null if not priced)
+  committed_qty: number;
+  remaining_qty: number | null;
+  product_id?: number | null;
+  product_element_code?: string | null;  // when linked to a master product
 };
 
 export type ApprovalTier = "line_manager" | "commercial_manager" | "director";

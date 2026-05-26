@@ -107,8 +107,10 @@ materials.get("/:projectId", async (c) => {
                 AND po.status IN ('approved', 'issued', 'pending_approval')
                 AND lower(pl.item) = lower(m.item)
                 AND pl.is_unpriced = 0
-            ), 0) AS committed_qty
+            ), 0) AS committed_qty,
+            pr.element_code AS product_element_code
      FROM materials m
+     LEFT JOIN products pr ON pr.id = m.product_id
      WHERE m.snapshot_id = ?
      ORDER BY m.type, m.item`,
   )

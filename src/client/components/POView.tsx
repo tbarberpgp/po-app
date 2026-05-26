@@ -1,10 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, fmtDate, fmtMoney } from "../lib/api";
 import { downloadPdf, generatePoPdf } from "../lib/po-pdf";
 import { Topbar } from "./Shell";
 import { can } from "../../shared/permissions";
-import type { CurrentUser, PurchaseOrder } from "../../shared/types";
+import type { CurrentUser, PurchaseOrder, Supplier } from "../../shared/types";
 
 type Row = PurchaseOrder & { project_code: string; project_name: string };
 type Activity = Awaited<ReturnType<typeof api.getPOActivity>>;
@@ -14,6 +14,7 @@ export function POView({ me }: { me: CurrentUser | null }) {
   const nav = useNavigate();
   const [po, setPo] = useState<Row | null>(null);
   const [activity, setActivity] = useState<Activity>([]);
+  const [approvedSuppliers, setApprovedSuppliers] = useState<Supplier[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [rejectReason, setRejectReason] = useState("");
@@ -29,6 +30,17 @@ export function POView({ me }: { me: CurrentUser | null }) {
     api.getPOActivity(id).then(setActivity).catch(() => setActivity([]));
   }
   useEffect(refresh, [id]);
+
+  useEffect(() => {
+    api.listSuppliers().then(setApprovedSuppliers).catch(() => setApprovedSuppliers([]));
+  }, []);
+
+  // Find the approved supplier matching the PO supplier (case-insensitive).
+  const supplierMatch = useMemo(() => {
+    if (!po) return null;
+    const needle = po.supplier.trim().toLowerCase();
+    return approvedSuppliers.find((s) => s.name.toLowerCase() === needle) ?? null;
+  }, [po, approvedSuppliers]);
 
   async function act(fn: () => Promise<unknown>) {
     setBusy(true); setErr(null);
@@ -424,6 +436,21 @@ function tryParseQuote(details: string): string | null {
     const o = JSON.parse(details);
     return o.reason ?? null;
   } catch { return null; }
+}
+
+function SupplierStatusBadge({ supplier }: { supplier: Supplier | null }) {
+  if (!supplier) {
+    return <span className="pill draft" style={{ fontSize: 11 }}>Not in approved register</span>;
+  }
+  const label = supplier.status === "preferred" ? "Preferred supplier"
+    : supplier.status === "approved" ? "Approved"
+    : supplier.status === "pending" ? "Pending onboarding"
+    : "Suspended";
+  const cls = supplier.status === "preferred" ? "issued"
+    : supplier.status === "approved" ? "approved"
+    : supplier.status === "pending" ? "pending"
+    : "rejected";
+  return <span className={`pill ${cls}`} style={{ fontSize: 11 }}>{label}</span>;
 }
 
 function initials(email: string): string {

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, fmtMoney } from "../lib/api";
 import { Topbar } from "./Shell";
-import type { MaterialWithCommitment } from "../../shared/types";
+import type { MaterialWithCommitment, Supplier, SupplierStatus } from "../../shared/types";
 
 // Item is "priced for this job" iff total_units > 0 in the Materials sheet (col V).
 const isPriced = (m: MaterialWithCommitment) => (m.total_units ?? 0) > 0;
@@ -47,6 +47,7 @@ export function NewPO() {
   const nav = useNavigate();
   const [project, setProject] = useState<Awaited<ReturnType<typeof api.getProject>> | null>(null);
   const [mats, setMats] = useState<MaterialWithCommitment[]>([]);
+  const [approvedSuppliers, setApprovedSuppliers] = useState<Supplier[]>([]);
   const [supplier, setSupplier] = useState<string>("");
   const [customSupplier, setCustomSupplier] = useState<string>("");
   const [notes, setNotes] = useState("");
@@ -61,11 +62,23 @@ export function NewPO() {
     if (!projectId) return;
     api.getProject(projectId).then(setProject).catch((e) => setErr(e.message));
     api.listMaterials(projectId).then(setMats).catch((e) => setErr(e.message));
+    api.listSuppliers().then(setApprovedSuppliers).catch(() => setApprovedSuppliers([]));
   }, [projectId]);
 
-  // Suppliers shown in the dropdown = distinct manufacturers across the snapshot.
-  // (Including suppliers with no priced items for this job, so PMs can still raise
-  // an "additional items only" PO if needed.)
+  // Index approved suppliers by lowercased name for O(1) match.
+  const approvedByName = useMemo(() => {
+    const m = new Map<string, Supplier>();
+    for (const s of approvedSuppliers) m.set(s.name.toLowerCase(), s);
+    return m;
+  }, [approvedSuppliers]);
+
+  function findApprovedSupplier(name: string): Supplier | null {
+    return approvedByName.get(name.trim().toLowerCase()) ?? null;
+  }
+
+  // Suppliers shown in the dropdown = union of manufacturers in this project's
+  // snapshot AND the org-level approved suppliers register, each tagged with
+  // its register status (or "not_in_register" for ad-hoc snapshot manufacturers).
   const suppliers = useMemo(() => {
     const set = new Map<string, { priced: number; total: number }>();
     for (const m of mats) {
@@ -75,10 +88,26 @@ export function NewPO() {
       if (isPriced(m)) cur.priced += 1;
       set.set(key, cur);
     }
+    // Make sure approved suppliers also appear even if they have no priced items.
+    for (const s of approvedSuppliers) {
+      if (!set.has(s.name)) set.set(s.name, { priced: 0, total: 0 });
+    }
     return [...set.entries()]
-      .map(([name, v]) => ({ name, ...v }))
-      .sort((a, b) => b.priced - a.priced || a.name.localeCompare(b.name));
-  }, [mats]);
+      .map(([name, v]) => {
+        const approved = findApprovedSupplier(name);
+        const status: SupplierStatus | "not_in_register" = approved?.status ?? "not_in_register";
+        return { name, ...v, status, approved };
+      })
+      .filter((s) => s.name !== NO_MFR || s.priced > 0 || s.total > 0)
+      .sort((a, b) => {
+        // Preferred first, then by priced count desc, then alphabetical.
+        const rank = (s: SupplierStatus | "not_in_register") =>
+          s === "preferred" ? 0 : s === "approved" ? 1 : s === "pending" ? 2 : s === "suspended" ? 4 : 3;
+        if (a.status !== b.status) return rank(a.status) - rank(b.status);
+        if (a.priced !== b.priced) return b.priced - a.priced;
+        return a.name.localeCompare(b.name);
+      });
+  }, [mats, approvedSuppliers, approvedByName]);
 
   const isCustomSupplier = supplier === "__other__";
   const effectiveSupplier = isCustomSupplier
@@ -86,6 +115,7 @@ export function NewPO() {
     : supplier === NO_MFR
       ? ""
       : supplier;
+  const supplierRecord = effectiveSupplier ? findApprovedSupplier(effectiveSupplier) : null;
 
   // Top section data: priced items (V > 0) for this supplier.
   const pricedForSupplier = useMemo(() => {
@@ -194,6 +224,22 @@ export function NewPO() {
   const hasAdditional = validAdditional.length > 0;
   const needsApproval = hasOver || hasAdditional;
 
+  // Scope checks against the approved supplier register. Surfaced as warnings
+  // — they don't block submission, but they nudge the PM to use the right
+  // merchant for the right element (e.g. don't buy insulation off a flashings-only
+  // supplier).
+  const scopeWarnings = useMemo(() => {
+    if (!supplierRecord) return [];
+    if (supplierRecord.approved_elements.length === 0) return []; // no scope = any element
+    const ok = new Set(supplierRecord.approved_elements);
+    const out: Array<{ item: string; element_code: string }> = [];
+    for (const r of pricedSelected) {
+      const ec = r.material.product_element_code;
+      if (ec && !ok.has(ec)) out.push({ item: r.material.item, element_code: ec });
+    }
+    return out;
+  }, [supplierRecord, pricedSelected]);
+
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     if (!projectId) return;
@@ -284,23 +330,65 @@ export function NewPO() {
       <main>
       {err && <div className="flash error">{err}</div>}
 
+      {effectiveSupplier && supplierRecord?.status === "suspended" && (
+        <div className="flash error">
+          <b>{effectiveSupplier}</b> is currently <b>suspended</b>. Speak to admin before raising a PO with this supplier.
+        </div>
+      )}
+      {effectiveSupplier && supplierRecord?.status === "pending" && (
+        <div className="flash info">
+          <b>{effectiveSupplier}</b> is in onboarding (pending). Credit terms may not be set up yet — check before issuing.
+        </div>
+      )}
+      {effectiveSupplier && !supplierRecord && !isCustomSupplier && (
+        <div className="flash info">
+          <b>{effectiveSupplier}</b> isn't in your <Link to="/suppliers">approved suppliers</Link> register yet.
+          Adding them there gives you payment terms, scope, contact details, and lets you preference them in future POs.
+        </div>
+      )}
+      {scopeWarnings.length > 0 && (
+        <div className="flash info">
+          <b>{scopeWarnings.length} item{scopeWarnings.length === 1 ? "" : "s"} outside supplier's approved scope.</b>{" "}
+          {effectiveSupplier} is approved for elements {supplierRecord!.approved_elements.join(", ")} only.
+          Items affected: {scopeWarnings.slice(0, 3).map((w) => `${w.item} (${w.element_code})`).join(", ")}
+          {scopeWarnings.length > 3 && ` (+${scopeWarnings.length - 3} more)`}.
+        </div>
+      )}
+
       <form id="new-po-form" onSubmit={submit}>
         <div className="split">
           <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
         {/* Supplier selection */}
         <div className="card card-padded">
           <div className="row">
-            <div style={{ minWidth: 280 }}>
+            <div style={{ minWidth: 320 }}>
               <label>Supplier</label>
               <select value={supplier} onChange={(e) => setSupplier(e.target.value)}>
                 <option value="">— select supplier —</option>
-                {suppliers.map((s) => (
-                  <option key={s.name} value={s.name}>
-                    {s.name} — {s.priced} priced{s.priced !== s.total ? `, ${s.total - s.priced} in library` : ""}
-                  </option>
-                ))}
+                {suppliers.map((s) => {
+                  const statusBit =
+                    s.status === "preferred" ? "⭐ preferred"
+                    : s.status === "approved" ? "approved"
+                    : s.status === "pending" ? "pending"
+                    : s.status === "suspended" ? "⛔ suspended"
+                    : "not in register";
+                  return (
+                    <option key={s.name} value={s.name}>
+                      {s.name} · {statusBit}
+                      {s.priced > 0 && ` · ${s.priced} priced`}
+                    </option>
+                  );
+                })}
                 <option value="__other__">+ Other supplier (custom)…</option>
               </select>
+              {supplierRecord && (
+                <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
+                  {supplierRecord.payment_terms && <>Terms: {supplierRecord.payment_terms} · </>}
+                  {supplierRecord.approved_elements.length > 0
+                    ? `Scope: ${supplierRecord.approved_elements.join(", ")}`
+                    : "Scope: any element"}
+                </div>
+              )}
             </div>
             {isCustomSupplier && (
               <div className="grow">
