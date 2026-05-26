@@ -284,6 +284,21 @@ export const api = {
       `/api/xero/push-po/${id}`,
       { method: "POST" },
     ),
+  xeroPendingCount: () =>
+    jfetch<{ pending: number }>("/api/xero/pending-count"),
+  xeroBulkPush: () =>
+    jfetch<{
+      total: number;
+      pushed: number;
+      failed: number;
+      results: Array<{
+        po_number: string;
+        supplier: string;
+        ok: boolean;
+        xero_po_number?: string;
+        error?: string;
+      }>;
+    }>("/api/xero/bulk-push", { method: "POST" }),
 };
 
 export function fmtMoney(n: number, currency = "GBP") {

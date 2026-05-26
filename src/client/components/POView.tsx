@@ -72,7 +72,7 @@ export function POView({ me }: { me: CurrentUser | null }) {
     } finally { setBusy(false); }
   }
 
-  const canPushToXero = po && (po.status === "approved" || po.status === "issued") && po.xero_sync_status !== "synced" && can(me?.role, "pos.issue");
+  const canPushToXero = po && (po.status === "approved" || po.status === "issued") && po.xero_sync_status !== "synced" && can(me?.role, "pos.push_to_xero");
 
   if (!po) return <main className="muted">Loading…</main>;
 

@@ -270,7 +270,7 @@ xero.post("/sync-suppliers", async (c) => {
 /* ── Push a PO into Xero ───────────────────────────────────────────── */
 
 xero.post("/push-po/:id", async (c) => {
-  const denied = requirePermission(c, "pos.issue");
+  const denied = requirePermission(c, "pos.push_to_xero");
   if (denied) return denied;
   const nc = notConfigured(c.env);
   if (nc) return nc;
@@ -283,6 +283,65 @@ xero.post("/push-po/:id", async (c) => {
     const msg = e instanceof Error ? e.message : String(e);
     return c.json({ error: msg }, 502);
   }
+});
+
+/** How many approved/issued POs aren't yet successfully in Xero. Used by the
+ *  PO list page to show a count + bulk-push affordance. */
+xero.get("/pending-count", async (c) => {
+  const row = await c.env.DB.prepare(
+    `SELECT COUNT(*) AS n
+     FROM purchase_orders
+     WHERE status IN ('approved', 'issued')
+       AND (xero_po_id IS NULL OR xero_sync_status = 'failed')`,
+  ).first<{ n: number }>();
+  return c.json({ pending: row?.n ?? 0 });
+});
+
+/** Bulk-push every approved/issued PO that isn't already synced to Xero
+ *  (or whose last push failed). Runs sequentially — Xero rate-limits at
+ *  60 calls/minute per org, so this is plenty for typical batch sizes. */
+xero.post("/bulk-push", async (c) => {
+  const denied = requirePermission(c, "pos.push_to_xero");
+  if (denied) return denied;
+  const nc = notConfigured(c.env);
+  if (nc) return nc;
+
+  const rows = await c.env.DB.prepare(
+    `SELECT id, po_number, supplier
+     FROM purchase_orders
+     WHERE status IN ('approved', 'issued')
+       AND (xero_po_id IS NULL OR xero_sync_status = 'failed')
+     ORDER BY created_at ASC`,
+  ).all<{ id: string; po_number: string; supplier: string }>();
+
+  const results: Array<{
+    po_number: string;
+    supplier: string;
+    ok: boolean;
+    xero_po_number?: string;
+    error?: string;
+  }> = [];
+
+  for (const r of rows.results) {
+    try {
+      const res = await pushPOToXero(c.env, r.id);
+      results.push({ po_number: r.po_number, supplier: r.supplier, ok: true, xero_po_number: res.xero_po_number });
+    } catch (e) {
+      results.push({
+        po_number: r.po_number,
+        supplier: r.supplier,
+        ok: false,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
+
+  return c.json({
+    total: rows.results.length,
+    pushed: results.filter((r) => r.ok).length,
+    failed: results.filter((r) => !r.ok).length,
+    results,
+  });
 });
 
 /**

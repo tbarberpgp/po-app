@@ -37,6 +37,7 @@ export type Permission =
   | "pos.create"
   | "pos.issue"
   | "pos.delete"
+  | "pos.push_to_xero"
   | "approvers.manage";
 
 // What each role is allowed to do. Approval (approve/reject) is granted
@@ -46,14 +47,14 @@ const MATRIX: Record<Role, Set<Permission>> = {
     "users.read", "users.write", "users.promote_superadmin",
     "projects.create", "projects.edit", "projects.delete",
     "materials.upload",
-    "pos.create", "pos.issue", "pos.delete",
+    "pos.create", "pos.issue", "pos.delete", "pos.push_to_xero",
     "approvers.manage",
   ]),
   admin: new Set<Permission>([
     "users.read", "users.write",
     "projects.create", "projects.edit",
     "materials.upload",
-    "pos.create", "pos.issue",
+    "pos.create", "pos.issue", "pos.push_to_xero",
     "approvers.manage",
   ]),
   procurement: new Set<Permission>([

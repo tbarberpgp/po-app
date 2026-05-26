@@ -2,26 +2,85 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, fmtDate, fmtMoney } from "../lib/api";
 import { Topbar } from "./Shell";
-import type { PurchaseOrder } from "../../shared/types";
+import { can } from "../../shared/permissions";
+import type { CurrentUser, PurchaseOrder } from "../../shared/types";
 
 type Row = PurchaseOrder & { project_code: string; project_name: string };
 
-export function POsList() {
+export function POsList({ me }: { me: CurrentUser | null }) {
   const [rows, setRows] = useState<Row[]>([]);
   const [status, setStatus] = useState<string>("");
   const [err, setErr] = useState<string | null>(null);
+  const [pendingXero, setPendingXero] = useState<number | null>(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkResult, setBulkResult] = useState<Awaited<ReturnType<typeof api.xeroBulkPush>> | null>(null);
 
-  useEffect(() => {
+  const canPushXero = can(me?.role, "pos.push_to_xero");
+
+  function refresh() {
     api.listPOs({ status: status || undefined })
       .then((rs) => setRows(rs as Row[]))
       .catch((e) => setErr(e.message));
-  }, [status]);
+    if (canPushXero) {
+      api.xeroPendingCount().then((r) => setPendingXero(r.pending)).catch(() => setPendingXero(null));
+    }
+  }
+  useEffect(refresh, [status, canPushXero]);
+
+  async function bulkPushToXero() {
+    if (!canPushXero) return;
+    if (!confirm(`Push ${pendingXero ?? 0} approved/issued PO(s) to Xero? This runs sequentially and may take a minute or two. Failures will be reported individually — successful ones won't be re-attempted.`)) return;
+    setBulkBusy(true);
+    setErr(null);
+    setBulkResult(null);
+    try {
+      const r = await api.xeroBulkPush();
+      setBulkResult(r);
+      refresh();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "bulk push failed");
+    } finally {
+      setBulkBusy(false);
+    }
+  }
 
   return (
     <>
-      <Topbar crumbs="Workspace" title="Purchase orders" />
+      <Topbar
+        crumbs="Workspace"
+        title="Purchase orders"
+        actions={
+          canPushXero && pendingXero != null && pendingXero > 0 ? (
+            <button className="accent" onClick={bulkPushToXero} disabled={bulkBusy}>
+              {bulkBusy ? "Pushing…" : `↑ Push ${pendingXero} to Xero`}
+            </button>
+          ) : null
+        }
+      />
       <main>
         {err && <div className="flash error">{err}</div>}
+
+        {bulkResult && (
+          <div className={`flash ${bulkResult.failed === 0 ? "success" : "info"}`}>
+            <b>Bulk push complete:</b> {bulkResult.pushed} succeeded, {bulkResult.failed} failed of {bulkResult.total} attempted.
+            {bulkResult.failed > 0 && (
+              <ul style={{ marginTop: 8, marginBottom: 0, paddingLeft: 20 }}>
+                {bulkResult.results.filter((r) => !r.ok).slice(0, 8).map((r) => (
+                  <li key={r.po_number} style={{ fontSize: 13 }}>
+                    <b>{r.po_number}</b> ({r.supplier}) — {r.error}
+                  </li>
+                ))}
+                {bulkResult.results.filter((r) => !r.ok).length > 8 && (
+                  <li style={{ fontSize: 13 }}>… and {bulkResult.results.filter((r) => !r.ok).length - 8} more</li>
+                )}
+              </ul>
+            )}
+            <div style={{ marginTop: 6, fontSize: 12 }}>
+              <button className="ghost tiny" onClick={() => setBulkResult(null)}>Dismiss</button>
+            </div>
+          </div>
+        )}
+
         <div className="card">
           <div className="card-hd">
             <h2 style={{ flex: 1 }}>All purchase orders</h2>

@@ -52,7 +52,7 @@ export function App() {
           <Route path="/" element={<ProjectsList me={me} />} />
           <Route path="/projects/:id" element={<ProjectDetail me={me} />} />
           <Route path="/projects/:id/new-po" element={<NewPO />} />
-          <Route path="/pos" element={<POsList />} />
+          <Route path="/pos" element={<POsList me={me} />} />
           <Route path="/pos/:id" element={<POView me={me} />} />
           <Route path="/approvals" element={<ApprovalsInbox me={me} />} />
           <Route path="/approvals/:id" element={<POView me={me} />} />
