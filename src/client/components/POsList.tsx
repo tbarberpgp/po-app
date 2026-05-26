@@ -50,10 +50,18 @@ export function POsList({ me }: { me: CurrentUser | null }) {
         crumbs="Workspace"
         title="Purchase orders"
         actions={
-          canPushXero && pendingXero != null && pendingXero > 0 ? (
-            <button className="accent" onClick={bulkPushToXero} disabled={bulkBusy}>
-              {bulkBusy ? "Pushing…" : `↑ Push ${pendingXero} to Xero`}
-            </button>
+          canPushXero ? (
+            pendingXero == null ? (
+              <span className="muted" style={{ fontSize: 12 }}>Xero: checking…</span>
+            ) : pendingXero === 0 ? (
+              <span className="pill approved" style={{ fontSize: 11 }} title="No approved or issued POs are missing from Xero">
+                ✓ Xero in sync
+              </span>
+            ) : (
+              <button className="accent" onClick={bulkPushToXero} disabled={bulkBusy}>
+                {bulkBusy ? "Pushing…" : `↑ Push ${pendingXero} to Xero`}
+              </button>
+            )
           ) : null
         }
       />
