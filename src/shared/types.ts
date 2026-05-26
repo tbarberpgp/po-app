@@ -227,6 +227,51 @@ export function derivedProjectNumber(projectCode: string): string {
   return digits.slice(-4).padStart(4, "0");
 }
 
+/** A supplier quote uploaded as a PDF and parsed by Claude. */
+export type SupplierQuote = {
+  id: number;
+  supplier_id: number;
+  supplier_name?: string;
+  filename: string;
+  uploaded_at: string;
+  uploaded_by: string;
+  status: "extracting" | "ready" | "applied" | "discarded" | "failed";
+  extraction_error: string | null;
+  notes: string | null;
+  total_applied_value: number | null;
+  total_old_value: number | null;
+  applied_at: string | null;
+  applied_by: string | null;
+  // present on list responses
+  line_count?: number;
+  applied_count?: number;
+};
+
+/** One row Claude extracted from the quote PDF, joined to the matched product context. */
+export type SupplierQuoteLine = {
+  id: number;
+  quote_id: number;
+  line_no: number;
+  raw_description: string;
+  raw_sku: string | null;
+  raw_qty: number | null;
+  raw_unit: string | null;
+  unit_price: number | null;
+  matched_product_id: number | null;
+  matched_product_supplier_id: number | null;
+  match_confidence: number | null;
+  old_unit_price: number | null;
+  is_applied: 0 | 1;
+  skip_reason: string | null;
+  // joined fields (when fetched via detail endpoint)
+  product_code?: string | null;
+  product_description?: string | null;
+  product_unit?: string | null;
+  product_primary_cost?: number | null;
+  supplier_current_cost?: number | null;
+  supplier_current_sku?: string | null;
+};
+
 export type CreatePOInput = {
   project_id: string;
   supplier: string;

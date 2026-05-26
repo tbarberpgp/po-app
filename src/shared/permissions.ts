@@ -38,7 +38,8 @@ export type Permission =
   | "pos.issue"
   | "pos.delete"
   | "pos.push_to_xero"
-  | "approvers.manage";
+  | "approvers.manage"
+  | "suppliers.manage";    // edit register + upload supplier quotes
 
 // What each role is allowed to do. Approval (approve/reject) is granted
 // separately via the `approvers` table and isn't role-based.
@@ -49,6 +50,7 @@ const MATRIX: Record<Role, Set<Permission>> = {
     "materials.upload",
     "pos.create", "pos.issue", "pos.delete", "pos.push_to_xero",
     "approvers.manage",
+    "suppliers.manage",
   ]),
   admin: new Set<Permission>([
     "users.read", "users.write",
@@ -56,10 +58,12 @@ const MATRIX: Record<Role, Set<Permission>> = {
     "materials.upload",
     "pos.create", "pos.issue", "pos.push_to_xero",
     "approvers.manage",
+    "suppliers.manage",
   ]),
   procurement: new Set<Permission>([
     "projects.edit",
     "pos.create", "pos.issue",
+    "suppliers.manage",
   ]),
   viewer: new Set<Permission>(),
 };

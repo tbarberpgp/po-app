@@ -11,6 +11,8 @@ import type {
   ResourceType,
   Settings,
   Supplier,
+  SupplierQuote,
+  SupplierQuoteLine,
   SupplierStatus,
 } from "../../shared/types";
 import type { Role } from "../../shared/permissions";
@@ -299,6 +301,46 @@ export const api = {
         error?: string;
       }>;
     }>("/api/xero/bulk-push", { method: "POST" }),
+
+  // Supplier quote upload pipeline ────────────────────────────────────────
+  listSupplierQuotes: (supplierId: number) =>
+    jfetch<SupplierQuote[]>(`/api/quotes/${supplierId}`),
+  uploadSupplierQuote: (supplierId: number, file: File, notes?: string) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    if (notes) fd.append("notes", notes);
+    return jfetch<{ quote_id: number; extracted_lines: number }>(
+      `/api/quotes/${supplierId}/upload`,
+      { method: "POST", body: fd },
+    );
+  },
+  getQuote: (quoteId: number) =>
+    jfetch<{ quote: SupplierQuote; lines: SupplierQuoteLine[] }>(
+      `/api/quotes/detail/${quoteId}`,
+    ),
+  rematchQuoteLine: (lineId: number, product_id: number | null) =>
+    jfetch<{ ok: true }>(`/api/quotes/lines/${lineId}/match`, {
+      method: "PATCH",
+      body: JSON.stringify({ product_id }),
+    }),
+  skipQuoteLine: (lineId: number, reason?: string) =>
+    jfetch<{ ok: true }>(`/api/quotes/lines/${lineId}/skip`, {
+      method: "PATCH",
+      body: JSON.stringify({ reason }),
+    }),
+  applyQuote: (quoteId: number) =>
+    jfetch<{
+      applied: number;
+      total_applied_value: number;
+      total_old_value: number;
+      delta_value: number;
+    }>(`/api/quotes/${quoteId}/apply`, { method: "POST" }),
+  discardQuote: (quoteId: number) =>
+    jfetch<{ ok: true }>(`/api/quotes/${quoteId}`, { method: "DELETE" }),
+  searchProductsForQuote: (q: string) =>
+    jfetch<Array<{ id: number; product_code: string; description: string; manufacturer: string | null; unit: string | null; unit_cost: number | null }>>(
+      `/api/quotes/_search/products?q=${encodeURIComponent(q)}`,
+    ),
 };
 
 export function fmtMoney(n: number, currency = "GBP") {

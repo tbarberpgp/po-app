@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { api, fmtMoney } from "../lib/api";
 import { Topbar } from "./Shell";
 import { can } from "../../shared/permissions";
-import type { CurrentUser, Element, Supplier, SupplierStatus } from "../../shared/types";
+import type { CurrentUser, Element, Supplier, SupplierQuote, SupplierStatus } from "../../shared/types";
 
 const STATUS_LABEL: Record<SupplierStatus, string> = {
   approved: "Approved",
@@ -208,6 +209,7 @@ export function SuppliersPage({ me }: { me: CurrentUser | null }) {
                       <td>
                         {canManage && (
                           <>
+                            <QuoteActionsCell supplier={s} />
                             <button className="ghost tiny" onClick={() => setEditingId(s.id)}>Edit</button>{" "}
                             <button className="ghost tiny" onClick={async () => {
                               if (!confirm(`Remove ${s.name}? Existing product-level supplier entries with this name will be preserved.`)) return;
@@ -423,5 +425,68 @@ function SupplierForm({
       <div className="card-hd"><h3>{initial ? "Edit supplier" : "New supplier"}</h3></div>
       <div className="card-bd">{body}</div>
     </div>
+  );
+}
+
+/* ── Per-row quote actions (upload + jump to most recent unapplied) ──────── */
+
+function QuoteActionsCell({ supplier }: { supplier: Supplier }) {
+  const navigate = useNavigate();
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [quotes, setQuotes] = useState<SupplierQuote[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    api.listSupplierQuotes(supplier.id).then(setQuotes).catch(() => setQuotes([]));
+  }, [supplier.id]);
+
+  const readyToReview = quotes.find((q) => q.status === "ready");
+
+  async function onPick(e: React.ChangeEvent<HTMLInputElement>) {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    setUploading(true); setErr(null);
+    try {
+      const r = await api.uploadSupplierQuote(supplier.id, f);
+      navigate(`/quotes/${r.quote_id}`);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "upload failed");
+    } finally {
+      setUploading(false);
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  }
+
+  return (
+    <>
+      <input
+        ref={fileRef}
+        type="file"
+        accept="application/pdf"
+        style={{ display: "none" }}
+        onChange={onPick}
+      />
+      {readyToReview ? (
+        <button
+          className="ghost tiny"
+          title={`Quote uploaded ${readyToReview.uploaded_at?.slice(0, 10) ?? ""} awaiting review`}
+          onClick={() => navigate(`/quotes/${readyToReview.id}`)}
+          style={{ color: "var(--warn)" }}
+        >
+          Review quote
+        </button>
+      ) : (
+        <button
+          className="ghost tiny"
+          onClick={() => fileRef.current?.click()}
+          disabled={uploading}
+          title="Upload a supplier quote PDF — Claude extracts the lines and you confirm matches before applying"
+        >
+          {uploading ? "Uploading…" : "Upload quote"}
+        </button>
+      )}{" "}
+      {err && <span style={{ color: "var(--danger)", fontSize: 11 }}>{err}</span>}
+    </>
   );
 }
