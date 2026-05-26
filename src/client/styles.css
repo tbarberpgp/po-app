@@ -554,6 +554,54 @@ td.num, th.num {
 }
 .inspector .stat .sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
 
+/* Tab navigation — used on the project detail page to switch between
+ * Overview and the project's purchase orders. */
+.tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--line);
+  margin: 0 0 16px;
+  padding: 0;
+  list-style: none;
+}
+.tab-btn {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  padding: 10px 16px;
+  cursor: pointer;
+  font-size: 14px;
+  color: var(--muted);
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: color var(--motion-fast), border-color var(--motion-fast);
+  min-height: 0;
+}
+.tab-btn:hover {
+  background: transparent;
+  color: var(--ink);
+  border-bottom-color: var(--line-strong);
+}
+.tab-btn.active {
+  color: var(--ink);
+  border-bottom-color: var(--accent);
+}
+.tab-btn .count {
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: var(--radius-pill);
+  background: var(--card-2);
+  color: var(--muted);
+  font-weight: 600;
+}
+.tab-btn.active .count {
+  background: var(--accent-soft);
+  color: var(--accent-2);
+}
+
 /* Expand affordance used in the product library row (▸ triangle + count). */
 .expand-btn {
   display: inline-flex;

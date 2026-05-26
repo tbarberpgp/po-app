@@ -3,7 +3,11 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, fmtDate, fmtMoney } from "../lib/api";
 import { Topbar } from "./Shell";
 import { can } from "../../shared/permissions";
-import type { CurrentUser, MaterialWithCommitment, Project } from "../../shared/types";
+import type { CurrentUser, MaterialWithCommitment, Project, PurchaseOrder } from "../../shared/types";
+
+type Tab = "overview" | "pos";
+
+type ProjectPORow = PurchaseOrder & { project_code: string; project_name: string };
 
 export function ProjectDetail({ me }: { me: CurrentUser | null }) {
   const nav = useNavigate();
@@ -18,6 +22,8 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
   const [info, setInfo] = useState<Awaited<ReturnType<typeof api.getProject>> | null>(null);
   const [poSummary, setPoSummary] = useState<Awaited<ReturnType<typeof api.getProjectSummary>> | null>(null);
   const [mats, setMats] = useState<MaterialWithCommitment[]>([]);
+  const [projectPOs, setProjectPOs] = useState<ProjectPORow[]>([]);
+  const [tab, setTab] = useState<Tab>("overview");
   const [filter, setFilter] = useState("");
   const [typeFilter, setTypeFilter] = useState("");
   const [supplierFilter, setSupplierFilter] = useState("");
@@ -31,6 +37,9 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
     api.getProject(id).then(setInfo).catch((e) => setErr(e.message));
     api.listMaterials(id).then(setMats).catch((e) => setErr(e.message));
     api.getProjectSummary(id).then(setPoSummary).catch((e) => setErr(e.message));
+    api.listPOs({ project_id: id })
+      .then((rs) => setProjectPOs(rs as ProjectPORow[]))
+      .catch(() => setProjectPOs([]));
   }
   useEffect(load, [id]);
 
@@ -124,6 +133,32 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
 
         <SiteDetailsCard project={info.project} onSaved={load} canEdit={canEditProject} />
 
+        <nav className="tabs" role="tablist">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === "overview"}
+            className={`tab-btn${tab === "overview" ? " active" : ""}`}
+            onClick={() => setTab("overview")}
+          >
+            Overview
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === "pos"}
+            className={`tab-btn${tab === "pos" ? " active" : ""}`}
+            onClick={() => setTab("pos")}
+          >
+            Purchase orders
+            <span className="count">{projectPOs.length}</span>
+          </button>
+        </nav>
+
+        {tab === "pos" ? (
+          <ProjectPOsPanel rows={projectPOs} />
+        ) : (
+        <>
         <div className="card">
           <div className="card-hd">
             <h3 style={{ flex: 1 }}>Pricing snapshot</h3>
@@ -264,7 +299,106 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
             </div>
           </>
         )}
+        </>
+        )}
       </main>
+    </>
+  );
+}
+
+/* ── Project POs panel ─────────────────────────────────────────────────── */
+
+function ProjectPOsPanel({ rows }: { rows: ProjectPORow[] }) {
+  if (rows.length === 0) {
+    return (
+      <div className="card">
+        <div className="card-bd">
+          <div className="empty">No purchase orders raised for this project yet.</div>
+        </div>
+      </div>
+    );
+  }
+
+  // Quick KPIs across just this project's POs.
+  const totals = rows.reduce(
+    (acc, r) => {
+      acc.all += r.total_value;
+      if (r.status === "approved" || r.status === "issued" || r.status === "pending_approval") {
+        acc.committed += r.total_value;
+      }
+      if (r.status === "pending_approval") acc.pending += 1;
+      if (r.xero_sync_status === "synced") acc.inXero += 1;
+      if (r.xero_sync_status === "failed") acc.xeroFailed += 1;
+      return acc;
+    },
+    { all: 0, committed: 0, pending: 0, inXero: 0, xeroFailed: 0 },
+  );
+
+  return (
+    <>
+      <div className="kpis" style={{ gridTemplateColumns: "repeat(4, 1fr)" }}>
+        <div className="kpi">
+          <div className="kpi-label">POs raised</div>
+          <div className="kpi-value">{rows.length}</div>
+          <div className="kpi-sub">{totals.pending > 0 ? `${totals.pending} pending approval` : "all decided"}</div>
+        </div>
+        <div className="kpi">
+          <div className="kpi-label">Committed</div>
+          <div className="kpi-value">{fmtMoney(totals.committed)}</div>
+          <div className="kpi-sub">approved + issued + pending</div>
+        </div>
+        <div className="kpi">
+          <div className="kpi-label">In Xero</div>
+          <div className="kpi-value">{totals.inXero}</div>
+          <div className="kpi-sub">{totals.xeroFailed > 0 ? `${totals.xeroFailed} push failed` : "synced"}</div>
+        </div>
+        <div className="kpi">
+          <div className="kpi-label">Total value</div>
+          <div className="kpi-value">{fmtMoney(totals.all)}</div>
+          <div className="kpi-sub">across all statuses</div>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-hd">
+          <h2 style={{ flex: 1 }}>Purchase orders on this project</h2>
+          <span className="pill">{rows.length}</span>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>PO</th>
+              <th>Supplier</th>
+              <th className="num">Value</th>
+              <th>Status</th>
+              <th>Xero</th>
+              <th>Raised</th>
+              <th>By</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.id}>
+                <td><Link to={`/pos/${r.id}`}>{r.po_number}</Link></td>
+                <td>{r.supplier}</td>
+                <td className="num">{fmtMoney(r.total_value)}</td>
+                <td><span className={`pill ${r.status}`}>{r.status.replace("_", " ")}</span></td>
+                <td>
+                  {r.xero_sync_status === "synced" ? (
+                    <span className="pill approved" style={{ fontSize: 10 }} title={r.xero_po_number ?? ""}>✓ {r.xero_po_number ?? "synced"}</span>
+                  ) : r.xero_sync_status === "failed" ? (
+                    <span className="pill rejected" style={{ fontSize: 10 }} title={r.xero_sync_error ?? ""}>failed</span>
+                  ) : (
+                    <span className="muted" style={{ fontSize: 11 }}>—</span>
+                  )}
+                </td>
+                <td className="muted">{fmtDate(r.created_at)}</td>
+                <td className="muted">{r.created_by}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </>
   );
 }
