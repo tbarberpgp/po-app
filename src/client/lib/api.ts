@@ -7,6 +7,7 @@ import type {
   Product,
   ProductSupplier,
   Project,
+  ProjectCommercial,
   PurchaseOrder,
   ResourceType,
   Settings,
@@ -66,6 +67,8 @@ export const api = {
 
   listMaterials: (projectId: string) =>
     jfetch<MaterialWithCommitment[]>(`/api/materials/${projectId}`),
+  listProjectCommercials: (projectId: string) =>
+    jfetch<ProjectCommercial[]>(`/api/materials/${projectId}/commercials`),
   uploadMaterials: (projectId: string, file: File) => {
     const fd = new FormData();
     fd.append("file", file);

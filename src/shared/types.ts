@@ -233,6 +233,19 @@ export function derivedProjectNumber(projectCode: string): string {
   return digits.slice(-4).padStart(4, "0");
 }
 
+/** A row from the workbook's Summary Cost Sheet — value / cost / GP per category. */
+export type ProjectCommercial = {
+  id: number;
+  snapshot_id: number;
+  category: string;
+  value: number | null;
+  cost: number | null;
+  gross_profit: number | null;
+  gross_profit_pct: number | null;  // 0..1 fraction (0.131 = 13.1%)
+  is_total: 0 | 1;
+  display_order: number;
+};
+
 /** A pending price approval surfaced on the approvals inbox. */
 export type PendingPriceApproval = {
   id: number;

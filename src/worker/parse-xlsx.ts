@@ -41,6 +41,97 @@ const looksLikeElementCode = (v: unknown): boolean => {
   return /^\d{1,4}$/.test(s);
 };
 
+export type ParsedCommercialRow = {
+  category: string;
+  value: number | null;
+  cost: number | null;
+  gross_profit: number | null;
+  gross_profit_pct: number | null;
+  is_total: boolean;
+  display_order: number;
+};
+
+/**
+ * Parse the "Summary Cost Sheet" tab — the project commercials breakdown.
+ *
+ * The layout puts the per-category labels in column E and the four numeric
+ * columns (Value, Cost, GP, GP%) somewhere to the right. The exact columns
+ * vary by template revision, so we sniff the header row instead of
+ * hard-coding letters.
+ *
+ * Returns the rows in document order (typically Total first, then each
+ * category). Empty/separator rows are skipped.
+ */
+export function parseSummaryCostSheet(buffer: ArrayBuffer): ParsedCommercialRow[] {
+  const wb = XLSX.read(buffer, { type: "array" });
+  const sheetName = wb.SheetNames.find((n) => n.toLowerCase() === "summary cost sheet");
+  if (!sheetName) return [];
+  const ws = wb.Sheets[sheetName];
+  const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws, {
+    header: "A",
+    defval: null,
+    raw: true,
+  });
+
+  // Find the header row (it contains "Value" and "GP%" or similar).
+  let headerIdx = -1;
+  let labelCol = "E";
+  let valueCol = "G";
+  let costCol = "H";
+  let gpCol = "I";
+  let gpPctCol = "J";
+  for (let i = 0; i < Math.min(15, rows.length); i++) {
+    const r = rows[i];
+    const cells = Object.entries(r);
+    const valueEntry = cells.find(([, v]) => typeof v === "string" && v.toLowerCase().trim() === "value");
+    // Match "GP" (no %) and "GP%" as distinct columns — the regex previously
+    // matched both because % was optional.
+    const gpPlainEntry = cells.find(([, v]) => typeof v === "string" && /^gp$/i.test(String(v).trim()));
+    const gpPctEntry = cells.find(([, v]) => typeof v === "string" && /^gp\s*%$/i.test(String(v).trim()));
+    if (valueEntry && (gpPlainEntry || gpPctEntry)) {
+      headerIdx = i;
+      valueCol = valueEntry[0];
+      const cols = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+      const valueColIdx = cols.indexOf(valueCol);
+      // Cost is usually the column immediately after Value.
+      costCol = cols[valueColIdx + 1];
+      gpCol = gpPlainEntry?.[0] ?? cols[valueColIdx + 2];
+      gpPctCol = gpPctEntry?.[0] ?? cols[valueColIdx + 3];
+      // Label column is usually 2 to the left of Value.
+      labelCol = cols[Math.max(0, valueColIdx - 2)];
+      break;
+    }
+  }
+  if (headerIdx < 0) return [];
+
+  const out: ParsedCommercialRow[] = [];
+  let order = 0;
+  for (let i = headerIdx + 1; i < rows.length; i++) {
+    const r = rows[i];
+    const label = str(r[labelCol]);
+    const value = num(r[valueCol]);
+    const cost = num(r[costCol]);
+    const gp = num(r[gpCol]);
+    const gpPct = num(r[gpPctCol]);
+    // Skip if there's no label AND no numeric content — pure separator row.
+    if (!label) continue;
+    // Skip rows that are just notes ("Clarifications" etc.) — they have a
+    // label but no value/cost.
+    if (value == null && cost == null && gp == null) continue;
+
+    out.push({
+      category: label,
+      value,
+      cost,
+      gross_profit: gp,
+      gross_profit_pct: gpPct,
+      is_total: /^total$/i.test(label),
+      display_order: order++,
+    });
+  }
+  return out;
+}
+
 /** Normalise a header cell for comparison: lowercase, strip spaces and hyphens. */
 const normHeader = (v: unknown): string =>
   String(v ?? "").toLowerCase().replace(/[\s-]+/g, "");

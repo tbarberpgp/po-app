@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, fmtDate, fmtMoney } from "../lib/api";
 import { Topbar } from "./Shell";
 import { can } from "../../shared/permissions";
-import type { CurrentUser, MaterialWithCommitment, Project, PurchaseOrder } from "../../shared/types";
+import type { CurrentUser, MaterialWithCommitment, Project, ProjectCommercial, PurchaseOrder } from "../../shared/types";
 
 type Tab = "overview" | "materials" | "pos";
 
@@ -22,6 +22,7 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
   const [info, setInfo] = useState<Awaited<ReturnType<typeof api.getProject>> | null>(null);
   const [poSummary, setPoSummary] = useState<Awaited<ReturnType<typeof api.getProjectSummary>> | null>(null);
   const [mats, setMats] = useState<MaterialWithCommitment[]>([]);
+  const [commercials, setCommercials] = useState<ProjectCommercial[]>([]);
   const [projectPOs, setProjectPOs] = useState<ProjectPORow[]>([]);
   const [tab, setTab] = useState<Tab>("overview");
   const [filter, setFilter] = useState("");
@@ -36,6 +37,7 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
     if (!id) return;
     api.getProject(id).then(setInfo).catch((e) => setErr(e.message));
     api.listMaterials(id).then(setMats).catch((e) => setErr(e.message));
+    api.listProjectCommercials(id).then(setCommercials).catch(() => setCommercials([]));
     api.getProjectSummary(id).then(setPoSummary).catch((e) => setErr(e.message));
     api.listPOs({ project_id: id })
       .then((rs) => setProjectPOs(rs as ProjectPORow[]))
@@ -202,6 +204,10 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
               <Kpi label="Remaining" value={fmtMoney(summary.remaining_total)} sub={summary.remaining_total < 0 ? `Over by ${fmtMoney(Math.abs(summary.remaining_total))}` : undefined} tone={summary.remaining_total < 0 ? "danger" : summary.remaining_total === 0 ? "success" : "default"} />
               <Kpi label="Unpriced spend" value={fmtMoney(summary.unpriced_spend)} sub={summary.unpriced_spend > 0 ? "Outside the BOQ" : "None"} tone={summary.unpriced_spend > 0 ? "danger" : "default"} />
             </div>
+
+            {commercials.length > 0 && tab === "overview" && (
+              <CommercialsCard rows={commercials} />
+            )}
 
             <div className="card">
               <div className="card-hd"><h2>By supplier</h2></div>
@@ -584,6 +590,76 @@ function summarise(mats: MaterialWithCommitment[], unpricedSpend: number): Summa
       .filter((s) => s.priced > 0)
       .sort((a, b) => b.priced - a.priced),
   };
+}
+
+/* ── Commercials card — value / cost / GP from the Summary Cost Sheet ──── */
+
+function CommercialsCard({ rows }: { rows: ProjectCommercial[] }) {
+  const total = rows.find((r) => r.is_total === 1);
+  const breakdown = rows.filter((r) => r.is_total === 0);
+
+  return (
+    <div className="card">
+      <div className="card-hd">
+        <h2 style={{ flex: 1 }}>Commercials</h2>
+        <span className="muted" style={{ fontSize: 12 }}>from Summary Cost Sheet</span>
+      </div>
+      {total && (
+        <div
+          className="kpis"
+          style={{
+            gridTemplateColumns: "repeat(4, 1fr)",
+            padding: "16px 20px",
+            background: "var(--card-2)",
+            borderBottom: "1px solid var(--line)",
+          }}
+        >
+          <Kpi label="Project value" value={fmtMoney(total.value ?? 0)} />
+          <Kpi label="Cost" value={fmtMoney(total.cost ?? 0)} />
+          <Kpi
+            label="Gross profit"
+            value={fmtMoney(total.gross_profit ?? 0)}
+            tone={(total.gross_profit ?? 0) > 0 ? "success" : (total.gross_profit ?? 0) < 0 ? "danger" : "default"}
+          />
+          <Kpi
+            label="GP margin"
+            value={total.gross_profit_pct != null ? `${(total.gross_profit_pct * 100).toFixed(1)}%` : "—"}
+            tone={(total.gross_profit_pct ?? 0) >= 0.1 ? "success" : (total.gross_profit_pct ?? 0) < 0 ? "danger" : "warn"}
+          />
+        </div>
+      )}
+      <table>
+        <thead>
+          <tr>
+            <th>Category</th>
+            <th className="num">Value</th>
+            <th className="num">Cost</th>
+            <th className="num">GP £</th>
+            <th className="num">GP %</th>
+          </tr>
+        </thead>
+        <tbody>
+          {breakdown.map((r) => {
+            const gp = r.gross_profit;
+            const gpPctTone = gp == null ? "" : gp > 0 ? "var(--success)" : gp < 0 ? "var(--danger)" : "var(--muted)";
+            return (
+              <tr key={r.id}>
+                <td>{r.category}</td>
+                <td className="num">{r.value != null ? fmtMoney(r.value) : <span className="muted">—</span>}</td>
+                <td className="num">{r.cost != null ? fmtMoney(r.cost) : <span className="muted">—</span>}</td>
+                <td className="num" style={{ color: gpPctTone || undefined }}>
+                  {gp != null ? fmtMoney(gp) : <span className="muted">—</span>}
+                </td>
+                <td className="num" style={{ color: gpPctTone || undefined }}>
+                  {r.gross_profit_pct != null ? `${(r.gross_profit_pct * 100).toFixed(1)}%` : <span className="muted">—</span>}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
 }
 
 /* ── Project-scoped quote upload button (Overview + Materials tab) ─────── */

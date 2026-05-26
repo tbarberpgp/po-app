@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import type { Env, Variables } from "../env";
-import { parseMaterialsSheet } from "../parse-xlsx";
+import { parseMaterialsSheet, parseSummaryCostSheet } from "../parse-xlsx";
 import { requirePermission } from "../auth";
 
 export const materials = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -21,9 +21,14 @@ materials.post("/:projectId/upload", async (c) => {
   const file = form.get("file");
   if (!(file instanceof File)) return c.json({ error: "file required" }, 400);
 
+  // Parse both the Materials sheet (required) and the Summary Cost Sheet
+  // (optional — older workbooks may not have it). Read the buffer once.
+  const buffer = await file.arrayBuffer();
   let parsed;
+  let commercials;
   try {
-    parsed = parseMaterialsSheet(await file.arrayBuffer());
+    parsed = parseMaterialsSheet(buffer);
+    commercials = parseSummaryCostSheet(buffer);
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : "parse failed" }, 400);
   }
@@ -75,14 +80,50 @@ materials.post("/:projectId/upload", async (c) => {
   );
   await c.env.DB.batch(stmts);
 
+  // Persist project commercials if the Summary Cost Sheet was present.
+  if (commercials.length > 0) {
+    const commStmts = commercials.map((r) =>
+      c.env.DB.prepare(
+        `INSERT INTO project_commercials
+           (snapshot_id, category, value, cost, gross_profit, gross_profit_pct, is_total, display_order)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).bind(
+        snapshotId,
+        r.category,
+        r.value,
+        r.cost,
+        r.gross_profit,
+        r.gross_profit_pct,
+        r.is_total ? 1 : 0,
+        r.display_order,
+      ),
+    );
+    await c.env.DB.batch(commStmts);
+  }
+
   await c.env.DB.prepare(
     `INSERT INTO audit_log (entity_type, entity_id, action, actor, details, created_at)
      VALUES ('snapshot', ?, 'uploaded', ?, ?, ?)`,
   )
-    .bind(String(snapshotId), actor, JSON.stringify({ filename: file.name, rows: parsed.length }), now)
+    .bind(String(snapshotId), actor, JSON.stringify({ filename: file.name, rows: parsed.length, commercials: commercials.length }), now)
     .run();
 
-  return c.json({ snapshot_id: snapshotId, rows: parsed.length });
+  return c.json({ snapshot_id: snapshotId, rows: parsed.length, commercials: commercials.length });
+});
+
+/** Return the commercials (Value / Cost / GP / GP%) for the project's active snapshot. */
+materials.get("/:projectId/commercials", async (c) => {
+  const projectId = c.req.param("projectId");
+  const rows = await c.env.DB.prepare(
+    `SELECT c.*
+     FROM project_commercials c
+     JOIN material_snapshots s ON s.id = c.snapshot_id
+     WHERE s.project_id = ? AND s.is_active = 1
+     ORDER BY c.display_order`,
+  )
+    .bind(projectId)
+    .all();
+  return c.json(rows.results);
 });
 
 /**
