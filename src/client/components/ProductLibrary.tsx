@@ -151,7 +151,7 @@ function LibraryTab({
           <table>
             <thead>
               <tr>
-                <th style={{ width: 28 }}></th>
+                <th style={{ width: 56 }}></th>
                 <th>Code</th>
                 <th>Element</th>
                 <th>Description</th>
@@ -181,16 +181,14 @@ function LibraryTab({
                     <tr key={p.id}>
                       <td>
                         <button
-                          className="ghost tiny"
+                          className="expand-btn"
                           onClick={() => setExpandedId(expandedId === p.id ? null : p.id)}
                           title={expandedId === p.id ? "Collapse" : "Show alternate suppliers"}
-                          style={{ minWidth: 24, padding: "2px 6px" }}
+                          aria-expanded={expandedId === p.id}
                         >
-                          {expandedId === p.id ? "▾" : "▸"}
+                          <span className="expand-triangle">{expandedId === p.id ? "▾" : "▸"}</span>
                           {p.alternate_supplier_count > 0 && (
-                            <span style={{ marginLeft: 4, fontSize: 10, color: "var(--accent-2)" }}>
-                              +{p.alternate_supplier_count}
-                            </span>
+                            <span className="expand-count">+{p.alternate_supplier_count}</span>
                           )}
                         </button>
                       </td>

@@ -159,6 +159,29 @@ export type ProductSupplier = {
   created_by: string | null;
 };
 
+export type SupplierStatus = "approved" | "preferred" | "suspended" | "pending";
+
+/** Org-level approved supplier register. */
+export type Supplier = {
+  id: number;
+  name: string;
+  status: SupplierStatus;
+  scope_notes: string | null;
+  payment_terms: string | null;
+  contact_name: string | null;
+  contact_email: string | null;
+  contact_phone: string | null;
+  address: string | null;
+  vat_number: string | null;
+  credit_limit_gbp: number | null;
+  notes: string | null;
+  created_at: string;
+  created_by: string | null;
+  // computed on read
+  approved_elements: string[];           // array of element codes
+  product_supplier_count: number;        // # of products listing them as an alternate supplier
+};
+
 /** Derive ELE.ITM[.VAR] from the pieces. */
 export function buildProductCode(element_code: string, item_no: number, variant: string | null): string {
   const item = String(item_no).padStart(2, "0");

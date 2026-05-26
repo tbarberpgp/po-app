@@ -7,6 +7,7 @@ import { pos } from "./routes/pos";
 import { approvers } from "./routes/approvers";
 import { users } from "./routes/users";
 import { products } from "./routes/products";
+import { suppliers } from "./routes/suppliers";
 import { elements, resourceTypes } from "./routes/taxonomy";
 import { loadSettings } from "./approval";
 
@@ -23,6 +24,7 @@ app.route("/api/pos", pos);
 app.route("/api/approvers", approvers);
 app.route("/api/users", users);
 app.route("/api/products", products);
+app.route("/api/suppliers", suppliers);
 app.route("/api/elements", elements);
 app.route("/api/resource-types", resourceTypes);
 

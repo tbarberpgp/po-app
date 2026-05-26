@@ -10,6 +10,8 @@ import type {
   PurchaseOrder,
   ResourceType,
   Settings,
+  Supplier,
+  SupplierStatus,
 } from "../../shared/types";
 import type { Role } from "../../shared/permissions";
 
@@ -220,6 +222,40 @@ export const api = {
     jfetch<{ ok: true }>(`/api/products/${productId}/suppliers/${supplierId}`, {
       method: "DELETE",
     }),
+
+  // Approved suppliers register
+  listSuppliers: () => jfetch<Supplier[]>("/api/suppliers"),
+  getSupplier: (id: number) => jfetch<Supplier>(`/api/suppliers/${id}`),
+  addSupplier: (input: {
+    name: string;
+    status?: SupplierStatus;
+    scope_notes?: string | null;
+    payment_terms?: string | null;
+    contact_name?: string | null;
+    contact_email?: string | null;
+    contact_phone?: string | null;
+    address?: string | null;
+    vat_number?: string | null;
+    credit_limit_gbp?: number | null;
+    notes?: string | null;
+    approved_elements?: string[];
+  }) => jfetch<{ id: number }>("/api/suppliers", { method: "POST", body: JSON.stringify(input) }),
+  updateSupplier: (id: number, input: Partial<{
+    name: string;
+    status: SupplierStatus;
+    scope_notes: string | null;
+    payment_terms: string | null;
+    contact_name: string | null;
+    contact_email: string | null;
+    contact_phone: string | null;
+    address: string | null;
+    vat_number: string | null;
+    credit_limit_gbp: number | null;
+    notes: string | null;
+    approved_elements: string[];
+  }>) => jfetch<{ ok: true }>(`/api/suppliers/${id}`, { method: "PUT", body: JSON.stringify(input) }),
+  removeSupplier: (id: number) =>
+    jfetch<{ ok: true }>(`/api/suppliers/${id}`, { method: "DELETE" }),
 };
 
 export function fmtMoney(n: number, currency = "GBP") {
