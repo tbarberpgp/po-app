@@ -417,6 +417,30 @@ function SuggestionsTab({
   const [linkingId, setLinkingId] = useState<number | "">("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkOpen, setBulkOpen] = useState(false);
+
+  const unlinkedSuggestions = useMemo(
+    () => suggestions.filter((s) => s.linked_product_id == null),
+    [suggestions],
+  );
+  const allUnlinkedSelected = unlinkedSuggestions.length > 0 &&
+    unlinkedSuggestions.every((s) => selected.has(s.key));
+
+  function toggleOne(key: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+  function toggleAll() {
+    setSelected((prev) => {
+      if (allUnlinkedSelected) return new Set();
+      return new Set(unlinkedSuggestions.map((s) => s.key));
+    });
+  }
 
   async function linkExisting(s: Suggestion, productId: number) {
     setBusy(true); setErr(null);
@@ -430,8 +454,26 @@ function SuggestionsTab({
     }
   }
 
+  const selectedSuggestions = useMemo(
+    () => suggestions.filter((s) => selected.has(s.key) && s.linked_product_id == null),
+    [suggestions, selected],
+  );
+
   return (
     <>
+      {canManage && selectedSuggestions.length > 0 && (
+        <div className="card card-padded" style={{ position: "sticky", top: 84, zIndex: 5, marginBottom: 12, borderColor: "var(--accent)", background: "var(--accent-soft)" }}>
+          <div className="row">
+            <div className="grow">
+              <b>{selectedSuggestions.length} item{selectedSuggestions.length === 1 ? "" : "s"} selected</b>
+              <span className="muted" style={{ marginLeft: 8 }}>· Promote them all to the master library in one pass</span>
+            </div>
+            <button className="ghost" onClick={() => setSelected(new Set())}>Clear</button>
+            <button className="accent" onClick={() => setBulkOpen(true)}>Promote {selectedSuggestions.length} selected →</button>
+          </div>
+        </div>
+      )}
+
       <div className="card">
         <div className="card-hd">
           <h2 style={{ flex: 1 }}>Suggestions from projects</h2>
@@ -443,7 +485,8 @@ function SuggestionsTab({
           <p className="muted" style={{ marginTop: 0 }}>
             Materials appearing in your projects, grouped by normalised name + manufacturer so
             duplicates collapse into one row. Promote any of these to the master library to
-            give it a permanent product code, or link it to an existing product.
+            give it a permanent product code, or link to an existing product. Tick the
+            checkboxes to bulk-promote.
           </p>
         </div>
         {err && <div style={{ padding: "0 20px 12px" }}><div className="flash error">{err}</div></div>}
@@ -455,6 +498,16 @@ function SuggestionsTab({
           <table>
             <thead>
               <tr>
+                <th style={{ width: 36 }}>
+                  {canManage && unlinkedSuggestions.length > 0 && (
+                    <input
+                      type="checkbox"
+                      checked={allUnlinkedSelected}
+                      onChange={toggleAll}
+                      title="Select all unlinked"
+                    />
+                  )}
+                </th>
                 <th>Description</th>
                 <th>Manufacturer</th>
                 <th>Type</th>
@@ -468,6 +521,15 @@ function SuggestionsTab({
             <tbody>
               {suggestions.map((s) => (
                 <tr key={s.key} style={s.linked_product_id ? { opacity: 0.55 } : undefined}>
+                  <td>
+                    {canManage && !s.linked_product_id && (
+                      <input
+                        type="checkbox"
+                        checked={selected.has(s.key)}
+                        onChange={() => toggleOne(s.key)}
+                      />
+                    )}
+                  </td>
                   <td>{s.sample_description}</td>
                   <td className="muted">{s.manufacturer ?? "—"}</td>
                   <td className="muted">{s.type}</td>
@@ -492,6 +554,19 @@ function SuggestionsTab({
           </table>
         )}
       </div>
+
+      {bulkOpen && (
+        <BulkPromoteModal
+          suggestions={selectedSuggestions}
+          elements={elements}
+          onClose={() => setBulkOpen(false)}
+          onDone={() => {
+            setBulkOpen(false);
+            setSelected(new Set());
+            onChanged();
+          }}
+        />
+      )}
 
       {promoting && (
         <div className="card">
@@ -551,17 +626,11 @@ function PromoteToNewProduct({
   elements: Element[];
   onCreated: (productId: number) => void;
 }) {
-  // Try to guess an element from the project material's type field.
-  const guessedElement = useMemo(() => {
-    const t = suggestion.type.toLowerCase();
-    const guess = elements.find((e) =>
-      e.name.toLowerCase().includes(t) || t.includes(e.name.toLowerCase().split(" - ")[0]),
-    );
-    return guess?.code ?? elements[0]?.code ?? "";
-  }, [elements, suggestion.type]);
+  const guessedElement = useMemo(() => guessElementFor(suggestion.type, elements), [elements, suggestion.type]);
 
   const [element, setElement] = useState(guessedElement);
   const [variant, setVariant] = useState("");
+  const [manufacturer, setManufacturer] = useState(suggestion.manufacturer ?? "");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -572,8 +641,8 @@ function PromoteToNewProduct({
         element_code: element,
         variant: variant || null,
         description: suggestion.sample_description,
-        manufacturer: suggestion.manufacturer,
-        supplier: suggestion.manufacturer,
+        manufacturer: manufacturer.trim() || null,
+        supplier: manufacturer.trim() || null,
         unit_cost: suggestion.avg_unit_cost ?? undefined,
         default_resource: "M",
       });
@@ -587,7 +656,7 @@ function PromoteToNewProduct({
 
   return (
     <>
-      <div style={{ display: "grid", gridTemplateColumns: "1.5fr 1fr auto", gap: 12, marginTop: 8 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr 1fr auto", gap: 12, marginTop: 8 }}>
         <div>
           <label>Element</label>
           <select value={element} onChange={(e) => setElement(e.target.value)}>
@@ -596,7 +665,11 @@ function PromoteToNewProduct({
         </div>
         <div>
           <label>Variant (optional)</label>
-          <input value={variant} onChange={(e) => setVariant(e.target.value)} placeholder="e.g. 80mm, ANTH, KS1000-80" />
+          <input value={variant} onChange={(e) => setVariant(e.target.value)} placeholder="80mm, ANTH, KS1000-80…" />
+        </div>
+        <div>
+          <label>Manufacturer</label>
+          <input value={manufacturer} onChange={(e) => setManufacturer(e.target.value)} placeholder="e.g. Kingspan" />
         </div>
         <div style={{ alignSelf: "end" }}>
           <button className="accent" onClick={create} disabled={busy || !element}>Create &amp; link</button>
@@ -607,5 +680,201 @@ function PromoteToNewProduct({
         Item number will be auto-allocated within the chosen element. {suggestion.material_ids.length} project material row(s) will be linked to this product.
       </div>
     </>
+  );
+}
+
+function guessElementFor(materialType: string, elements: Element[]): string {
+  const t = materialType.toLowerCase();
+  const guess = elements.find((e) =>
+    e.name.toLowerCase().includes(t) || t.includes(e.name.toLowerCase().split(" - ")[0]),
+  );
+  return guess?.code ?? elements[0]?.code ?? "";
+}
+
+/* ── Bulk promote modal ─────────────────────────────────────────────────── */
+
+type BulkRow = {
+  suggestion: Suggestion;
+  element_code: string;
+  variant: string;
+  manufacturer: string;
+  status: "pending" | "creating" | "done" | "error";
+  error?: string;
+  product_code?: string;
+};
+
+function BulkPromoteModal({
+  suggestions, elements, onClose, onDone,
+}: {
+  suggestions: Suggestion[];
+  elements: Element[];
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const [rows, setRows] = useState<BulkRow[]>(() =>
+    suggestions.map((s) => ({
+      suggestion: s,
+      element_code: guessElementFor(s.type, elements),
+      variant: "",
+      manufacturer: s.manufacturer ?? "",
+      status: "pending",
+    })),
+  );
+  const [running, setRunning] = useState(false);
+  const [finishedCount, setFinishedCount] = useState(0);
+
+  function update(idx: number, patch: Partial<BulkRow>) {
+    setRows((rs) => rs.map((r, i) => (i === idx ? { ...r, ...patch } : r)));
+  }
+
+  async function runAll() {
+    setRunning(true);
+    setFinishedCount(0);
+    let done = 0;
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      if (r.status === "done") { done += 1; setFinishedCount(done); continue; }
+      update(i, { status: "creating", error: undefined });
+      try {
+        const product = await api.addProduct({
+          element_code: r.element_code,
+          variant: r.variant.trim() || null,
+          description: r.suggestion.sample_description,
+          manufacturer: r.manufacturer.trim() || null,
+          supplier: r.manufacturer.trim() || null,
+          unit_cost: r.suggestion.avg_unit_cost ?? undefined,
+          default_resource: "M",
+        });
+        await api.linkMaterialsToProduct(product.id, r.suggestion.material_ids);
+        const code = `${r.element_code}.${String(product.item_no).padStart(2, "0")}${product.variant ? "." + product.variant : ""}`;
+        update(i, { status: "done", product_code: code });
+      } catch (e) {
+        update(i, { status: "error", error: e instanceof Error ? e.message : "failed" });
+      }
+      done += 1;
+      setFinishedCount(done);
+    }
+    setRunning(false);
+  }
+
+  const allDone = rows.every((r) => r.status === "done");
+  const anyErrors = rows.some((r) => r.status === "error");
+
+  return (
+    <div
+      style={{
+        position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 100,
+        display: "flex", alignItems: "flex-start", justifyContent: "center",
+        padding: "60px 20px", overflowY: "auto",
+      }}
+      onClick={(e) => { if (e.target === e.currentTarget && !running) onClose(); }}
+    >
+      <div className="card" style={{ width: "100%", maxWidth: 1100, margin: 0 }}>
+        <div className="card-hd">
+          <h2 style={{ flex: 1 }}>Promote {rows.length} items</h2>
+          <button className="ghost" onClick={onClose} disabled={running}>Close</button>
+        </div>
+        <div className="card-bd">
+          <p className="muted" style={{ marginTop: 0 }}>
+            Review the element, variant and manufacturer for each item, then run them through.
+            Item numbers are auto-allocated within each element. Linked project materials will
+            update automatically.
+          </p>
+          {running && (
+            <div className="flash info">
+              Working… {finishedCount} of {rows.length} processed.
+            </div>
+          )}
+          {!running && allDone && (
+            <div className="flash success">
+              All {rows.length} items processed{anyErrors ? " (with errors — see below)" : "."}
+            </div>
+          )}
+
+          <table>
+            <thead>
+              <tr>
+                <th style={{ width: 24 }}>#</th>
+                <th>Description</th>
+                <th style={{ width: 200 }}>Element</th>
+                <th style={{ width: 140 }}>Variant</th>
+                <th style={{ width: 180 }}>Manufacturer</th>
+                <th style={{ width: 130 }}>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r, idx) => (
+                <tr key={r.suggestion.key}>
+                  <td className="muted">{idx + 1}</td>
+                  <td>
+                    {r.suggestion.sample_description}
+                    <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
+                      {r.suggestion.occurrences}× across {r.suggestion.project_codes.length} project{r.suggestion.project_codes.length === 1 ? "" : "s"}
+                      {r.suggestion.avg_unit_cost != null && <> · avg {fmtMoney(r.suggestion.avg_unit_cost)}</>}
+                    </div>
+                  </td>
+                  <td>
+                    <select
+                      value={r.element_code}
+                      onChange={(e) => update(idx, { element_code: e.target.value })}
+                      disabled={running || r.status === "done"}
+                    >
+                      {elements.map((el) => (
+                        <option key={el.code} value={el.code}>{el.code} · {el.name}</option>
+                      ))}
+                    </select>
+                  </td>
+                  <td>
+                    <input
+                      value={r.variant}
+                      onChange={(e) => update(idx, { variant: e.target.value })}
+                      placeholder="optional"
+                      disabled={running || r.status === "done"}
+                    />
+                  </td>
+                  <td>
+                    <input
+                      value={r.manufacturer}
+                      onChange={(e) => update(idx, { manufacturer: e.target.value })}
+                      placeholder="e.g. Kingspan"
+                      disabled={running || r.status === "done"}
+                    />
+                  </td>
+                  <td>
+                    {r.status === "pending" && <span className="badge draft">pending</span>}
+                    {r.status === "creating" && <span className="badge pending dot">creating…</span>}
+                    {r.status === "done" && (
+                      <span className="badge approved" style={{ fontFamily: "ui-monospace, monospace" }}>
+                        ✓ {r.product_code}
+                      </span>
+                    )}
+                    {r.status === "error" && (
+                      <span title={r.error} className="badge rejected">error</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div className="card-hd" style={{ borderBottom: "none", borderTop: "1px solid var(--line)" }}>
+          <div className="grow muted">
+            {allDone
+              ? `${rows.filter((r) => r.status === "done").length} created, ${rows.filter((r) => r.status === "error").length} failed`
+              : `${finishedCount} of ${rows.length} processed`}
+          </div>
+          {allDone ? (
+            <button className="primary" onClick={onDone}>Done</button>
+          ) : (
+            <>
+              <button className="ghost" onClick={onClose} disabled={running}>Cancel</button>
+              <button className="accent" onClick={runAll} disabled={running}>
+                {running ? "Running…" : "Promote all"}
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }

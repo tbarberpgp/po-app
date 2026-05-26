@@ -57,6 +57,8 @@ export type POLine = {
   is_over_budget: boolean;
   priced_qty_at_order: number | null;
   committed_before: number | null;
+  // Derived at query time: PRJ.ELE.RES if the material links to a master product.
+  cost_code?: string | null;
 };
 
 export type PurchaseOrder = {
@@ -153,6 +155,20 @@ export function buildProductCode(element_code: string, item_no: number, variant:
 export function buildCostCode(project_number: string | number, element_code: string, resource: string): string {
   const prj = String(project_number).padStart(4, "0");
   return `${prj}.${element_code}.${resource}`;
+}
+
+/**
+ * Pull a 4-digit project number out of an arbitrary project code.
+ *   "BNC001"   → "0001"
+ *   "BNC042"   → "0042"
+ *   "PGP-2604" → "2604"
+ *   "ABC"      → "0000"
+ * Codes longer than 4 digits keep the trailing 4 (rare; spec says 4 digits).
+ */
+export function derivedProjectNumber(projectCode: string): string {
+  const digits = projectCode.replace(/\D/g, "");
+  if (!digits) return "0000";
+  return digits.slice(-4).padStart(4, "0");
 }
 
 export type CreatePOInput = {

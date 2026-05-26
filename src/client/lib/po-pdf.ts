@@ -174,12 +174,17 @@ function drawLineTable(ctx: Ctx, po: Input, startY: number): number {
     const description = describe(ln);
     const sublines = wrapText(description, regular, 10, descriptionWidth);
     const lineHeight = 12;
-    const rowH = Math.max(sublines.length * lineHeight, lineHeight + 4);
+    const codeHeight = ln.cost_code ? 11 : 0;
+    const rowH = Math.max(sublines.length * lineHeight + codeHeight, lineHeight + 4);
 
     let dy = y;
     for (const t of sublines) {
       page.drawText(t, { x: descriptionLeft, y: dy, font: regular, size: 10, color: BLACK });
       dy -= lineHeight;
+    }
+    if (ln.cost_code) {
+      page.drawText(ln.cost_code, { x: descriptionLeft, y: dy, font: regular, size: 9, color: GREY });
+      dy -= codeHeight;
     }
     drawRightAligned(page, formatNumber(ln.qty),       right.quantity,   y, regular, 10);
     drawRightAligned(page, formatNumber(ln.unit_cost), right.unit_price, y, regular, 10);
@@ -188,7 +193,7 @@ function drawLineTable(ctx: Ctx, po: Input, startY: number): number {
     drawRightAligned(page, formatNumber(ln.line_total),right.amount,     y, regular, 10);
 
     subtotal += ln.line_total;
-    y = (sublines.length > 1 ? dy : y - rowH) - 4;
+    y = (sublines.length > 1 || ln.cost_code ? dy : y - rowH) - 4;
     hairline(page, MARGIN, y + 4, PAGE_W - MARGIN);
     y -= 8;
   }

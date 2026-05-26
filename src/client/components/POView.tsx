@@ -144,6 +144,11 @@ export function POView({ me }: { me: CurrentUser | null }) {
                     <tr key={l.id}>
                       <td>
                         {l.item}
+                        {l.cost_code && (
+                          <div className="muted" style={{ fontSize: 11, fontFamily: "ui-monospace, monospace", marginTop: 2 }}>
+                            {l.cost_code}
+                          </div>
+                        )}
                         {(l.is_unpriced || l.is_over_budget) && (
                           <div style={{ marginTop: 4, display: "flex", gap: 6 }}>
                             {l.is_unpriced && <span className="badge unpriced">unpriced</span>}

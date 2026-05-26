@@ -4,6 +4,7 @@ import type { CreatePOInput, POLine } from "../../shared/types";
 import { loadSettings, tierForApproval } from "../approval";
 import { emailApprovers, emailRequesterDecision } from "../notify";
 import { requirePermission } from "../auth";
+import { buildCostCode, derivedProjectNumber } from "../../shared/types";
 
 export const pos = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -54,12 +55,37 @@ pos.get("/:id", async (c) => {
     .bind(id)
     .first();
   if (!po) return c.json({ error: "not found" }, 404);
+
+  // Pull product → element joins so we can derive the PRJ.ELE.RES cost code
+  // for any line whose material links to a master product.
   const lines = await c.env.DB.prepare(
-    "SELECT * FROM po_lines WHERE po_id = ? ORDER BY id",
+    `SELECT pl.*,
+            m.product_id        AS link_product_id,
+            pr.element_code     AS link_element_code,
+            pr.default_resource AS link_default_resource
+     FROM po_lines pl
+     LEFT JOIN materials m  ON m.id = pl.material_id
+     LEFT JOIN products  pr ON pr.id = m.product_id
+     WHERE pl.po_id = ?
+     ORDER BY pl.id`,
   )
     .bind(id)
-    .all();
-  return c.json({ ...po, lines: lines.results });
+    .all<Record<string, unknown> & {
+      link_element_code: string | null;
+      link_default_resource: string | null;
+    }>();
+
+  const projectCode = po.project_code as string;
+  const projectNumber = derivedProjectNumber(projectCode);
+  const enriched = lines.results.map((l) => {
+    const cost_code =
+      l.link_element_code
+        ? buildCostCode(projectNumber, l.link_element_code, l.link_default_resource ?? "M")
+        : null;
+    return { ...l, cost_code };
+  });
+
+  return c.json({ ...po, lines: enriched });
 });
 
 pos.post("/", async (c) => {
