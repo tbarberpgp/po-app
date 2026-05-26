@@ -13,6 +13,7 @@ import {
   contactAddressLine,
   contactPhone,
   createPurchaseOrder,
+  findContactByName,
   formatPaymentTerms,
   getValidConnection,
   listSupplierContacts,
@@ -325,18 +326,46 @@ export async function pushPOToXero(env: Env, poId: string): Promise<{
     .bind(poId)
     .all<{ item: string; manufacturer: string | null; qty: number; unit_cost: number }>();
 
-  // Match supplier to a Xero ContactID if we have one on file.
+  // Resolve a Xero ContactID for this PO's supplier.
+  // 1. Best case — local supplier row already has xero_contact_id (synced earlier).
+  // 2. Fallback — search Xero by name (exact, then Contains) and cache the ID.
+  // 3. Failure — clear instruction; Xero won't accept Name alone.
   const supplierRow = await env.DB.prepare(
-    "SELECT xero_contact_id FROM suppliers WHERE lower(name) = lower(?)",
+    "SELECT id, xero_contact_id FROM suppliers WHERE lower(name) = lower(?)",
   )
     .bind(po.supplier)
-    .first<{ xero_contact_id: string | null }>();
+    .first<{ id: number; xero_contact_id: string | null }>();
+
+  let contactId: string | null = supplierRow?.xero_contact_id ?? null;
+  if (!contactId) {
+    const found = await findContactByName(env, po.supplier);
+    if (found) {
+      contactId = found.ContactID;
+      const now = new Date().toISOString();
+      if (supplierRow) {
+        await env.DB.prepare(
+          "UPDATE suppliers SET xero_contact_id = ?, xero_last_synced_at = ? WHERE id = ?",
+        ).bind(contactId, now, supplierRow.id).run();
+      } else {
+        // PO supplier wasn't in our register at all; create the row now so
+        // we don't have to look it up again next time.
+        await env.DB.prepare(
+          `INSERT INTO suppliers (name, status, xero_contact_id, xero_last_synced_at, created_at, created_by)
+           VALUES (?, 'approved', ?, ?, ?, 'auto-xero-link')`,
+        ).bind(found.Name ?? po.supplier, contactId, now, now).run();
+      }
+    }
+  }
+
+  if (!contactId) {
+    throw new Error(
+      `Supplier "${po.supplier}" wasn't found in Xero. Either add them as a Contact in Xero (Business → Contacts → New) and run "Sync from Xero" on the Approved Suppliers page, or rename them to match an existing Xero contact name.`,
+    );
+  }
 
   const dateOnly = po.created_at.split("T")[0];
   const payload: XeroPOInput = {
-    Contact: supplierRow?.xero_contact_id
-      ? { ContactID: supplierRow.xero_contact_id }
-      : { Name: po.supplier },
+    Contact: { ContactID: contactId },
     Date: dateOnly,
     DeliveryDate: po.delivery_date ?? undefined,
     Reference: po.po_number,

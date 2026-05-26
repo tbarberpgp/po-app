@@ -135,6 +135,38 @@ export async function listSupplierContacts(env: Env): Promise<XeroContact[]> {
   return all;
 }
 
+/**
+ * Look up a single Xero contact by name. Tries an exact-name `where`
+ * filter first, then falls back to a Contains search for "Alumasc Ltd"
+ * vs "Alumasc"-style mismatches. Returns null when no match is found.
+ */
+export async function findContactByName(env: Env, name: string): Promise<XeroContact | null> {
+  const conn = await getValidConnection(env);
+  const safe = name.replace(/"/g, '\\"');
+
+  // 1. Exact match — covers the common case where local name === Xero name.
+  try {
+    const body = await xeroFetch(
+      conn,
+      "GET",
+      `/Contacts?where=${encodeURIComponent(`Name="${safe}"`)}`,
+    ) as { Contacts?: XeroContact[] };
+    if (body.Contacts && body.Contacts.length > 0) return body.Contacts[0];
+  } catch { /* fall through to contains */ }
+
+  // 2. Contains match — handles "Alumasc" ↔ "Alumasc Ltd" etc.
+  try {
+    const body = await xeroFetch(
+      conn,
+      "GET",
+      `/Contacts?where=${encodeURIComponent(`Name.Contains("${safe}")`)}`,
+    ) as { Contacts?: XeroContact[] };
+    if (body.Contacts && body.Contacts.length > 0) return body.Contacts[0];
+  } catch { /* ignore */ }
+
+  return null;
+}
+
 /* ── Purchase Orders ────────────────────────────────────────────────── */
 
 export type XeroPOLine = {
