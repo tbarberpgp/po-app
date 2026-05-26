@@ -173,6 +173,20 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ material_ids: materialIds, unlink }),
     }),
+  researchProduct: (query: string) =>
+    jfetch<{
+      suggestion: {
+        element_code?: string;
+        manufacturer?: string;
+        variant?: string;
+        description?: string;
+        unit?: string;
+        estimated_unit_cost_gbp?: number;
+        confidence?: "high" | "medium" | "low";
+        notes?: string;
+      };
+      usage: { input_tokens: number; output_tokens: number };
+    }>("/api/products/research", { method: "POST", body: JSON.stringify({ query }) }),
 };
 
 export function fmtMoney(n: number, currency = "GBP") {

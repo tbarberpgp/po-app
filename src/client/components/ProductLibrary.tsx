@@ -237,6 +237,39 @@ function ProductForm({
   });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // AI research state
+  const [researchQuery, setResearchQuery] = useState("");
+  const [researching, setResearching] = useState(false);
+  const [researchInfo, setResearchInfo] = useState<{ confidence: string; notes?: string } | null>(null);
+
+  async function research() {
+    if (!researchQuery.trim()) return;
+    setResearching(true); setErr(null); setResearchInfo(null);
+    try {
+      const { suggestion } = await api.researchProduct(researchQuery.trim());
+      setForm((f) => ({
+        ...f,
+        // Only overwrite blanks so re-running research doesn't blow away manual edits.
+        element_code: f.element_code || suggestion.element_code || f.element_code,
+        variant: f.variant || suggestion.variant || "",
+        description: f.description || suggestion.description || researchQuery.trim(),
+        manufacturer: f.manufacturer || suggestion.manufacturer || "",
+        supplier: f.supplier || suggestion.manufacturer || "",
+        unit: f.unit || suggestion.unit || "",
+        unit_cost:
+          f.unit_cost ||
+          (suggestion.estimated_unit_cost_gbp && suggestion.estimated_unit_cost_gbp > 0
+            ? String(suggestion.estimated_unit_cost_gbp)
+            : ""),
+        notes: f.notes || suggestion.notes || "",
+      }));
+      setResearchInfo({ confidence: suggestion.confidence ?? "low", notes: suggestion.notes });
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "research failed");
+    } finally {
+      setResearching(false);
+    }
+  }
 
   const previewCode = form.item_no
     ? buildProductCode(form.element_code, Number(form.item_no), form.variant || null)
@@ -269,6 +302,35 @@ function ProductForm({
 
   const fields = (
     <>
+      {!initial && (
+        <div style={{ marginBottom: 16, padding: 12, background: "var(--accent-soft)", border: "1px solid var(--accent)", borderRadius: 8 }}>
+          <label style={{ color: "var(--accent-2)" }}>Research with AI</label>
+          <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+            <input
+              value={researchQuery}
+              onChange={(e) => setResearchQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  research();
+                }
+              }}
+              placeholder="e.g. 'Kingspan KS1000 RW 80mm' or 'Rockwool RWA45 100mm slab'"
+              style={{ flex: 1 }}
+            />
+            <button type="button" className="accent" onClick={research} disabled={researching || !researchQuery.trim()}>
+              {researching ? "Researching…" : "🔍 Research"}
+            </button>
+          </div>
+          {researchInfo && (
+            <div className="muted" style={{ fontSize: 12, marginTop: 8 }}>
+              Confidence: <b style={{ color: researchInfo.confidence === "high" ? "var(--success)" : researchInfo.confidence === "low" ? "var(--danger)" : "var(--warn)" }}>{researchInfo.confidence}</b>
+              {researchInfo.notes && <> · {researchInfo.notes}</>}
+              {" "}— review the auto-filled fields below and edit as needed.
+            </div>
+          )}
+        </div>
+      )}
       <div style={{ display: "grid", gridTemplateColumns: "1.5fr 80px 100px 1fr", gap: 12 }}>
         <div>
           <label>Element</label>

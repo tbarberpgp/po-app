@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import Anthropic from "@anthropic-ai/sdk";
 import type { Env, Variables } from "../env";
 import { requirePermission } from "../auth";
 
@@ -210,6 +211,151 @@ products.get("/suggestions", async (c) => {
     return a.sample_description.localeCompare(b.sample_description);
   });
   return c.json(result);
+});
+
+/**
+ * AI product research — given a product name/SKU/description, ask Claude to
+ * fill in the missing fields (element code, manufacturer, variant, unit,
+ * typical UK trade price). Returns the structured suggestion; the client
+ * uses it to pre-fill the New Product form.
+ *
+ * The element list is loaded from D1 on every call so Claude can only
+ * suggest codes that actually exist (no hallucinated elements).
+ */
+products.post("/research", async (c) => {
+  const denied = requirePermission(c, "approvers.manage");
+  if (denied) return denied;
+
+  if (!c.env.ANTHROPIC_API_KEY) {
+    return c.json(
+      {
+        error:
+          "Product research is disabled in this environment. Set the ANTHROPIC_API_KEY secret via `wrangler secret put ANTHROPIC_API_KEY` to enable.",
+      },
+      503,
+    );
+  }
+
+  const body = await c.req.json<{ query: string }>();
+  const query = body.query?.trim();
+  if (!query) return c.json({ error: "query is required" }, 400);
+
+  // Pull current elements so Claude's choices are bounded by what exists.
+  const elements = await c.env.DB.prepare(
+    "SELECT code, name, notes FROM elements ORDER BY code",
+  ).all<{ code: string; name: string; notes: string | null }>();
+
+  const elementsContext = elements.results
+    .map((e) => `  ${e.code} — ${e.name}${e.notes ? `: ${e.notes}` : ""}`)
+    .join("\n");
+
+  const systemPrompt = `You are an expert in UK roofing, cladding and building-envelope procurement. Given a description of a construction material or product, return structured details so it can be added to a master product catalogue.
+
+Allocate the product to one of these element codes (use the closest match — never invent a code):
+${elementsContext}
+
+Pricing guidance: estimate typical UK trade prices in GBP (excluding VAT). Be conservative — if you're unsure, mark confidence "low" and explain in notes. Common units: m² (cladding, insulation, membranes), lm/m (gutters, flashings, trims), ea/nr (fixings, brackets, rooflights), Roll (membranes, tapes), Box (fasteners).
+
+Variant guidance: use a short alphanumeric flag (e.g. "KS1000-80", "ANTH", "100mm", "M8-50") only when the description names a clear distinguishing variant. Leave blank otherwise.`;
+
+  const client = new Anthropic({ apiKey: c.env.ANTHROPIC_API_KEY });
+
+  const response = await client.messages.create({
+    model: "claude-opus-4-7",
+    max_tokens: 1024,
+    thinking: { type: "adaptive" },
+    output_config: { effort: "medium" },
+    system: systemPrompt,
+    tools: [
+      {
+        name: "suggest_product",
+        description:
+          "Return structured product details for the master cost-coded catalogue.",
+        input_schema: {
+          type: "object" as const,
+          properties: {
+            element_code: {
+              type: "string",
+              description:
+                "2-digit element code from the provided list (e.g. '21', '31', '60'). Must exactly match one of the codes shown.",
+            },
+            manufacturer: {
+              type: "string",
+              description:
+                "Manufacturer brand name (e.g. 'Kingspan', 'Trespa', 'Rockwool', 'Alumasc'). Empty string if unknown / generic.",
+            },
+            variant: {
+              type: "string",
+              description:
+                "Short alphanumeric variant flag for size/colour/spec (e.g. 'KS1000-80'). Empty string if no clear variant.",
+            },
+            description: {
+              type: "string",
+              description:
+                "Cleaned, standardised product description (e.g. 'Kingspan KS1000 RW 80mm composite roof panel').",
+            },
+            unit: {
+              type: "string",
+              description:
+                "Typical unit of sale: 'm²', 'lm', 'ea', 'Roll', 'Box', 'bag', 'drum', etc.",
+            },
+            estimated_unit_cost_gbp: {
+              type: "number",
+              description:
+                "Estimated UK trade price in GBP excluding VAT, per the unit above. 0 if unknown.",
+            },
+            confidence: {
+              type: "string",
+              enum: ["high", "medium", "low"],
+              description:
+                "How confident you are in this suggestion overall.",
+            },
+            notes: {
+              type: "string",
+              description:
+                "Any caveats, alternatives, or context worth surfacing to the user (e.g. 'Available in 60–120mm thicknesses; price varies').",
+            },
+          },
+          required: ["element_code", "description", "confidence"],
+        },
+      },
+    ],
+    tool_choice: { type: "tool", name: "suggest_product" },
+    messages: [
+      {
+        role: "user",
+        content: `Research this product and fill in the structured fields:\n\n${query}`,
+      },
+    ],
+  });
+
+  const toolUse = response.content.find(
+    (b): b is Anthropic.ToolUseBlock => b.type === "tool_use",
+  );
+  if (!toolUse) {
+    return c.json({ error: "Claude did not return structured output" }, 502);
+  }
+
+  // Validate the element code is one we actually have. If the model picked an
+  // unknown code, drop it so the UI re-prompts the user.
+  const suggestion = toolUse.input as {
+    element_code?: string;
+    [k: string]: unknown;
+  };
+  if (
+    suggestion.element_code &&
+    !elements.results.some((e) => e.code === suggestion.element_code)
+  ) {
+    delete suggestion.element_code;
+  }
+
+  return c.json({
+    suggestion,
+    usage: {
+      input_tokens: response.usage.input_tokens,
+      output_tokens: response.usage.output_tokens,
+    },
+  });
 });
 
 /** Link a set of project materials to an existing product (or unlink with product_id=null). */
