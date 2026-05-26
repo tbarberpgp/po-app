@@ -63,9 +63,45 @@ async function xeroFetch(conn: XeroConnectionRow, method: string, path: string, 
   });
   if (!res.ok) {
     const txt = await res.text();
-    throw new Error(`Xero ${method} ${path} → ${res.status}: ${txt.slice(0, 400)}`);
+    throw new Error(`Xero ${method} ${path} → ${res.status}: ${extractXeroError(txt)}`);
   }
   return res.json();
+}
+
+/**
+ * Pull the useful bit out of a Xero error response. Xero returns deeply
+ * nested validation errors like:
+ *   { Elements: [ { ValidationErrors: [ { Message: "..." } ] } ] }
+ * The raw JSON is huge and the actionable text is buried. Returns a
+ * concatenated, human-readable error string.
+ */
+function extractXeroError(rawBody: string): string {
+  try {
+    const parsed = JSON.parse(rawBody);
+
+    // Validation exceptions on collection endpoints (most common shape)
+    const validationMessages: string[] = [];
+    const elements = Array.isArray(parsed?.Elements) ? parsed.Elements : [];
+    for (const el of elements) {
+      const errs = Array.isArray(el?.ValidationErrors) ? el.ValidationErrors : [];
+      for (const e of errs) if (e?.Message) validationMessages.push(String(e.Message));
+      // Sometimes line-level errors nest inside LineItems
+      const lines = Array.isArray(el?.LineItems) ? el.LineItems : [];
+      for (const ln of lines) {
+        const lnErrs = Array.isArray(ln?.ValidationErrors) ? ln.ValidationErrors : [];
+        for (const e of lnErrs) if (e?.Message) validationMessages.push(`Line: ${String(e.Message)}`);
+      }
+    }
+    if (validationMessages.length > 0) return validationMessages.join(" · ");
+
+    // Generic Message field
+    if (typeof parsed?.Message === "string") return parsed.Message;
+    if (typeof parsed?.detail === "string") return parsed.detail;
+    if (typeof parsed?.error === "string") return parsed.error;
+  } catch {
+    /* not JSON */
+  }
+  return rawBody.slice(0, 600);
 }
 
 /* ── Contacts (suppliers) ───────────────────────────────────────────── */
