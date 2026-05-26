@@ -110,6 +110,51 @@ export type AppUser = {
   created_by: string | null;
 };
 
+export type Element = {
+  code: string;
+  name: string;
+  notes: string | null;
+};
+
+export type ResourceType = {
+  code: "M" | "L" | "P" | "S" | "O" | "X";
+  name: string;
+  usage: string | null;
+};
+
+export type Product = {
+  id: number;
+  element_code: string;
+  item_no: number;
+  variant: string | null;
+  description: string;
+  manufacturer: string | null;
+  supplier: string | null;
+  unit: string | null;
+  unit_cost: number | null;
+  default_resource: string | null;
+  notes: string | null;
+  created_at: string;
+  created_by: string | null;
+  // Computed/derived on read
+  product_code: string;
+  element_name: string;
+  usage_count: number;
+};
+
+/** Derive ELE.ITM[.VAR] from the pieces. */
+export function buildProductCode(element_code: string, item_no: number, variant: string | null): string {
+  const item = String(item_no).padStart(2, "0");
+  const v = variant?.trim() ? `.${variant.trim()}` : "";
+  return `${element_code}.${item}${v}`;
+}
+
+/** Derive PRJ.ELE.RES from a project number, element and resource code. */
+export function buildCostCode(project_number: string | number, element_code: string, resource: string): string {
+  const prj = String(project_number).padStart(4, "0");
+  return `${prj}.${element_code}.${resource}`;
+}
+
 export type CreatePOInput = {
   project_id: string;
   supplier: string;

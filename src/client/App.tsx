@@ -8,6 +8,7 @@ import { POView } from "./components/POView";
 import { ApprovalsInbox } from "./components/ApprovalsInbox";
 import { Admin } from "./components/Admin";
 import { DeletedProjects } from "./components/DeletedProjects";
+import { ProductLibrary } from "./components/ProductLibrary";
 import { Sidebar } from "./components/Shell";
 import { api } from "./lib/api";
 import type { CurrentUser } from "../shared/types";
@@ -56,6 +57,7 @@ export function App() {
           <Route path="/approvals/:id" element={<POView me={me} />} />
           <Route path="/admin" element={<Admin me={me} />} />
           <Route path="/deleted-projects" element={<DeletedProjects me={me} />} />
+          <Route path="/products" element={<ProductLibrary me={me} />} />
           <Route path="*" element={<NoMatch />} />
         </Routes>
       </div>

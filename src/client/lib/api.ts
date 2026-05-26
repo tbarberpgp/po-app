@@ -2,9 +2,12 @@ import type {
   AppUser,
   CreatePOInput,
   CurrentUser,
+  Element,
   MaterialWithCommitment,
+  Product,
   Project,
   PurchaseOrder,
+  ResourceType,
   Settings,
 } from "../../shared/types";
 import type { Role } from "../../shared/permissions";
@@ -122,6 +125,53 @@ export const api = {
     jfetch<{ ok: true }>(`/api/pos/${id}`, {
       method: "DELETE",
       body: JSON.stringify({ reason }),
+    }),
+
+  // Product library / taxonomy
+  listElements: () => jfetch<Element[]>("/api/elements"),
+  listResourceTypes: () => jfetch<ResourceType[]>("/api/resource-types"),
+  listProducts: () => jfetch<Product[]>("/api/products"),
+  addProduct: (input: {
+    element_code: string;
+    item_no?: number;
+    variant?: string | null;
+    description: string;
+    manufacturer?: string | null;
+    supplier?: string | null;
+    unit?: string | null;
+    unit_cost?: number | null;
+    default_resource?: string;
+    notes?: string | null;
+  }) => jfetch<{ id: number; item_no: number; variant: string | null }>("/api/products", {
+    method: "POST",
+    body: JSON.stringify(input),
+  }),
+  updateProduct: (
+    id: number,
+    input: Partial<Pick<Product, "element_code" | "item_no" | "variant" | "description" | "manufacturer" | "supplier" | "unit" | "unit_cost" | "default_resource" | "notes">>,
+  ) => jfetch<{ ok: true }>(`/api/products/${id}`, {
+    method: "PUT",
+    body: JSON.stringify(input),
+  }),
+  removeProduct: (id: number) =>
+    jfetch<{ ok: true }>(`/api/products/${id}`, { method: "DELETE" }),
+  productSuggestions: () =>
+    jfetch<Array<{
+      key: string;
+      sample_description: string;
+      manufacturer: string | null;
+      type: string;
+      occurrences: number;
+      avg_unit_cost: number | null;
+      suppliers: string[];
+      project_codes: string[];
+      linked_product_id: number | null;
+      material_ids: number[];
+    }>>("/api/products/suggestions"),
+  linkMaterialsToProduct: (productId: number, materialIds: number[], unlink = false) =>
+    jfetch<{ ok: true; linked: number }>(`/api/products/${productId}/link-materials`, {
+      method: "POST",
+      body: JSON.stringify({ material_ids: materialIds, unlink }),
     }),
 };
 

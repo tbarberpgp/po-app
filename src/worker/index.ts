@@ -6,6 +6,8 @@ import { materials } from "./routes/materials";
 import { pos } from "./routes/pos";
 import { approvers } from "./routes/approvers";
 import { users } from "./routes/users";
+import { products } from "./routes/products";
+import { elements, resourceTypes } from "./routes/taxonomy";
 import { loadSettings } from "./approval";
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -20,6 +22,9 @@ app.route("/api/materials", materials);
 app.route("/api/pos", pos);
 app.route("/api/approvers", approvers);
 app.route("/api/users", users);
+app.route("/api/products", products);
+app.route("/api/elements", elements);
+app.route("/api/resource-types", resourceTypes);
 
 app.onError((err, c) => {
   console.error(err);
