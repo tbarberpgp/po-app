@@ -131,7 +131,7 @@ export type Product = {
   variant: string | null;
   description: string;
   manufacturer: string | null;
-  supplier: string | null;
+  supplier: string | null;        // primary supplier — defaults to manufacturer if blank
   unit: string | null;
   unit_cost: number | null;
   default_resource: string | null;
@@ -142,6 +142,21 @@ export type Product = {
   product_code: string;
   element_name: string;
   usage_count: number;
+  alternate_supplier_count: number;
+};
+
+/** An alternate supplier offering the product at its own price / SKU / lead time. */
+export type ProductSupplier = {
+  id: number;
+  product_id: number;
+  supplier_name: string;
+  unit_cost: number | null;
+  supplier_sku: string | null;
+  lead_time_days: number | null;
+  notes: string | null;
+  is_preferred: boolean;
+  created_at: string;
+  created_by: string | null;
 };
 
 /** Derive ELE.ITM[.VAR] from the pieces. */

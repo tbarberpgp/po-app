@@ -3,7 +3,7 @@ import { api, fmtMoney } from "../lib/api";
 import { Topbar } from "./Shell";
 import { can } from "../../shared/permissions";
 import { buildProductCode } from "../../shared/types";
-import type { CurrentUser, Element, Product, ResourceType } from "../../shared/types";
+import type { CurrentUser, Element, Product, ProductSupplier, ResourceType } from "../../shared/types";
 
 type Suggestion = Awaited<ReturnType<typeof api.productSuggestions>>[number];
 type Tab = "library" | "suggestions";
@@ -109,6 +109,7 @@ function LibraryTab({
   const [filter, setFilter] = useState("");
   const [elementFilter, setElementFilter] = useState("");
   const [editingId, setEditingId] = useState<number | null>(null);
+  const [expandedId, setExpandedId] = useState<number | null>(null);
 
   const visible = products
     .filter((p) => !elementFilter || p.element_code === elementFilter)
@@ -150,6 +151,7 @@ function LibraryTab({
           <table>
             <thead>
               <tr>
+                <th style={{ width: 28 }}></th>
                 <th>Code</th>
                 <th>Element</th>
                 <th>Description</th>
@@ -175,32 +177,61 @@ function LibraryTab({
                     onSaved={() => { setEditingId(null); onChanged(); }}
                   />
                 ) : (
-                  <tr key={p.id}>
-                    <td><span className="badge" style={{ fontFamily: "ui-monospace, monospace" }}>{p.product_code}</span></td>
-                    <td className="muted">{p.element_code} · {p.element_name.replace(/^[A-Za-z]+ - /, "")}</td>
-                    <td>
-                      {p.description}
-                      {duplicateIds.has(p.id) && <span className="badge unpriced" style={{ marginLeft: 6 }}>possible duplicate</span>}
-                    </td>
-                    <td className="muted">{p.manufacturer ?? "—"}</td>
-                    <td className="muted">{p.supplier ?? "—"}</td>
-                    <td>{p.unit ?? ""}</td>
-                    <td className="num">{p.unit_cost != null ? fmtMoney(p.unit_cost) : <span className="muted">—</span>}</td>
-                    <td>{p.default_resource ?? "M"}</td>
-                    <td className="num">{p.usage_count}</td>
-                    <td>
-                      {canManage && (
-                        <>
-                          <button className="ghost tiny" onClick={() => setEditingId(p.id)}>Edit</button>{" "}
-                          <button className="ghost tiny" onClick={async () => {
-                            if (!confirm(`Delete product "${p.product_code} ${p.description}"? Linked project materials will be unlinked but kept.`)) return;
-                            await api.removeProduct(p.id);
-                            onChanged();
-                          }}>×</button>
-                        </>
-                      )}
-                    </td>
-                  </tr>
+                  <>
+                    <tr key={p.id}>
+                      <td>
+                        <button
+                          className="ghost tiny"
+                          onClick={() => setExpandedId(expandedId === p.id ? null : p.id)}
+                          title={expandedId === p.id ? "Collapse" : "Show alternate suppliers"}
+                          style={{ minWidth: 24, padding: "2px 6px" }}
+                        >
+                          {expandedId === p.id ? "▾" : "▸"}
+                          {p.alternate_supplier_count > 0 && (
+                            <span style={{ marginLeft: 4, fontSize: 10, color: "var(--accent-2)" }}>
+                              +{p.alternate_supplier_count}
+                            </span>
+                          )}
+                        </button>
+                      </td>
+                      <td><span className="badge" style={{ fontFamily: "ui-monospace, monospace" }}>{p.product_code}</span></td>
+                      <td className="muted">{p.element_code} · {p.element_name.replace(/^[A-Za-z]+ - /, "")}</td>
+                      <td>
+                        {p.description}
+                        {duplicateIds.has(p.id) && <span className="badge unpriced" style={{ marginLeft: 6 }}>possible duplicate</span>}
+                      </td>
+                      <td className="muted">{p.manufacturer ?? "—"}</td>
+                      <td className="muted">
+                        {p.supplier ?? "—"}
+                        {p.supplier && p.manufacturer && p.supplier === p.manufacturer && (
+                          <span className="muted" style={{ fontSize: 11, marginLeft: 4 }} title="Same as manufacturer">↩</span>
+                        )}
+                      </td>
+                      <td>{p.unit ?? ""}</td>
+                      <td className="num">{p.unit_cost != null ? fmtMoney(p.unit_cost) : <span className="muted">—</span>}</td>
+                      <td>{p.default_resource ?? "M"}</td>
+                      <td className="num">{p.usage_count}</td>
+                      <td>
+                        {canManage && (
+                          <>
+                            <button className="ghost tiny" onClick={() => setEditingId(p.id)}>Edit</button>{" "}
+                            <button className="ghost tiny" onClick={async () => {
+                              if (!confirm(`Delete product "${p.product_code} ${p.description}"? Linked project materials will be unlinked but kept.`)) return;
+                              await api.removeProduct(p.id);
+                              onChanged();
+                            }}>×</button>
+                          </>
+                        )}
+                      </td>
+                    </tr>
+                    {expandedId === p.id && (
+                      <tr>
+                        <td colSpan={11} style={{ background: "var(--card-2)", padding: 0 }}>
+                          <AlternateSuppliersPanel product={p} canManage={canManage} onChanged={onChanged} />
+                        </td>
+                      </tr>
+                    )}
+                  </>
                 ),
               )}
             </tbody>
@@ -223,6 +254,13 @@ function ProductForm({
   onCancel: () => void;
   onSaved: () => void;
 }) {
+  // Treat the row as "supplier === manufacturer" when they actually match
+  // (or supplier is blank). The user can untick to type a different supplier.
+  const startsSameAsMfr =
+    !initial ||
+    !initial.supplier ||
+    (initial.manufacturer && initial.supplier === initial.manufacturer);
+  const [sameAsMfr, setSameAsMfr] = useState<boolean>(!!startsSameAsMfr);
   const [form, setForm] = useState({
     element_code: initial?.element_code ?? elements[0]?.code ?? "",
     item_no: initial?.item_no?.toString() ?? "",   // blank → auto-allocate
@@ -278,13 +316,16 @@ function ProductForm({
   async function save() {
     setBusy(true); setErr(null);
     try {
+      const effectiveSupplier = sameAsMfr
+        ? form.manufacturer || null
+        : form.supplier || null;
       const payload = {
         element_code: form.element_code,
         item_no: form.item_no ? Number(form.item_no) : undefined,
         variant: form.variant || null,
         description: form.description,
         manufacturer: form.manufacturer || null,
-        supplier: form.supplier || null,
+        supplier: effectiveSupplier,
         unit: form.unit || null,
         unit_cost: form.unit_cost ? Number(form.unit_cost) : null,
         default_resource: form.default_resource,
@@ -361,8 +402,24 @@ function ProductForm({
           <input value={form.manufacturer} onChange={(e) => setForm({ ...form, manufacturer: e.target.value })} />
         </div>
         <div>
-          <label>Supplier</label>
-          <input value={form.supplier} onChange={(e) => setForm({ ...form, supplier: e.target.value })} />
+          <label style={{ display: "flex", alignItems: "center", gap: 6, textTransform: "none", letterSpacing: 0, fontSize: 11 }}>
+            <span>Supplier</span>
+            <label style={{ display: "inline-flex", alignItems: "center", gap: 4, margin: 0, padding: 0, textTransform: "none", letterSpacing: 0, fontSize: 11, color: "var(--muted)" }}>
+              <input
+                type="checkbox"
+                checked={sameAsMfr}
+                onChange={(e) => setSameAsMfr(e.target.checked)}
+                style={{ minHeight: 0 }}
+              />
+              same as manufacturer
+            </label>
+          </label>
+          <input
+            value={sameAsMfr ? form.manufacturer : form.supplier}
+            onChange={(e) => setForm({ ...form, supplier: e.target.value })}
+            readOnly={sameAsMfr}
+            placeholder={sameAsMfr ? "—" : "e.g. SIG Roofing"}
+          />
         </div>
         <div>
           <label>Unit</label>
@@ -379,6 +436,12 @@ function ProductForm({
           </select>
         </div>
       </div>
+      {initial && (
+        <div className="muted" style={{ fontSize: 12, marginTop: 8 }}>
+          Need to compare prices from multiple suppliers (e.g. fixings from different merchants)? Save first,
+          then expand the row in the table to add alternate suppliers with their own prices and SKUs.
+        </div>
+      )}
       {err && <div className="flash error" style={{ marginTop: 12 }}>{err}</div>}
       <div className="row" style={{ marginTop: 16 }}>
         <button className="primary" onClick={save} disabled={busy || !form.description.trim()}>{initial ? "Save" : "Create product"}</button>
@@ -680,6 +743,275 @@ function PromoteToNewProduct({
         Item number will be auto-allocated within the chosen element. {suggestion.material_ids.length} project material row(s) will be linked to this product.
       </div>
     </>
+  );
+}
+
+/* ── Alternate suppliers panel (expand row to manage) ─────────────────── */
+
+function AlternateSuppliersPanel({
+  product, canManage, onChanged,
+}: {
+  product: Product;
+  canManage: boolean;
+  onChanged: () => void;
+}) {
+  const [rows, setRows] = useState<ProductSupplier[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
+
+  function reload() {
+    setLoading(true);
+    api.listProductSuppliers(product.id)
+      .then(setRows)
+      .catch((e) => setErr(e instanceof Error ? e.message : "load failed"))
+      .finally(() => setLoading(false));
+  }
+  useEffect(reload, [product.id]);
+
+  return (
+    <div style={{ padding: 20 }}>
+      <div className="row" style={{ marginBottom: 12 }}>
+        <div className="grow">
+          <h3 style={{ margin: 0, fontSize: 14 }}>Alternate suppliers for {product.product_code}</h3>
+          <div className="muted" style={{ fontSize: 12, marginTop: 2 }}>
+            Add suppliers where this product is also available, each with their own price and SKU.
+            The primary supplier is <b>{product.supplier ?? product.manufacturer ?? "—"}</b> at{" "}
+            <b>{product.unit_cost != null ? fmtMoney(product.unit_cost) : "—"}</b>.
+          </div>
+        </div>
+        {canManage && !adding && (
+          <button className="accent tiny" onClick={() => setAdding(true)}>+ Add supplier</button>
+        )}
+      </div>
+
+      {err && <div className="flash error">{err}</div>}
+
+      {adding && (
+        <AlternateSupplierForm
+          productId={product.id}
+          onCancel={() => setAdding(false)}
+          onSaved={() => { setAdding(false); reload(); onChanged(); }}
+        />
+      )}
+
+      {loading ? (
+        <div className="muted">Loading suppliers…</div>
+      ) : rows.length === 0 && !adding ? (
+        <div className="muted" style={{ fontSize: 13 }}>
+          No alternate suppliers yet.{" "}
+          {canManage && "Click + Add supplier above to add one — useful when the same product is stocked by multiple merchants at different prices."}
+        </div>
+      ) : (
+        <table style={{ background: "var(--card)" }}>
+          <thead>
+            <tr>
+              <th>Supplier</th>
+              <th>SKU</th>
+              <th className="num">Unit cost</th>
+              <th className="num">vs. primary</th>
+              <th className="num">Lead time</th>
+              <th>Notes</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <AlternateSupplierRow
+                key={r.id}
+                row={r}
+                productId={product.id}
+                primaryCost={product.unit_cost}
+                canManage={canManage}
+                onChanged={() => { reload(); onChanged(); }}
+              />
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
+function AlternateSupplierForm({
+  productId, onCancel, onSaved,
+}: {
+  productId: number;
+  onCancel: () => void;
+  onSaved: () => void;
+}) {
+  const [form, setForm] = useState({
+    supplier_name: "",
+    unit_cost: "",
+    supplier_sku: "",
+    lead_time_days: "",
+    notes: "",
+    is_preferred: false,
+  });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function save() {
+    setBusy(true); setErr(null);
+    try {
+      await api.addProductSupplier(productId, {
+        supplier_name: form.supplier_name.trim(),
+        unit_cost: form.unit_cost ? Number(form.unit_cost) : null,
+        supplier_sku: form.supplier_sku.trim() || null,
+        lead_time_days: form.lead_time_days ? Number(form.lead_time_days) : null,
+        notes: form.notes.trim() || null,
+        is_preferred: form.is_preferred,
+      });
+      onSaved();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "save failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="card" style={{ marginBottom: 12, background: "var(--card)" }}>
+      <div className="card-bd">
+        {err && <div className="flash error">{err}</div>}
+        <div style={{ display: "grid", gridTemplateColumns: "1.5fr 1fr 120px 110px auto", gap: 12 }}>
+          <div>
+            <label>Supplier name</label>
+            <input value={form.supplier_name} onChange={(e) => setForm({ ...form, supplier_name: e.target.value })} placeholder="e.g. SIG Roofing" />
+          </div>
+          <div>
+            <label>Their SKU (optional)</label>
+            <input value={form.supplier_sku} onChange={(e) => setForm({ ...form, supplier_sku: e.target.value })} placeholder="e.g. SIG-9924" />
+          </div>
+          <div>
+            <label>Unit cost (£)</label>
+            <input type="number" step="0.01" className="num" value={form.unit_cost} onChange={(e) => setForm({ ...form, unit_cost: e.target.value })} />
+          </div>
+          <div>
+            <label>Lead time (days)</label>
+            <input type="number" className="num" value={form.lead_time_days} onChange={(e) => setForm({ ...form, lead_time_days: e.target.value })} />
+          </div>
+          <div style={{ alignSelf: "end" }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, textTransform: "none", letterSpacing: 0 }}>
+              <input type="checkbox" checked={form.is_preferred} onChange={(e) => setForm({ ...form, is_preferred: e.target.checked })} style={{ minHeight: 0 }} />
+              Prefer over primary
+            </label>
+          </div>
+        </div>
+        <div style={{ marginTop: 12 }}>
+          <label>Notes</label>
+          <input value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="e.g. 5% trade discount at 100+, MOQ 50" />
+        </div>
+        <div className="row" style={{ marginTop: 12 }}>
+          <button className="primary" onClick={save} disabled={busy || !form.supplier_name.trim()}>Save supplier</button>
+          <button className="ghost" onClick={onCancel}>Cancel</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AlternateSupplierRow({
+  row, productId, primaryCost, canManage, onChanged,
+}: {
+  row: ProductSupplier;
+  productId: number;
+  primaryCost: number | null;
+  canManage: boolean;
+  onChanged: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [form, setForm] = useState({
+    supplier_name: row.supplier_name,
+    unit_cost: row.unit_cost?.toString() ?? "",
+    supplier_sku: row.supplier_sku ?? "",
+    lead_time_days: row.lead_time_days?.toString() ?? "",
+    notes: row.notes ?? "",
+    is_preferred: row.is_preferred,
+  });
+  const [busy, setBusy] = useState(false);
+
+  const delta = primaryCost != null && row.unit_cost != null ? row.unit_cost - primaryCost : null;
+  const deltaPct = primaryCost != null && primaryCost > 0 && row.unit_cost != null
+    ? ((row.unit_cost - primaryCost) / primaryCost) * 100
+    : null;
+
+  async function save() {
+    setBusy(true);
+    try {
+      await api.updateProductSupplier(productId, row.id, {
+        supplier_name: form.supplier_name.trim(),
+        unit_cost: form.unit_cost ? Number(form.unit_cost) : null,
+        supplier_sku: form.supplier_sku.trim() || null,
+        lead_time_days: form.lead_time_days ? Number(form.lead_time_days) : null,
+        notes: form.notes.trim() || null,
+        is_preferred: form.is_preferred,
+      });
+      setEditing(false);
+      onChanged();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (editing) {
+    return (
+      <tr style={{ background: "var(--accent-soft)" }}>
+        <td><input value={form.supplier_name} onChange={(e) => setForm({ ...form, supplier_name: e.target.value })} /></td>
+        <td><input value={form.supplier_sku} onChange={(e) => setForm({ ...form, supplier_sku: e.target.value })} /></td>
+        <td><input type="number" step="0.01" className="num" value={form.unit_cost} onChange={(e) => setForm({ ...form, unit_cost: e.target.value })} /></td>
+        <td className="muted num">—</td>
+        <td><input type="number" className="num" value={form.lead_time_days} onChange={(e) => setForm({ ...form, lead_time_days: e.target.value })} /></td>
+        <td>
+          <input value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} />
+          <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, marginTop: 6, textTransform: "none", letterSpacing: 0 }}>
+            <input type="checkbox" checked={form.is_preferred} onChange={(e) => setForm({ ...form, is_preferred: e.target.checked })} style={{ minHeight: 0 }} />
+            Preferred
+          </label>
+        </td>
+        <td>
+          <button className="primary tiny" disabled={busy} onClick={save}>Save</button>{" "}
+          <button className="ghost tiny" onClick={() => setEditing(false)}>Cancel</button>
+        </td>
+      </tr>
+    );
+  }
+
+  return (
+    <tr>
+      <td>
+        {row.supplier_name}
+        {row.is_preferred && <span className="badge approved" style={{ marginLeft: 6, fontSize: 10 }}>preferred</span>}
+      </td>
+      <td className="muted" style={{ fontFamily: "ui-monospace, monospace", fontSize: 12 }}>{row.supplier_sku ?? "—"}</td>
+      <td className="num">{row.unit_cost != null ? fmtMoney(row.unit_cost) : <span className="muted">—</span>}</td>
+      <td className="num">
+        {delta == null ? (
+          <span className="muted">—</span>
+        ) : delta === 0 ? (
+          <span className="muted">±0</span>
+        ) : (
+          <span style={{ color: delta < 0 ? "var(--success)" : "var(--warn)", fontSize: 12 }}>
+            {delta > 0 ? "+" : ""}{fmtMoney(delta)}
+            {deltaPct != null && <span className="muted" style={{ marginLeft: 4 }}>({deltaPct > 0 ? "+" : ""}{deltaPct.toFixed(1)}%)</span>}
+          </span>
+        )}
+      </td>
+      <td className="num">{row.lead_time_days != null ? `${row.lead_time_days}d` : <span className="muted">—</span>}</td>
+      <td className="muted" style={{ fontSize: 12 }}>{row.notes ?? "—"}</td>
+      <td>
+        {canManage && (
+          <>
+            <button className="ghost tiny" onClick={() => setEditing(true)}>Edit</button>{" "}
+            <button className="ghost tiny" onClick={async () => {
+              if (!confirm(`Remove ${row.supplier_name} as a supplier for this product?`)) return;
+              await api.removeProductSupplier(productId, row.id);
+              onChanged();
+            }}>×</button>
+          </>
+        )}
+      </td>
+    </tr>
   );
 }
 

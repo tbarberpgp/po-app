@@ -13,12 +13,14 @@ products.use("/*", async (c, next) => {
   await next();
 });
 
-/** List the master product catalogue, with derived product_code and a count
- * of how many project materials reference each product. */
+/** List the master product catalogue, with derived product_code, a count of
+ * how many project materials reference each product, and a count of alternate
+ * suppliers (for the expand-row affordance in the UI). */
 products.get("/", async (c) => {
   const rows = await c.env.DB.prepare(
     `SELECT p.*, e.name AS element_name,
-            (SELECT COUNT(*) FROM materials m WHERE m.product_id = p.id) AS usage_count
+            (SELECT COUNT(*) FROM materials m WHERE m.product_id = p.id) AS usage_count,
+            (SELECT COUNT(*) FROM product_suppliers ps WHERE ps.product_id = p.id) AS alternate_supplier_count
      FROM products p
      JOIN elements e ON e.code = p.element_code
      ORDER BY p.element_code, p.item_no, p.variant`,
@@ -68,6 +70,11 @@ products.post("/", async (c) => {
   }
 
   const variant = body.variant?.trim() || null;
+  const manufacturer = body.manufacturer?.trim() || null;
+  // Supplier defaults to manufacturer when not explicitly set — covers the
+  // common case (Kingspan products bought from Kingspan, Rockwool from
+  // Rockwool, etc). Override by sending a non-empty `supplier`.
+  const supplier = body.supplier?.trim() || manufacturer;
   const now = new Date().toISOString();
   try {
     const res = await c.env.DB.prepare(
@@ -82,8 +89,8 @@ products.post("/", async (c) => {
         item_no,
         variant,
         body.description.trim(),
-        body.manufacturer?.trim() || null,
-        body.supplier?.trim() || null,
+        manufacturer,
+        supplier,
         body.unit?.trim() || null,
         body.unit_cost ?? null,
         body.default_resource ?? "M",
@@ -108,12 +115,25 @@ products.put("/:id", async (c) => {
     "element_code", "item_no", "variant", "description", "manufacturer",
     "supplier", "unit", "unit_cost", "default_resource", "notes",
   ] as const;
+
+  // Supplier auto-mirrors manufacturer: if the caller passes a manufacturer
+  // change but leaves supplier untouched (or sends an empty string), copy
+  // the manufacturer over to keep them in sync.
+  const patch = { ...body };
+  if ("manufacturer" in patch) {
+    const newMfr = typeof patch.manufacturer === "string" ? patch.manufacturer.trim() || null : null;
+    patch.manufacturer = newMfr;
+    if (!("supplier" in patch) || !patch.supplier || (typeof patch.supplier === "string" && !patch.supplier.trim())) {
+      patch.supplier = newMfr;
+    }
+  }
+
   const sets: string[] = [];
   const binds: unknown[] = [];
   for (const k of allowed) {
-    if (k in body) {
+    if (k in patch) {
       sets.push(`${k} = ?`);
-      let v = body[k];
+      let v = patch[k];
       if (typeof v === "string") v = v.trim() || null;
       binds.push(v ?? null);
     }
@@ -128,6 +148,109 @@ products.put("/:id", async (c) => {
     if (msg.includes("UNIQUE")) return c.json({ error: "Product code collision — pick a different item number/variant" }, 409);
     throw e;
   }
+  return c.json({ ok: true });
+});
+
+/* ── Alternate suppliers (one product → many suppliers) ──────────────── */
+
+products.get("/:id/suppliers", async (c) => {
+  const id = c.req.param("id");
+  const rows = await c.env.DB.prepare(
+    `SELECT * FROM product_suppliers WHERE product_id = ?
+     ORDER BY is_preferred DESC, unit_cost ASC, supplier_name`,
+  ).bind(id).all();
+  return c.json(rows.results);
+});
+
+products.post("/:id/suppliers", async (c) => {
+  const denied = requirePermission(c, "approvers.manage");
+  if (denied) return denied;
+  const productId = Number(c.req.param("id"));
+  const body = await c.req.json<{
+    supplier_name: string;
+    unit_cost?: number | null;
+    supplier_sku?: string | null;
+    lead_time_days?: number | null;
+    notes?: string | null;
+    is_preferred?: boolean;
+  }>();
+  if (!body.supplier_name?.trim()) return c.json({ error: "supplier_name required" }, 400);
+  const now = new Date().toISOString();
+  try {
+    // If marked preferred, clear any existing preferred for this product first.
+    if (body.is_preferred) {
+      await c.env.DB.prepare(
+        "UPDATE product_suppliers SET is_preferred = 0 WHERE product_id = ?",
+      ).bind(productId).run();
+    }
+    const res = await c.env.DB.prepare(
+      `INSERT INTO product_suppliers
+         (product_id, supplier_name, unit_cost, supplier_sku, lead_time_days,
+          notes, is_preferred, created_at, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       RETURNING id`,
+    )
+      .bind(
+        productId,
+        body.supplier_name.trim(),
+        body.unit_cost ?? null,
+        body.supplier_sku?.trim() || null,
+        body.lead_time_days ?? null,
+        body.notes?.trim() || null,
+        body.is_preferred ? 1 : 0,
+        now,
+        c.get("userEmail"),
+      )
+      .first<{ id: number }>();
+    return c.json({ id: res!.id });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (msg.includes("UNIQUE")) {
+      return c.json({ error: `This product already has an entry for "${body.supplier_name}"` }, 409);
+    }
+    throw e;
+  }
+});
+
+products.put("/:id/suppliers/:sid", async (c) => {
+  const denied = requirePermission(c, "approvers.manage");
+  if (denied) return denied;
+  const productId = Number(c.req.param("id"));
+  const sid = Number(c.req.param("sid"));
+  const body = await c.req.json<Record<string, unknown>>();
+
+  if (body.is_preferred === true) {
+    await c.env.DB.prepare(
+      "UPDATE product_suppliers SET is_preferred = 0 WHERE product_id = ? AND id != ?",
+    ).bind(productId, sid).run();
+  }
+
+  const allowed = ["supplier_name", "unit_cost", "supplier_sku", "lead_time_days", "notes", "is_preferred"] as const;
+  const sets: string[] = [];
+  const binds: unknown[] = [];
+  for (const k of allowed) {
+    if (k in body) {
+      sets.push(`${k} = ?`);
+      let v = body[k];
+      if (k === "is_preferred") v = v ? 1 : 0;
+      else if (typeof v === "string") v = v.trim() || null;
+      binds.push(v ?? null);
+    }
+  }
+  if (sets.length === 0) return c.json({ error: "nothing to update" }, 400);
+  binds.push(sid, productId);
+  await c.env.DB.prepare(
+    `UPDATE product_suppliers SET ${sets.join(", ")} WHERE id = ? AND product_id = ?`,
+  ).bind(...binds).run();
+  return c.json({ ok: true });
+});
+
+products.delete("/:id/suppliers/:sid", async (c) => {
+  const denied = requirePermission(c, "approvers.manage");
+  if (denied) return denied;
+  await c.env.DB.prepare(
+    "DELETE FROM product_suppliers WHERE id = ? AND product_id = ?",
+  ).bind(c.req.param("sid"), c.req.param("id")).run();
   return c.json({ ok: true });
 });
 

@@ -5,6 +5,7 @@ import type {
   Element,
   MaterialWithCommitment,
   Product,
+  ProductSupplier,
   Project,
   PurchaseOrder,
   ResourceType,
@@ -187,6 +188,38 @@ export const api = {
       };
       usage: { input_tokens: number; output_tokens: number };
     }>("/api/products/research", { method: "POST", body: JSON.stringify({ query }) }),
+
+  // Alternate suppliers per product
+  listProductSuppliers: (productId: number) =>
+    jfetch<ProductSupplier[]>(`/api/products/${productId}/suppliers`),
+  addProductSupplier: (productId: number, input: {
+    supplier_name: string;
+    unit_cost?: number | null;
+    supplier_sku?: string | null;
+    lead_time_days?: number | null;
+    notes?: string | null;
+    is_preferred?: boolean;
+  }) =>
+    jfetch<{ id: number }>(`/api/products/${productId}/suppliers`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  updateProductSupplier: (productId: number, supplierId: number, input: Partial<{
+    supplier_name: string;
+    unit_cost: number | null;
+    supplier_sku: string | null;
+    lead_time_days: number | null;
+    notes: string | null;
+    is_preferred: boolean;
+  }>) =>
+    jfetch<{ ok: true }>(`/api/products/${productId}/suppliers/${supplierId}`, {
+      method: "PUT",
+      body: JSON.stringify(input),
+    }),
+  removeProductSupplier: (productId: number, supplierId: number) =>
+    jfetch<{ ok: true }>(`/api/products/${productId}/suppliers/${supplierId}`, {
+      method: "DELETE",
+    }),
 };
 
 export function fmtMoney(n: number, currency = "GBP") {
