@@ -347,6 +347,9 @@ td.num, th.num {
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
+td.center, th.center {
+  text-align: center;
+}
 
 /* ── Pills / badges ───────────────────────────────────────────────────── */
 .badge, .pill {

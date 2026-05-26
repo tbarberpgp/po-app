@@ -179,7 +179,7 @@ export function POView({ me }: { me: CurrentUser | null }) {
                     <th>Item</th>
                     <th>Manufacturer</th>
                     <th className="num">Qty</th>
-                    <th>Unit</th>
+                    <th className="center">Unit</th>
                     <th className="num">Unit cost</th>
                     <th className="num">Line total</th>
                   </tr>
@@ -203,7 +203,7 @@ export function POView({ me }: { me: CurrentUser | null }) {
                       </td>
                       <td className="muted">{l.manufacturer ?? ""}</td>
                       <td className="num">{l.qty}</td>
-                      <td>{l.unit}</td>
+                      <td className="center">{l.unit}</td>
                       <td className="num">{fmtMoney(l.unit_cost)}</td>
                       <td className="num">{fmtMoney(l.line_total)}</td>
                     </tr>

@@ -107,11 +107,11 @@ export function POsList({ me }: { me: CurrentUser | null }) {
               <thead>
                 <tr>
                   <th>PO</th>
-                  <th>Project</th>
+                  <th className="center">Project</th>
                   <th>Supplier</th>
                   <th className="num">Value</th>
-                  <th>Status</th>
-                  <th>Xero</th>
+                  <th className="center">Status</th>
+                  <th className="center">Xero</th>
                   <th>Raised</th>
                   <th>By</th>
                 </tr>
@@ -120,11 +120,11 @@ export function POsList({ me }: { me: CurrentUser | null }) {
                 {rows.map((r) => (
                   <tr key={r.id}>
                     <td><Link to={`/pos/${r.id}`}>{r.po_number}</Link></td>
-                    <td>{r.project_code}</td>
+                    <td className="center">{r.project_code}</td>
                     <td>{r.supplier}</td>
                     <td className="num">{fmtMoney(r.total_value)}</td>
-                    <td><span className={`pill ${r.status}`}>{r.status.replace("_", " ")}</span></td>
-                    <td>
+                    <td className="center"><span className={`pill ${r.status}`}>{r.status.replace("_", " ")}</span></td>
+                    <td className="center">
                       {r.xero_sync_status === "synced" ? (
                         <span
                           className="pill approved"

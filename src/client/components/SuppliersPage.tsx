@@ -148,7 +148,7 @@ export function SuppliersPage({ me }: { me: CurrentUser | null }) {
               <thead>
                 <tr>
                   <th>Supplier</th>
-                  <th>Status</th>
+                  <th className="center">Status</th>
                   <th>Scope (elements)</th>
                   <th>Payment terms</th>
                   <th>Contact</th>
@@ -174,7 +174,7 @@ export function SuppliersPage({ me }: { me: CurrentUser | null }) {
                         <div style={{ fontWeight: 500 }}>{s.name}</div>
                         {s.scope_notes && <div className="muted" style={{ fontSize: 12, marginTop: 2 }}>{s.scope_notes}</div>}
                       </td>
-                      <td>
+                      <td className="center">
                         <span className={`pill ${STATUS_PILL[s.status]}`}>{STATUS_LABEL[s.status]}</span>
                         {s.xero_contact_id && (
                           <span className="pill issued" style={{ marginLeft: 6, fontSize: 10 }} title={`Xero Contact ID: ${s.xero_contact_id}`}>Xero</span>

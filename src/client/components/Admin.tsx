@@ -312,8 +312,8 @@ function UsersSection({
           <tr>
             <th>Name</th>
             <th>Email</th>
-            <th>Role</th>
-            <th>Status</th>
+            <th className="center">Role</th>
+            <th className="center">Status</th>
             <th style={{ width: 130 }}></th>
           </tr>
         </thead>
@@ -385,7 +385,7 @@ function UserRow({
           </select>
           {err && <div className="muted" style={{ fontSize: 11, color: "var(--danger)", marginTop: 4 }}>{err}</div>}
         </td>
-        <td><span className={`pill ${user.active ? "approved" : "draft"}`}>{user.active ? "active" : "deactivated"}</span></td>
+        <td className="center"><span className={`pill ${user.active ? "approved" : "draft"}`}>{user.active ? "active" : "deactivated"}</span></td>
         <td>
           <button className="primary tiny" onClick={save} disabled={busy}>Save</button>{" "}
           <button className="ghost tiny" onClick={() => { setEditing(false); setName(user.name ?? ""); setRole(user.role); }}>Cancel</button>
@@ -398,8 +398,8 @@ function UserRow({
     <tr>
       <td>{user.name ?? <span className="muted">—</span>}</td>
       <td className="muted">{user.email}{isSelf && " (you)"}</td>
-      <td><span className="pill">{ROLE_LABELS[user.role]}</span></td>
-      <td><span className={`pill ${user.active ? "approved" : "draft"}`}>{user.active ? "active" : "deactivated"}</span></td>
+      <td className="center"><span className="pill">{ROLE_LABELS[user.role]}</span></td>
+      <td className="center"><span className={`pill ${user.active ? "approved" : "draft"}`}>{user.active ? "active" : "deactivated"}</span></td>
       <td>
         {canEdit && <button className="ghost tiny" onClick={() => setEditing(true)}>Edit</button>}{" "}
         {canEdit && !isSelf && (

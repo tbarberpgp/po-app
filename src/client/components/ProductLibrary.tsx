@@ -152,14 +152,14 @@ function LibraryTab({
             <thead>
               <tr>
                 <th style={{ width: 56 }}></th>
-                <th>Code</th>
+                <th className="center">Code</th>
                 <th>Element</th>
                 <th>Description</th>
                 <th>Manufacturer</th>
                 <th>Supplier</th>
-                <th>Unit</th>
+                <th className="center">Unit</th>
                 <th className="num">Unit cost</th>
-                <th>Res</th>
+                <th className="center">Res</th>
                 <th className="num">Uses</th>
                 <th></th>
               </tr>
@@ -192,7 +192,7 @@ function LibraryTab({
                           )}
                         </button>
                       </td>
-                      <td><span className="badge" style={{ fontFamily: "ui-monospace, monospace" }}>{p.product_code}</span></td>
+                      <td className="center"><span className="badge" style={{ fontFamily: "ui-monospace, monospace" }}>{p.product_code}</span></td>
                       <td className="muted">{p.element_code} · {p.element_name.replace(/^[A-Za-z]+ - /, "")}</td>
                       <td>
                         {p.description}
@@ -205,9 +205,9 @@ function LibraryTab({
                           <span className="muted" style={{ fontSize: 11, marginLeft: 4 }} title="Same as manufacturer">↩</span>
                         )}
                       </td>
-                      <td>{p.unit ?? ""}</td>
+                      <td className="center">{p.unit ?? ""}</td>
                       <td className="num">{p.unit_cost != null ? fmtMoney(p.unit_cost) : <span className="muted">—</span>}</td>
-                      <td>{p.default_resource ?? "M"}</td>
+                      <td className="center">{p.default_resource ?? "M"}</td>
                       <td className="num">{p.usage_count}</td>
                       <td>
                         {canManage && (
@@ -571,11 +571,11 @@ function SuggestionsTab({
                 </th>
                 <th>Description</th>
                 <th>Manufacturer</th>
-                <th>Type</th>
+                <th className="center">Type</th>
                 <th className="num">In # projects</th>
                 <th className="num">Occurrences</th>
                 <th className="num">Avg unit cost</th>
-                <th>Status</th>
+                <th className="center">Status</th>
                 <th></th>
               </tr>
             </thead>
@@ -593,11 +593,11 @@ function SuggestionsTab({
                   </td>
                   <td>{s.sample_description}</td>
                   <td className="muted">{s.manufacturer ?? "—"}</td>
-                  <td className="muted">{s.type}</td>
+                  <td className="muted center">{s.type}</td>
                   <td className="num">{s.project_codes.length}</td>
                   <td className="num">{s.occurrences}</td>
                   <td className="num">{s.avg_unit_cost != null ? fmtMoney(s.avg_unit_cost) : <span className="muted">—</span>}</td>
-                  <td>
+                  <td className="center">
                     {s.linked_product_id ? (
                       <span className="badge approved">linked</span>
                     ) : (
@@ -1144,7 +1144,7 @@ function BulkPromoteModal({
                 <th style={{ width: 200 }}>Element</th>
                 <th style={{ width: 140 }}>Variant</th>
                 <th style={{ width: 180 }}>Manufacturer</th>
-                <th style={{ width: 130 }}>Status</th>
+                <th className="center" style={{ width: 130 }}>Status</th>
               </tr>
             </thead>
             <tbody>
@@ -1185,7 +1185,7 @@ function BulkPromoteModal({
                       disabled={running || r.status === "done"}
                     />
                   </td>
-                  <td>
+                  <td className="center">
                     {r.status === "pending" && <span className="badge draft">pending</span>}
                     {r.status === "creating" && <span className="badge pending dot">creating…</span>}
                     {r.status === "done" && (

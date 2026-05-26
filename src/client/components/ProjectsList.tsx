@@ -60,8 +60,8 @@ export function ProjectsList({ me }: { me: CurrentUser | null }) {
                 <tr>
                   <th>Code</th>
                   <th>Name</th>
-                  <th>Client</th>
-                  <th>Materials</th>
+                  <th className="center">Client</th>
+                  <th className="center">Materials</th>
                   <th></th>
                 </tr>
               </thead>
@@ -70,11 +70,11 @@ export function ProjectsList({ me }: { me: CurrentUser | null }) {
                   <tr key={r.id}>
                     <td><Link to={`/projects/${r.id}`}>{r.code}</Link></td>
                     <td>{r.name}</td>
-                    <td className="muted">{r.client ?? ""}</td>
-                    <td>
+                    <td className="muted center">{r.client ?? ""}</td>
+                    <td className="center">
                       {r.active_snapshot_id
-                        ? <span className="pill approved">Loaded</span>
-                        : <span className="pill draft">None</span>}
+                        ? <span className="pill approved" style={{ minWidth: 64, justifyContent: "center" }}>Loaded</span>
+                        : <span className="pill draft" style={{ minWidth: 64, justifyContent: "center" }}>None</span>}
                     </td>
                     <td style={{ textAlign: "right" }}>
                       <Link to={`/projects/${r.id}`} className="btn ghost tiny">Open ›</Link>

@@ -47,14 +47,15 @@ materials.post("/:projectId/upload", async (c) => {
   const stmts = parsed.map((m) =>
     c.env.DB.prepare(
       `INSERT INTO materials (
-         snapshot_id, item, type, manufacturer, pack_qty, pack_unit, cost, cost_unit,
+         snapshot_id, item, type, element_code, manufacturer, pack_qty, pack_unit, cost, cost_unit,
          coverage_qty, coverage_unit, waste_pct, unit_rate, rate_unit,
          total_qty, total_qty_unit, total_units, total_units_unit, material_total_cost
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).bind(
       snapshotId,
       m.item,
       m.type,
+      m.element_code,
       m.manufacturer,
       m.pack_qty,
       m.pack_unit,
@@ -108,11 +109,13 @@ materials.get("/:projectId", async (c) => {
                 AND lower(pl.item) = lower(m.item)
                 AND pl.is_unpriced = 0
             ), 0) AS committed_qty,
-            pr.element_code AS product_element_code
+            pr.element_code AS product_element_code,
+            e.name        AS element_name
      FROM materials m
      LEFT JOIN products pr ON pr.id = m.product_id
+     LEFT JOIN elements e ON e.code = m.element_code
      WHERE m.snapshot_id = ?
-     ORDER BY m.type, m.item`,
+     ORDER BY COALESCE(m.element_code, m.type), m.item`,
   )
     .bind(projectId, snap.id)
     .all<Record<string, unknown> & { committed_qty: number; total_units: number | null }>();

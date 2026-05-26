@@ -250,15 +250,15 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
               <table>
                 <thead>
                   <tr>
-                    <th>Type</th>
+                    <th className="center">Type</th>
                     <th>Item</th>
-                    <th>Supplier</th>
+                    <th className="center">Supplier</th>
                     <th className="num">Pack cost</th>
-                    <th>Unit</th>
+                    <th className="center">Unit</th>
                     <th className="num">Priced</th>
                     <th className="num">Committed</th>
                     <th className="num">Remaining</th>
-                    <th style={{ width: 140 }}>Usage</th>
+                    <th className="center" style={{ width: 140 }}>Usage</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -273,17 +273,17 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
                     const unit = m.total_units_unit ?? m.pack_unit ?? "";
                     return (
                       <tr key={m.id}>
-                        <td>{m.type}</td>
+                        <td className="center">{m.type}</td>
                         <td>{m.item}</td>
-                        <td className="muted">{m.manufacturer ?? "—"}</td>
+                        <td className="muted center">{m.manufacturer ?? "—"}</td>
                         <td className="num">{m.cost != null ? fmtMoney(m.cost) : <span className="muted">—</span>}</td>
-                        <td>{unit}</td>
+                        <td className="center">{unit}</td>
                         <td className="num">{priced ? `${priced.toLocaleString()}` : <span className="muted">not priced</span>}</td>
                         <td className="num">{committed.toLocaleString()}</td>
                         <td className="num">
                           {remaining == null ? <span className="muted">—</span> : remaining.toLocaleString()}
                         </td>
-                        <td>
+                        <td className="center">
                           <div className="bar">
                             <div
                               className={over || (isOriginallyUnpriced && committed > 0) ? "danger" : exact ? "ok" : ""}
@@ -370,8 +370,8 @@ function ProjectPOsPanel({ rows }: { rows: ProjectPORow[] }) {
               <th>PO</th>
               <th>Supplier</th>
               <th className="num">Value</th>
-              <th>Status</th>
-              <th>Xero</th>
+              <th className="center">Status</th>
+              <th className="center">Xero</th>
               <th>Raised</th>
               <th>By</th>
             </tr>
@@ -382,8 +382,8 @@ function ProjectPOsPanel({ rows }: { rows: ProjectPORow[] }) {
                 <td><Link to={`/pos/${r.id}`}>{r.po_number}</Link></td>
                 <td>{r.supplier}</td>
                 <td className="num">{fmtMoney(r.total_value)}</td>
-                <td><span className={`pill ${r.status}`}>{r.status.replace("_", " ")}</span></td>
-                <td>
+                <td className="center"><span className={`pill ${r.status}`}>{r.status.replace("_", " ")}</span></td>
+                <td className="center">
                   {r.xero_sync_status === "synced" ? (
                     <span className="pill approved" style={{ fontSize: 10 }} title={r.xero_po_number ?? ""}>✓ {r.xero_po_number ?? "synced"}</span>
                   ) : r.xero_sync_status === "failed" ? (

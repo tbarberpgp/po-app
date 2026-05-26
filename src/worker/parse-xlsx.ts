@@ -2,7 +2,10 @@ import * as XLSX from "xlsx";
 
 export type ParsedMaterial = {
   item: string;
+  /** Human-readable element/section label rendered in lists & filters. */
   type: string;
+  /** New (MCR007+): numeric element code from col B that maps to the elements table. */
+  element_code: string | null;
   manufacturer: string | null;
   pack_qty: number | null;
   pack_unit: string | null;
@@ -31,18 +34,34 @@ const str = (v: unknown): string | null => {
   return s === "" ? null : s;
 };
 
+/** Is the string a candidate element code? Codes are short numeric like "10", "22", "51". */
+const looksLikeElementCode = (v: unknown): boolean => {
+  if (v === null || v === undefined) return false;
+  const s = String(v).trim();
+  return /^\d{1,4}$/.test(s);
+};
+
 /**
  * Parse the Materials sheet of a PowerGrid pricing workbook.
  *
- * Column map (header row = 5, data starts row 6) — see Materials tab:
- *   A  item (full descriptor)        B  type        C  manufacturer
- *   D  pack_qty   E  pack_unit       F  cost        G  cost_unit
+ * Two layouts are supported and auto-detected by scanning for the header row:
+ *
+ * Legacy (BNC001-era): headers on row 5, data row 6+, col B = free-text "Type",
+ * no element-name column.
+ *
+ * New (MCR007+): headers on row 4, data row 5+, col B = numeric Element Code
+ * that matches the `elements` master table; col Z = Element Name.
+ *
+ * Data columns (identical between layouts apart from B/Z):
+ *   A  item (full descriptor)        B  type / element code
+ *   C  manufacturer                  D  pack_qty       E  pack_unit
+ *   F  cost                          G  cost_unit
  *   H  coverage_qty                  I  coverage_unit
  *   L  waste_pct                     M  coverage_inc_waste
  *   O  unit_rate (cost / coverage)   P  rate_unit
- *   T  total_qty (in measurement units, e.g. m²)   U  total_qty_unit
- *   V  total_units (in pack units — what we order)  W  total_units_unit
- *   X  material_total_cost (priced material budget for line)
+ *   T  total_qty                     U  total_qty_unit
+ *   V  total_units (pack units)      W  total_units_unit
+ *   X  material_total_cost           Z  element_name (new layout only)
  */
 export function parseMaterialsSheet(buffer: ArrayBuffer): ParsedMaterial[] {
   const wb = XLSX.read(buffer, { type: "array" });
@@ -57,17 +76,47 @@ export function parseMaterialsSheet(buffer: ArrayBuffer): ParsedMaterial[] {
     raw: true,
   });
 
+  // Find the header row. It's the first row in the top ~15 rows whose col B
+  // contains "Type" or "Element Code" (case-insensitive, hyphens stripped).
+  let headerRowIdx = -1;
+  for (let i = 0; i < Math.min(15, rows.length); i++) {
+    const b = String(rows[i]["B"] ?? "")
+      .toLowerCase()
+      .replace(/[\s-]+/g, "");
+    if (b === "type" || b === "elementcode") {
+      headerRowIdx = i;
+      break;
+    }
+  }
+  if (headerRowIdx < 0) {
+    // Fall back to the legacy assumption (row 5 → index 4).
+    headerRowIdx = 4;
+  }
+
   const out: ParsedMaterial[] = [];
-  // Data starts row 6 (1-indexed); sheet_to_json gives 0-indexed array.
-  for (let i = 5; i < rows.length; i++) {
+  for (let i = headerRowIdx + 1; i < rows.length; i++) {
     const r = rows[i];
     const item = str(r["A"]);
-    const type = str(r["B"]);
-    if (!item || !type) continue; // skip blank/separator rows
+    const b = r["B"];
+    if (!item || b === null || b === undefined || String(b).trim() === "") continue;
+
+    // New layout: col B is a numeric code, col Z is the descriptive element
+    // name. Display column ("type") comes from Z; element_code captures B.
+    // Legacy layout: col B is the descriptive label; no element code is known.
+    let displayType: string;
+    let elementCode: string | null;
+    if (looksLikeElementCode(b)) {
+      elementCode = String(b).trim();
+      displayType = str(r["Z"]) ?? elementCode;
+    } else {
+      elementCode = null;
+      displayType = String(b).trim();
+    }
 
     out.push({
       item,
-      type,
+      type: displayType,
+      element_code: elementCode,
       manufacturer: str(r["C"]),
       pack_qty: num(r["D"]),
       pack_unit: str(r["E"]),

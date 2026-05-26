@@ -16,7 +16,8 @@ export type Material = {
   id: number;
   snapshot_id: number;
   item: string;
-  type: string;
+  type: string;                       // human-readable element/section label
+  element_code: string | null;        // numeric code from new-format pricing sheets (col B)
   manufacturer: string | null;
   pack_qty: number | null;
   pack_unit: string | null;
@@ -39,6 +40,8 @@ export type MaterialWithCommitment = Material & {
   remaining_qty: number | null;
   product_id?: number | null;
   product_element_code?: string | null;  // when linked to a master product
+  /** Joined from elements table when element_code is set — canonical name for display. */
+  element_name?: string | null;
 };
 
 export type ApprovalTier = "line_manager" | "commercial_manager" | "director";

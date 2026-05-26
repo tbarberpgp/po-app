@@ -60,9 +60,9 @@ export function DeletedProjects({ me }: { me: CurrentUser | null }) {
             <table>
               <thead>
                 <tr>
-                  <th>Original code</th>
+                  <th className="center">Original code</th>
                   <th>Name</th>
-                  <th>Client</th>
+                  <th className="center">Client</th>
                   <th className="num">POs hidden</th>
                   <th>Deleted</th>
                   <th>By</th>
@@ -75,9 +75,9 @@ export function DeletedProjects({ me }: { me: CurrentUser | null }) {
                   const code = display(r.code);
                   return (
                     <tr key={r.id}>
-                      <td><span className="pill deleted">{code}</span></td>
+                      <td className="center"><span className="pill deleted">{code}</span></td>
                       <td>{r.name}</td>
-                      <td className="muted">{r.client ?? ""}</td>
+                      <td className="muted center">{r.client ?? ""}</td>
                       <td className="num">{r.po_count}</td>
                       <td className="muted">{fmtDate(r.deleted_at)}</td>
                       <td className="muted">{r.deleted_by}</td>

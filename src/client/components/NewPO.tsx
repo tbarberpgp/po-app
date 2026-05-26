@@ -418,9 +418,9 @@ export function NewPO() {
                   <tr>
                     <th style={{ width: 36 }}></th>
                     <th>Item</th>
-                    <th>Type</th>
+                    <th className="center">Type</th>
                     <th className="num">Pack cost</th>
-                    <th>Unit</th>
+                    <th className="center">Unit</th>
                     <th className="num">Priced</th>
                     <th className="num">Committed</th>
                     <th className="num">Remaining</th>
@@ -441,9 +441,9 @@ export function NewPO() {
                       <tr key={m.id} style={row ? { background: "var(--accent-soft)" } : undefined}>
                         <td><input type="checkbox" checked={!!row} onChange={() => toggleRow(m)} /></td>
                         <td>{m.item}</td>
-                        <td>{m.type}</td>
+                        <td className="center">{m.type}</td>
                         <td className="num">{m.cost != null ? fmtMoney(m.cost) : <span className="muted">—</span>}</td>
-                        <td>{unit}</td>
+                        <td className="center">{unit}</td>
                         <td className="num">{priced.toLocaleString()}</td>
                         <td className="num">{committed.toLocaleString()}</td>
                         <td className="num">{remaining.toLocaleString()}</td>

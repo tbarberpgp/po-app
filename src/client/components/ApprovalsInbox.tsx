@@ -38,11 +38,11 @@ export function ApprovalsInbox({ me }: { me: CurrentUser | null }) {
               <thead>
                 <tr>
                   <th>PO</th>
-                  <th>Project</th>
+                  <th className="center">Project</th>
                   <th>Supplier</th>
                   <th className="num">Value</th>
-                  <th>Tier</th>
-                  <th>Reason</th>
+                  <th className="center">Tier</th>
+                  <th className="center">Reason</th>
                   <th>Raised</th>
                   <th>By</th>
                 </tr>
@@ -51,11 +51,11 @@ export function ApprovalsInbox({ me }: { me: CurrentUser | null }) {
                 {mine.map((r) => (
                   <tr key={r.id}>
                     <td><Link to={`/approvals/${r.id}`}>{r.po_number}</Link></td>
-                    <td>{r.project_code}</td>
+                    <td className="center">{r.project_code}</td>
                     <td>{r.supplier}</td>
                     <td className="num">{fmtMoney(r.total_value)}</td>
-                    <td>{r.approval_tier?.replace("_", " ")}</td>
-                    <td>{r.approval_reason?.replace("_", " ")}</td>
+                    <td className="center">{r.approval_tier?.replace("_", " ")}</td>
+                    <td className="center">{r.approval_reason?.replace("_", " ")}</td>
                     <td className="muted">{fmtDate(r.created_at)}</td>
                     <td className="muted">{r.created_by}</td>
                   </tr>
