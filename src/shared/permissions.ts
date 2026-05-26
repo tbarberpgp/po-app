@@ -32,6 +32,7 @@ export type Permission =
   | "users.promote_superadmin"
   | "projects.create"
   | "projects.edit"
+  | "projects.delete"
   | "materials.upload"
   | "pos.create"
   | "pos.issue"
@@ -43,7 +44,7 @@ export type Permission =
 const MATRIX: Record<Role, Set<Permission>> = {
   superadmin: new Set<Permission>([
     "users.read", "users.write", "users.promote_superadmin",
-    "projects.create", "projects.edit",
+    "projects.create", "projects.edit", "projects.delete",
     "materials.upload",
     "pos.create", "pos.issue", "pos.delete",
     "approvers.manage",

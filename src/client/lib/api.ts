@@ -41,6 +41,8 @@ export const api = {
     id: string,
     input: Partial<Pick<Project, "name" | "client" | "delivery_address" | "site_contact_name" | "site_contact_phone" | "delivery_instructions">>,
   ) => jfetch<{ ok: true }>(`/api/projects/${id}`, { method: "PUT", body: JSON.stringify(input) }),
+  deleteProject: (id: string, reason: string) =>
+    jfetch<{ ok: true }>(`/api/projects/${id}`, { method: "DELETE", body: JSON.stringify({ reason }) }),
   getProjectSummary: (id: string) =>
     jfetch<{ unpriced_spend: number; by_status: Array<{ status: string; n: number; v: number }> }>(
       `/api/projects/${id}/summary`,

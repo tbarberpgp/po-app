@@ -24,6 +24,8 @@ pos.get("/", async (c) => {
     binds.push(status);
   }
   if (!includeDeleted) where.push("po.status != 'deleted'");
+  // POs of deleted projects also vanish from every list.
+  where.push("p.deleted_at IS NULL");
   const sql = `SELECT po.*, p.code AS project_code, p.name AS project_name
      FROM purchase_orders po
      JOIN projects p ON p.id = po.project_id
@@ -47,7 +49,7 @@ pos.get("/:id", async (c) => {
             p.delivery_instructions AS project_delivery_instructions
      FROM purchase_orders po
      JOIN projects p ON p.id = po.project_id
-     WHERE po.id = ?`,
+     WHERE po.id = ? AND p.deleted_at IS NULL`,
   )
     .bind(id)
     .first();

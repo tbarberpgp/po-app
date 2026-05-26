@@ -9,6 +9,7 @@ projects.get("/", async (c) => {
     `SELECT p.*, s.id AS active_snapshot_id
      FROM projects p
      LEFT JOIN material_snapshots s ON s.project_id = p.id AND s.is_active = 1
+     WHERE p.deleted_at IS NULL
      ORDER BY p.created_at DESC`,
   ).all();
   return c.json(rows.results);
@@ -47,7 +48,9 @@ projects.post("/", async (c) => {
 
 projects.get("/:id", async (c) => {
   const id = c.req.param("id");
-  const project = await c.env.DB.prepare("SELECT * FROM projects WHERE id = ?")
+  const project = await c.env.DB.prepare(
+    "SELECT * FROM projects WHERE id = ? AND deleted_at IS NULL",
+  )
     .bind(id)
     .first();
   if (!project) return c.json({ error: "not found" }, 404);
@@ -57,6 +60,44 @@ projects.get("/:id", async (c) => {
     .bind(id)
     .first();
   return c.json({ project, active_snapshot: snapshot });
+});
+
+projects.delete("/:id", async (c) => {
+  const denied = requirePermission(c, "projects.delete");
+  if (denied) return denied;
+
+  const id = c.req.param("id");
+  const actor = c.get("userEmail");
+  const body = await c.req.json<{ reason?: string }>().catch(() => ({ reason: undefined }));
+  const reason = (body.reason ?? "").trim();
+  if (!reason) return c.json({ error: "deletion reason is required" }, 400);
+
+  const project = await c.env.DB.prepare(
+    "SELECT id, code FROM projects WHERE id = ? AND deleted_at IS NULL",
+  )
+    .bind(id)
+    .first<{ id: string; code: string }>();
+  if (!project) return c.json({ error: "not found" }, 404);
+
+  const now = new Date().toISOString();
+  // Rename the code so the original is free for a fresh project (unique constraint).
+  // The full original code stays visible in the audit_log details.
+  const freedCode = `${project.code}#deleted-${Date.now()}`;
+  await c.env.DB.prepare(
+    `UPDATE projects
+       SET deleted_at = ?, deleted_by = ?, deletion_reason = ?, code = ?
+       WHERE id = ?`,
+  )
+    .bind(now, actor, reason, freedCode, id)
+    .run();
+
+  await c.env.DB.prepare(
+    `INSERT INTO audit_log (entity_type, entity_id, action, actor, details, created_at)
+     VALUES ('project', ?, 'deleted', ?, ?, ?)`,
+  )
+    .bind(id, actor, JSON.stringify({ reason, original_code: project.code }), now)
+    .run();
+  return c.json({ ok: true });
 });
 
 projects.put("/:id", async (c) => {

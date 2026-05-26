@@ -1,14 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, fmtDate, fmtMoney } from "../lib/api";
 import { Topbar } from "./Shell";
 import { can } from "../../shared/permissions";
 import type { CurrentUser, MaterialWithCommitment, Project } from "../../shared/types";
 
 export function ProjectDetail({ me }: { me: CurrentUser | null }) {
+  const nav = useNavigate();
   const canRaisePO = can(me?.role, "pos.create");
   const canUploadMaterials = can(me?.role, "materials.upload");
   const canEditProject = can(me?.role, "projects.edit");
+  const canDeleteProject = can(me?.role, "projects.delete");
+  const [showDelete, setShowDelete] = useState(false);
+  const [deleteReason, setDeleteReason] = useState("");
+  const [deleting, setDeleting] = useState(false);
   const { id } = useParams<{ id: string }>();
   const [info, setInfo] = useState<Awaited<ReturnType<typeof api.getProject>> | null>(null);
   const [poSummary, setPoSummary] = useState<Awaited<ReturnType<typeof api.getProjectSummary>> | null>(null);
@@ -62,11 +67,60 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
       <Topbar
         crumbs={<><Link to="/">Projects</Link> / {info.project.code}</>}
         title={info.project.name}
-        actions={canRaisePO ? <Link className="btn accent" to={`/projects/${id}/new-po`}>+ Raise PO</Link> : null}
+        actions={
+          <>
+            {canDeleteProject && (
+              <button className="danger" onClick={() => setShowDelete(true)}>Delete project</button>
+            )}
+            {canRaisePO && <Link className="btn accent" to={`/projects/${id}/new-po`}>+ Raise PO</Link>}
+          </>
+        }
       />
       <main>
         {err && <div className="flash error">{err}</div>}
         {info.project.client && <p className="muted" style={{ marginTop: 0 }}>Client · {info.project.client}</p>}
+
+        {showDelete && (
+          <div className="card">
+            <div className="card-hd"><h3>Delete {info.project.code}</h3></div>
+            <div className="card-bd">
+              <p className="muted" style={{ marginTop: 0 }}>
+                Soft-deletes the project. It vanishes from the Projects list and dashboards,
+                its purchase orders disappear too, and its committed value rolls off the books.
+                The audit trail is preserved and the project code <b>{info.project.code}</b> is
+                freed for re-use. Superadmin only.
+              </p>
+              <label>Reason (required)</label>
+              <textarea
+                value={deleteReason}
+                onChange={(e) => setDeleteReason(e.target.value)}
+                rows={3}
+                placeholder="e.g. project cancelled, duplicate of another job, raised in error…"
+                style={{ resize: "vertical" }}
+              />
+              <div className="row" style={{ marginTop: 12 }}>
+                <button
+                  className="danger"
+                  disabled={deleting || !deleteReason.trim()}
+                  onClick={async () => {
+                    if (!id) return;
+                    setDeleting(true); setErr(null);
+                    try {
+                      await api.deleteProject(id, deleteReason.trim());
+                      nav("/");
+                    } catch (e) {
+                      setErr(e instanceof Error ? e.message : "delete failed");
+                      setDeleting(false);
+                    }
+                  }}
+                >
+                  {deleting ? "Deleting…" : "Confirm delete"}
+                </button>
+                <button className="ghost" onClick={() => setShowDelete(false)}>Cancel</button>
+              </div>
+            </div>
+          </div>
+        )}
 
         <SiteDetailsCard project={info.project} onSaved={load} canEdit={canEditProject} />
 
