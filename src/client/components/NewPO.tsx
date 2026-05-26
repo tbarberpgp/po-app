@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, fmtMoney } from "../lib/api";
 import { Topbar } from "./Shell";
+import { SupplierCombobox, compareSuppliers, type SupplierOption } from "./SupplierCombobox";
 import type { MaterialWithCommitment, Supplier, SupplierStatus } from "../../shared/types";
 
 // Item is "priced for this job" iff total_units > 0 in the Materials sheet (col V).
@@ -361,49 +362,16 @@ export function NewPO() {
         {/* Supplier selection */}
         <div className="card card-padded">
           <div className="row">
-            <div style={{ minWidth: 320 }}>
+            <div style={{ minWidth: 320, flex: "1 1 320px" }}>
               <label>Supplier</label>
-              <select value={supplier} onChange={(e) => setSupplier(e.target.value)}>
-                <option value="">— select supplier —</option>
-                {(() => {
-                  // Split into two optgroups so the suppliers actually relevant
-                  // to this project sit at the top and don't get lost among the
-                  // org-wide approved register (which can run to hundreds when
-                  // synced from Xero).
-                  const onProject = suppliers.filter((s) => s.priced > 0 || s.total > 0);
-                  const offProject = suppliers.filter((s) => s.priced === 0 && s.total === 0);
-                  const statusBit = (s: typeof suppliers[number]) =>
-                    s.status === "preferred" ? "⭐ preferred"
-                    : s.status === "approved" ? "approved"
-                    : s.status === "pending" ? "pending"
-                    : s.status === "suspended" ? "⛔ suspended"
-                    : "not in register";
-                  return (
-                    <>
-                      {onProject.length > 0 && (
-                        <optgroup label={`On this project (${onProject.length})`}>
-                          {onProject.map((s) => (
-                            <option key={s.name} value={s.name}>
-                              {s.name} · {statusBit(s)}
-                              {s.priced > 0 && ` · ${s.priced} priced`}
-                            </option>
-                          ))}
-                        </optgroup>
-                      )}
-                      {offProject.length > 0 && (
-                        <optgroup label={`Other approved suppliers (${offProject.length})`}>
-                          {offProject.map((s) => (
-                            <option key={s.name} value={s.name}>
-                              {s.name} · {statusBit(s)}
-                            </option>
-                          ))}
-                        </optgroup>
-                      )}
-                    </>
-                  );
-                })()}
-                <option value="__other__">+ Other supplier (custom)…</option>
-              </select>
+              <SupplierCombobox
+                value={supplier === "__other__" ? "" : supplier}
+                isCustom={isCustomSupplier}
+                onChange={(name) => setSupplier(name)}
+                onCustom={() => setSupplier("__other__")}
+                onProject={[...suppliers.filter((s) => s.priced > 0 || s.total > 0)].sort(compareSuppliers) as SupplierOption[]}
+                offProject={[...suppliers.filter((s) => s.priced === 0 && s.total === 0)].sort(compareSuppliers) as SupplierOption[]}
+              />
               {supplierRecord && (
                 <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
                   {supplierRecord.payment_terms && <>Terms: {supplierRecord.payment_terms} · </>}
