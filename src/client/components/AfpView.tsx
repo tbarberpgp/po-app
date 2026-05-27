@@ -8,6 +8,8 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, fmtDate, fmtMoney } from "../lib/api";
 import { Topbar } from "./Shell";
 import { can } from "../../shared/permissions";
+import { generateAfpPdf } from "../lib/afp-pdf";
+import { generateAfpXlsx } from "../lib/afp-xlsx";
 import type { AfpDetail, AfpLine, AfpStatus, CurrentUser } from "../../shared/types";
 
 export function AfpView({ me }: { me: CurrentUser | null }) {
@@ -65,6 +67,25 @@ export function AfpView({ me }: { me: CurrentUser | null }) {
     try { await api.deleteAfp(afp.id); navigate(`/projects/${afp.project_id}`); }
     catch (e) { setErr(e instanceof Error ? e.message : "delete failed"); }
   }
+  async function downloadPdf() {
+    if (!detail) return;
+    setBusy(true); setErr(null);
+    try {
+      const bytes = await generateAfpPdf(detail);
+      triggerDownload(bytes, `AfP-${afp.project_code ?? "project"}-${afp.app_number}.pdf`, "application/pdf");
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "PDF generation failed");
+    } finally { setBusy(false); }
+  }
+  function downloadXlsx() {
+    if (!detail) return;
+    try {
+      const bytes = generateAfpXlsx(detail);
+      triggerDownload(bytes, `AfP-${afp.project_code ?? "project"}-${afp.app_number}.xlsx`, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Excel generation failed");
+    }
+  }
 
   return (
     <>
@@ -74,6 +95,8 @@ export function AfpView({ me }: { me: CurrentUser | null }) {
         status={<span className={`pill ${statusPill(afp.status)}`}>{afp.status}</span>}
         actions={
           <>
+            <button className="ghost" onClick={downloadPdf} disabled={busy} title="Download as PDF">↓ PDF</button>
+            <button className="ghost" onClick={downloadXlsx} disabled={busy} title="Download as Excel">↓ Excel</button>
             {canEdit && isDraft && (
               <>
                 <button className="ghost" onClick={discard} disabled={busy}>Discard</button>
@@ -389,4 +412,22 @@ function AddAdhocLineButton({ afpId, onAdded }: { afpId: number; onAdded: () => 
       <button className="ghost tiny" onClick={() => setOpen(false)}>Cancel</button>
     </div>
   );
+}
+
+/** Trigger a browser download for an in-memory file. */
+function triggerDownload(bytes: Uint8Array, filename: string, mime: string) {
+  // Copy into a fresh ArrayBuffer so the Blob type-checks against the browser's
+  // strict BlobPart definition (Uint8Array with a SharedArrayBuffer backing
+  // store can otherwise fail in newer TS lib defs).
+  const buf = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(buf).set(bytes);
+  const blob = new Blob([buf], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 0);
 }
