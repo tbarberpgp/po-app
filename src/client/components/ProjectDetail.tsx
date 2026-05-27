@@ -1205,7 +1205,9 @@ function ValuationScheduleUpload({ projectId, canEdit }: { projectId: string; ca
       if (r.parsed && r.entries_created > 0) {
         setInfo(`Imported ${r.entries_created} schedule date${r.entries_created === 1 ? "" : "s"} from ${r.filename}.`);
       } else if (r.parsed) {
-        setInfo(`Read ${r.filename} but found no recognisable schedule rows. The parser looks for an "App #" column plus cut-off / submission / certification / payment date columns. Add entries manually below.`);
+        setInfo(
+          `Read ${r.filename} but couldn't recognise the layout. The parser looks for date columns labelled "Application date", "Due date", "Notice date" or "Final date for payment" — either as columns (one row per valuation) or as rows (transposed, with the entry-type names in column A). Add entries manually below, or send the file headers so I can extend the matcher.`,
+        );
       } else {
         setInfo(`Recorded ${r.filename}. PDF previews aren't auto-parsed — add the dates manually below.`);
       }

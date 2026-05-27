@@ -124,18 +124,19 @@ export function parseValuationScheduleXlsx(buffer: ArrayBuffer): ParsedValuation
 }
 
 function scanSheet(rows: Array<Record<string, unknown>>): ParsedValuationEntry[] {
-  // Try every row in the first 20 as a candidate header row. A valid header
-  // contains an "App #" column (or similar) and at least one date column.
+  // Pass 1 — column-oriented layout (rows are valuations, columns are dates).
+  // Header row contains date column labels; optionally an "App #" column too.
   for (let h = 0; h < Math.min(20, rows.length); h++) {
     const headerRow = rows[h];
     const colMap = readHeaderRow(headerRow);
-    if (!colMap.appCol || colMap.dateCols.length === 0) continue;
-    // Header looks good — extract rows beneath it.
+    if (colMap.dateCols.length === 0) continue;
     const out: ParsedValuationEntry[] = [];
+    let consecutiveEmpty = 0;
     for (let i = h + 1; i < rows.length; i++) {
       const r = rows[i];
-      const appRaw = r[colMap.appCol];
-      const appNum = appRaw == null ? null : Number(String(appRaw).replace(/[^0-9]/g, ""));
+      const appNum = colMap.appCol
+        ? coerceAppNumber(r[colMap.appCol])
+        : null;
       const notes = colMap.notesCol ? str(r[colMap.notesCol]) : null;
       let foundAny = false;
       for (const dc of colMap.dateCols) {
@@ -143,18 +144,104 @@ function scanSheet(rows: Array<Record<string, unknown>>): ParsedValuationEntry[]
         if (!iso) continue;
         foundAny = true;
         out.push({
-          app_number: Number.isFinite(appNum) && appNum! > 0 ? appNum : null,
+          app_number: appNum,
           entry_type: dc.type,
           date: iso,
           notes,
         });
       }
-      // Stop scanning once we hit a fully-empty row (likely the totals/footer)
-      if (!foundAny && Object.values(r).every((v) => v == null || v === "")) break;
+      // Stop after 2+ empty rows in a row — likely past the data block.
+      if (!foundAny && Object.values(r).every((v) => v == null || v === "")) {
+        consecutiveEmpty++;
+        if (consecutiveEmpty >= 2) break;
+      } else {
+        consecutiveEmpty = 0;
+      }
+    }
+    if (out.length > 0) return out;
+  }
+
+  // Pass 2 — transposed layout (column A holds entry-type labels and each
+  // row to the right is a different valuation's dates for that type).
+  const transposed = scanTransposed(rows);
+  if (transposed.length > 0) return transposed;
+
+  return [];
+}
+
+/**
+ * Parse a transposed schedule where the leftmost column lists entry types
+ * and each subsequent column is a separate valuation cycle:
+ *
+ *           | App 1       | App 2       | App 3       |
+ *  Application | 30 Apr     | 31 May      | 30 Jun      |
+ *  Due       | 15 May      | 15 Jun      | 15 Jul      |
+ *  Notice    | 18 May      | 18 Jun      | 18 Jul      |
+ *  Final pmt | 30 May      | 30 Jun      | 30 Jul      |
+ */
+function scanTransposed(rows: Array<Record<string, unknown>>): ParsedValuationEntry[] {
+  if (rows.length === 0) return [];
+  // Identify the label column — the column where multiple cells in different
+  // rows match an entry-type keyword.
+  const candidateCols = ["A", "B", "C"];
+  for (const labelCol of candidateCols) {
+    const labelRows: Array<{ rowIdx: number; type: ParsedValuationEntry["entry_type"] }> = [];
+    for (let i = 0; i < rows.length; i++) {
+      const v = rows[i][labelCol];
+      if (v == null) continue;
+      const label = String(v).toLowerCase().replace(/\s+/g, " ").trim();
+      for (const { type, re } of ENTRY_KEYWORDS) {
+        if (re.test(label)) {
+          if (!labelRows.some((l) => l.type === type)) labelRows.push({ rowIdx: i, type });
+          break;
+        }
+      }
+    }
+    if (labelRows.length < 2) continue;
+
+    // The header row above the first label is where app numbers / period
+    // labels typically live. Scan it for app numbers in the remaining cols.
+    const firstLabelRow = labelRows[0].rowIdx;
+    const cols = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    const labelColIdx = cols.indexOf(labelCol);
+
+    // Try the row immediately above the first entry-type row as the app-#
+    // header. If empty, scan upward up to 3 rows for an app-numbered row.
+    let appHeaderRow: Record<string, unknown> | null = null;
+    for (let r = firstLabelRow - 1; r >= Math.max(0, firstLabelRow - 3); r--) {
+      const candidate = rows[r];
+      const hasNumbers = Object.entries(candidate).some(([col, v]) => {
+        const idx = cols.indexOf(col);
+        if (idx <= labelColIdx) return false;
+        return v != null && coerceAppNumber(v) != null;
+      });
+      if (hasNumbers) { appHeaderRow = candidate; break; }
+    }
+
+    const out: ParsedValuationEntry[] = [];
+    for (const { rowIdx, type } of labelRows) {
+      const row = rows[rowIdx];
+      for (const [col, v] of Object.entries(row)) {
+        const ci = cols.indexOf(col);
+        if (ci <= labelColIdx) continue;
+        const iso = toIsoDate(v);
+        if (!iso) continue;
+        const appNum = appHeaderRow ? coerceAppNumber(appHeaderRow[col]) : null;
+        out.push({ app_number: appNum, entry_type: type, date: iso, notes: null });
+      }
     }
     if (out.length > 0) return out;
   }
   return [];
+}
+
+function coerceAppNumber(v: unknown): number | null {
+  if (v == null || v === "") return null;
+  if (typeof v === "number" && Number.isFinite(v) && v > 0) return Math.round(v);
+  const m = String(v).match(/(\d+)/);
+  if (!m) return null;
+  const n = Number(m[1]);
+  return Number.isFinite(n) && n > 0 ? n : null;
 }
 
 function readHeaderRow(row: Record<string, unknown>): {
@@ -168,8 +255,15 @@ function readHeaderRow(row: Record<string, unknown>): {
   for (const [col, raw] of Object.entries(row)) {
     if (raw == null || raw === "") continue;
     const label = String(raw).toLowerCase().replace(/\s+/g, " ").trim();
-    // App # / Application No / etc.
-    if (!appCol && /(app\s*[#no]|application\s*(?:no|number|#))/i.test(label)) appCol = col;
+    // Header that identifies which valuation cycle this row is for.
+    // Match: "App #/no/number", "Application #/no/number", "Valuation #/no/number",
+    // "AfP #/no", "Cycle", "Period #/no", or a bare "#" / "no.".
+    if (
+      !appCol &&
+      /^(app(?:lication)?\s*(?:#|no\.?|number)?$|valuation\s*(?:#|no\.?|number)?$|afp\s*(?:#|no\.?|number)?$|cycle$|period\s*(?:#|no\.?|number)?$|no\.?$|^#$)/i.test(label)
+    ) {
+      appCol = col;
+    }
     if (!notesCol && /^(notes?|comment|remark)/i.test(label)) notesCol = col;
     // Match against the most-specific patterns first; stop at the first hit
     // so a single column maps to a single entry type.
