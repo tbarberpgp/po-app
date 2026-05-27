@@ -129,13 +129,28 @@ export const api = {
     }>>(`/api/materials/${projectId}/substitutions`),
   listLabourByCostCode: (projectId: string) =>
     jfetch<LabourByCostCode[]>(`/api/materials/${projectId}/labour-by-cost-code`),
-  uploadMaterials: (projectId: string, file: File) => {
-    const fd = new FormData();
-    fd.append("file", file);
-    return jfetch<{ snapshot_id: number; rows: number }>(`/api/materials/${projectId}/upload`, {
-      method: "POST",
-      body: fd,
-    });
+  /**
+   * Parse the workbook in the BROWSER and POST the resulting JSON to the
+   * worker. The xlsx zip decode is heavy enough that doing it in a Cloudflare
+   * Worker pushes against the 30s CPU / 128MB memory limits for larger files
+   * — moving it to the user's browser side-steps both. The bytes never reach
+   * the server.
+   */
+  uploadMaterials: async (projectId: string, file: File) => {
+    const { parsePricingWorkbookClient } = await import("./materials-parser");
+    const parsed = await parsePricingWorkbookClient(file);
+    return jfetch<{ snapshot_id: number; rows: number; commercials: number; contract_items: number }>(
+      `/api/materials/${projectId}/upload-parsed`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          filename: file.name,
+          materials: parsed.materials,
+          commercials: parsed.commercials,
+          contract_items: parsed.contract_items,
+        }),
+      },
+    );
   },
 
   listPOs: (q?: { project_id?: string; status?: string }) => {

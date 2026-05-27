@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import type { Env, Variables } from "../env";
-import { parseContractItems, parseMaterialsSheet, parseSummaryCostSheet, readPricingWorkbook } from "../parse-xlsx";
+import { parseContractItems, parseMaterialsSheet, parseSummaryCostSheet, readPricingWorkbook } from "../../shared/parse-xlsx";
+import type { ParsedMaterial, ParsedCommercialRow, ParsedContractItem } from "../../shared/parse-xlsx";
 import { requirePermission } from "../auth";
 
 export const materials = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -39,23 +40,82 @@ materials.post("/:projectId/upload", async (c) => {
   }
   if (parsed.length === 0) return c.json({ error: "No material rows found" }, 400);
 
+  const out = await persistParsedWorkbook(c.env.DB, projectId, file.name, actor, {
+    materials: parsed,
+    commercials,
+    contract_items: contractItems,
+  });
+  return c.json(out);
+});
+
+/**
+ * Same as /upload but the client has already parsed the workbook locally
+ * and sends the JSON results. Avoids running the xlsx zip decode + sheet
+ * parse on the Worker — which can hit Cloudflare's 30s / 128MB resource
+ * limits for larger pricing files. The bytes never reach the server.
+ */
+materials.post("/:projectId/upload-parsed", async (c) => {
+  const denied = requirePermission(c, "materials.upload");
+  if (denied) return denied;
+  const projectId = c.req.param("projectId");
+  const actor = c.get("userEmail");
+
+  const project = await c.env.DB.prepare("SELECT id FROM projects WHERE id = ?")
+    .bind(projectId)
+    .first();
+  if (!project) return c.json({ error: "project not found" }, 404);
+
+  const body = await c.req.json<{
+    filename: string;
+    materials: ParsedMaterial[];
+    commercials?: ParsedCommercialRow[];
+    contract_items?: ParsedContractItem[];
+  }>();
+  if (!body.filename || !Array.isArray(body.materials) || body.materials.length === 0) {
+    return c.json({ error: "filename + materials[] required" }, 400);
+  }
+
+  const out = await persistParsedWorkbook(c.env.DB, projectId, body.filename, actor, {
+    materials: body.materials,
+    commercials: body.commercials ?? [],
+    contract_items: body.contract_items ?? [],
+  });
+  return c.json(out);
+});
+
+/**
+ * Wipes the current active snapshot for the project and writes a new one
+ * with all the rows from `parsed`. Used by both the multipart upload (where
+ * the worker parses) and the JSON upload (where the client parses).
+ */
+async function persistParsedWorkbook(
+  db: D1Database,
+  projectId: string,
+  filename: string,
+  actor: string,
+  parsed: {
+    materials: ParsedMaterial[];
+    commercials: ParsedCommercialRow[];
+    contract_items: ParsedContractItem[];
+  },
+) {
   const now = new Date().toISOString();
-  await c.env.DB.prepare(
-    "UPDATE material_snapshots SET is_active = 0 WHERE project_id = ? AND is_active = 1",
-  )
+  await db
+    .prepare("UPDATE material_snapshots SET is_active = 0 WHERE project_id = ? AND is_active = 1")
     .bind(projectId)
     .run();
-  const snap = await c.env.DB.prepare(
-    `INSERT INTO material_snapshots (project_id, uploaded_at, uploaded_by, filename, is_active)
-     VALUES (?, ?, ?, ?, 1) RETURNING id`,
-  )
-    .bind(projectId, now, actor, file.name)
+  const snap = await db
+    .prepare(
+      `INSERT INTO material_snapshots (project_id, uploaded_at, uploaded_by, filename, is_active)
+       VALUES (?, ?, ?, ?, 1) RETURNING id`,
+    )
+    .bind(projectId, now, actor, filename)
     .first<{ id: number }>();
   const snapshotId = snap!.id;
 
-  // Batch insert in chunks (D1 has param limits).
-  const stmts = parsed.map((m) =>
-    c.env.DB.prepare(
+  // Batch insert materials.
+  const matStmts = parsed.materials.map((m) =>
+    db.prepare(
       `INSERT INTO materials (
          snapshot_id, item, type, element_code, manufacturer, pack_qty, pack_unit, cost, cost_unit,
          coverage_qty, coverage_unit, waste_pct, unit_rate, rate_unit,
@@ -63,90 +123,66 @@ materials.post("/:projectId/upload", async (c) => {
          labour_unit_cost, labour_total_cost
        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).bind(
-      snapshotId,
-      m.item,
-      m.type,
-      m.element_code,
-      m.manufacturer,
-      m.pack_qty,
-      m.pack_unit,
-      m.cost,
-      m.cost_unit,
-      m.coverage_qty,
-      m.coverage_unit,
-      m.waste_pct,
-      m.unit_rate,
-      m.rate_unit,
-      m.total_qty,
-      m.total_qty_unit,
-      m.total_units,
-      m.total_units_unit,
-      m.material_total_cost,
-      m.labour_unit_cost,
-      m.labour_total_cost,
+      snapshotId, m.item, m.type, m.element_code, m.manufacturer,
+      m.pack_qty, m.pack_unit, m.cost, m.cost_unit,
+      m.coverage_qty, m.coverage_unit, m.waste_pct, m.unit_rate, m.rate_unit,
+      m.total_qty, m.total_qty_unit, m.total_units, m.total_units_unit, m.material_total_cost,
+      m.labour_unit_cost, m.labour_total_cost,
     ),
   );
-  await c.env.DB.batch(stmts);
+  await db.batch(matStmts);
 
-  // Persist contract items from the Pricing tab (for the AfP workflow).
-  if (contractItems.length > 0) {
-    const ciStmts = contractItems.map((ci) =>
-      c.env.DB.prepare(
+  if (parsed.contract_items.length > 0) {
+    const ciStmts = parsed.contract_items.map((ci) =>
+      db.prepare(
         `INSERT INTO contract_items
            (snapshot_id, item_no, section, description, qty, unit,
             sell_rate, sell_total, labour_rate, labour_total)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).bind(
-        snapshotId,
-        ci.item_no,
-        ci.section,
-        ci.description,
-        ci.qty,
-        ci.unit,
-        ci.sell_rate,
-        ci.sell_total,
-        ci.labour_rate,
-        ci.labour_total,
+        snapshotId, ci.item_no, ci.section, ci.description, ci.qty, ci.unit,
+        ci.sell_rate, ci.sell_total, ci.labour_rate, ci.labour_total,
       ),
     );
-    await c.env.DB.batch(ciStmts);
+    await db.batch(ciStmts);
   }
 
-  // Persist project commercials if the Summary Cost Sheet was present.
-  if (commercials.length > 0) {
-    const commStmts = commercials.map((r) =>
-      c.env.DB.prepare(
+  if (parsed.commercials.length > 0) {
+    const commStmts = parsed.commercials.map((r) =>
+      db.prepare(
         `INSERT INTO project_commercials
            (snapshot_id, category, value, cost, gross_profit, gross_profit_pct, is_total, display_order)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       ).bind(
-        snapshotId,
-        r.category,
-        r.value,
-        r.cost,
-        r.gross_profit,
-        r.gross_profit_pct,
-        r.is_total ? 1 : 0,
-        r.display_order,
+        snapshotId, r.category, r.value, r.cost, r.gross_profit,
+        r.gross_profit_pct, r.is_total ? 1 : 0, r.display_order,
       ),
     );
-    await c.env.DB.batch(commStmts);
+    await db.batch(commStmts);
   }
 
-  await c.env.DB.prepare(
+  await db.prepare(
     `INSERT INTO audit_log (entity_type, entity_id, action, actor, details, created_at)
      VALUES ('snapshot', ?, 'uploaded', ?, ?, ?)`,
   )
-    .bind(String(snapshotId), actor, JSON.stringify({ filename: file.name, rows: parsed.length, commercials: commercials.length, contract_items: contractItems.length }), now)
+    .bind(
+      String(snapshotId), actor,
+      JSON.stringify({
+        filename, rows: parsed.materials.length,
+        commercials: parsed.commercials.length,
+        contract_items: parsed.contract_items.length,
+      }),
+      now,
+    )
     .run();
 
-  return c.json({
+  return {
     snapshot_id: snapshotId,
-    rows: parsed.length,
-    commercials: commercials.length,
-    contract_items: contractItems.length,
-  });
-});
+    rows: parsed.materials.length,
+    commercials: parsed.commercials.length,
+    contract_items: parsed.contract_items.length,
+  };
+}
 
 /**
  * Aggregate labour cost for the active snapshot, grouped by element code so

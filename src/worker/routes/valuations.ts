@@ -5,7 +5,7 @@
 import { Hono } from "hono";
 import type { Env, Variables } from "../env";
 import { requirePermission } from "../auth";
-import { parseValuationScheduleXlsx } from "../parse-xlsx";
+import { parseValuationScheduleXlsx } from "../../shared/parse-xlsx";
 
 export const valuations = new Hono<{ Bindings: Env; Variables: Variables }>();
 
