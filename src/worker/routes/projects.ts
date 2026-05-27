@@ -172,18 +172,24 @@ projects.put("/:id", async (c) => {
   const body = await c.req.json<{
     name?: string;
     client?: string | null;
+    client_email?: string | null;
+    client_contact_name?: string | null;
     delivery_address?: string | null;
     site_contact_name?: string | null;
     site_contact_phone?: string | null;
     delivery_instructions?: string | null;
+    retention_pct?: number;
   }>();
   const allowed = [
     "name",
     "client",
+    "client_email",
+    "client_contact_name",
     "delivery_address",
     "site_contact_name",
     "site_contact_phone",
     "delivery_instructions",
+    "retention_pct",
   ] as const;
   const sets: string[] = [];
   const binds: unknown[] = [];

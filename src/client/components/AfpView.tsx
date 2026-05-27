@@ -39,10 +39,23 @@ export function AfpView({ me }: { me: CurrentUser | null }) {
     finally { setBusy(false); }
   }
   async function submit() {
-    if (!confirm(`Submit AfP #${afp.app_number}? The totals will be frozen and you'll need a new draft to change anything.`)) return;
+    if (!confirm(`Send AfP #${afp.app_number} for director approval? The totals will be frozen until the director approves or rejects.`)) return;
     setBusy(true);
     try { await api.submitAfp(afp.id); refresh(); }
     catch (e) { setErr(e instanceof Error ? e.message : "submit failed"); }
+    finally { setBusy(false); }
+  }
+  async function approve() {
+    setBusy(true); setErr(null);
+    try { await api.approveAfp(afp.id); refresh(); }
+    catch (e) { setErr(e instanceof Error ? e.message : "approve failed"); }
+    finally { setBusy(false); }
+  }
+  async function reject() {
+    const reason = prompt("Reason for rejection (optional, sent back to the requester)") ?? undefined;
+    setBusy(true); setErr(null);
+    try { await api.rejectAfp(afp.id, reason); refresh(); }
+    catch (e) { setErr(e instanceof Error ? e.message : "reject failed"); }
     finally { setBusy(false); }
   }
   async function certify() {
@@ -100,7 +113,13 @@ export function AfpView({ me }: { me: CurrentUser | null }) {
             {canEdit && isDraft && (
               <>
                 <button className="ghost" onClick={discard} disabled={busy}>Discard</button>
-                <button className="accent" onClick={submit} disabled={busy}>Submit</button>
+                <button className="accent" onClick={submit} disabled={busy}>Send for approval</button>
+              </>
+            )}
+            {canEdit && afp.status === "pending_approval" && me?.is_approver && me.approver_tiers.includes("director") && (
+              <>
+                <button className="ghost" onClick={reject} disabled={busy}>Reject</button>
+                <button className="accent" onClick={approve} disabled={busy}>Approve & send</button>
               </>
             )}
             {canEdit && afp.status === "submitted" && (
@@ -216,8 +235,9 @@ export function AfpView({ me }: { me: CurrentUser | null }) {
 function statusPill(s: AfpStatus): string {
   switch (s) {
     case "draft": return "draft";
-    case "submitted": return "pending";
-    case "certified": return "issued";
+    case "pending_approval": return "pending";
+    case "submitted": return "issued";
+    case "certified": return "approved";
     case "paid": return "approved";
   }
 }

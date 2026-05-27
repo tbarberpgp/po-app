@@ -181,13 +181,30 @@ materials.get("/:projectId/labour-by-cost-code", async (c) => {
       material_total: number;
     }>();
 
-  // Derive PRJ.ELE.L for each row server-side so the UI doesn't have to
-  // duplicate the buildCostCode helper.
+  // Total labour expended is the sum of certified amounts across all
+  // incoming_labour AfPs that have reached 'certified' or 'paid' status.
+  // We don't yet break this down by element_code (AfP lines are work-item
+  // level, not element-level), so the per-row "expended" is approximated
+  // pro-rata by element labour weight.
+  const expendedRow = await c.env.DB.prepare(
+    `SELECT COALESCE(SUM(certified_amount), 0) AS total_expended
+     FROM applications_for_payment
+     WHERE project_id = ? AND direction = 'incoming_labour'
+       AND status IN ('certified', 'paid')`,
+  )
+    .bind(projectId)
+    .first<{ total_expended: number }>();
+  const totalExpended = expendedRow?.total_expended ?? 0;
+  const totalLabour = rows.results.reduce((s, r) => s + r.labour_total, 0);
+
   const digits = project.code.replace(/\D/g, "");
   const prjPart = (digits.slice(-4) || "0000").padStart(4, "0");
   const out = rows.results.map((r) => ({
     ...r,
     cost_code: `${prjPart}.${r.element_code}.L`,
+    // Pro-rata split of expended across elements by their labour share.
+    expended:
+      totalLabour > 0 ? Math.round((r.labour_total / totalLabour) * totalExpended * 100) / 100 : 0,
   }));
   return c.json(out);
 });

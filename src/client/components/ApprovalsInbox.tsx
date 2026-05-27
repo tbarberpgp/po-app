@@ -5,10 +5,12 @@ import { Topbar } from "./Shell";
 import type { CurrentUser, PendingPriceApproval, PurchaseOrder } from "../../shared/types";
 
 type Row = PurchaseOrder & { project_code: string; project_name: string };
+type PendingAfp = Awaited<ReturnType<typeof api.listPendingAfps>>[number];
 
 export function ApprovalsInbox({ me }: { me: CurrentUser | null }) {
   const [rows, setRows] = useState<Row[]>([]);
   const [prices, setPrices] = useState<PendingPriceApproval[]>([]);
+  const [afps, setAfps] = useState<PendingAfp[]>([]);
   const [err, setErr] = useState<string | null>(null);
 
   function refresh() {
@@ -16,6 +18,7 @@ export function ApprovalsInbox({ me }: { me: CurrentUser | null }) {
       .then((rs) => setRows(rs as Row[]))
       .catch((e) => setErr(e.message));
     api.listPendingPriceApprovals().then(setPrices).catch(() => setPrices([]));
+    api.listPendingAfps().then(setAfps).catch(() => setAfps([]));
   }
   useEffect(refresh, []);
 
@@ -23,6 +26,8 @@ export function ApprovalsInbox({ me }: { me: CurrentUser | null }) {
   const minePrices = me
     ? prices.filter((p) => p.approval_tier && me.approver_tiers.includes(p.approval_tier))
     : [];
+  // AfPs route to director-tier approvers
+  const myAfps = me?.approver_tiers.includes("director") ? afps : [];
 
   async function decide(id: number, action: "approve" | "reject") {
     if (action === "reject") {
@@ -34,7 +39,7 @@ export function ApprovalsInbox({ me }: { me: CurrentUser | null }) {
     refresh();
   }
 
-  const totalMine = minePOs.length + minePrices.length;
+  const totalMine = minePOs.length + minePrices.length + myAfps.length;
 
   return (
     <>
@@ -78,6 +83,38 @@ export function ApprovalsInbox({ me }: { me: CurrentUser | null }) {
                         <td className="center">{r.approval_reason?.replace("_", " ")}</td>
                         <td className="muted">{fmtDate(r.created_at)}</td>
                         <td className="muted">{r.created_by}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {myAfps.length > 0 && (
+              <div className="card" style={{ marginTop: 16 }}>
+                <div className="card-hd"><h2>AfPs awaiting director approval</h2><span className="pill">{myAfps.length}</span></div>
+                <table>
+                  <thead>
+                    <tr>
+                      <th className="center">Project</th>
+                      <th className="center">#</th>
+                      <th className="center">Direction</th>
+                      <th>Period ending</th>
+                      <th className="num">Cumulative</th>
+                      <th className="num">Total invoice</th>
+                      <th>Submitted</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {myAfps.map((a) => (
+                      <tr key={a.id}>
+                        <td className="center">{a.project_code}</td>
+                        <td className="center"><Link to={`/applications/${a.id}`}>#{a.app_number}</Link></td>
+                        <td className="center">{a.direction === "outgoing" ? "Outgoing" : "Incoming labour"}</td>
+                        <td>{fmtDate(a.period_end)}</td>
+                        <td className="num">{a.cumulative_value != null ? fmtMoney(a.cumulative_value) : "—"}</td>
+                        <td className="num"><b>{a.total_invoice != null ? fmtMoney(a.total_invoice) : "—"}</b></td>
+                        <td className="muted">{fmtDate(a.submitted_at)} · {a.submitted_by}</td>
                       </tr>
                     ))}
                   </tbody>

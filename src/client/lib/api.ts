@@ -12,7 +12,10 @@ import type {
   ProductSupplier,
   Project,
   ProjectCommercial,
+  PortfolioCalendarItem,
   PurchaseOrder,
+  ValuationEntryType,
+  ValuationScheduleEntry,
   ResourceType,
   Settings,
   Supplier,
@@ -52,7 +55,7 @@ export const api = {
     ),
   updateProject: (
     id: string,
-    input: Partial<Pick<Project, "name" | "client" | "delivery_address" | "site_contact_name" | "site_contact_phone" | "delivery_instructions">>,
+    input: Partial<Pick<Project, "name" | "client" | "client_email" | "client_contact_name" | "delivery_address" | "site_contact_name" | "site_contact_phone" | "delivery_instructions" | "retention_pct">>,
   ) => jfetch<{ ok: true }>(`/api/projects/${id}`, { method: "PUT", body: JSON.stringify(input) }),
   deleteProject: (id: string, reason: string) =>
     jfetch<{ ok: true }>(`/api/projects/${id}`, { method: "DELETE", body: JSON.stringify({ reason }) }),
@@ -433,6 +436,41 @@ export const api = {
     }),
   deleteAfp: (id: number) =>
     jfetch<{ ok: true }>(`/api/applications/${id}`, { method: "DELETE" }),
+  approveAfp: (id: number) =>
+    jfetch<{ ok: true }>(`/api/applications/${id}/approve`, { method: "POST" }),
+  rejectAfp: (id: number, reason?: string) =>
+    jfetch<{ ok: true }>(`/api/applications/${id}/reject`, {
+      method: "POST", body: JSON.stringify({ reason }),
+    }),
+  listPendingAfps: () =>
+    jfetch<Array<{
+      id: number; app_number: number; period_end: string; direction: string;
+      total_invoice: number | null; contract_sum: number | null;
+      cumulative_value: number | null; submitted_at: string;
+      submitted_by: string; project_code: string; project_name: string;
+    }>>(`/api/applications/_pending-approval`),
+
+  // Valuation schedule + portfolio calendar ──────────────────────────────
+  listValuationEntries: (projectId: string) =>
+    jfetch<ValuationScheduleEntry[]>(`/api/valuations/project/${projectId}`),
+  addValuationEntry: (projectId: string, body: { app_number?: number | null; entry_type: ValuationEntryType; date: string; notes?: string }) =>
+    jfetch<{ id: number }>(`/api/valuations/project/${projectId}`, {
+      method: "POST", body: JSON.stringify(body),
+    }),
+  deleteValuationEntry: (id: number) =>
+    jfetch<{ ok: true }>(`/api/valuations/entries/${id}`, { method: "DELETE" }),
+  recordValuationUpload: (projectId: string, filename: string) =>
+    jfetch<{ ok: true }>(`/api/valuations/project/${projectId}/upload-meta`, {
+      method: "POST", body: JSON.stringify({ filename }),
+    }),
+  portfolioCalendar: (opts?: { from?: string; to?: string }) => {
+    const q = new URLSearchParams();
+    if (opts?.from) q.set("from", opts.from);
+    if (opts?.to) q.set("to", opts.to);
+    return jfetch<PortfolioCalendarItem[]>(
+      `/api/valuations/_portfolio${q.toString() ? `?${q}` : ""}`,
+    );
+  },
   discardQuote: (quoteId: number) =>
     jfetch<{ ok: true }>(`/api/quotes/${quoteId}`, { method: "DELETE" }),
   searchProductsForQuote: (q: string) =>

@@ -6,11 +6,12 @@
 import { Hono } from "hono";
 import type { Env, Variables } from "../env";
 import { requirePermission } from "../auth";
+import { emailAfpApprovers, emailAfpCounterparty, emailAfpCertified } from "../notify";
 
 export const applications = new Hono<{ Bindings: Env; Variables: Variables }>();
 
 type Direction = "outgoing" | "incoming_labour";
-type Status = "draft" | "submitted" | "certified" | "paid";
+type Status = "draft" | "pending_approval" | "submitted" | "certified" | "paid";
 
 type AfpRow = {
   id: number;
@@ -440,7 +441,11 @@ applications.delete("/lines/:lineId", async (c) => {
   return c.json({ ok: true });
 });
 
-/** Move from draft → submitted. Freezes the totals. */
+/**
+ * Move from draft → pending_approval. Freezes the totals so the approver
+ * sees the same numbers the requester saw. A director-tier approver must
+ * then approve before it goes to the counterparty.
+ */
 applications.post("/:id/submit", async (c) => {
   const denied = requirePermission(c, "projects.edit");
   if (denied) return denied;
@@ -451,16 +456,171 @@ applications.post("/:id/submit", async (c) => {
     .bind(id)
     .first<{ id: number; status: Status }>();
   if (!afp) return c.json({ error: "not found" }, 404);
-  if (afp.status !== "draft") return c.json({ error: "only drafts can be submitted" }, 409);
-  await recalcTotals(c.env.DB, id); // make sure totals are fresh before freezing
+  if (afp.status !== "draft") return c.json({ error: "only drafts can be sent for approval" }, 409);
+  await recalcTotals(c.env.DB, id);
   const now = new Date().toISOString();
   const actor = c.get("userEmail");
   await c.env.DB.prepare(
-    "UPDATE applications_for_payment SET status = 'submitted', submitted_at = ?, submitted_by = ? WHERE id = ?",
+    "UPDATE applications_for_payment SET status = 'pending_approval', submitted_at = ?, submitted_by = ? WHERE id = ?",
   )
     .bind(now, actor, id)
     .run();
+
+  // Fire approval email (async, doesn't block response)
+  c.executionCtx.waitUntil((async () => {
+    const enriched = await c.env.DB.prepare(
+      `SELECT a.id, a.app_number, a.total_invoice, a.direction, a.project_id,
+              p.code AS project_code, p.name AS project_name
+       FROM applications_for_payment a JOIN projects p ON p.id = a.project_id
+       WHERE a.id = ?`,
+    ).bind(id).first<{
+      id: number; app_number: number; total_invoice: number | null;
+      direction: string; project_id: string; project_code: string; project_name: string;
+    }>();
+    if (!enriched) return;
+    const approvers = await c.env.DB.prepare(
+      `SELECT email FROM approvers
+       WHERE tier = 'director' AND (project_id IS NULL OR project_id = ?)`,
+    ).bind(enriched.project_id).all<{ email: string }>();
+    await emailAfpApprovers(c.env, {
+      afp: { id: enriched.id, app_number: enriched.app_number, total_invoice: enriched.total_invoice, direction: enriched.direction },
+      project: { code: enriched.project_code, name: enriched.project_name },
+      approvers: approvers.results,
+      raisedBy: actor,
+    });
+  })());
+
+  return c.json({ ok: true, status: "pending_approval" });
+});
+
+/** Director approves a pending AfP → status becomes 'submitted' (i.e. sent). */
+applications.post("/:id/approve", async (c) => {
+  // For now any approver tagged 'director' on the project can approve.
+  // Permission check delegates to the existing approver table.
+  const userEmail = c.get("userEmail");
+  const id = Number(c.req.param("id"));
+  const afp = await c.env.DB.prepare(
+    `SELECT a.id, a.status, a.project_id
+     FROM applications_for_payment a WHERE a.id = ?`,
+  )
+    .bind(id)
+    .first<{ id: number; status: Status; project_id: string }>();
+  if (!afp) return c.json({ error: "not found" }, 404);
+  if (afp.status !== "pending_approval") {
+    return c.json({ error: "AfP is not awaiting approval" }, 409);
+  }
+  // Approver check: must be configured as a director either project-wide or globally.
+  const approver = await c.env.DB.prepare(
+    `SELECT id FROM approvers
+     WHERE email = ? AND tier = 'director'
+       AND (project_id IS NULL OR project_id = ?)`,
+  )
+    .bind(userEmail, afp.project_id)
+    .first();
+  if (!approver) {
+    return c.json({ error: "Only a director-tier approver can sign off this AfP" }, 403);
+  }
+  const now = new Date().toISOString();
+  await c.env.DB.prepare(
+    "UPDATE applications_for_payment SET status = 'submitted', approved_at = ?, approved_by = ? WHERE id = ?",
+  )
+    .bind(now, userEmail, id)
+    .run();
+
+  // Email the counterparty (client for outgoing, supplier for incoming labour)
+  c.executionCtx.waitUntil((async () => {
+    const detail = await c.env.DB.prepare(
+      `SELECT a.id, a.app_number, a.total_invoice, a.period_end, a.direction,
+              a.counterparty_supplier_id,
+              p.code AS project_code, p.name AS project_name,
+              p.client_email AS client_email, p.client_contact_name AS client_contact_name
+       FROM applications_for_payment a JOIN projects p ON p.id = a.project_id
+       WHERE a.id = ?`,
+    ).bind(id).first<{
+      id: number; app_number: number; total_invoice: number | null; period_end: string;
+      direction: string; counterparty_supplier_id: number | null;
+      project_code: string; project_name: string;
+      client_email: string | null; client_contact_name: string | null;
+    }>();
+    if (!detail) return;
+    let to: string | null = null;
+    let contactName: string | null = null;
+    if (detail.direction === "outgoing") {
+      to = detail.client_email;
+      contactName = detail.client_contact_name;
+    } else if (detail.counterparty_supplier_id) {
+      const s = await c.env.DB.prepare(
+        "SELECT contact_email, contact_name FROM suppliers WHERE id = ?",
+      ).bind(detail.counterparty_supplier_id).first<{ contact_email: string | null; contact_name: string | null }>();
+      to = s?.contact_email ?? null;
+      contactName = s?.contact_name ?? null;
+    }
+    if (!to) {
+      console.warn(`AfP ${id} sent but no counterparty email — set client_email or supplier contact_email`);
+      return;
+    }
+    await emailAfpCounterparty(c.env, {
+      afp: { id: detail.id, app_number: detail.app_number, total_invoice: detail.total_invoice, period_end: detail.period_end, direction: detail.direction },
+      project: { code: detail.project_code, name: detail.project_name },
+      to,
+      contactName,
+    });
+  })());
+
   return c.json({ ok: true });
+});
+
+/** Director rejects a pending AfP → back to draft with a reason. */
+applications.post("/:id/reject", async (c) => {
+  const userEmail = c.get("userEmail");
+  const id = Number(c.req.param("id"));
+  const body = await c.req
+    .json<{ reason?: string }>()
+    .catch(() => ({} as { reason?: string }));
+  const afp = await c.env.DB.prepare(
+    `SELECT a.id, a.status, a.project_id
+     FROM applications_for_payment a WHERE a.id = ?`,
+  )
+    .bind(id)
+    .first<{ id: number; status: Status; project_id: string }>();
+  if (!afp) return c.json({ error: "not found" }, 404);
+  if (afp.status !== "pending_approval") {
+    return c.json({ error: "AfP is not awaiting approval" }, 409);
+  }
+  const approver = await c.env.DB.prepare(
+    `SELECT id FROM approvers
+     WHERE email = ? AND tier = 'director'
+       AND (project_id IS NULL OR project_id = ?)`,
+  )
+    .bind(userEmail, afp.project_id)
+    .first();
+  if (!approver) {
+    return c.json({ error: "Only a director-tier approver can reject this AfP" }, 403);
+  }
+  const now = new Date().toISOString();
+  await c.env.DB.prepare(
+    `UPDATE applications_for_payment
+     SET status = 'draft', approval_rejected_at = ?, approval_rejected_by = ?,
+         approval_rejection_reason = ?, submitted_at = NULL, submitted_by = NULL
+     WHERE id = ?`,
+  )
+    .bind(now, userEmail, body.reason ?? null, id)
+    .run();
+  return c.json({ ok: true });
+});
+
+/** List AfPs awaiting approval (used by the inbox). */
+applications.get("/_pending-approval", async (c) => {
+  const rows = await c.env.DB.prepare(
+    `SELECT a.id, a.app_number, a.period_end, a.direction, a.total_invoice,
+            a.contract_sum, a.cumulative_value, a.submitted_at, a.submitted_by,
+            p.code AS project_code, p.name AS project_name
+     FROM applications_for_payment a
+     JOIN projects p ON p.id = a.project_id
+     WHERE a.status = 'pending_approval'
+     ORDER BY a.submitted_at DESC`,
+  ).all();
+  return c.json(rows.results);
 });
 
 /** Move from submitted → certified, with optional certified_amount override. */
@@ -488,6 +648,28 @@ applications.post("/:id/certify", async (c) => {
   )
     .bind(now, actor, certified, id)
     .run();
+
+  // Email the raiser that the AfP was certified
+  c.executionCtx.waitUntil((async () => {
+    const d = await c.env.DB.prepare(
+      `SELECT a.id, a.app_number, a.submitted_by, a.created_by,
+              p.code AS project_code, p.name AS project_name
+       FROM applications_for_payment a JOIN projects p ON p.id = a.project_id
+       WHERE a.id = ?`,
+    ).bind(id).first<{
+      id: number; app_number: number; submitted_by: string | null; created_by: string;
+      project_code: string; project_name: string;
+    }>();
+    if (!d) return;
+    const to = d.submitted_by ?? d.created_by;
+    if (!to) return;
+    await emailAfpCertified(c.env, {
+      afp: { id: d.id, app_number: d.app_number, certified_amount: certified },
+      project: { code: d.project_code, name: d.project_name },
+      to, actor,
+    });
+  })());
+
   return c.json({ ok: true, certified_amount: certified });
 });
 

@@ -211,7 +211,7 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
         {tab === "pos" ? (
           <ProjectPOsPanel rows={projectPOs} />
         ) : tab === "commercials" ? (
-          <CommercialsBreakdown rows={commercials} />
+          <CommercialsBreakdown rows={commercials} projectId={id ?? ""} canEdit={canEditProject} />
         ) : tab === "labour" ? (
           <LabourBreakdown rows={labour} />
         ) : tab === "afp" ? (
@@ -664,7 +664,23 @@ function CommercialsHeadlineKpis({ rows }: { rows: ProjectCommercial[] }) {
 }
 
 /** Full per-category breakdown on the Commercials tab. */
-function CommercialsBreakdown({ rows }: { rows: ProjectCommercial[] }) {
+function CommercialsBreakdown({ rows, projectId, canEdit }: { rows: ProjectCommercial[]; projectId: string; canEdit: boolean }) {
+  // Two-column layout: left = portfolio calendar (combined across projects)
+  // + valuation-schedule upload, right = the per-category breakdown table.
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "320px 1fr", gap: 16 }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+        <PortfolioCalendarPanel projectId={projectId} />
+        <ValuationScheduleUpload projectId={projectId} canEdit={canEdit} />
+      </div>
+      <div>
+        <CommercialsBreakdownInner rows={rows} />
+      </div>
+    </div>
+  );
+}
+
+function CommercialsBreakdownInner({ rows }: { rows: ProjectCommercial[] }) {
   if (rows.length === 0) {
     return (
       <div className="card">
@@ -753,16 +769,34 @@ function AfpListPanel({
   onRefresh: () => void;
 }) {
   const navigate = useNavigate();
+  const [direction, setDirection] = useState<"outgoing" | "incoming_labour">("outgoing");
   const [creating, setCreating] = useState(false);
   const [periodEnd, setPeriodEnd] = useState(() => new Date().toISOString().slice(0, 10));
   const [notes, setNotes] = useState("");
+  const [supplierId, setSupplierId] = useState<number | null>(null);
+  const [suppliers, setSuppliers] = useState<Awaited<ReturnType<typeof api.listSuppliers>>>([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
+  useEffect(() => {
+    if (direction === "incoming_labour" && suppliers.length === 0) {
+      api.listSuppliers().then(setSuppliers).catch(() => setSuppliers([]));
+    }
+  }, [direction, suppliers.length]);
+
   async function createAfp() {
+    if (direction === "incoming_labour" && !supplierId) {
+      setErr("Pick the subcontractor this application is from");
+      return;
+    }
     setBusy(true); setErr(null);
     try {
-      const r = await api.createAfp(projectId, { period_end: periodEnd, notes: notes || undefined });
+      const r = await api.createAfp(projectId, {
+        period_end: periodEnd,
+        notes: notes || undefined,
+        direction,
+        counterparty_supplier_id: direction === "incoming_labour" ? supplierId : undefined,
+      });
       onRefresh();
       navigate(`/applications/${r.id}`);
     } catch (e) {
@@ -772,9 +806,9 @@ function AfpListPanel({
     }
   }
 
-  // Outgoing AfPs only — incoming labour ships next.
-  const outgoing = afps.filter((a) => a.direction === "outgoing");
-  const totals = outgoing.reduce(
+  // Filter AfPs to the selected direction
+  const filtered = afps.filter((a) => a.direction === direction);
+  const totals = filtered.reduce(
     (acc, a) => {
       acc.invoiced += a.total_invoice ?? 0;
       if (a.status === "certified" || a.status === "paid") acc.certified += a.certified_amount ?? a.amount_due ?? 0;
@@ -784,11 +818,12 @@ function AfpListPanel({
     { invoiced: 0, certified: 0, paid: 0 },
   );
 
+  const dirLabel = direction === "outgoing" ? "Outgoing (to client)" : "Incoming labour (from subcontractor)";
   return (
     <>
       <div className="kpis">
-        <Kpi label="Apps to date" value={String(outgoing.length)} sub={outgoing.length > 0 ? `Latest #${outgoing[0].app_number}` : "None yet"} />
-        <Kpi label="Total invoiced" value={fmtMoney(totals.invoiced)} sub="incl VAT" />
+        <Kpi label="Apps to date" value={String(filtered.length)} sub={filtered.length > 0 ? `Latest #${filtered[0].app_number}` : "None yet"} />
+        <Kpi label={direction === "outgoing" ? "Total invoiced" : "Total claimed"} value={fmtMoney(totals.invoiced)} sub="incl VAT" />
         <Kpi label="Certified" value={fmtMoney(totals.certified)} tone={totals.certified > 0 ? "success" : "default"} />
         <Kpi label="Paid" value={fmtMoney(totals.paid)} tone={totals.paid > 0 ? "success" : "default"} />
       </div>
@@ -796,32 +831,53 @@ function AfpListPanel({
       <div className="card" style={{ marginTop: 16 }}>
         <div className="card-hd">
           <h2 style={{ flex: 1 }}>Applications for payment</h2>
+          <div style={{ display: "flex", gap: 6, marginRight: 12 }}>
+            <button
+              type="button"
+              className={direction === "outgoing" ? "primary tiny" : "ghost tiny"}
+              onClick={() => setDirection("outgoing")}
+            >Outgoing</button>
+            <button
+              type="button"
+              className={direction === "incoming_labour" ? "primary tiny" : "ghost tiny"}
+              onClick={() => setDirection("incoming_labour")}
+            >Incoming labour</button>
+          </div>
           {canCreate && !creating && (
-            <button className="accent" onClick={() => setCreating(true)}>+ New AfP</button>
+            <button className="accent" onClick={() => setCreating(true)}>+ New {direction === "outgoing" ? "AfP" : "labour app"}</button>
           )}
         </div>
         {err && <div className="flash error" style={{ margin: "12px 20px 0" }}>{err}</div>}
         {creating && (
           <div className="card-bd" style={{ background: "var(--accent-soft)", borderBottom: "1px solid var(--line)" }}>
-            <div className="row" style={{ alignItems: "flex-end", gap: 12 }}>
+            <div className="row" style={{ alignItems: "flex-end", gap: 12, flexWrap: "wrap" }}>
               <div>
                 <label>Period ending</label>
                 <input type="date" value={periodEnd} onChange={(e) => setPeriodEnd(e.target.value)} />
               </div>
+              {direction === "incoming_labour" && (
+                <div>
+                  <label>Subcontractor</label>
+                  <select value={supplierId ?? ""} onChange={(e) => setSupplierId(e.target.value ? Number(e.target.value) : null)} style={{ minWidth: 220 }}>
+                    <option value="">— select —</option>
+                    {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                  </select>
+                </div>
+              )}
               <div className="grow">
                 <label>Notes (optional)</label>
-                <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="e.g. Valuation #3 — works to 30 Apr 2026" />
+                <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder={direction === "outgoing" ? "e.g. Valuation #3 — works to 30 Apr 2026" : "e.g. May application from labour subcontractor"} />
               </div>
-              <button className="primary" onClick={createAfp} disabled={busy || !periodEnd}>{busy ? "Creating…" : "Create draft"}</button>
+              <button className="primary" onClick={createAfp} disabled={busy || !periodEnd || (direction === "incoming_labour" && !supplierId)}>{busy ? "Creating…" : "Create draft"}</button>
               <button className="ghost" onClick={() => setCreating(false)}>Cancel</button>
             </div>
             <div className="muted" style={{ marginTop: 8, fontSize: 12 }}>
-              The draft will be seeded with one line per contract item from the BOQ at 0% complete. Edit per-line % and add any variations on the AfP detail screen, then submit.
+              Draft seeded from the BOQ at 0% complete using {direction === "outgoing" ? "sell rates" : "labour cost rates"}. Edit per-line % and add variations on the detail screen, then submit.
             </div>
           </div>
         )}
-        {outgoing.length === 0 ? (
-          <div className="card-bd"><div className="empty">No applications raised yet.</div></div>
+        {filtered.length === 0 ? (
+          <div className="card-bd"><div className="empty">No {dirLabel.toLowerCase()} applications yet.</div></div>
         ) : (
           <table>
             <thead>
@@ -831,13 +887,13 @@ function AfpListPanel({
                 <th className="center">Status</th>
                 <th className="num">Cumulative</th>
                 <th className="num">This period</th>
-                <th className="num">Total invoice</th>
+                <th className="num">{direction === "outgoing" ? "Total invoice" : "Total claimed"}</th>
                 <th className="num">Certified</th>
                 <th>Raised</th>
               </tr>
             </thead>
             <tbody>
-              {outgoing.map((a) => (
+              {filtered.map((a) => (
                 <tr key={a.id}>
                   <td className="center"><Link to={`/applications/${a.id}`}>#{a.app_number}</Link></td>
                   <td>{fmtDate(a.period_end)}</td>
@@ -866,8 +922,9 @@ function AfpListPanel({
 function afpStatusPill(s: ApplicationForPayment["status"]): string {
   switch (s) {
     case "draft": return "draft";
-    case "submitted": return "pending";
-    case "certified": return "issued";
+    case "pending_approval": return "pending";
+    case "submitted": return "issued";
+    case "certified": return "approved";
     case "paid": return "approved";
   }
 }
@@ -887,10 +944,7 @@ function LabourBreakdown({ rows }: { rows: LabourByCostCode[] }) {
     );
   }
   const totalLabour = rows.reduce((s, r) => s + r.labour_total, 0);
-  // Expended is the cumulative amount certified to subcontractors for labour.
-  // Until the labour-application workflow lands it's always £0; placeholders
-  // wired now so the UI doesn't need rework when that ships.
-  const totalExpended = 0;
+  const totalExpended = rows.reduce((s, r) => s + (r.expended ?? 0), 0);
   return (
     <div className="card">
       <div className="card-hd">
@@ -927,8 +981,9 @@ function LabourBreakdown({ rows }: { rows: LabourByCostCode[] }) {
         </thead>
         <tbody>
           {rows.map((r) => {
-            const expended = 0;                    // placeholder
+            const expended = r.expended ?? 0;
             const pct = r.labour_total > 0 ? expended / r.labour_total : 0;
+            const isZero = expended < 0.005;
             return (
               <tr key={r.cost_code}>
                 <td className="center">
@@ -940,8 +995,12 @@ function LabourBreakdown({ rows }: { rows: LabourByCostCode[] }) {
                 </td>
                 <td className="num">{r.line_count}</td>
                 <td className="num" style={{ fontWeight: 600 }}>{fmtMoney(r.labour_total)}</td>
-                <td className="num"><span className="muted">{fmtMoney(expended)}</span></td>
-                <td className="num"><span className="muted">{`${(pct * 100).toFixed(1)}%`}</span></td>
+                <td className="num">
+                  {isZero ? <span className="muted">{fmtMoney(0)}</span> : fmtMoney(expended)}
+                </td>
+                <td className="num">
+                  {isZero ? <span className="muted">0.0%</span> : `${(pct * 100).toFixed(1)}%`}
+                </td>
               </tr>
             );
           })}
@@ -1001,5 +1060,185 @@ function ProjectQuoteUpload({ projectId, disabled }: { projectId: string; disabl
       </button>
       {err && <span style={{ color: "var(--danger)", fontSize: 11, marginLeft: 8 }}>{err}</span>}
     </>
+  );
+}
+
+/* ── Portfolio valuation calendar (combined across projects) ─────────── */
+
+function PortfolioCalendarPanel({ projectId }: { projectId: string }) {
+  type Item = Awaited<ReturnType<typeof api.portfolioCalendar>>[number];
+  const [items, setItems] = useState<Item[]>([]);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    api.portfolioCalendar().then(setItems).catch((e) => setErr(e.message));
+  }, []);
+
+  // Group items by ISO month for display
+  const byMonth = useMemo(() => {
+    const m = new Map<string, Item[]>();
+    for (const it of items) {
+      const key = it.date.slice(0, 7);
+      if (!m.has(key)) m.set(key, []);
+      m.get(key)!.push(it);
+    }
+    return [...m.entries()].sort(([a], [b]) => a.localeCompare(b));
+  }, [items]);
+
+  return (
+    <div className="card">
+      <div className="card-hd"><h3 style={{ flex: 1 }}>Valuation calendar</h3></div>
+      <div className="card-bd" style={{ maxHeight: 560, overflowY: "auto" }}>
+        {err && <div className="muted" style={{ color: "var(--danger)" }}>{err}</div>}
+        {byMonth.length === 0 ? (
+          <div className="empty" style={{ fontSize: 12 }}>No upcoming valuation dates across the portfolio. Add a schedule entry below to get started.</div>
+        ) : (
+          byMonth.map(([month, list]) => (
+            <div key={month} style={{ marginBottom: 14 }}>
+              <div className="eyebrow" style={{ marginBottom: 6 }}>{formatMonth(month)}</div>
+              {list.map((it, i) => (
+                <CalendarRow key={`${it.kind}-${it.afp_id ?? "s"}-${i}`} it={it} isThisProject={it.project_id === projectId} />
+              ))}
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CalendarRow({ it, isThisProject }: { it: Awaited<ReturnType<typeof api.portfolioCalendar>>[number]; isThisProject: boolean }) {
+  const color =
+    it.kind === "afp-period-end" ? "var(--accent-2)"
+    : it.kind === "scheduled-submission" ? "var(--success)"
+    : it.kind === "scheduled-cutoff" ? "var(--warn)"
+    : it.kind === "scheduled-payment" ? "var(--accent)"
+    : "var(--muted)";
+  return (
+    <div style={{
+      display: "flex", alignItems: "baseline", gap: 8,
+      padding: "5px 0", borderBottom: "1px solid var(--line)",
+      fontSize: 12,
+      fontWeight: isThisProject ? 600 : 400,
+    }}>
+      <span style={{ width: 42, color: "var(--muted)", fontVariantNumeric: "tabular-nums" }}>{it.date.slice(8, 10)}</span>
+      <span style={{ width: 6, height: 6, background: color, borderRadius: 999, flexShrink: 0 }} />
+      <span style={{ flex: 1, color: isThisProject ? "var(--ink)" : "var(--muted)" }}>
+        <Link to={`/projects/${it.project_id}`} style={{ fontFamily: "ui-monospace, monospace", fontSize: 11 }}>{it.project_code}</Link>{" — "}
+        {it.afp_id ? <Link to={`/applications/${it.afp_id}`}>{it.label}</Link> : it.label}
+      </span>
+    </div>
+  );
+}
+
+function formatMonth(yyyymm: string): string {
+  const [y, m] = yyyymm.split("-");
+  const d = new Date(Number(y), Number(m) - 1, 1);
+  return d.toLocaleDateString("en-GB", { month: "long", year: "numeric" });
+}
+
+/* ── Valuation schedule upload + add-entry form ──────────────────────── */
+
+function ValuationScheduleUpload({ projectId, canEdit }: { projectId: string; canEdit: boolean }) {
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [entries, setEntries] = useState<Awaited<ReturnType<typeof api.listValuationEntries>>>([]);
+  const [adding, setAdding] = useState(false);
+  const [form, setForm] = useState({ entry_type: "submission" as const, date: "", app_number: "", notes: "" });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  function refresh() {
+    api.listValuationEntries(projectId).then(setEntries).catch(() => setEntries([]));
+  }
+  useEffect(refresh, [projectId]);
+
+  async function onFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const f = e.target.files?.[0];
+    if (fileRef.current) fileRef.current.value = "";
+    if (!f) return;
+    setBusy(true); setErr(null);
+    try {
+      // We don't upload the file bytes anywhere yet — just record the filename.
+      // A future iteration could push to R2 / store the bytes.
+      await api.recordValuationUpload(projectId, f.name);
+      setErr(null);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "upload failed");
+    } finally { setBusy(false); }
+  }
+
+  async function saveEntry() {
+    if (!form.date) { setErr("Date required"); return; }
+    setBusy(true); setErr(null);
+    try {
+      await api.addValuationEntry(projectId, {
+        entry_type: form.entry_type,
+        date: form.date,
+        app_number: form.app_number ? Number(form.app_number) : null,
+        notes: form.notes || undefined,
+      });
+      setForm({ entry_type: "submission", date: "", app_number: "", notes: "" });
+      setAdding(false);
+      refresh();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "save failed");
+    } finally { setBusy(false); }
+  }
+
+  async function deleteEntry(id: number) {
+    await api.deleteValuationEntry(id);
+    refresh();
+  }
+
+  return (
+    <div className="card">
+      <div className="card-hd">
+        <h3 style={{ flex: 1 }}>Project schedule</h3>
+        {canEdit && (
+          <>
+            <input ref={fileRef} type="file" style={{ display: "none" }} accept=".pdf,.xlsx,.xls" onChange={onFile} />
+            <button className="ghost tiny" onClick={() => fileRef.current?.click()} disabled={busy}>↑ Upload</button>
+          </>
+        )}
+      </div>
+      <div className="card-bd">
+        {err && <div className="flash error" style={{ marginBottom: 8 }}>{err}</div>}
+        {canEdit && !adding && (
+          <button className="ghost tiny" onClick={() => setAdding(true)} style={{ marginBottom: 8 }}>+ Add date</button>
+        )}
+        {canEdit && adding && (
+          <div style={{ display: "grid", gap: 6, marginBottom: 10 }}>
+            <select value={form.entry_type} onChange={(e) => setForm({ ...form, entry_type: e.target.value as typeof form.entry_type })}>
+              <option value="cutoff">Cut-off</option>
+              <option value="submission">Submission</option>
+              <option value="certification">Certification</option>
+              <option value="payment">Payment</option>
+            </select>
+            <input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} />
+            <input type="number" placeholder="App # (optional)" value={form.app_number} onChange={(e) => setForm({ ...form, app_number: e.target.value })} />
+            <input placeholder="Notes (optional)" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} />
+            <div style={{ display: "flex", gap: 6 }}>
+              <button className="primary tiny" onClick={saveEntry} disabled={busy}>Save</button>
+              <button className="ghost tiny" onClick={() => setAdding(false)}>Cancel</button>
+            </div>
+          </div>
+        )}
+        {entries.length === 0 ? (
+          <div className="muted" style={{ fontSize: 12 }}>No schedule entries yet.</div>
+        ) : (
+          <div style={{ display: "grid", gap: 4 }}>
+            {entries.map((e) => (
+              <div key={e.id} style={{ display: "flex", alignItems: "baseline", gap: 6, fontSize: 12, padding: "3px 0", borderBottom: "1px solid var(--line)" }}>
+                <span style={{ color: "var(--muted)", fontVariantNumeric: "tabular-nums", width: 64 }}>{fmtDate(e.date).slice(0, 6)}</span>
+                <span style={{ flex: 1 }}>
+                  {e.entry_type.replace(/^./, (c) => c.toUpperCase())}{e.app_number ? ` #${e.app_number}` : ""}
+                </span>
+                {canEdit && <button className="ghost tiny" onClick={() => deleteEntry(e.id)} title="Delete">×</button>}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
   );
 }

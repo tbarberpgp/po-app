@@ -3,13 +3,43 @@ export type Project = {
   code: string;
   name: string;
   client: string | null;
+  client_email: string | null;
+  client_contact_name: string | null;
   currency: string;
+  retention_pct?: number;
   delivery_address: string | null;
   site_contact_name: string | null;
   site_contact_phone: string | null;
   delivery_instructions: string | null;
+  valuation_schedule_filename: string | null;
+  valuation_schedule_uploaded_at: string | null;
+  valuation_schedule_uploaded_by: string | null;
   created_at: string;
   created_by: string;
+};
+
+export type ValuationEntryType = "cutoff" | "submission" | "certification" | "payment";
+
+export type ValuationScheduleEntry = {
+  id: number;
+  app_number: number | null;
+  entry_type: ValuationEntryType;
+  date: string;
+  notes: string | null;
+  created_at: string;
+  created_by: string;
+};
+
+export type PortfolioCalendarItem = {
+  date: string;
+  project_id: string;
+  project_code: string;
+  project_name: string;
+  kind: string;             // "scheduled-<type>" | "afp-period-end"
+  label: string;
+  app_number: number | null;
+  afp_id?: number;
+  status?: string;
 };
 
 export type Material = {
@@ -249,7 +279,7 @@ export type ContractItem = {
 };
 
 export type AfpDirection = "outgoing" | "incoming_labour";
-export type AfpStatus = "draft" | "submitted" | "certified" | "paid";
+export type AfpStatus = "draft" | "pending_approval" | "submitted" | "certified" | "paid";
 
 /** One Application for Payment — outgoing (PowerGrid → client) or incoming
  *  labour (subcontractor → PowerGrid). */
@@ -282,6 +312,11 @@ export type ApplicationForPayment = {
   paid_at: string | null;
   paid_by: string | null;
   payment_reference: string | null;
+  approved_at?: string | null;
+  approved_by?: string | null;
+  approval_rejected_at?: string | null;
+  approval_rejected_by?: string | null;
+  approval_rejection_reason?: string | null;
   // joined fields
   line_count?: number;
   project_code?: string;
@@ -330,6 +365,8 @@ export type LabourByCostCode = {
   line_count: number;
   labour_total: number;
   material_total: number;
+  /** Amount certified to subcontractors against this element via incoming labour AfPs. */
+  expended: number;
 };
 
 /** A row from the workbook's Summary Cost Sheet — value / cost / GP per category. */
