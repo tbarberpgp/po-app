@@ -68,36 +68,77 @@ const ENTRY_KEYWORDS: Array<{ type: ParsedValuationEntry["entry_type"]; re: RegE
   { type: "application",   re: /(application\s*date|app\s*date|afp\s*date|submission|submitted|applied)/i },
 ];
 
-/** Best-effort coerce an xlsx cell into an ISO yyyy-mm-dd string. */
+const MONTH_BY_NAME: Record<string, number> = {
+  jan: 1, january: 1, feb: 2, february: 2, mar: 3, march: 3,
+  apr: 4, april: 4, may: 5, jun: 6, june: 6, jul: 7, july: 7,
+  aug: 8, august: 8, sep: 9, sept: 9, september: 9, oct: 10, october: 10,
+  nov: 11, november: 11, dec: 12, december: 12,
+};
+
+function fmtIso(year: number, month: number, day: number): string | null {
+  if (year < 1900 || year > 2200) return null;
+  if (month < 1 || month > 12) return null;
+  if (day < 1 || day > 31) return null;
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+/** Best-effort coerce an xlsx cell into an ISO yyyy-mm-dd string. Handles
+ *  Date objects, Excel serials, all-numeric DD/MM/YYYY, and named-month
+ *  formats like "14-May-2026", "14 May 2026", "May 14, 2026". */
 function toIsoDate(v: unknown): string | null {
   if (v == null || v === "") return null;
   if (v instanceof Date) {
-    const y = v.getFullYear();
-    const m = String(v.getMonth() + 1).padStart(2, "0");
-    const d = String(v.getDate()).padStart(2, "0");
-    return `${y}-${m}-${d}`;
+    return fmtIso(v.getFullYear(), v.getMonth() + 1, v.getDate());
   }
   if (typeof v === "number") {
-    // Excel serial date number (days since 1899-12-30)
+    // Day-offset hints in payment schedules (e.g. "1", "7", "30") are tiny
+    // integers — reject anything outside the realistic Excel-date range so
+    // we don't accidentally turn "7" into 1900-01-06.
+    if (v < 10000) return null;
     const d = new Date(Math.round((v - 25569) * 86400 * 1000));
     if (Number.isNaN(d.getTime())) return null;
     return toIsoDate(d);
   }
   const s = String(v).trim();
   if (!s) return null;
-  // Try DD/MM/YYYY, DD-MM-YYYY, or anything Date.parse handles.
-  const dmy = s.match(/^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2,4})$/);
-  if (dmy) {
-    const [, dd, mm, yy] = dmy;
-    const year = yy.length === 2 ? 2000 + Number(yy) : Number(yy);
-    const month = Number(mm);
-    const day = Number(dd);
-    if (year > 1900 && month >= 1 && month <= 12 && day >= 1 && day <= 31) {
-      return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+
+  // YYYY-MM-DD (ISO)
+  const ymd = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (ymd) return fmtIso(Number(ymd[1]), Number(ymd[2]), Number(ymd[3]));
+
+  // DD-Mon-YYYY / DD Mon YYYY / DD.Mon.YYYY  (e.g. "14-May-2026")
+  const dmn = s.match(/^(\d{1,2})[\s\-./]+([A-Za-z]{3,})[\s\-./]+(\d{2,4})$/);
+  if (dmn) {
+    const m = MONTH_BY_NAME[dmn[2].toLowerCase()];
+    if (m) {
+      const year = dmn[3].length === 2 ? 2000 + Number(dmn[3]) : Number(dmn[3]);
+      return fmtIso(year, m, Number(dmn[1]));
     }
   }
+
+  // Mon DD, YYYY / Mon DD YYYY  (e.g. "May 14, 2026")
+  const nDm = s.match(/^([A-Za-z]{3,})[\s.]+(\d{1,2}),?\s+(\d{2,4})$/);
+  if (nDm) {
+    const m = MONTH_BY_NAME[nDm[1].toLowerCase()];
+    if (m) {
+      const year = nDm[3].length === 2 ? 2000 + Number(nDm[3]) : Number(nDm[3]);
+      return fmtIso(year, m, Number(nDm[2]));
+    }
+  }
+
+  // All-numeric DD/MM/YYYY / DD-MM-YYYY / DD.MM.YYYY (UK convention)
+  const dmy = s.match(/^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2,4})$/);
+  if (dmy) {
+    const year = dmy[3].length === 2 ? 2000 + Number(dmy[3]) : Number(dmy[3]);
+    return fmtIso(year, Number(dmy[2]), Number(dmy[1]));
+  }
+
+  // Fallback: anything Date.parse handles natively.
   const t = Date.parse(s);
-  if (!Number.isNaN(t)) return toIsoDate(new Date(t));
+  if (!Number.isNaN(t)) {
+    const d = new Date(t);
+    return fmtIso(d.getFullYear(), d.getMonth() + 1, d.getDate());
+  }
   return null;
 }
 
@@ -256,11 +297,11 @@ function readHeaderRow(row: Record<string, unknown>): {
     if (raw == null || raw === "") continue;
     const label = String(raw).toLowerCase().replace(/\s+/g, " ").trim();
     // Header that identifies which valuation cycle this row is for.
-    // Match: "App #/no/number", "Application #/no/number", "Valuation #/no/number",
-    // "AfP #/no", "Cycle", "Period #/no", or a bare "#" / "no.".
+    // Match: "App #/no/number", "Application …", "Val. / Valuation …",
+    // "AfP …", "Cycle", "Period …", or a bare "#" / "no.".
     if (
       !appCol &&
-      /^(app(?:lication)?\s*(?:#|no\.?|number)?$|valuation\s*(?:#|no\.?|number)?$|afp\s*(?:#|no\.?|number)?$|cycle$|period\s*(?:#|no\.?|number)?$|no\.?$|^#$)/i.test(label)
+      /^(app(?:lication)?\.?\s*(?:#|no\.?|number)?$|val(?:uation)?\.?\s*(?:#|no\.?|number)?$|afp\s*(?:#|no\.?|number)?$|cycle$|period\s*(?:#|no\.?|number)?$|no\.?$|^#$)/i.test(label)
     ) {
       appCol = col;
     }
