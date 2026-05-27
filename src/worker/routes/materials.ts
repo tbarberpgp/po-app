@@ -268,10 +268,26 @@ materials.get("/:projectId", async (c) => {
             (SELECT COUNT(*) FROM material_live_prices mlp
              WHERE mlp.material_id = m.id
                AND mlp.project_id = ?
-               AND mlp.status = 'pending_approval') AS pending_price_count
+               AND mlp.status = 'pending_approval') AS pending_price_count,
+            -- Active substitution (if any): replacement item/manufacturer/cost
+            sub.id                       AS sub_id,
+            sub.kind                     AS sub_kind,
+            sub.replacement_item         AS sub_item,
+            sub.replacement_manufacturer AS sub_manufacturer,
+            sub.replacement_supplier     AS sub_supplier,
+            sub.replacement_cost         AS sub_cost,
+            sub.replacement_unit         AS sub_unit,
+            sub.replacement_total_units  AS sub_total_units,
+            sub.replacement_product_id   AS sub_product_id,
+            sub.replacement_quote_line_id AS sub_quote_line_id,
+            sub.reason                   AS sub_reason,
+            sub.created_at               AS sub_created_at,
+            sub.created_by               AS sub_created_by
      FROM materials m
      LEFT JOIN products pr ON pr.id = m.product_id
      LEFT JOIN elements e ON e.code = m.element_code
+     LEFT JOIN material_substitutions sub
+            ON sub.material_id = m.id AND sub.active = 1
      WHERE m.snapshot_id = ?
      ORDER BY COALESCE(m.element_code, m.type), m.item`,
   )
@@ -285,4 +301,177 @@ materials.get("/:projectId", async (c) => {
       r.total_units == null ? null : (r.total_units ?? 0) - (r.committed_qty ?? 0),
   }));
   return c.json(result);
+});
+
+// ── Material substitutions ────────────────────────────────────────────────
+
+type SubKind = "like_for_like" | "equivalent_spec" | "variation";
+
+/**
+ * Swap one material for another on the BOQ. Source can be a master product,
+ * a supplier quote line, or freeform fields. The original material row stays
+ * — only POs raised AFTER the swap pick up the replacement's defaults; the
+ * BOQ allowance still draws down against the original material_id so
+ * reporting stays consistent.
+ *
+ * Creating a new substitution while another is active auto-reverts the old
+ * one (its `active` flag flips to 0, audit-trailed).
+ */
+materials.post("/:materialId/substitute", async (c) => {
+  const denied = requirePermission(c, "materials.upload");
+  if (denied) return denied;
+  const materialId = Number(c.req.param("materialId"));
+  if (!Number.isInteger(materialId)) return c.json({ error: "invalid material id" }, 400);
+
+  const body = await c.req.json<{
+    kind?: SubKind;
+    reason?: string | null;
+    notes?: string | null;
+    // Replacement sources (any combination; latter overrides former)
+    product_id?: number | null;
+    quote_line_id?: number | null;
+    // Freeform / overrides
+    replacement_item?: string;
+    replacement_manufacturer?: string | null;
+    replacement_supplier?: string | null;
+    replacement_cost?: number | null;
+    replacement_unit?: string | null;
+    replacement_total_units?: number | null;
+  }>();
+
+  const material = await c.env.DB.prepare(
+    `SELECT m.id, m.item, m.total_units, m.pack_unit,
+            s.project_id AS project_id
+     FROM materials m JOIN material_snapshots s ON s.id = m.snapshot_id
+     WHERE m.id = ?`,
+  )
+    .bind(materialId)
+    .first<{ id: number; item: string; total_units: number | null; pack_unit: string | null; project_id: string }>();
+  if (!material) return c.json({ error: "material not found" }, 404);
+
+  // Resolve replacement fields from each source, then layer overrides.
+  let item: string | null = null;
+  let manufacturer: string | null = null;
+  let supplier: string | null = null;
+  let cost: number | null = null;
+  let unit: string | null = null;
+
+  if (body.product_id) {
+    const p = await c.env.DB.prepare(
+      `SELECT description, manufacturer, supplier, unit, unit_cost
+       FROM products WHERE id = ?`,
+    )
+      .bind(body.product_id)
+      .first<{ description: string; manufacturer: string | null; supplier: string | null; unit: string | null; unit_cost: number | null }>();
+    if (!p) return c.json({ error: "product not found" }, 404);
+    item = p.description;
+    manufacturer = p.manufacturer;
+    supplier = p.supplier;
+    cost = p.unit_cost;
+    unit = p.unit;
+  }
+  if (body.quote_line_id) {
+    const q = await c.env.DB.prepare(
+      `SELECT l.raw_description, l.raw_unit, l.unit_price,
+              s.name AS supplier_name
+       FROM supplier_quote_lines l
+       JOIN supplier_quotes qq ON qq.id = l.quote_id
+       JOIN suppliers s        ON s.id = qq.supplier_id
+       WHERE l.id = ?`,
+    )
+      .bind(body.quote_line_id)
+      .first<{ raw_description: string; raw_unit: string | null; unit_price: number | null; supplier_name: string }>();
+    if (!q) return c.json({ error: "quote line not found" }, 404);
+    item = item ?? q.raw_description;
+    unit = unit ?? q.raw_unit;
+    cost = cost ?? q.unit_price;
+    supplier = supplier ?? q.supplier_name;
+  }
+  // Freeform overrides win (if provided)
+  if (body.replacement_item != null) item = body.replacement_item;
+  if (body.replacement_manufacturer !== undefined) manufacturer = body.replacement_manufacturer;
+  if (body.replacement_supplier !== undefined) supplier = body.replacement_supplier;
+  if (body.replacement_cost !== undefined) cost = body.replacement_cost;
+  if (body.replacement_unit !== undefined) unit = body.replacement_unit;
+
+  if (!item || !item.trim()) {
+    return c.json({ error: "replacement_item (or a product/quote source) is required" }, 400);
+  }
+
+  const totalUnits = body.replacement_total_units ?? material.total_units;
+  const kind: SubKind = body.kind ?? "like_for_like";
+  const now = new Date().toISOString();
+  const actor = c.get("userEmail");
+
+  // Auto-revert any existing active substitution for this material.
+  await c.env.DB.prepare(
+    `UPDATE material_substitutions
+     SET active = 0, reverted_at = ?, reverted_by = ?,
+         reverted_reason = COALESCE(reverted_reason, 'superseded by new substitution')
+     WHERE material_id = ? AND active = 1`,
+  )
+    .bind(now, actor, materialId)
+    .run();
+
+  const inserted = await c.env.DB.prepare(
+    `INSERT INTO material_substitutions
+       (material_id, project_id,
+        replacement_product_id, replacement_quote_line_id,
+        replacement_item, replacement_manufacturer, replacement_supplier,
+        replacement_cost, replacement_unit, replacement_total_units,
+        kind, reason, notes,
+        active, created_at, created_by)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+     RETURNING id`,
+  )
+    .bind(
+      materialId, material.project_id,
+      body.product_id ?? null, body.quote_line_id ?? null,
+      item.trim(), manufacturer ?? null, supplier ?? null,
+      cost ?? null, unit ?? material.pack_unit ?? null, totalUnits ?? null,
+      kind, body.reason ?? null, body.notes ?? null,
+      now, actor,
+    )
+    .first<{ id: number }>();
+
+  return c.json({ id: inserted?.id, ok: true });
+});
+
+/** List substitution history (all rows) for a project. */
+materials.get("/:projectId/substitutions", async (c) => {
+  const projectId = c.req.param("projectId");
+  const rows = await c.env.DB.prepare(
+    `SELECT sub.*,
+            m.item AS original_item,
+            m.manufacturer AS original_manufacturer,
+            m.cost AS original_cost,
+            m.total_units AS original_total_units,
+            m.total_units_unit AS original_unit
+     FROM material_substitutions sub
+     JOIN materials m ON m.id = sub.material_id
+     WHERE sub.project_id = ?
+     ORDER BY sub.created_at DESC`,
+  )
+    .bind(projectId)
+    .all();
+  return c.json(rows.results);
+});
+
+/** Revert an active substitution. */
+materials.delete("/substitutions/:id", async (c) => {
+  const denied = requirePermission(c, "materials.upload");
+  if (denied) return denied;
+  const id = Number(c.req.param("id"));
+  const body = await c.req
+    .json<{ reason?: string }>()
+    .catch(() => ({} as { reason?: string }));
+  const now = new Date().toISOString();
+  await c.env.DB.prepare(
+    `UPDATE material_substitutions
+     SET active = 0, reverted_at = ?, reverted_by = ?, reverted_reason = ?
+     WHERE id = ? AND active = 1`,
+  )
+    .bind(now, c.get("userEmail"), body.reason ?? null, id)
+    .run();
+  return c.json({ ok: true });
 });

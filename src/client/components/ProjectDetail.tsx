@@ -300,6 +300,7 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
                       <th className="num">Committed</th>
                       <th className="num">Remaining</th>
                       <th className="center" style={{ width: 140 }}>Usage</th>
+                      {canUploadMaterials && <th style={{ width: 90 }}></th>}
                     </tr>
                   </thead>
                   <tbody>
@@ -314,12 +315,36 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
                       const unit = m.total_units_unit ?? m.pack_unit ?? "";
                       const live = m.live_unit_price ?? null;
                       const delta = live != null && m.cost != null ? live - m.cost : null;
+                      const isSubbed = !!m.sub_id;
                       return (
                         <tr key={m.id}>
                           <td className="center">{m.type}</td>
-                          <td>{m.item}</td>
-                          <td className="muted center">{m.manufacturer ?? "—"}</td>
-                          <td className="num">{m.cost != null ? fmtMoney(m.cost) : <span className="muted">—</span>}</td>
+                          <td>
+                            {isSubbed ? (
+                              <>
+                                <div style={{ fontWeight: 600 }}>{m.sub_item}</div>
+                                <div className="muted" style={{ fontSize: 11, textDecoration: "line-through", marginTop: 2 }}>
+                                  {m.item}
+                                </div>
+                                <SubBadge kind={m.sub_kind} reason={m.sub_reason} by={m.sub_created_by} at={m.sub_created_at} />
+                              </>
+                            ) : m.item}
+                          </td>
+                          <td className="muted center">
+                            {isSubbed
+                              ? (m.sub_supplier ?? m.sub_manufacturer ?? <span className="muted">—</span>)
+                              : (m.manufacturer ?? "—")}
+                          </td>
+                          <td className="num">
+                            {isSubbed && m.sub_cost != null ? (
+                              <>
+                                <div>{fmtMoney(m.sub_cost)}</div>
+                                {m.cost != null && (
+                                  <div className="muted" style={{ fontSize: 10, textDecoration: "line-through" }}>{fmtMoney(m.cost)}</div>
+                                )}
+                              </>
+                            ) : m.cost != null ? fmtMoney(m.cost) : <span className="muted">—</span>}
+                          </td>
                           <td className="num">
                             {live != null ? (
                               <>
@@ -336,7 +361,7 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
                               <span className="muted">—</span>
                             )}
                           </td>
-                          <td className="center">{unit}</td>
+                          <td className="center">{isSubbed ? (m.sub_unit ?? unit) : unit}</td>
                           <td className="num">{priced ? `${priced.toLocaleString()}` : <span className="muted">not priced</span>}</td>
                           <td className="num">{committed.toLocaleString()}</td>
                           <td className="num">
@@ -350,6 +375,11 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
                               />
                             </div>
                           </td>
+                          {canUploadMaterials && (
+                            <td className="center">
+                              <SubstituteAction material={m} onChanged={load} />
+                            </td>
+                          )}
                         </tr>
                       );
                     })}
@@ -1404,6 +1434,237 @@ function ValuationScheduleUpload({ projectId, canEdit }: { projectId: string; ca
         ) : (
           <ScheduleEntryGroups entries={entries} canEdit={canEdit} onDelete={deleteEntry} />
         )}
+      </div>
+    </div>
+  );
+}
+
+/* ── Material substitution: pill + action with modal ─────────────────── */
+
+function SubBadge({ kind, reason, by, at }: {
+  kind?: string | null;
+  reason?: string | null;
+  by?: string | null;
+  at?: string | null;
+}) {
+  const label = kind === "variation" ? "Variation" : kind === "equivalent_spec" ? "Equiv. spec" : "Subbed";
+  const tone = kind === "variation" ? "pending" : kind === "equivalent_spec" ? "issued" : "approved";
+  return (
+    <span
+      className={`pill ${tone}`}
+      style={{ fontSize: 10, marginTop: 4, display: "inline-flex" }}
+      title={[reason, by ? `by ${by}` : null, at ? `on ${at.slice(0, 10)}` : null].filter(Boolean).join(" · ") || undefined}
+    >
+      {label}
+    </span>
+  );
+}
+
+function SubstituteAction({ material, onChanged }: { material: MaterialWithCommitment; onChanged: () => void }) {
+  const [open, setOpen] = useState(false);
+  const isSubbed = !!material.sub_id;
+
+  async function revert() {
+    if (!material.sub_id) return;
+    const reason = prompt("Reason for reverting (optional)") ?? undefined;
+    await api.revertSubstitution(material.sub_id, reason);
+    onChanged();
+  }
+
+  return (
+    <>
+      {isSubbed ? (
+        <>
+          <button className="ghost tiny" onClick={() => setOpen(true)} title="Change replacement">Edit</button>
+          <button className="ghost tiny" onClick={revert} title="Revert to original material" style={{ marginLeft: 4 }}>↺</button>
+        </>
+      ) : (
+        <button className="ghost tiny" onClick={() => setOpen(true)} title="Swap this material for a different supplier / brand / spec">Substitute</button>
+      )}
+      {open && (
+        <SubstituteModal
+          material={material}
+          onCancel={() => setOpen(false)}
+          onSaved={() => { setOpen(false); onChanged(); }}
+        />
+      )}
+    </>
+  );
+}
+
+function SubstituteModal({
+  material, onCancel, onSaved,
+}: {
+  material: MaterialWithCommitment;
+  onCancel: () => void;
+  onSaved: () => void;
+}) {
+  type Source = "library" | "freeform";
+  const [source, setSource] = useState<Source>("freeform");
+  const [kind, setKind] = useState<"like_for_like" | "equivalent_spec" | "variation">("like_for_like");
+
+  // Library picker state
+  const [search, setSearch] = useState("");
+  const [hits, setHits] = useState<Awaited<ReturnType<typeof api.searchProductsForQuote>>>([]);
+  const [productId, setProductId] = useState<number | null>(null);
+
+  // Freeform fields (pre-filled from a picked product or the current sub).
+  const [item, setItem] = useState(material.sub_item ?? "");
+  const [manufacturer, setManufacturer] = useState(material.sub_manufacturer ?? "");
+  const [supplier, setSupplier] = useState(material.sub_supplier ?? "");
+  const [cost, setCost] = useState<string>(material.sub_cost != null ? String(material.sub_cost) : "");
+  const [unit, setUnit] = useState(material.sub_unit ?? material.total_units_unit ?? material.pack_unit ?? "");
+  const [reason, setReason] = useState(material.sub_reason ?? "");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (source !== "library") return;
+    if (search.trim().length < 2) { setHits([]); return; }
+    const t = setTimeout(() => {
+      api.searchProductsForQuote(search).then(setHits).catch(() => setHits([]));
+    }, 200);
+    return () => clearTimeout(t);
+  }, [source, search]);
+
+  function pickHit(h: Awaited<ReturnType<typeof api.searchProductsForQuote>>[number]) {
+    setProductId(h.id);
+    setItem(h.description);
+    setManufacturer(h.manufacturer ?? "");
+    setCost(h.unit_cost != null ? String(h.unit_cost) : "");
+    setUnit(h.unit ?? unit);
+  }
+
+  async function save() {
+    if (!item.trim()) { setErr("Replacement item description is required"); return; }
+    setBusy(true); setErr(null);
+    try {
+      await api.substituteMaterial(material.id, {
+        kind,
+        reason: reason.trim() || null,
+        product_id: source === "library" ? productId : null,
+        replacement_item: item.trim(),
+        replacement_manufacturer: manufacturer.trim() || null,
+        replacement_supplier: supplier.trim() || null,
+        replacement_cost: cost === "" ? null : Number(cost),
+        replacement_unit: unit.trim() || null,
+      });
+      onSaved();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "save failed");
+    } finally { setBusy(false); }
+  }
+
+  return (
+    <div
+      style={{
+        position: "fixed", inset: 0, background: "rgba(15,17,48,0.45)",
+        display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100,
+      }}
+      onClick={onCancel}
+    >
+      <div
+        className="card"
+        style={{ maxWidth: 640, width: "calc(100% - 32px)", maxHeight: "calc(100vh - 64px)", overflow: "auto" }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="card-hd"><h3 style={{ flex: 1 }}>{material.sub_id ? "Edit substitution" : "Substitute material"}</h3></div>
+        <div className="card-bd">
+          {err && <div className="flash error" style={{ marginBottom: 8 }}>{err}</div>}
+
+          <div className="muted" style={{ fontSize: 12, marginBottom: 10 }}>
+            Original: <b>{material.item}</b>{material.manufacturer ? <> · {material.manufacturer}</> : null}
+            {material.cost != null && <> · {fmtMoney(material.cost)}</>}
+          </div>
+
+          <div className="eyebrow">Source</div>
+          <div style={{ display: "flex", gap: 6, marginTop: 6, marginBottom: 12 }}>
+            <button type="button" className={source === "freeform" ? "primary tiny" : "ghost tiny"} onClick={() => setSource("freeform")}>Freeform</button>
+            <button type="button" className={source === "library" ? "primary tiny" : "ghost tiny"} onClick={() => setSource("library")}>Product library</button>
+          </div>
+
+          {source === "library" && (
+            <div style={{ marginBottom: 12 }}>
+              <input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search products by description / manufacturer…"
+                style={{ width: "100%" }}
+              />
+              {hits.length > 0 && (
+                <div style={{ marginTop: 6, maxHeight: 180, overflowY: "auto", border: "1px solid var(--line)", borderRadius: "var(--radius-md)" }}>
+                  {hits.map((h) => (
+                    <div
+                      key={h.id}
+                      onClick={() => pickHit(h)}
+                      style={{
+                        padding: "8px 10px", cursor: "pointer", fontSize: 13,
+                        background: productId === h.id ? "var(--accent-soft)" : "transparent",
+                        borderBottom: "1px solid var(--line)",
+                      }}
+                    >
+                      <div>
+                        <span className="badge" style={{ fontFamily: "ui-monospace, monospace", marginRight: 6 }}>{h.product_code}</span>
+                        {h.description}
+                      </div>
+                      <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
+                        {h.manufacturer ?? "—"} · {h.unit ?? "—"} · {h.unit_cost != null ? fmtMoney(h.unit_cost) : "no price"}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          <div style={{ display: "grid", gap: 8 }}>
+            <div>
+              <label>Replacement item</label>
+              <input value={item} onChange={(e) => setItem(e.target.value)} placeholder="e.g. Recticel Eurothane GP 100mm PIR" />
+            </div>
+            <div className="row" style={{ gap: 8 }}>
+              <div style={{ flex: 1 }}>
+                <label>Manufacturer</label>
+                <input value={manufacturer} onChange={(e) => setManufacturer(e.target.value)} />
+              </div>
+              <div style={{ flex: 1 }}>
+                <label>Supplier</label>
+                <input value={supplier} onChange={(e) => setSupplier(e.target.value)} placeholder="defaults to manufacturer" />
+              </div>
+            </div>
+            <div className="row" style={{ gap: 8 }}>
+              <div style={{ flex: 1 }}>
+                <label>Unit cost (£)</label>
+                <input type="number" step="any" value={cost} onChange={(e) => setCost(e.target.value)} />
+              </div>
+              <div style={{ flex: 1 }}>
+                <label>Unit</label>
+                <input value={unit} onChange={(e) => setUnit(e.target.value)} placeholder="ea / m² / Roll" />
+              </div>
+            </div>
+            <div>
+              <label>Kind</label>
+              <select value={kind} onChange={(e) => setKind(e.target.value as typeof kind)}>
+                <option value="like_for_like">Like-for-like (brand swap, same spec)</option>
+                <option value="equivalent_spec">Equivalent spec (different unit / pack)</option>
+                <option value="variation">Variation (materially different)</option>
+              </select>
+            </div>
+            <div>
+              <label>Reason (optional, audit trail)</label>
+              <input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="e.g. Alumasc lead time too long" />
+            </div>
+          </div>
+
+          <div className="muted" style={{ fontSize: 11, marginTop: 12 }}>
+            Existing POs stay linked to the original material. Only new POs raised after this swap will default to the replacement. BOQ allowance continues to draw down against the original line.
+          </div>
+        </div>
+        <div className="card-hd" style={{ borderTop: "1px solid var(--line)", borderBottom: "none" }}>
+          <div style={{ flex: 1 }} />
+          <button className="ghost" onClick={onCancel} disabled={busy}>Cancel</button>{" "}
+          <button className="accent" onClick={save} disabled={busy || !item.trim()}>{busy ? "Saving…" : material.sub_id ? "Save change" : "Save substitution"}</button>
+        </div>
       </div>
     </div>
   );

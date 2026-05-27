@@ -210,9 +210,11 @@ export function NewPO() {
     });
   }
 
-  // Totals
+  // Totals — use the active substitution's cost when one exists.
+  const effectiveCost = (m: MaterialWithCommitment): number =>
+    m.sub_id && m.sub_cost != null ? m.sub_cost : (m.cost ?? 0);
   const pricedSelected = useMemo(() => [...pricedRows.values()].filter((r) => r.qty > 0), [pricedRows]);
-  const pricedTotal = pricedSelected.reduce((s, r) => s + r.qty * (r.material.cost ?? 0), 0);
+  const pricedTotal = pricedSelected.reduce((s, r) => s + r.qty * effectiveCost(r.material), 0);
   const validAdditional = additional.filter((a) => a.item.trim() && a.qty > 0);
   const additionalTotal = validAdditional.reduce((s, a) => s + a.qty * a.unit_cost, 0);
   const grandTotal = pricedTotal + additionalTotal;
@@ -252,15 +254,26 @@ export function NewPO() {
     setErr(null);
     try {
       const lines = [
-        ...pricedSelected.map((r) => ({
-          material_id: r.material.id,
-          item: r.material.item,
-          type: r.material.type,
-          manufacturer: r.material.manufacturer,
-          qty: r.qty,
-          unit: r.material.total_units_unit ?? r.material.pack_unit ?? "ea",
-          unit_cost: r.material.cost ?? 0,
-        })),
+        ...pricedSelected.map((r) => {
+          // If the material has an active substitution, the PO line picks up
+          // the replacement's item/manufacturer/cost/unit but still records
+          // the ORIGINAL material_id so the BOQ allowance draws down correctly.
+          const m = r.material;
+          const subbed = !!m.sub_id;
+          return {
+            material_id: m.id,
+            item: subbed ? (m.sub_item ?? m.item) : m.item,
+            type: m.type,
+            manufacturer: subbed
+              ? (m.sub_manufacturer ?? m.sub_supplier ?? m.manufacturer)
+              : m.manufacturer,
+            qty: r.qty,
+            unit: subbed
+              ? (m.sub_unit ?? m.total_units_unit ?? m.pack_unit ?? "ea")
+              : (m.total_units_unit ?? m.pack_unit ?? "ea"),
+            unit_cost: subbed ? (m.sub_cost ?? m.cost ?? 0) : (m.cost ?? 0),
+          };
+        }),
         ...validAdditional.map((a) => ({
           material_id: a.material_id,           // null for custom, set for library picks
           item: a.item.trim(),
@@ -431,18 +444,36 @@ export function NewPO() {
                 <tbody>
                   {pricedForSupplier.map((m) => {
                     const row = pricedRows.get(m.id);
-                    const unit = m.total_units_unit ?? m.pack_unit ?? "ea";
+                    const subbed = !!m.sub_id;
+                    const displayItem = subbed ? (m.sub_item ?? m.item) : m.item;
+                    const displayCost = subbed ? (m.sub_cost ?? m.cost ?? 0) : (m.cost ?? 0);
+                    const unit = (subbed ? m.sub_unit : null) ?? m.total_units_unit ?? m.pack_unit ?? "ea";
                     const priced = m.total_units ?? 0;
                     const committed = m.committed_qty ?? 0;
                     const remaining = priced - committed;
-                    const lineTotal = row ? row.qty * (m.cost ?? 0) : 0;
+                    const lineTotal = row ? row.qty * displayCost : 0;
                     const isOver = row && row.qty > remaining;
                     return (
                       <tr key={m.id} style={row ? { background: "var(--accent-soft)" } : undefined}>
                         <td><input type="checkbox" checked={!!row} onChange={() => toggleRow(m)} /></td>
-                        <td>{m.item}</td>
+                        <td>
+                          {displayItem}
+                          {subbed && (
+                            <div className="muted" style={{ fontSize: 11, textDecoration: "line-through", marginTop: 2 }}>{m.item}</div>
+                          )}
+                          {subbed && <span className="pill approved" style={{ fontSize: 10, marginLeft: 6 }} title={m.sub_reason ?? "Substituted material — original allowance applies"}>Subbed</span>}
+                        </td>
                         <td className="center">{m.type}</td>
-                        <td className="num">{m.cost != null ? fmtMoney(m.cost) : <span className="muted">—</span>}</td>
+                        <td className="num">
+                          {subbed && m.sub_cost != null ? (
+                            <>
+                              <div>{fmtMoney(displayCost)}</div>
+                              {m.cost != null && Math.abs(m.cost - displayCost) >= 0.005 && (
+                                <div className="muted" style={{ fontSize: 10, textDecoration: "line-through" }}>{fmtMoney(m.cost)}</div>
+                              )}
+                            </>
+                          ) : m.cost != null ? fmtMoney(m.cost) : <span className="muted">—</span>}
+                        </td>
                         <td className="center">{unit}</td>
                         <td className="num">{priced.toLocaleString()}</td>
                         <td className="num">{committed.toLocaleString()}</td>

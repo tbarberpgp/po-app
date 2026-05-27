@@ -65,6 +65,25 @@ export type Material = {
   material_total_cost: number | null;
 };
 
+export type MaterialSubstitutionKind = "like_for_like" | "equivalent_spec" | "variation";
+
+/** Joined onto a material row when an active substitution exists. */
+export type MaterialActiveSubstitution = {
+  sub_id: number;
+  sub_kind: MaterialSubstitutionKind;
+  sub_item: string;
+  sub_manufacturer: string | null;
+  sub_supplier: string | null;
+  sub_cost: number | null;
+  sub_unit: string | null;
+  sub_total_units: number | null;
+  sub_product_id: number | null;
+  sub_quote_line_id: number | null;
+  sub_reason: string | null;
+  sub_created_at: string;
+  sub_created_by: string;
+};
+
 export type MaterialWithCommitment = Material & {
   committed_qty: number;
   remaining_qty: number | null;
@@ -78,6 +97,20 @@ export type MaterialWithCommitment = Material & {
   live_supplier_name?: string | null;
   /** Number of pending price approvals for this material — surfaced on the row. */
   pending_price_count?: number;
+  /** Joined fields from the active substitution, if any. Null when no swap is in effect. */
+  sub_id?: number | null;
+  sub_kind?: MaterialSubstitutionKind | null;
+  sub_item?: string | null;
+  sub_manufacturer?: string | null;
+  sub_supplier?: string | null;
+  sub_cost?: number | null;
+  sub_unit?: string | null;
+  sub_total_units?: number | null;
+  sub_product_id?: number | null;
+  sub_quote_line_id?: number | null;
+  sub_reason?: string | null;
+  sub_created_at?: string | null;
+  sub_created_by?: string | null;
 };
 
 export type ApprovalTier = "line_manager" | "commercial_manager" | "director";

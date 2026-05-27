@@ -76,6 +76,57 @@ export const api = {
     jfetch<MaterialWithCommitment[]>(`/api/materials/${projectId}`),
   listProjectCommercials: (projectId: string) =>
     jfetch<ProjectCommercial[]>(`/api/materials/${projectId}/commercials`),
+
+  // Material substitutions ────────────────────────────────────────────────
+  substituteMaterial: (
+    materialId: number,
+    body: {
+      kind?: "like_for_like" | "equivalent_spec" | "variation";
+      reason?: string | null;
+      notes?: string | null;
+      product_id?: number | null;
+      quote_line_id?: number | null;
+      replacement_item?: string;
+      replacement_manufacturer?: string | null;
+      replacement_supplier?: string | null;
+      replacement_cost?: number | null;
+      replacement_unit?: string | null;
+      replacement_total_units?: number | null;
+    },
+  ) =>
+    jfetch<{ id: number; ok: true }>(`/api/materials/${materialId}/substitute`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  revertSubstitution: (id: number, reason?: string) =>
+    jfetch<{ ok: true }>(`/api/materials/substitutions/${id}`, {
+      method: "DELETE",
+      body: JSON.stringify({ reason }),
+    }),
+  listMaterialSubstitutions: (projectId: string) =>
+    jfetch<Array<{
+      id: number;
+      material_id: number;
+      kind: "like_for_like" | "equivalent_spec" | "variation";
+      replacement_item: string;
+      replacement_manufacturer: string | null;
+      replacement_supplier: string | null;
+      replacement_cost: number | null;
+      replacement_unit: string | null;
+      replacement_total_units: number | null;
+      replacement_product_id: number | null;
+      replacement_quote_line_id: number | null;
+      reason: string | null;
+      notes: string | null;
+      active: 0 | 1;
+      created_at: string; created_by: string;
+      reverted_at: string | null; reverted_by: string | null; reverted_reason: string | null;
+      original_item: string;
+      original_manufacturer: string | null;
+      original_cost: number | null;
+      original_total_units: number | null;
+      original_unit: string | null;
+    }>>(`/api/materials/${projectId}/substitutions`),
   listLabourByCostCode: (projectId: string) =>
     jfetch<LabourByCostCode[]>(`/api/materials/${projectId}/labour-by-cost-code`),
   uploadMaterials: (projectId: string, file: File) => {
