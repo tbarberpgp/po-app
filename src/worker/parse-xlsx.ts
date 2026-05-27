@@ -345,8 +345,8 @@ export type ParsedContractItem = {
  *
  * Headers are on row 6 (1-indexed); data starts row 7 onward.
  */
-export function parseContractItems(buffer: ArrayBuffer): ParsedContractItem[] {
-  const wb = XLSX.read(buffer, { type: "array" });
+export function parseContractItems(input: ArrayBuffer | XLSX.WorkBook): ParsedContractItem[] {
+  const wb = input instanceof ArrayBuffer ? readPricingWorkbook(input) : input;
   const sellSheet = wb.Sheets[wb.SheetNames.find((n) => n.toLowerCase() === "pricing") ?? ""];
   if (!sellSheet) return [];
   const labourSheet = wb.Sheets[wb.SheetNames.find((n) => n.toLowerCase() === "costing labour only") ?? ""];
@@ -424,8 +424,8 @@ export type ParsedCommercialRow = {
  * Returns the rows in document order (typically Total first, then each
  * category). Empty/separator rows are skipped.
  */
-export function parseSummaryCostSheet(buffer: ArrayBuffer): ParsedCommercialRow[] {
-  const wb = XLSX.read(buffer, { type: "array" });
+export function parseSummaryCostSheet(input: ArrayBuffer | XLSX.WorkBook): ParsedCommercialRow[] {
+  const wb = input instanceof ArrayBuffer ? readPricingWorkbook(input) : input;
   const sheetName = wb.SheetNames.find((n) => n.toLowerCase() === "summary cost sheet");
   if (!sheetName) return [];
   const ws = wb.Sheets[sheetName];
@@ -589,8 +589,20 @@ function mapFor(layout: Layout): ColumnMap {
  * Parse the Materials sheet of a PowerGrid pricing workbook. See the {@link Layout}
  * comments above for the supported revisions and how column letters shift.
  */
-export function parseMaterialsSheet(buffer: ArrayBuffer): ParsedMaterial[] {
-  const wb = XLSX.read(buffer, { type: "array" });
+/**
+ * Read just the sheets we actually use. The pricing workbook has a dozen
+ * tabs (Pricing, Costing, Prelims, About, Elements, …) — parsing them all
+ * burns Worker CPU and on a slow connection bumps into Cloudflare's
+ * resource limits. Sheet-restricted reads are ~7× faster.
+ */
+const USED_SHEETS = ["Materials", "Summary Cost Sheet", "Pricing"];
+
+export function readPricingWorkbook(buffer: ArrayBuffer): XLSX.WorkBook {
+  return XLSX.read(buffer, { type: "array", sheets: USED_SHEETS });
+}
+
+export function parseMaterialsSheet(input: ArrayBuffer | XLSX.WorkBook): ParsedMaterial[] {
+  const wb = input instanceof ArrayBuffer ? readPricingWorkbook(input) : input;
   const sheetName = wb.SheetNames.find((n) => n.toLowerCase() === "materials");
   if (!sheetName) {
     throw new Error("Workbook does not contain a 'Materials' sheet");

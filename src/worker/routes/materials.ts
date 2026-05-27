@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import type { Env, Variables } from "../env";
-import { parseContractItems, parseMaterialsSheet, parseSummaryCostSheet } from "../parse-xlsx";
+import { parseContractItems, parseMaterialsSheet, parseSummaryCostSheet, readPricingWorkbook } from "../parse-xlsx";
 import { requirePermission } from "../auth";
 
 export const materials = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -22,15 +22,18 @@ materials.post("/:projectId/upload", async (c) => {
   if (!(file instanceof File)) return c.json({ error: "file required" }, 400);
 
   // Parse Materials (required), Summary Cost Sheet (optional), and Pricing
-  // + Costing Labour Only tabs for contract items (optional). Read once.
+  // Parse the workbook ONCE with sheets restricted to the three we read
+  // (Materials, Summary Cost Sheet, Pricing). Cuts Worker CPU ~7x vs reading
+  // every sheet and prevents Cloudflare's resource-limit hit on larger files.
   const buffer = await file.arrayBuffer();
   let parsed;
   let commercials;
   let contractItems;
   try {
-    parsed = parseMaterialsSheet(buffer);
-    commercials = parseSummaryCostSheet(buffer);
-    contractItems = parseContractItems(buffer);
+    const wb = readPricingWorkbook(buffer);
+    parsed = parseMaterialsSheet(wb);
+    commercials = parseSummaryCostSheet(wb);
+    contractItems = parseContractItems(wb);
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : "parse failed" }, 400);
   }
