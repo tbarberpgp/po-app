@@ -414,6 +414,97 @@ export type ParsedCommercialRow = {
 };
 
 /**
+ * Cross-check the Summary Cost Sheet figures against the Materials sheet. We've
+ * seen workbooks (MCR009) ship with a broken/empty cell in the inner
+ * "Measured Works" Cost — leading to an 88% GP that should be ~9%. The
+ * Materials sheet's column Y + Z (material total + labour total) is the
+ * authoritative cost for measured works; this function uses that to fix
+ * up the commercials rows so the displayed numbers actually obey
+ *   Cost = Materials + Labour
+ *   GP   = Value − Cost
+ * for the rows we can derive.
+ */
+export function reconcileCommercials(
+  commercials: ParsedCommercialRow[],
+  materials: ParsedMaterial[],
+): ParsedCommercialRow[] {
+  if (commercials.length === 0) return commercials;
+  const measuredCostFromMaterials = materials.reduce(
+    (s, m) => s + (m.material_total_cost ?? 0) + (m.labour_total_cost ?? 0),
+    0,
+  );
+  if (measuredCostFromMaterials === 0) return commercials;
+
+  const out = commercials.map((r) => ({ ...r }));
+
+  // Find every row that is the "Measured Works" category. Workbooks have
+  // either one (just the measured works total) or two (parent total + inner
+  // "Measured Works" / "Measured works" sub-row beneath Ancil Items).
+  const measuredIdxs: number[] = [];
+  for (let i = 0; i < out.length; i++) {
+    if (/^\s*measured\s*works\s*$/i.test(out[i].category)) measuredIdxs.push(i);
+  }
+  if (measuredIdxs.length === 0) return out;
+
+  // Inner row is the last occurrence; parent is the first (only when 2+).
+  const innerIdx = measuredIdxs[measuredIdxs.length - 1];
+  const parentIdx = measuredIdxs.length >= 2 ? measuredIdxs[0] : -1;
+
+  // If the inner row's cost is materially off (or zero), overwrite from the
+  // materials sum. Tolerance is the larger of £50 or 0.5%.
+  const inner = out[innerIdx];
+  const tol = Math.max(50, measuredCostFromMaterials * 0.005);
+  if (Math.abs((inner.cost ?? 0) - measuredCostFromMaterials) > tol) {
+    inner.cost = measuredCostFromMaterials;
+    if (inner.value != null) {
+      inner.gross_profit = inner.value - measuredCostFromMaterials;
+      inner.gross_profit_pct = inner.value > 0 ? inner.gross_profit / inner.value : 0;
+    }
+  }
+
+  // Parent Measured Works cost = inner Measured Works cost. The Materials
+  // sheet sum is the AUTHORITY for everything inside Measured Works
+  // (including Ancil items — there's no separate row in the Materials sheet
+  // for ancillaries, they're folded in). The Ancil Items "Cost" cell some
+  // workbooks (MCR009) carry is unreliable / often a manual stand-in; we
+  // ignore it to avoid double-counting.
+  if (parentIdx >= 0) {
+    const parent = out[parentIdx];
+    parent.cost = inner.cost ?? 0;
+    if (parent.value != null) {
+      parent.gross_profit = parent.value - parent.cost;
+      parent.gross_profit_pct = parent.value > 0 ? parent.gross_profit / parent.value : 0;
+    }
+  }
+  // Ancil Items: blank the cost out so the UI doesn't show a stale figure
+  // that we no longer trust (its value column stays as a sub-breakdown).
+  const ancilIdx = out.findIndex((r) => /^\s*ancil/i.test(r.category));
+  if (ancilIdx >= 0) {
+    out[ancilIdx].cost = null;
+    out[ancilIdx].gross_profit = null;
+    out[ancilIdx].gross_profit_pct = null;
+  }
+
+  // Total cost = Preliminaries (top) + Measured Works (parent) + Directors Adj.
+  const totalIdx = out.findIndex((r) => r.is_total || /^\s*total\s*$/i.test(r.category));
+  if (totalIdx >= 0) {
+    const prelimsIdx = out.findIndex((r) => /^\s*prelim/i.test(r.category));
+    const directorsIdx = out.findIndex((r) => /director/i.test(r.category));
+    const measuredTopCost = parentIdx >= 0 ? (out[parentIdx].cost ?? 0) : (inner.cost ?? 0);
+    const prelimsCost = prelimsIdx >= 0 ? (out[prelimsIdx].cost ?? 0) : 0;
+    const directorsCost = directorsIdx >= 0 ? (out[directorsIdx].cost ?? 0) : 0;
+    const total = out[totalIdx];
+    total.cost = prelimsCost + measuredTopCost + directorsCost;
+    if (total.value != null) {
+      total.gross_profit = total.value - total.cost;
+      total.gross_profit_pct = total.value > 0 ? total.gross_profit / total.value : 0;
+    }
+  }
+
+  return out;
+}
+
+/**
  * Parse the "Summary Cost Sheet" tab — the project commercials breakdown.
  *
  * The layout puts the per-category labels in column E and the four numeric

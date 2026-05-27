@@ -1,6 +1,9 @@
 import { Hono } from "hono";
 import type { Env, Variables } from "../env";
-import { parseContractItems, parseMaterialsSheet, parseSummaryCostSheet, readPricingWorkbook } from "../../shared/parse-xlsx";
+import {
+  parseContractItems, parseMaterialsSheet, parseSummaryCostSheet,
+  readPricingWorkbook, reconcileCommercials,
+} from "../../shared/parse-xlsx";
 import type { ParsedMaterial, ParsedCommercialRow, ParsedContractItem } from "../../shared/parse-xlsx";
 import { requirePermission } from "../auth";
 
@@ -148,7 +151,10 @@ async function persistParsedWorkbook(
   }
 
   if (parsed.commercials.length > 0) {
-    const commStmts = parsed.commercials.map((r) =>
+    // Reconcile against the materials sheet so we don't persist a broken
+    // GP from the workbook (e.g. inner Measured Works Cost cell missing).
+    const reconciled = reconcileCommercials(parsed.commercials, parsed.materials);
+    const commStmts = reconciled.map((r) =>
       db.prepare(
         `INSERT INTO project_commercials
            (snapshot_id, category, value, cost, gross_profit, gross_profit_pct, is_total, display_order)
