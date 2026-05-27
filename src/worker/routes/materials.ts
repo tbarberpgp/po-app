@@ -54,8 +54,9 @@ materials.post("/:projectId/upload", async (c) => {
       `INSERT INTO materials (
          snapshot_id, item, type, element_code, manufacturer, pack_qty, pack_unit, cost, cost_unit,
          coverage_qty, coverage_unit, waste_pct, unit_rate, rate_unit,
-         total_qty, total_qty_unit, total_units, total_units_unit, material_total_cost
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         total_qty, total_qty_unit, total_units, total_units_unit, material_total_cost,
+         labour_unit_cost, labour_total_cost
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).bind(
       snapshotId,
       m.item,
@@ -76,6 +77,8 @@ materials.post("/:projectId/upload", async (c) => {
       m.total_units,
       m.total_units_unit,
       m.material_total_cost,
+      m.labour_unit_cost,
+      m.labour_total_cost,
     ),
   );
   await c.env.DB.batch(stmts);
@@ -109,6 +112,53 @@ materials.post("/:projectId/upload", async (c) => {
     .run();
 
   return c.json({ snapshot_id: snapshotId, rows: parsed.length, commercials: commercials.length });
+});
+
+/**
+ * Aggregate labour cost for the active snapshot, grouped by element code so
+ * each row maps to a single cost code (PRJ.ELE.L).
+ */
+materials.get("/:projectId/labour-by-cost-code", async (c) => {
+  const projectId = c.req.param("projectId");
+  const project = await c.env.DB.prepare(
+    "SELECT id, code FROM projects WHERE id = ?",
+  )
+    .bind(projectId)
+    .first<{ id: string; code: string }>();
+  if (!project) return c.json({ error: "project not found" }, 404);
+
+  const rows = await c.env.DB.prepare(
+    `SELECT m.element_code, e.name AS element_name,
+            COUNT(*) AS line_count,
+            COALESCE(SUM(m.labour_total_cost), 0) AS labour_total,
+            COALESCE(SUM(m.material_total_cost), 0) AS material_total
+     FROM materials m
+     JOIN material_snapshots s ON s.id = m.snapshot_id
+     LEFT JOIN elements e ON e.code = m.element_code
+     WHERE s.project_id = ? AND s.is_active = 1
+       AND m.element_code IS NOT NULL
+     GROUP BY m.element_code, e.name
+     HAVING labour_total > 0
+     ORDER BY m.element_code`,
+  )
+    .bind(projectId)
+    .all<{
+      element_code: string;
+      element_name: string | null;
+      line_count: number;
+      labour_total: number;
+      material_total: number;
+    }>();
+
+  // Derive PRJ.ELE.L for each row server-side so the UI doesn't have to
+  // duplicate the buildCostCode helper.
+  const digits = project.code.replace(/\D/g, "");
+  const prjPart = (digits.slice(-4) || "0000").padStart(4, "0");
+  const out = rows.results.map((r) => ({
+    ...r,
+    cost_code: `${prjPart}.${r.element_code}.L`,
+  }));
+  return c.json(out);
 });
 
 /** Return the commercials (Value / Cost / GP / GP%) for the project's active snapshot. */

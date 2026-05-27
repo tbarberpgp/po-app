@@ -21,6 +21,8 @@ export type ParsedMaterial = {
   total_units: number | null;       // pack-unit qty to purchase (Rolls, Boxes, ea)
   total_units_unit: string | null;  // the pack unit suppliers sell in
   material_total_cost: number | null;
+  labour_unit_cost: number | null;    // labour £ per unit (col S in v2)
+  labour_total_cost: number | null;   // labour £ for the whole line (col Z in v2)
 };
 
 const num = (v: unknown): number | null => {
@@ -170,6 +172,8 @@ type ColumnMap = {
   total_units: string;
   total_units_unit: string;
   material_total_cost: string;
+  labour_unit_cost: string;
+  labour_total_cost: string;
 };
 
 const LEGACY: ColumnMap = {
@@ -183,6 +187,8 @@ const LEGACY: ColumnMap = {
   total_qty: "T", total_qty_unit: "U",
   total_units: "V", total_units_unit: "W",
   material_total_cost: "X",
+  labour_unit_cost: "R",         // legacy may not have labour — falls back to null
+  labour_total_cost: "Y",
 };
 
 const V1: ColumnMap = { ...LEGACY, hasElementCode: true, element_name: "Z" };
@@ -199,6 +205,8 @@ const V2: ColumnMap = {
   total_qty: "U", total_qty_unit: "V",
   total_units: "W", total_units_unit: "X",
   material_total_cost: "Y",
+  labour_unit_cost: "S",         // v2 shifted everything one column right
+  labour_total_cost: "Z",
 };
 
 /** Detect the layout from the header row's cell contents. */
@@ -286,6 +294,8 @@ export function parseMaterialsSheet(buffer: ArrayBuffer): ParsedMaterial[] {
       total_units: num(r[m.total_units]),
       total_units_unit: str(r[m.total_units_unit]),
       material_total_cost: num(r[m.material_total_cost]),
+      labour_unit_cost: num(r[m.labour_unit_cost]),
+      labour_total_cost: num(r[m.labour_total_cost]),
     });
   }
   return out;

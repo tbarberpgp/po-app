@@ -233,6 +233,16 @@ export function derivedProjectNumber(projectCode: string): string {
   return digits.slice(-4).padStart(4, "0");
 }
 
+/** One labour-by-cost-code row aggregated from the materials table. */
+export type LabourByCostCode = {
+  element_code: string;
+  element_name: string | null;
+  cost_code: string;          // PRJ.ELE.L derived server-side
+  line_count: number;
+  labour_total: number;
+  material_total: number;
+};
+
 /** A row from the workbook's Summary Cost Sheet — value / cost / GP per category. */
 export type ProjectCommercial = {
   id: number;

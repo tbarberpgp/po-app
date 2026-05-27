@@ -3,6 +3,7 @@ import type {
   CreatePOInput,
   CurrentUser,
   Element,
+  LabourByCostCode,
   MaterialWithCommitment,
   Product,
   ProductSupplier,
@@ -69,6 +70,8 @@ export const api = {
     jfetch<MaterialWithCommitment[]>(`/api/materials/${projectId}`),
   listProjectCommercials: (projectId: string) =>
     jfetch<ProjectCommercial[]>(`/api/materials/${projectId}/commercials`),
+  listLabourByCostCode: (projectId: string) =>
+    jfetch<LabourByCostCode[]>(`/api/materials/${projectId}/labour-by-cost-code`),
   uploadMaterials: (projectId: string, file: File) => {
     const fd = new FormData();
     fd.append("file", file);

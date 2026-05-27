@@ -3,9 +3,9 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, fmtDate, fmtMoney } from "../lib/api";
 import { Topbar } from "./Shell";
 import { can } from "../../shared/permissions";
-import type { CurrentUser, MaterialWithCommitment, Project, ProjectCommercial, PurchaseOrder } from "../../shared/types";
+import type { CurrentUser, LabourByCostCode, MaterialWithCommitment, Project, ProjectCommercial, PurchaseOrder } from "../../shared/types";
 
-type Tab = "overview" | "materials" | "commercials" | "pos";
+type Tab = "overview" | "materials" | "commercials" | "labour" | "pos";
 
 type ProjectPORow = PurchaseOrder & { project_code: string; project_name: string };
 
@@ -23,6 +23,7 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
   const [poSummary, setPoSummary] = useState<Awaited<ReturnType<typeof api.getProjectSummary>> | null>(null);
   const [mats, setMats] = useState<MaterialWithCommitment[]>([]);
   const [commercials, setCommercials] = useState<ProjectCommercial[]>([]);
+  const [labour, setLabour] = useState<LabourByCostCode[]>([]);
   const [projectPOs, setProjectPOs] = useState<ProjectPORow[]>([]);
   const [tab, setTab] = useState<Tab>("overview");
   const [filter, setFilter] = useState("");
@@ -38,6 +39,7 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
     api.getProject(id).then(setInfo).catch((e) => setErr(e.message));
     api.listMaterials(id).then(setMats).catch((e) => setErr(e.message));
     api.listProjectCommercials(id).then(setCommercials).catch(() => setCommercials([]));
+    api.listLabourByCostCode(id).then(setLabour).catch(() => setLabour([]));
     api.getProjectSummary(id).then(setPoSummary).catch((e) => setErr(e.message));
     api.listPOs({ project_id: id })
       .then((rs) => setProjectPOs(rs as ProjectPORow[]))
@@ -166,6 +168,18 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
             Materials
             <span className="count">{mats.length}</span>
           </button>
+          {labour.length > 0 && (
+            <button
+              type="button"
+              role="tab"
+              aria-selected={tab === "labour"}
+              className={`tab-btn${tab === "labour" ? " active" : ""}`}
+              onClick={() => setTab("labour")}
+            >
+              Labour
+              <span className="count">{labour.length}</span>
+            </button>
+          )}
           <button
             type="button"
             role="tab"
@@ -186,6 +200,8 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
           <ProjectPOsPanel rows={projectPOs} />
         ) : tab === "commercials" ? (
           <CommercialsBreakdown rows={commercials} />
+        ) : tab === "labour" ? (
+          <LabourBreakdown rows={labour} />
         ) : (
         <>
         {mats.length > 0 && (
@@ -706,6 +722,92 @@ function CommercialsBreakdown({ rows }: { rows: ProjectCommercial[] }) {
               </tr>
             );
           })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/* ── Labour breakdown by cost code ───────────────────────────────────────── */
+
+function LabourBreakdown({ rows }: { rows: LabourByCostCode[] }) {
+  if (rows.length === 0) {
+    return (
+      <div className="card">
+        <div className="card-bd">
+          <div className="empty">
+            No labour data — either the BOQ has no labour entered, or it was uploaded before labour parsing was added (re-upload the workbook to populate).
+          </div>
+        </div>
+      </div>
+    );
+  }
+  const totalLabour = rows.reduce((s, r) => s + r.labour_total, 0);
+  const totalMaterial = rows.reduce((s, r) => s + r.material_total, 0);
+  return (
+    <div className="card">
+      <div className="card-hd">
+        <h2 style={{ flex: 1 }}>Labour by cost code</h2>
+        <span className="muted" style={{ fontSize: 12 }}>resource code <code>.L</code></span>
+      </div>
+      <div
+        className="kpis"
+        style={{
+          gridTemplateColumns: "repeat(3, 1fr)",
+          padding: "16px 20px",
+          background: "var(--card-2)",
+          borderBottom: "1px solid var(--line)",
+        }}
+      >
+        <Kpi label="Total labour" value={fmtMoney(totalLabour)} />
+        <Kpi label="Total material" value={fmtMoney(totalMaterial)} />
+        <Kpi
+          label="Labour share"
+          value={totalMaterial + totalLabour > 0 ? `${((totalLabour / (totalMaterial + totalLabour)) * 100).toFixed(1)}%` : "—"}
+          sub="of materials+labour"
+        />
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th className="center">Cost code</th>
+            <th>Element</th>
+            <th className="num">Lines</th>
+            <th className="num">Material £</th>
+            <th className="num">Labour £</th>
+            <th className="num">Labour share</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => {
+            const combined = r.material_total + r.labour_total;
+            const share = combined > 0 ? r.labour_total / combined : 0;
+            return (
+              <tr key={r.cost_code}>
+                <td className="center">
+                  <span className="badge" style={{ fontFamily: "ui-monospace, monospace" }}>{r.cost_code}</span>
+                </td>
+                <td>
+                  {r.element_name ?? <span className="muted">Element {r.element_code}</span>}
+                  <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>code {r.element_code}</div>
+                </td>
+                <td className="num">{r.line_count}</td>
+                <td className="num">{fmtMoney(r.material_total)}</td>
+                <td className="num" style={{ fontWeight: 600 }}>{fmtMoney(r.labour_total)}</td>
+                <td className="num">{`${(share * 100).toFixed(1)}%`}</td>
+              </tr>
+            );
+          })}
+          <tr style={{ background: "var(--card-2)" }}>
+            <td colSpan={3} style={{ fontWeight: 600, textAlign: "right" }}>Total</td>
+            <td className="num" style={{ fontWeight: 600 }}>{fmtMoney(totalMaterial)}</td>
+            <td className="num" style={{ fontWeight: 600 }}>{fmtMoney(totalLabour)}</td>
+            <td className="num" style={{ fontWeight: 600 }}>
+              {totalMaterial + totalLabour > 0
+                ? `${((totalLabour / (totalMaterial + totalLabour)) * 100).toFixed(1)}%`
+                : "—"}
+            </td>
+          </tr>
         </tbody>
       </table>
     </div>
