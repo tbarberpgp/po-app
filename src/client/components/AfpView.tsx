@@ -348,17 +348,20 @@ function LineRow({
       <td className="num">{fmtMoney(line.contract_value)}</td>
       <td className="center">
         {isDraft && canEdit ? (
-          <input
-            type="number"
-            min={0}
-            max={100}
-            step="any"
-            value={pct}
-            onChange={(e) => setPct(Number(e.target.value))}
-            onBlur={() => commit(pct)}
-            onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
-            style={{ width: 70, textAlign: "right" }}
-          />
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+            <input
+              type="number"
+              min={0}
+              max={100}
+              step="any"
+              value={pct}
+              onChange={(e) => setPct(Number(e.target.value))}
+              onBlur={() => commit(pct)}
+              onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+              style={{ width: 60, textAlign: "right" }}
+            />
+            <span className="muted" style={{ fontSize: 12 }}>%</span>
+          </span>
         ) : (
           <span>{line.percent_complete.toFixed(1)}%</span>
         )}
