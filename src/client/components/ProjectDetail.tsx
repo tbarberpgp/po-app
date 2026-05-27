@@ -1402,19 +1402,86 @@ function ValuationScheduleUpload({ projectId, canEdit }: { projectId: string; ca
         {entries.length === 0 ? (
           <div className="muted" style={{ fontSize: 12 }}>No schedule entries yet.</div>
         ) : (
-          <div style={{ display: "grid", gap: 4 }}>
-            {entries.map((e) => (
-              <div key={e.id} style={{ display: "flex", alignItems: "baseline", gap: 6, fontSize: 12, padding: "3px 0", borderBottom: "1px solid var(--line)" }}>
-                <span style={{ color: "var(--muted)", fontVariantNumeric: "tabular-nums", width: 64 }}>{fmtDate(e.date).slice(0, 6)}</span>
-                <span style={{ flex: 1 }}>
-                  {valuationLabel(e.entry_type)}{e.app_number ? ` #${e.app_number}` : ""}
+          <ScheduleEntryGroups entries={entries} canEdit={canEdit} onDelete={deleteEntry} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ── Schedule list, grouped by valuation and date-sorted ──────────────── */
+
+function ScheduleEntryGroups({
+  entries, canEdit, onDelete,
+}: {
+  entries: Awaited<ReturnType<typeof api.listValuationEntries>>;
+  canEdit: boolean;
+  onDelete: (id: number) => void;
+}) {
+  type Entry = (typeof entries)[number];
+  // Stable order for the four entry types within a valuation block.
+  const TYPE_ORDER: Record<string, number> = {
+    application: 1, due: 2, notice: 3, final_payment: 4,
+  };
+
+  const groups = useMemo(() => {
+    const m = new Map<string, Entry[]>();
+    for (const e of entries) {
+      const key = e.app_number == null ? "none" : `app-${e.app_number}`;
+      const arr = m.get(key) ?? [];
+      arr.push(e);
+      m.set(key, arr);
+    }
+    const result = [...m.values()].map((list) => {
+      const sorted = [...list].sort((a, b) => {
+        const dateCmp = a.date.localeCompare(b.date);
+        if (dateCmp !== 0) return dateCmp;
+        return (TYPE_ORDER[a.entry_type] ?? 99) - (TYPE_ORDER[b.entry_type] ?? 99);
+      });
+      return {
+        app_number: sorted[0].app_number,
+        earliest: sorted[0].date,
+        latest: sorted[sorted.length - 1].date,
+        entries: sorted,
+      };
+    });
+    // Sort valuations by their earliest date so upcoming cycles bubble to the top.
+    result.sort((a, b) => a.earliest.localeCompare(b.earliest));
+    return result;
+  }, [entries]);
+
+  return (
+    <div style={{ maxHeight: 360, overflowY: "auto", display: "grid", gap: 8 }}>
+      {groups.map((g, gi) => (
+        <div key={gi} style={{ border: "1px solid var(--line)", borderRadius: 4, padding: "6px 8px" }}>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 6, marginBottom: 4 }}>
+            <span style={{ fontSize: 12, fontWeight: 600 }}>
+              {g.app_number != null ? `Val #${g.app_number}` : "Unnumbered"}
+            </span>
+            <span className="muted" style={{ fontSize: 10 }}>
+              {fmtDate(g.earliest)} → {fmtDate(g.latest)}
+            </span>
+            <span style={{ flex: 1 }} />
+            <span className="muted" style={{ fontSize: 10 }}>{g.entries.length} dates</span>
+          </div>
+          <div style={{ display: "grid", gap: 2 }}>
+            {g.entries.map((e) => (
+              <div key={e.id} style={{
+                display: "flex", alignItems: "baseline", gap: 6,
+                fontSize: 11, padding: "2px 0",
+              }}>
+                <span style={{ color: "var(--muted)", fontVariantNumeric: "tabular-nums", width: 56 }}>
+                  {fmtDate(e.date).slice(0, 6)}
                 </span>
-                {canEdit && <button className="ghost tiny" onClick={() => deleteEntry(e.id)} title="Delete">×</button>}
+                <span style={{ flex: 1 }}>{valuationLabel(e.entry_type)}</span>
+                {canEdit && (
+                  <button className="ghost tiny" onClick={() => onDelete(e.id)} title="Delete this date">×</button>
+                )}
               </div>
             ))}
           </div>
-        )}
-      </div>
+        </div>
+      ))}
     </div>
   );
 }
