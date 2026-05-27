@@ -743,7 +743,10 @@ function LabourBreakdown({ rows }: { rows: LabourByCostCode[] }) {
     );
   }
   const totalLabour = rows.reduce((s, r) => s + r.labour_total, 0);
-  const totalMaterial = rows.reduce((s, r) => s + r.material_total, 0);
+  // Expended is the cumulative amount certified to subcontractors for labour.
+  // Until the labour-application workflow lands it's always £0; placeholders
+  // wired now so the UI doesn't need rework when that ships.
+  const totalExpended = 0;
   return (
     <div className="card">
       <div className="card-hd">
@@ -759,12 +762,12 @@ function LabourBreakdown({ rows }: { rows: LabourByCostCode[] }) {
           borderBottom: "1px solid var(--line)",
         }}
       >
-        <Kpi label="Total labour" value={fmtMoney(totalLabour)} />
-        <Kpi label="Total material" value={fmtMoney(totalMaterial)} />
+        <Kpi label="Total labour" value={fmtMoney(totalLabour)} sub="from BOQ" />
+        <Kpi label="Amount expended" value={fmtMoney(totalExpended)} sub="certified so far" />
         <Kpi
-          label="Labour share"
-          value={totalMaterial + totalLabour > 0 ? `${((totalLabour / (totalMaterial + totalLabour)) * 100).toFixed(1)}%` : "—"}
-          sub="of materials+labour"
+          label="% expended"
+          value={totalLabour > 0 ? `${((totalExpended / totalLabour) * 100).toFixed(1)}%` : "—"}
+          sub="of total labour"
         />
       </div>
       <table>
@@ -773,15 +776,15 @@ function LabourBreakdown({ rows }: { rows: LabourByCostCode[] }) {
             <th className="center">Cost code</th>
             <th>Element</th>
             <th className="num">Lines</th>
-            <th className="num">Material £</th>
             <th className="num">Labour £</th>
-            <th className="num">Labour share</th>
+            <th className="num">Expended £</th>
+            <th className="num">% expended</th>
           </tr>
         </thead>
         <tbody>
           {rows.map((r) => {
-            const combined = r.material_total + r.labour_total;
-            const share = combined > 0 ? r.labour_total / combined : 0;
+            const expended = 0;                    // placeholder
+            const pct = r.labour_total > 0 ? expended / r.labour_total : 0;
             return (
               <tr key={r.cost_code}>
                 <td className="center">
@@ -792,20 +795,18 @@ function LabourBreakdown({ rows }: { rows: LabourByCostCode[] }) {
                   <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>code {r.element_code}</div>
                 </td>
                 <td className="num">{r.line_count}</td>
-                <td className="num">{fmtMoney(r.material_total)}</td>
                 <td className="num" style={{ fontWeight: 600 }}>{fmtMoney(r.labour_total)}</td>
-                <td className="num">{`${(share * 100).toFixed(1)}%`}</td>
+                <td className="num"><span className="muted">{fmtMoney(expended)}</span></td>
+                <td className="num"><span className="muted">{`${(pct * 100).toFixed(1)}%`}</span></td>
               </tr>
             );
           })}
           <tr style={{ background: "var(--card-2)" }}>
             <td colSpan={3} style={{ fontWeight: 600, textAlign: "right" }}>Total</td>
-            <td className="num" style={{ fontWeight: 600 }}>{fmtMoney(totalMaterial)}</td>
             <td className="num" style={{ fontWeight: 600 }}>{fmtMoney(totalLabour)}</td>
+            <td className="num" style={{ fontWeight: 600 }}>{fmtMoney(totalExpended)}</td>
             <td className="num" style={{ fontWeight: 600 }}>
-              {totalMaterial + totalLabour > 0
-                ? `${((totalLabour / (totalMaterial + totalLabour)) * 100).toFixed(1)}%`
-                : "—"}
+              {totalLabour > 0 ? `${((totalExpended / totalLabour) * 100).toFixed(1)}%` : "—"}
             </td>
           </tr>
         </tbody>
