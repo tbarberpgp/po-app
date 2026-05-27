@@ -188,27 +188,6 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
           <CommercialsBreakdown rows={commercials} />
         ) : (
         <>
-        <div className="card">
-          <div className="card-hd">
-            <h3 style={{ flex: 1 }}>Pricing snapshot</h3>
-            {canUploadMaterials && (
-              <label className="btn secondary" style={{ cursor: "pointer", marginBottom: 0 }}>
-                {busy ? "Uploading…" : info.active_snapshot ? "Replace .xlsx" : "Upload .xlsx"}
-                <input ref={fileRef} type="file" accept=".xlsx,.xlsm" onChange={onUpload} hidden disabled={busy} />
-              </label>
-            )}
-          </div>
-          <div className="card-bd">
-            {info.active_snapshot ? (
-              <div className="muted">
-                {info.active_snapshot.filename} · uploaded {fmtDate(info.active_snapshot.uploaded_at)} · {mats.length} materials
-              </div>
-            ) : (
-              <div className="muted">No pricing workbook uploaded yet.</div>
-            )}
-          </div>
-        </div>
-
         {mats.length > 0 && (
           <>
             {tab === "overview" && commercials.length > 0 && (
@@ -355,6 +334,29 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
             )}
           </>
         )}
+
+        {/* Pricing snapshot footer — uploader sits here so the page reads
+            "headline numbers → detail → file source" top-to-bottom. */}
+        <div className="card">
+          <div className="card-hd">
+            <h3 style={{ flex: 1 }}>Pricing snapshot</h3>
+            {canUploadMaterials && (
+              <label className="btn secondary" style={{ cursor: "pointer", marginBottom: 0 }}>
+                {busy ? "Uploading…" : info.active_snapshot ? "Replace .xlsx" : "Upload .xlsx"}
+                <input ref={fileRef} type="file" accept=".xlsx,.xlsm" onChange={onUpload} hidden disabled={busy} />
+              </label>
+            )}
+          </div>
+          <div className="card-bd">
+            {info.active_snapshot ? (
+              <div className="muted">
+                {info.active_snapshot.filename} · uploaded {fmtDate(info.active_snapshot.uploaded_at)} · {mats.length} materials
+              </div>
+            ) : (
+              <div className="muted">No pricing workbook uploaded yet.</div>
+            )}
+          </div>
+        </div>
         </>
         )}
       </main>
