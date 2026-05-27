@@ -463,6 +463,15 @@ export const api = {
     jfetch<{ ok: true }>(`/api/valuations/project/${projectId}/upload-meta`, {
       method: "POST", body: JSON.stringify({ filename }),
     }),
+  uploadValuationSchedule: (projectId: string, file: File, opts?: { replace?: boolean }) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    if (opts?.replace === false) fd.append("replace", "false");
+    return jfetch<{ ok: true; parsed: boolean; entries_created: number; filename: string }>(
+      `/api/valuations/project/${projectId}/upload`,
+      { method: "POST", body: fd },
+    );
+  },
   portfolioCalendar: (opts?: { from?: string; to?: string }) => {
     const q = new URLSearchParams();
     if (opts?.from) q.set("from", opts.from);

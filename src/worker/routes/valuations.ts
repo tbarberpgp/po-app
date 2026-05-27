@@ -5,6 +5,7 @@
 import { Hono } from "hono";
 import type { Env, Variables } from "../env";
 import { requirePermission } from "../auth";
+import { parseValuationScheduleXlsx } from "../parse-xlsx";
 
 export const valuations = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -79,6 +80,82 @@ valuations.post("/project/:projectId/upload-meta", async (c) => {
     .bind(body.filename, now, c.get("userEmail"), projectId)
     .run();
   return c.json({ ok: true });
+});
+
+/**
+ * Upload an .xlsx valuation schedule. Parses the sheet, creates one entry
+ * per detected date column per app row, records the filename + uploaded_at
+ * on the project, and (by default) replaces the existing entries so a
+ * re-upload of the same file doesn't create duplicates.
+ */
+valuations.post("/project/:projectId/upload", async (c) => {
+  const denied = requirePermission(c, "projects.edit");
+  if (denied) return denied;
+  const projectId = c.req.param("projectId");
+  const project = await c.env.DB.prepare("SELECT id FROM projects WHERE id = ?")
+    .bind(projectId)
+    .first();
+  if (!project) return c.json({ error: "project not found" }, 404);
+
+  const form = await c.req.formData();
+  const file = form.get("file");
+  const replace = form.get("replace") !== "false"; // default: replace
+  if (!(file instanceof File)) return c.json({ error: "file required" }, 400);
+  const name = file.name.toLowerCase();
+  const actor = c.get("userEmail");
+  const now = new Date().toISOString();
+
+  // Non-xlsx (e.g. PDF): just record metadata — we can't parse.
+  if (!name.endsWith(".xlsx") && !name.endsWith(".xlsm") && !name.endsWith(".xls")) {
+    await c.env.DB.prepare(
+      `UPDATE projects
+       SET valuation_schedule_filename = ?, valuation_schedule_uploaded_at = ?,
+           valuation_schedule_uploaded_by = ?
+       WHERE id = ?`,
+    )
+      .bind(file.name, now, actor, projectId)
+      .run();
+    return c.json({ ok: true, parsed: false, entries_created: 0, filename: file.name });
+  }
+
+  let entries;
+  try {
+    entries = parseValuationScheduleXlsx(await file.arrayBuffer());
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : "parse failed" }, 400);
+  }
+
+  if (replace) {
+    await c.env.DB.prepare("DELETE FROM valuation_schedule_entries WHERE project_id = ?")
+      .bind(projectId)
+      .run();
+  }
+  if (entries.length > 0) {
+    const stmts = entries.map((e) =>
+      c.env.DB.prepare(
+        `INSERT INTO valuation_schedule_entries
+           (project_id, app_number, entry_type, date, notes, created_at, created_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ).bind(projectId, e.app_number, e.entry_type, e.date, e.notes, now, actor),
+    );
+    await c.env.DB.batch(stmts);
+  }
+
+  await c.env.DB.prepare(
+    `UPDATE projects
+     SET valuation_schedule_filename = ?, valuation_schedule_uploaded_at = ?,
+         valuation_schedule_uploaded_by = ?
+     WHERE id = ?`,
+  )
+    .bind(file.name, now, actor, projectId)
+    .run();
+
+  return c.json({
+    ok: true,
+    parsed: true,
+    entries_created: entries.length,
+    filename: file.name,
+  });
 });
 
 /**

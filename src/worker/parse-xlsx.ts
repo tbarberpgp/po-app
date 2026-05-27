@@ -43,6 +43,136 @@ const looksLikeElementCode = (v: unknown): boolean => {
   return /^\d{1,4}$/.test(s);
 };
 
+// ── Valuation schedule parser ─────────────────────────────────────────────
+
+export type ParsedValuationEntry = {
+  app_number: number | null;
+  entry_type: "cutoff" | "submission" | "certification" | "payment";
+  date: string;       // ISO yyyy-mm-dd
+  notes: string | null;
+};
+
+const ENTRY_KEYWORDS: Record<ParsedValuationEntry["entry_type"], RegExp> = {
+  cutoff: /(cut\s*[-]?\s*off|valuation\s*date)/i,
+  submission: /(submission|application\s*date|submitted)/i,
+  certification: /(certif|certify|cert\.?\s*date)/i,
+  payment: /(payment|paid|due\s*date)/i,
+};
+
+/** Best-effort coerce an xlsx cell into an ISO yyyy-mm-dd string. */
+function toIsoDate(v: unknown): string | null {
+  if (v == null || v === "") return null;
+  if (v instanceof Date) {
+    const y = v.getFullYear();
+    const m = String(v.getMonth() + 1).padStart(2, "0");
+    const d = String(v.getDate()).padStart(2, "0");
+    return `${y}-${m}-${d}`;
+  }
+  if (typeof v === "number") {
+    // Excel serial date number (days since 1899-12-30)
+    const d = new Date(Math.round((v - 25569) * 86400 * 1000));
+    if (Number.isNaN(d.getTime())) return null;
+    return toIsoDate(d);
+  }
+  const s = String(v).trim();
+  if (!s) return null;
+  // Try DD/MM/YYYY, DD-MM-YYYY, or anything Date.parse handles.
+  const dmy = s.match(/^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2,4})$/);
+  if (dmy) {
+    const [, dd, mm, yy] = dmy;
+    const year = yy.length === 2 ? 2000 + Number(yy) : Number(yy);
+    const month = Number(mm);
+    const day = Number(dd);
+    if (year > 1900 && month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+      return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    }
+  }
+  const t = Date.parse(s);
+  if (!Number.isNaN(t)) return toIsoDate(new Date(t));
+  return null;
+}
+
+/**
+ * Parse a valuation schedule .xlsx. Looks across every sheet for a header
+ * row that mentions an "App #" / "Application" column AND at least one of
+ * cut-off / submission / certification / payment dates. Each subsequent
+ * row with date-shaped values becomes one entry per matching date column.
+ *
+ * Returns [] if no recognisable schedule is found (caller can still
+ * record the filename for manual review).
+ */
+export function parseValuationScheduleXlsx(buffer: ArrayBuffer): ParsedValuationEntry[] {
+  const wb = XLSX.read(buffer, { type: "array", cellDates: true });
+  for (const sheetName of wb.SheetNames) {
+    const ws = wb.Sheets[sheetName];
+    const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws, {
+      header: "A", defval: null, raw: false,
+    });
+    const result = scanSheet(rows);
+    if (result.length > 0) return result;
+  }
+  return [];
+}
+
+function scanSheet(rows: Array<Record<string, unknown>>): ParsedValuationEntry[] {
+  // Try every row in the first 20 as a candidate header row. A valid header
+  // contains an "App #" column (or similar) and at least one date column.
+  for (let h = 0; h < Math.min(20, rows.length); h++) {
+    const headerRow = rows[h];
+    const colMap = readHeaderRow(headerRow);
+    if (!colMap.appCol || colMap.dateCols.length === 0) continue;
+    // Header looks good — extract rows beneath it.
+    const out: ParsedValuationEntry[] = [];
+    for (let i = h + 1; i < rows.length; i++) {
+      const r = rows[i];
+      const appRaw = r[colMap.appCol];
+      const appNum = appRaw == null ? null : Number(String(appRaw).replace(/[^0-9]/g, ""));
+      const notes = colMap.notesCol ? str(r[colMap.notesCol]) : null;
+      let foundAny = false;
+      for (const dc of colMap.dateCols) {
+        const iso = toIsoDate(r[dc.col]);
+        if (!iso) continue;
+        foundAny = true;
+        out.push({
+          app_number: Number.isFinite(appNum) && appNum! > 0 ? appNum : null,
+          entry_type: dc.type,
+          date: iso,
+          notes,
+        });
+      }
+      // Stop scanning once we hit a fully-empty row (likely the totals/footer)
+      if (!foundAny && Object.values(r).every((v) => v == null || v === "")) break;
+    }
+    if (out.length > 0) return out;
+  }
+  return [];
+}
+
+function readHeaderRow(row: Record<string, unknown>): {
+  appCol: string | null;
+  notesCol: string | null;
+  dateCols: Array<{ col: string; type: ParsedValuationEntry["entry_type"] }>;
+} {
+  let appCol: string | null = null;
+  let notesCol: string | null = null;
+  const dateCols: Array<{ col: string; type: ParsedValuationEntry["entry_type"] }> = [];
+  for (const [col, raw] of Object.entries(row)) {
+    if (raw == null || raw === "") continue;
+    const label = String(raw).toLowerCase().replace(/\s+/g, " ").trim();
+    // App # / Application No / etc.
+    if (!appCol && /(app\s*[#no]|application\s*(?:no|number|#))/i.test(label)) appCol = col;
+    if (!notesCol && /^(notes?|comment|remark)/i.test(label)) notesCol = col;
+    for (const [type, re] of Object.entries(ENTRY_KEYWORDS) as Array<[ParsedValuationEntry["entry_type"], RegExp]>) {
+      if (re.test(label)) {
+        // Avoid double-counting if a label matches multiple regexes (e.g.
+        // "Application date" hits both `submission` and `app` if not careful).
+        if (!dateCols.some((d) => d.col === col)) dateCols.push({ col, type });
+      }
+    }
+  }
+  return { appCol, notesCol, dateCols };
+}
+
 export type ParsedContractItem = {
   item_no: number;
   section: string | null;

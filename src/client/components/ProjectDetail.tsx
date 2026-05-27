@@ -1176,9 +1176,12 @@ function ValuationScheduleUpload({ projectId, canEdit }: { projectId: string; ca
   const [form, setForm] = useState({ entry_type: "submission" as const, date: "", app_number: "", notes: "" });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [info, setInfo] = useState<string | null>(null);
+  const [project, setProject] = useState<Awaited<ReturnType<typeof api.getProject>>["project"] | null>(null);
 
   function refresh() {
     api.listValuationEntries(projectId).then(setEntries).catch(() => setEntries([]));
+    api.getProject(projectId).then((r) => setProject(r.project)).catch(() => setProject(null));
   }
   useEffect(refresh, [projectId]);
 
@@ -1186,12 +1189,17 @@ function ValuationScheduleUpload({ projectId, canEdit }: { projectId: string; ca
     const f = e.target.files?.[0];
     if (fileRef.current) fileRef.current.value = "";
     if (!f) return;
-    setBusy(true); setErr(null);
+    setBusy(true); setErr(null); setInfo(null);
     try {
-      // We don't upload the file bytes anywhere yet — just record the filename.
-      // A future iteration could push to R2 / store the bytes.
-      await api.recordValuationUpload(projectId, f.name);
-      setErr(null);
+      const r = await api.uploadValuationSchedule(projectId, f);
+      if (r.parsed && r.entries_created > 0) {
+        setInfo(`Imported ${r.entries_created} schedule date${r.entries_created === 1 ? "" : "s"} from ${r.filename}.`);
+      } else if (r.parsed) {
+        setInfo(`Read ${r.filename} but found no recognisable schedule rows. The parser looks for an "App #" column plus cut-off / submission / certification / payment date columns. Add entries manually below.`);
+      } else {
+        setInfo(`Recorded ${r.filename}. PDF previews aren't auto-parsed — add the dates manually below.`);
+      }
+      refresh();
     } catch (e) {
       setErr(e instanceof Error ? e.message : "upload failed");
     } finally { setBusy(false); }
@@ -1233,6 +1241,13 @@ function ValuationScheduleUpload({ projectId, canEdit }: { projectId: string; ca
       </div>
       <div className="card-bd">
         {err && <div className="flash error" style={{ marginBottom: 8 }}>{err}</div>}
+        {info && <div className="flash success" style={{ marginBottom: 8 }}>{info}</div>}
+        {project?.valuation_schedule_filename && (
+          <div className="muted" style={{ fontSize: 11, marginBottom: 8 }}>
+            Last uploaded: <b>{project.valuation_schedule_filename}</b>
+            {project.valuation_schedule_uploaded_at && <> · {fmtDate(project.valuation_schedule_uploaded_at)}</>}
+          </div>
+        )}
         {canEdit && !adding && (
           <button className="ghost tiny" onClick={() => setAdding(true)} style={{ marginBottom: 8 }}>+ Add date</button>
         )}
