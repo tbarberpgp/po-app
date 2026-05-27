@@ -5,7 +5,7 @@ import { Topbar } from "./Shell";
 import { can } from "../../shared/permissions";
 import type { CurrentUser, MaterialWithCommitment, Project, ProjectCommercial, PurchaseOrder } from "../../shared/types";
 
-type Tab = "overview" | "materials" | "pos";
+type Tab = "overview" | "materials" | "commercials" | "pos";
 
 type ProjectPORow = PurchaseOrder & { project_code: string; project_name: string };
 
@@ -155,6 +155,17 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
             Materials
             <span className="count">{mats.length}</span>
           </button>
+          {commercials.length > 0 && (
+            <button
+              type="button"
+              role="tab"
+              aria-selected={tab === "commercials"}
+              className={`tab-btn${tab === "commercials" ? " active" : ""}`}
+              onClick={() => setTab("commercials")}
+            >
+              Commercials
+            </button>
+          )}
           <button
             type="button"
             role="tab"
@@ -173,6 +184,8 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
 
         {tab === "pos" ? (
           <ProjectPOsPanel rows={projectPOs} />
+        ) : tab === "commercials" ? (
+          <CommercialsBreakdown rows={commercials} />
         ) : (
         <>
         <div className="card">
@@ -198,6 +211,10 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
 
         {mats.length > 0 && (
           <>
+            {tab === "overview" && commercials.length > 0 && (
+              <CommercialsHeadlineKpis rows={commercials} />
+            )}
+
             <div className="kpis">
               <Kpi label="Priced material budget" value={fmtMoney(summary.priced_total)} />
               <Kpi label="Committed" value={fmtMoney(summary.committed_total)} sub={`${summary.committed_pct.toFixed(0)}% of budget`} tone={summary.committed_total > summary.priced_total ? "danger" : "default"} />
@@ -205,10 +222,7 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
               <Kpi label="Unpriced spend" value={fmtMoney(summary.unpriced_spend)} sub={summary.unpriced_spend > 0 ? "Outside the BOQ" : "None"} tone={summary.unpriced_spend > 0 ? "danger" : "default"} />
             </div>
 
-            {commercials.length > 0 && tab === "overview" && (
-              <CommercialsCard rows={commercials} />
-            )}
-
+            {tab === "overview" && (
             <div className="card">
               <div className="card-hd"><h2>By supplier</h2></div>
               <table>
@@ -244,6 +258,7 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
                 </tbody>
               </table>
             </div>
+            )}
 
             {tab === "materials" && (
               <div className="card">
@@ -592,12 +607,45 @@ function summarise(mats: MaterialWithCommitment[], unpricedSpend: number): Summa
   };
 }
 
-/* ── Commercials card — value / cost / GP from the Summary Cost Sheet ──── */
+/* ── Commercials — split between Overview (headline KPIs) and tab (table) ── */
 
-function CommercialsCard({ rows }: { rows: ProjectCommercial[] }) {
+/** Four headline KPIs shown at the top of the Overview tab. */
+function CommercialsHeadlineKpis({ rows }: { rows: ProjectCommercial[] }) {
+  const total = rows.find((r) => r.is_total === 1);
+  if (!total) return null;
+  return (
+    <div className="kpis">
+      <Kpi label="Project value" value={fmtMoney(total.value ?? 0)} />
+      <Kpi label="Cost" value={fmtMoney(total.cost ?? 0)} />
+      <Kpi
+        label="Gross profit"
+        value={fmtMoney(total.gross_profit ?? 0)}
+        tone={(total.gross_profit ?? 0) > 0 ? "success" : (total.gross_profit ?? 0) < 0 ? "danger" : "default"}
+      />
+      <Kpi
+        label="GP margin"
+        value={total.gross_profit_pct != null ? `${(total.gross_profit_pct * 100).toFixed(1)}%` : "—"}
+        tone={(total.gross_profit_pct ?? 0) >= 0.1 ? "success" : (total.gross_profit_pct ?? 0) < 0 ? "danger" : "warn"}
+      />
+    </div>
+  );
+}
+
+/** Full per-category breakdown on the Commercials tab. */
+function CommercialsBreakdown({ rows }: { rows: ProjectCommercial[] }) {
+  if (rows.length === 0) {
+    return (
+      <div className="card">
+        <div className="card-bd">
+          <div className="empty">
+            No commercials yet — upload (or re-upload) a pricing workbook that includes the "Summary Cost Sheet" tab.
+          </div>
+        </div>
+      </div>
+    );
+  }
   const total = rows.find((r) => r.is_total === 1);
   const breakdown = rows.filter((r) => r.is_total === 0);
-
   return (
     <div className="card">
       <div className="card-hd">
