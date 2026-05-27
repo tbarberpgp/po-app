@@ -193,11 +193,6 @@ function EventChip({ it }: { it: PortfolioCalendarItem }) {
 
 function KindBadge({ kind }: { kind: string }) {
   const color = colorForKind(kind);
-  const label = kind === "afp-period-end" ? "AfP period-end" :
-    kind === "scheduled-cutoff" ? "Cut-off" :
-    kind === "scheduled-submission" ? "Submission" :
-    kind === "scheduled-certification" ? "Certification" :
-    kind === "scheduled-payment" ? "Payment" : kind;
   return (
     <span style={{
       display: "inline-flex", alignItems: "center", gap: 4,
@@ -205,17 +200,17 @@ function KindBadge({ kind }: { kind: string }) {
       background: `color-mix(in srgb, ${color} 14%, transparent)`,
       color,
     }}>
-      {label}
+      {labelForKind(kind)}
     </span>
   );
 }
 
 function Legend() {
   const kinds: Array<{ kind: string; label: string }> = [
-    { kind: "scheduled-cutoff", label: "Cut-off" },
-    { kind: "scheduled-submission", label: "Submission" },
-    { kind: "scheduled-certification", label: "Certification" },
-    { kind: "scheduled-payment", label: "Payment" },
+    { kind: "scheduled-application", label: "Application" },
+    { kind: "scheduled-due", label: "Due date" },
+    { kind: "scheduled-notice", label: "Notice" },
+    { kind: "scheduled-final_payment", label: "Final date for payment" },
     { kind: "afp-period-end", label: "AfP period-end" },
   ];
   return (
@@ -232,12 +227,23 @@ function Legend() {
 
 function colorForKind(kind: string): string {
   switch (kind) {
-    case "scheduled-cutoff": return "#d97706";       // amber
-    case "scheduled-submission": return "#16a34a";   // green
-    case "scheduled-certification": return "#ee5d2b"; // PGP orange
-    case "scheduled-payment": return "#9333ea";      // purple
-    case "afp-period-end": return "#0f1130";         // PGP navy
+    case "scheduled-application":    return "#16a34a";   // green
+    case "scheduled-due":            return "#d97706";   // amber
+    case "scheduled-notice":         return "#ee5d2b";   // PGP orange
+    case "scheduled-final_payment":  return "#9333ea";   // purple
+    case "afp-period-end":           return "#0f1130";   // PGP navy
     default: return "#6b7280";
+  }
+}
+
+function labelForKind(kind: string): string {
+  switch (kind) {
+    case "scheduled-application":    return "Application";
+    case "scheduled-due":            return "Due date";
+    case "scheduled-notice":         return "Notice";
+    case "scheduled-final_payment":  return "Final date for payment";
+    case "afp-period-end":           return "AfP period-end";
+    default: return kind;
   }
 }
 

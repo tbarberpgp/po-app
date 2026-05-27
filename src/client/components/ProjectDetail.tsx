@@ -1161,6 +1161,16 @@ function CalendarRow({ it, isThisProject }: { it: Awaited<ReturnType<typeof api.
   );
 }
 
+function valuationLabel(t: string): string {
+  switch (t) {
+    case "application": return "Application date";
+    case "due": return "Due date";
+    case "notice": return "Notice date";
+    case "final_payment": return "Final date for payment";
+    default: return t;
+  }
+}
+
 function formatMonth(yyyymm: string): string {
   const [y, m] = yyyymm.split("-");
   const d = new Date(Number(y), Number(m) - 1, 1);
@@ -1173,7 +1183,7 @@ function ValuationScheduleUpload({ projectId, canEdit }: { projectId: string; ca
   const fileRef = useRef<HTMLInputElement>(null);
   const [entries, setEntries] = useState<Awaited<ReturnType<typeof api.listValuationEntries>>>([]);
   const [adding, setAdding] = useState(false);
-  const [form, setForm] = useState({ entry_type: "submission" as const, date: "", app_number: "", notes: "" });
+  const [form, setForm] = useState<{ entry_type: "application" | "due" | "notice" | "final_payment"; date: string; app_number: string; notes: string }>({ entry_type: "application", date: "", app_number: "", notes: "" });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
@@ -1215,7 +1225,7 @@ function ValuationScheduleUpload({ projectId, canEdit }: { projectId: string; ca
         app_number: form.app_number ? Number(form.app_number) : null,
         notes: form.notes || undefined,
       });
-      setForm({ entry_type: "submission", date: "", app_number: "", notes: "" });
+      setForm({ entry_type: "application", date: "", app_number: "", notes: "" });
       setAdding(false);
       refresh();
     } catch (e) {
@@ -1254,10 +1264,10 @@ function ValuationScheduleUpload({ projectId, canEdit }: { projectId: string; ca
         {canEdit && adding && (
           <div style={{ display: "grid", gap: 6, marginBottom: 10 }}>
             <select value={form.entry_type} onChange={(e) => setForm({ ...form, entry_type: e.target.value as typeof form.entry_type })}>
-              <option value="cutoff">Cut-off</option>
-              <option value="submission">Submission</option>
-              <option value="certification">Certification</option>
-              <option value="payment">Payment</option>
+              <option value="application">Application date</option>
+              <option value="due">Due date</option>
+              <option value="notice">Notice date</option>
+              <option value="final_payment">Final date for payment</option>
             </select>
             <input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} />
             <input type="number" placeholder="App # (optional)" value={form.app_number} onChange={(e) => setForm({ ...form, app_number: e.target.value })} />
@@ -1276,7 +1286,7 @@ function ValuationScheduleUpload({ projectId, canEdit }: { projectId: string; ca
               <div key={e.id} style={{ display: "flex", alignItems: "baseline", gap: 6, fontSize: 12, padding: "3px 0", borderBottom: "1px solid var(--line)" }}>
                 <span style={{ color: "var(--muted)", fontVariantNumeric: "tabular-nums", width: 64 }}>{fmtDate(e.date).slice(0, 6)}</span>
                 <span style={{ flex: 1 }}>
-                  {e.entry_type.replace(/^./, (c) => c.toUpperCase())}{e.app_number ? ` #${e.app_number}` : ""}
+                  {valuationLabel(e.entry_type)}{e.app_number ? ` #${e.app_number}` : ""}
                 </span>
                 {canEdit && <button className="ghost tiny" onClick={() => deleteEntry(e.id)} title="Delete">×</button>}
               </div>

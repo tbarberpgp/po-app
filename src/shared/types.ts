@@ -18,7 +18,7 @@ export type Project = {
   created_by: string;
 };
 
-export type ValuationEntryType = "cutoff" | "submission" | "certification" | "payment";
+export type ValuationEntryType = "application" | "due" | "notice" | "final_payment";
 
 export type ValuationScheduleEntry = {
   id: number;

@@ -45,19 +45,28 @@ const looksLikeElementCode = (v: unknown): boolean => {
 
 // ── Valuation schedule parser ─────────────────────────────────────────────
 
+/**
+ * Valuation schedule entry types. These mirror the UK Construction Act
+ * payment cycle: PM submits an application; the contract specifies a due
+ * date when the sum becomes owed; the client issues a payment / pay-less
+ * notice by the notice date; the contractor must be paid by the final
+ * date for payment.
+ */
 export type ParsedValuationEntry = {
   app_number: number | null;
-  entry_type: "cutoff" | "submission" | "certification" | "payment";
+  entry_type: "application" | "due" | "notice" | "final_payment";
   date: string;       // ISO yyyy-mm-dd
   notes: string | null;
 };
 
-const ENTRY_KEYWORDS: Record<ParsedValuationEntry["entry_type"], RegExp> = {
-  cutoff: /(cut\s*[-]?\s*off|valuation\s*date)/i,
-  submission: /(submission|application\s*date|submitted)/i,
-  certification: /(certif|certify|cert\.?\s*date)/i,
-  payment: /(payment|paid|due\s*date)/i,
-};
+// Order matters — more specific regexes first, so that e.g.
+// "Final date for payment" doesn't get scooped by the looser /payment/ rule.
+const ENTRY_KEYWORDS: Array<{ type: ParsedValuationEntry["entry_type"]; re: RegExp }> = [
+  { type: "final_payment", re: /(final\s*date\s*for\s*payment|final\s*payment\s*date|fdp\b)/i },
+  { type: "notice",        re: /(pay\s*less\s*notice|payment\s*notice|notice\s*date|^notice$)/i },
+  { type: "due",           re: /(due\s*date|date\s*due|payment\s*due)/i },
+  { type: "application",   re: /(application\s*date|app\s*date|afp\s*date|submission|submitted|applied)/i },
+];
 
 /** Best-effort coerce an xlsx cell into an ISO yyyy-mm-dd string. */
 function toIsoDate(v: unknown): string | null {
@@ -162,11 +171,14 @@ function readHeaderRow(row: Record<string, unknown>): {
     // App # / Application No / etc.
     if (!appCol && /(app\s*[#no]|application\s*(?:no|number|#))/i.test(label)) appCol = col;
     if (!notesCol && /^(notes?|comment|remark)/i.test(label)) notesCol = col;
-    for (const [type, re] of Object.entries(ENTRY_KEYWORDS) as Array<[ParsedValuationEntry["entry_type"], RegExp]>) {
-      if (re.test(label)) {
-        // Avoid double-counting if a label matches multiple regexes (e.g.
-        // "Application date" hits both `submission` and `app` if not careful).
-        if (!dateCols.some((d) => d.col === col)) dateCols.push({ col, type });
+    // Match against the most-specific patterns first; stop at the first hit
+    // so a single column maps to a single entry type.
+    if (!dateCols.some((d) => d.col === col)) {
+      for (const { type, re } of ENTRY_KEYWORDS) {
+        if (re.test(label)) {
+          dateCols.push({ col, type });
+          break;
+        }
       }
     }
   }

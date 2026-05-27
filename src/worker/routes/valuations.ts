@@ -9,8 +9,20 @@ import { parseValuationScheduleXlsx } from "../parse-xlsx";
 
 export const valuations = new Hono<{ Bindings: Env; Variables: Variables }>();
 
-const ENTRY_TYPES = ["cutoff", "submission", "certification", "payment"] as const;
+const ENTRY_TYPES = ["application", "due", "notice", "final_payment"] as const;
 type EntryType = typeof ENTRY_TYPES[number];
+
+/**
+ * Display labels for each entry type. These appear in the portfolio
+ * calendar feed and downstream UI; keeping a single source of truth here
+ * means we can rename in one place.
+ */
+const ENTRY_LABELS: Record<EntryType, string> = {
+  application: "Application",
+  due: "Due date",
+  notice: "Notice",
+  final_payment: "Final date for payment",
+};
 
 /** List valuation schedule entries for one project. */
 valuations.get("/project/:projectId", async (c) => {
@@ -218,7 +230,8 @@ valuations.get("/_portfolio", async (c) => {
       project_code: s.project_code,
       project_name: s.project_name,
       kind: `scheduled-${s.entry_type}`,
-      label: s.entry_type.replace(/^./, (ch) => ch.toUpperCase()) + (s.app_number ? ` #${s.app_number}` : ""),
+      label: (ENTRY_LABELS[s.entry_type as EntryType] ?? s.entry_type) +
+        (s.app_number ? ` #${s.app_number}` : ""),
       app_number: s.app_number,
     });
   }
