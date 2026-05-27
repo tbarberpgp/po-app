@@ -145,16 +145,6 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
           >
             Overview
           </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={tab === "materials"}
-            className={`tab-btn${tab === "materials" ? " active" : ""}`}
-            onClick={() => setTab("materials")}
-          >
-            Materials
-            <span className="count">{mats.length}</span>
-          </button>
           {commercials.length > 0 && (
             <button
               type="button"
@@ -166,6 +156,16 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
               Commercials
             </button>
           )}
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === "materials"}
+            className={`tab-btn${tab === "materials" ? " active" : ""}`}
+            onClick={() => setTab("materials")}
+          >
+            Materials
+            <span className="count">{mats.length}</span>
+          </button>
           <button
             type="button"
             role="tab"
