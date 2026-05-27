@@ -1424,9 +1424,20 @@ function ScheduleEntryGroups({
     application: 1, due: 2, notice: 3, final_payment: 4,
   };
 
+  // ISO yyyy-mm-dd for today's local date — used to hide past entries.
+  const todayIso = useMemo(() => {
+    const d = new Date();
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+  }, []);
+
   const groups = useMemo(() => {
     const m = new Map<string, Entry[]>();
+    // Filter out entries whose date is strictly before today.
     for (const e of entries) {
+      if (e.date < todayIso) continue;
       const key = e.app_number == null ? "none" : `app-${e.app_number}`;
       const arr = m.get(key) ?? [];
       arr.push(e);
@@ -1445,43 +1456,59 @@ function ScheduleEntryGroups({
         entries: sorted,
       };
     });
-    // Sort valuations by their earliest date so upcoming cycles bubble to the top.
+    // Sort valuations by their earliest upcoming date so the next cycle is on top.
     result.sort((a, b) => a.earliest.localeCompare(b.earliest));
     return result;
-  }, [entries]);
+  }, [entries, todayIso]);
+
+  const hiddenCount = entries.filter((e) => e.date < todayIso).length;
 
   return (
-    <div style={{ maxHeight: 360, overflowY: "auto", display: "grid", gap: 8 }}>
-      {groups.map((g, gi) => (
-        <div key={gi} style={{ border: "1px solid var(--line)", borderRadius: 4, padding: "6px 8px" }}>
-          <div style={{ display: "flex", alignItems: "baseline", gap: 6, marginBottom: 4 }}>
-            <span style={{ fontSize: 12, fontWeight: 600 }}>
-              {g.app_number != null ? `Val #${g.app_number}` : "Unnumbered"}
-            </span>
-            <span className="muted" style={{ fontSize: 10 }}>
-              {fmtDate(g.earliest)} → {fmtDate(g.latest)}
-            </span>
-            <span style={{ flex: 1 }} />
-            <span className="muted" style={{ fontSize: 10 }}>{g.entries.length} dates</span>
-          </div>
-          <div style={{ display: "grid", gap: 2 }}>
-            {g.entries.map((e) => (
-              <div key={e.id} style={{
-                display: "flex", alignItems: "baseline", gap: 6,
-                fontSize: 11, padding: "2px 0",
-              }}>
-                <span style={{ color: "var(--muted)", fontVariantNumeric: "tabular-nums", width: 56 }}>
-                  {fmtDate(e.date).slice(0, 6)}
-                </span>
-                <span style={{ flex: 1 }}>{valuationLabel(e.entry_type)}</span>
-                {canEdit && (
-                  <button className="ghost tiny" onClick={() => onDelete(e.id)} title="Delete this date">×</button>
-                )}
-              </div>
-            ))}
-          </div>
+    <>
+      {groups.length === 0 ? (
+        <div className="muted" style={{ fontSize: 12 }}>
+          All scheduled dates are in the past.
+          {hiddenCount > 0 && <> ({hiddenCount} hidden.)</>}
         </div>
-      ))}
-    </div>
+      ) : (
+        <div style={{ maxHeight: 360, overflowY: "auto", display: "grid", gap: 8 }}>
+          {groups.map((g, gi) => (
+            <div key={gi} style={{ border: "1px solid var(--line)", borderRadius: 4, padding: "6px 8px" }}>
+              <div style={{ display: "flex", alignItems: "baseline", gap: 6, marginBottom: 4 }}>
+                <span style={{ fontSize: 12, fontWeight: 600 }}>
+                  {g.app_number != null ? `Val #${g.app_number}` : "Unnumbered"}
+                </span>
+                <span className="muted" style={{ fontSize: 10 }}>
+                  {fmtDate(g.earliest)} → {fmtDate(g.latest)}
+                </span>
+                <span style={{ flex: 1 }} />
+                <span className="muted" style={{ fontSize: 10 }}>{g.entries.length} dates</span>
+              </div>
+              <div style={{ display: "grid", gap: 2 }}>
+                {g.entries.map((e) => (
+                  <div key={e.id} style={{
+                    display: "flex", alignItems: "baseline", gap: 6,
+                    fontSize: 11, padding: "2px 0",
+                  }}>
+                    <span style={{ color: "var(--muted)", fontVariantNumeric: "tabular-nums", width: 56 }}>
+                      {fmtDate(e.date).slice(0, 6)}
+                    </span>
+                    <span style={{ flex: 1 }}>{valuationLabel(e.entry_type)}</span>
+                    {canEdit && (
+                      <button className="ghost tiny" onClick={() => onDelete(e.id)} title="Delete this date">×</button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      {hiddenCount > 0 && groups.length > 0 && (
+        <div className="muted" style={{ fontSize: 10, marginTop: 6, textAlign: "right" }}>
+          {hiddenCount} past date{hiddenCount === 1 ? "" : "s"} hidden
+        </div>
+      )}
+    </>
   );
 }
