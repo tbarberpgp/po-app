@@ -43,6 +43,89 @@ const looksLikeElementCode = (v: unknown): boolean => {
   return /^\d{1,4}$/.test(s);
 };
 
+export type ParsedContractItem = {
+  item_no: number;
+  section: string | null;
+  description: string;
+  qty: number;
+  unit: string | null;
+  sell_rate: number;
+  sell_total: number;
+  labour_rate: number | null;
+  labour_total: number | null;
+};
+
+/**
+ * Parse the work item list from the Pricing and Costing-Labour-Only tabs and
+ * merge by document position. The two tabs share the same row layout, so the
+ * Nth priced work item on Pricing == the Nth work item on Costing Labour Only
+ * (both anchor off the BOQ work breakdown).
+ *
+ * Row classification per tab:
+ *   col A populated AND col D & col K numeric  → work item
+ *   col A populated AND col D/K missing        → section header
+ *   col A empty                                → material sub-row (ignored)
+ *
+ * Headers are on row 6 (1-indexed); data starts row 7 onward.
+ */
+export function parseContractItems(buffer: ArrayBuffer): ParsedContractItem[] {
+  const wb = XLSX.read(buffer, { type: "array" });
+  const sellSheet = wb.Sheets[wb.SheetNames.find((n) => n.toLowerCase() === "pricing") ?? ""];
+  if (!sellSheet) return [];
+  const labourSheet = wb.Sheets[wb.SheetNames.find((n) => n.toLowerCase() === "costing labour only") ?? ""];
+
+  const scan = (ws: XLSX.WorkSheet): { items: Array<{ section: string | null; description: string; qty: number; unit: string | null; rate: number; total: number }> } => {
+    const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws, {
+      header: "A", defval: null, raw: true,
+    });
+    const out: Array<{ section: string | null; description: string; qty: number; unit: string | null; rate: number; total: number }> = [];
+    let section: string | null = null;
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      const a = str(r["A"]);
+      if (!a) continue;
+      const d = num(r["D"]);
+      const k = num(r["K"]);
+      const m = num(r["M"]);
+      if (d == null || k == null) {
+        // section header (col A populated but no numeric qty / rate)
+        section = a;
+        continue;
+      }
+      out.push({
+        section,
+        description: a,
+        qty: d,
+        unit: str(r["E"]),
+        rate: k,
+        total: m ?? d * k,
+      });
+    }
+    return { items: out };
+  };
+
+  const sell = scan(sellSheet);
+  const labour = labourSheet ? scan(labourSheet) : { items: [] };
+
+  return sell.items.map((s, i) => {
+    const l = labour.items[i];
+    // Only treat the labour row as a match if the description matches — if the
+    // tabs diverge we skip the labour rate rather than silently mis-aligning.
+    const labourMatches = l && l.description === s.description;
+    return {
+      item_no: i + 1,
+      section: s.section,
+      description: s.description,
+      qty: s.qty,
+      unit: s.unit,
+      sell_rate: s.rate,
+      sell_total: s.total,
+      labour_rate: labourMatches ? l.rate : null,
+      labour_total: labourMatches ? l.total : null,
+    };
+  });
+}
+
 export type ParsedCommercialRow = {
   category: string;
   value: number | null;

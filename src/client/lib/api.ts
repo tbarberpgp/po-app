@@ -1,4 +1,7 @@
 import type {
+  AfpDetail,
+  AfpDirection,
+  ApplicationForPayment,
   AppUser,
   CreatePOInput,
   CurrentUser,
@@ -378,6 +381,58 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ action, reason }),
     }),
+
+  // Applications for Payment ─────────────────────────────────────────────
+  listAfps: (projectId: string, direction: AfpDirection = "outgoing") =>
+    jfetch<ApplicationForPayment[]>(
+      `/api/applications/project/${projectId}?direction=${direction}`,
+    ),
+  getAfp: (id: number) => jfetch<AfpDetail>(`/api/applications/${id}`),
+  createAfp: (
+    projectId: string,
+    body: { period_end: string; notes?: string; direction?: AfpDirection; counterparty_supplier_id?: number | null },
+  ) =>
+    jfetch<{ id: number; app_number: number }>(`/api/applications/project/${projectId}`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  updateAfp: (id: number, body: { period_end?: string; notes?: string; retention_pct?: number; vat_pct?: number }) =>
+    jfetch<{ ok: true }>(`/api/applications/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+  updateAfpLine: (
+    lineId: number,
+    body: { percent_complete?: number; description?: string; qty?: number; unit?: string; rate?: number },
+  ) =>
+    jfetch<{ ok: true }>(`/api/applications/lines/${lineId}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+  addAfpLine: (
+    afpId: number,
+    body: { description: string; qty: number; unit?: string; rate: number; section?: string },
+  ) =>
+    jfetch<{ ok: true }>(`/api/applications/${afpId}/lines`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  deleteAfpLine: (lineId: number) =>
+    jfetch<{ ok: true }>(`/api/applications/lines/${lineId}`, { method: "DELETE" }),
+  submitAfp: (id: number) =>
+    jfetch<{ ok: true }>(`/api/applications/${id}/submit`, { method: "POST" }),
+  certifyAfp: (id: number, body?: { certified_amount?: number; notes?: string }) =>
+    jfetch<{ ok: true; certified_amount: number }>(`/api/applications/${id}/certify`, {
+      method: "POST",
+      body: JSON.stringify(body ?? {}),
+    }),
+  markAfpPaid: (id: number, payment_reference?: string) =>
+    jfetch<{ ok: true }>(`/api/applications/${id}/mark-paid`, {
+      method: "POST",
+      body: JSON.stringify({ payment_reference }),
+    }),
+  deleteAfp: (id: number) =>
+    jfetch<{ ok: true }>(`/api/applications/${id}`, { method: "DELETE" }),
   discardQuote: (quoteId: number) =>
     jfetch<{ ok: true }>(`/api/quotes/${quoteId}`, { method: "DELETE" }),
   searchProductsForQuote: (q: string) =>

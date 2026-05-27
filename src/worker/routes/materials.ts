@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import type { Env, Variables } from "../env";
-import { parseMaterialsSheet, parseSummaryCostSheet } from "../parse-xlsx";
+import { parseContractItems, parseMaterialsSheet, parseSummaryCostSheet } from "../parse-xlsx";
 import { requirePermission } from "../auth";
 
 export const materials = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -21,14 +21,16 @@ materials.post("/:projectId/upload", async (c) => {
   const file = form.get("file");
   if (!(file instanceof File)) return c.json({ error: "file required" }, 400);
 
-  // Parse both the Materials sheet (required) and the Summary Cost Sheet
-  // (optional — older workbooks may not have it). Read the buffer once.
+  // Parse Materials (required), Summary Cost Sheet (optional), and Pricing
+  // + Costing Labour Only tabs for contract items (optional). Read once.
   const buffer = await file.arrayBuffer();
   let parsed;
   let commercials;
+  let contractItems;
   try {
     parsed = parseMaterialsSheet(buffer);
     commercials = parseSummaryCostSheet(buffer);
+    contractItems = parseContractItems(buffer);
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : "parse failed" }, 400);
   }
@@ -83,6 +85,30 @@ materials.post("/:projectId/upload", async (c) => {
   );
   await c.env.DB.batch(stmts);
 
+  // Persist contract items from the Pricing tab (for the AfP workflow).
+  if (contractItems.length > 0) {
+    const ciStmts = contractItems.map((ci) =>
+      c.env.DB.prepare(
+        `INSERT INTO contract_items
+           (snapshot_id, item_no, section, description, qty, unit,
+            sell_rate, sell_total, labour_rate, labour_total)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).bind(
+        snapshotId,
+        ci.item_no,
+        ci.section,
+        ci.description,
+        ci.qty,
+        ci.unit,
+        ci.sell_rate,
+        ci.sell_total,
+        ci.labour_rate,
+        ci.labour_total,
+      ),
+    );
+    await c.env.DB.batch(ciStmts);
+  }
+
   // Persist project commercials if the Summary Cost Sheet was present.
   if (commercials.length > 0) {
     const commStmts = commercials.map((r) =>
@@ -108,10 +134,15 @@ materials.post("/:projectId/upload", async (c) => {
     `INSERT INTO audit_log (entity_type, entity_id, action, actor, details, created_at)
      VALUES ('snapshot', ?, 'uploaded', ?, ?, ?)`,
   )
-    .bind(String(snapshotId), actor, JSON.stringify({ filename: file.name, rows: parsed.length, commercials: commercials.length }), now)
+    .bind(String(snapshotId), actor, JSON.stringify({ filename: file.name, rows: parsed.length, commercials: commercials.length, contract_items: contractItems.length }), now)
     .run();
 
-  return c.json({ snapshot_id: snapshotId, rows: parsed.length, commercials: commercials.length });
+  return c.json({
+    snapshot_id: snapshotId,
+    rows: parsed.length,
+    commercials: commercials.length,
+    contract_items: contractItems.length,
+  });
 });
 
 /**

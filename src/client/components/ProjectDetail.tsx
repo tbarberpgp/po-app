@@ -3,9 +3,9 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, fmtDate, fmtMoney } from "../lib/api";
 import { Topbar } from "./Shell";
 import { can } from "../../shared/permissions";
-import type { CurrentUser, LabourByCostCode, MaterialWithCommitment, Project, ProjectCommercial, PurchaseOrder } from "../../shared/types";
+import type { ApplicationForPayment, CurrentUser, LabourByCostCode, MaterialWithCommitment, Project, ProjectCommercial, PurchaseOrder } from "../../shared/types";
 
-type Tab = "overview" | "materials" | "commercials" | "labour" | "pos";
+type Tab = "overview" | "materials" | "commercials" | "labour" | "afp" | "pos";
 
 type ProjectPORow = PurchaseOrder & { project_code: string; project_name: string };
 
@@ -24,6 +24,7 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
   const [mats, setMats] = useState<MaterialWithCommitment[]>([]);
   const [commercials, setCommercials] = useState<ProjectCommercial[]>([]);
   const [labour, setLabour] = useState<LabourByCostCode[]>([]);
+  const [afps, setAfps] = useState<ApplicationForPayment[]>([]);
   const [projectPOs, setProjectPOs] = useState<ProjectPORow[]>([]);
   const [tab, setTab] = useState<Tab>("overview");
   const [filter, setFilter] = useState("");
@@ -40,6 +41,7 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
     api.listMaterials(id).then(setMats).catch((e) => setErr(e.message));
     api.listProjectCommercials(id).then(setCommercials).catch(() => setCommercials([]));
     api.listLabourByCostCode(id).then(setLabour).catch(() => setLabour([]));
+    api.listAfps(id).then(setAfps).catch(() => setAfps([]));
     api.getProjectSummary(id).then(setPoSummary).catch((e) => setErr(e.message));
     api.listPOs({ project_id: id })
       .then((rs) => setProjectPOs(rs as ProjectPORow[]))
@@ -183,6 +185,16 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
           <button
             type="button"
             role="tab"
+            aria-selected={tab === "afp"}
+            className={`tab-btn${tab === "afp" ? " active" : ""}`}
+            onClick={() => setTab("afp")}
+          >
+            Applications
+            {afps.length > 0 && <span className="count">{afps.length}</span>}
+          </button>
+          <button
+            type="button"
+            role="tab"
             aria-selected={tab === "pos"}
             className={`tab-btn${tab === "pos" ? " active" : ""}`}
             onClick={() => setTab("pos")}
@@ -202,6 +214,8 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
           <CommercialsBreakdown rows={commercials} />
         ) : tab === "labour" ? (
           <LabourBreakdown rows={labour} />
+        ) : tab === "afp" ? (
+          <AfpListPanel projectId={id ?? ""} afps={afps} canCreate={canEditProject} onRefresh={load} />
         ) : (
         <>
         {mats.length > 0 && (
@@ -726,6 +740,136 @@ function CommercialsBreakdown({ rows }: { rows: ProjectCommercial[] }) {
       </table>
     </div>
   );
+}
+
+/* ── Applications for Payment panel ───────────────────────────────────────── */
+
+function AfpListPanel({
+  projectId, afps, canCreate, onRefresh,
+}: {
+  projectId: string;
+  afps: ApplicationForPayment[];
+  canCreate: boolean;
+  onRefresh: () => void;
+}) {
+  const navigate = useNavigate();
+  const [creating, setCreating] = useState(false);
+  const [periodEnd, setPeriodEnd] = useState(() => new Date().toISOString().slice(0, 10));
+  const [notes, setNotes] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function createAfp() {
+    setBusy(true); setErr(null);
+    try {
+      const r = await api.createAfp(projectId, { period_end: periodEnd, notes: notes || undefined });
+      onRefresh();
+      navigate(`/applications/${r.id}`);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "create failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Outgoing AfPs only — incoming labour ships next.
+  const outgoing = afps.filter((a) => a.direction === "outgoing");
+  const totals = outgoing.reduce(
+    (acc, a) => {
+      acc.invoiced += a.total_invoice ?? 0;
+      if (a.status === "certified" || a.status === "paid") acc.certified += a.certified_amount ?? a.amount_due ?? 0;
+      if (a.status === "paid") acc.paid += a.certified_amount ?? a.amount_due ?? 0;
+      return acc;
+    },
+    { invoiced: 0, certified: 0, paid: 0 },
+  );
+
+  return (
+    <>
+      <div className="kpis">
+        <Kpi label="Apps to date" value={String(outgoing.length)} sub={outgoing.length > 0 ? `Latest #${outgoing[0].app_number}` : "None yet"} />
+        <Kpi label="Total invoiced" value={fmtMoney(totals.invoiced)} sub="incl VAT" />
+        <Kpi label="Certified" value={fmtMoney(totals.certified)} tone={totals.certified > 0 ? "success" : "default"} />
+        <Kpi label="Paid" value={fmtMoney(totals.paid)} tone={totals.paid > 0 ? "success" : "default"} />
+      </div>
+
+      <div className="card" style={{ marginTop: 16 }}>
+        <div className="card-hd">
+          <h2 style={{ flex: 1 }}>Applications for payment</h2>
+          {canCreate && !creating && (
+            <button className="accent" onClick={() => setCreating(true)}>+ New AfP</button>
+          )}
+        </div>
+        {err && <div className="flash error" style={{ margin: "12px 20px 0" }}>{err}</div>}
+        {creating && (
+          <div className="card-bd" style={{ background: "var(--accent-soft)", borderBottom: "1px solid var(--line)" }}>
+            <div className="row" style={{ alignItems: "flex-end", gap: 12 }}>
+              <div>
+                <label>Period ending</label>
+                <input type="date" value={periodEnd} onChange={(e) => setPeriodEnd(e.target.value)} />
+              </div>
+              <div className="grow">
+                <label>Notes (optional)</label>
+                <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="e.g. Valuation #3 — works to 30 Apr 2026" />
+              </div>
+              <button className="primary" onClick={createAfp} disabled={busy || !periodEnd}>{busy ? "Creating…" : "Create draft"}</button>
+              <button className="ghost" onClick={() => setCreating(false)}>Cancel</button>
+            </div>
+            <div className="muted" style={{ marginTop: 8, fontSize: 12 }}>
+              The draft will be seeded with one line per contract item from the BOQ at 0% complete. Edit per-line % and add any variations on the AfP detail screen, then submit.
+            </div>
+          </div>
+        )}
+        {outgoing.length === 0 ? (
+          <div className="card-bd"><div className="empty">No applications raised yet.</div></div>
+        ) : (
+          <table>
+            <thead>
+              <tr>
+                <th className="center">#</th>
+                <th>Period ending</th>
+                <th className="center">Status</th>
+                <th className="num">Cumulative</th>
+                <th className="num">This period</th>
+                <th className="num">Total invoice</th>
+                <th className="num">Certified</th>
+                <th>Raised</th>
+              </tr>
+            </thead>
+            <tbody>
+              {outgoing.map((a) => (
+                <tr key={a.id}>
+                  <td className="center"><Link to={`/applications/${a.id}`}>#{a.app_number}</Link></td>
+                  <td>{fmtDate(a.period_end)}</td>
+                  <td className="center">
+                    <span className={`pill ${afpStatusPill(a.status)}`} style={{ fontSize: 10 }}>{a.status}</span>
+                  </td>
+                  <td className="num">{fmtMoney(a.cumulative_value ?? 0)}</td>
+                  <td className="num">{fmtMoney(a.this_period_net ?? 0)}</td>
+                  <td className="num">{fmtMoney(a.total_invoice ?? 0)}</td>
+                  <td className="num">
+                    {a.certified_amount != null
+                      ? fmtMoney(a.certified_amount)
+                      : <span className="muted">—</span>}
+                  </td>
+                  <td className="muted">{fmtDate(a.created_at)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </>
+  );
+}
+
+function afpStatusPill(s: ApplicationForPayment["status"]): string {
+  switch (s) {
+    case "draft": return "draft";
+    case "submitted": return "pending";
+    case "certified": return "issued";
+    case "paid": return "approved";
+  }
 }
 
 /* ── Labour breakdown by cost code ───────────────────────────────────────── */

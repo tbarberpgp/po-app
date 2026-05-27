@@ -11,6 +11,7 @@ import { DeletedProjects } from "./components/DeletedProjects";
 import { ProductLibrary } from "./components/ProductLibrary";
 import { SuppliersPage } from "./components/SuppliersPage";
 import { QuoteReview } from "./components/QuoteReview";
+import { AfpView } from "./components/AfpView";
 import { Sidebar } from "./components/Shell";
 import { api } from "./lib/api";
 import type { CurrentUser } from "../shared/types";
@@ -62,6 +63,7 @@ export function App() {
           <Route path="/products" element={<ProductLibrary me={me} />} />
           <Route path="/suppliers" element={<SuppliersPage me={me} />} />
           <Route path="/quotes/:quoteId" element={<QuoteReview me={me} />} />
+          <Route path="/applications/:id" element={<AfpView me={me} />} />
           <Route path="*" element={<NoMatch />} />
         </Routes>
       </div>

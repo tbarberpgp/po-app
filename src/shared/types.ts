@@ -233,6 +233,95 @@ export function derivedProjectNumber(projectCode: string): string {
   return digits.slice(-4).padStart(4, "0");
 }
 
+/** A single work item from the Pricing/Costing-Labour-Only tabs. */
+export type ContractItem = {
+  id: number;
+  snapshot_id: number;
+  item_no: number;
+  section: string | null;
+  description: string;
+  qty: number;
+  unit: string | null;
+  sell_rate: number;
+  sell_total: number;
+  labour_rate: number | null;
+  labour_total: number | null;
+};
+
+export type AfpDirection = "outgoing" | "incoming_labour";
+export type AfpStatus = "draft" | "submitted" | "certified" | "paid";
+
+/** One Application for Payment — outgoing (PowerGrid → client) or incoming
+ *  labour (subcontractor → PowerGrid). */
+export type ApplicationForPayment = {
+  id: number;
+  project_id: string;
+  direction: AfpDirection;
+  app_number: number;
+  period_end: string;
+  notes: string | null;
+  retention_pct: number;
+  vat_pct: number;
+  contract_sum: number | null;
+  cumulative_value: number | null;
+  previous_certified: number | null;
+  this_period_net: number | null;
+  retention_amount: number | null;
+  amount_due: number | null;
+  vat_amount: number | null;
+  total_invoice: number | null;
+  status: AfpStatus;
+  counterparty_supplier_id: number | null;
+  created_at: string;
+  created_by: string;
+  submitted_at: string | null;
+  submitted_by: string | null;
+  certified_at: string | null;
+  certified_by: string | null;
+  certified_amount: number | null;
+  paid_at: string | null;
+  paid_by: string | null;
+  payment_reference: string | null;
+  // joined fields
+  line_count?: number;
+  project_code?: string;
+  project_name?: string;
+  project_client?: string | null;
+  project_retention_pct?: number;
+};
+
+/** One line on an AfP — BOQ-derived (links to contract_item) or ad-hoc. */
+export type AfpLine = {
+  id: number;
+  afp_id: number;
+  contract_item_id: number | null;
+  section: string | null;
+  description: string;
+  unit: string | null;
+  qty: number | null;
+  rate: number;
+  contract_value: number;
+  percent_complete: number;
+  cumulative_value: number;
+  is_adhoc: 0 | 1;
+  display_order: number;
+};
+
+/** Bundle returned by GET /api/applications/:id — the AfP, its lines, and the
+ *  prior AfPs so the UI can show the previously-certified column. */
+export type AfpDetail = {
+  afp: ApplicationForPayment;
+  lines: AfpLine[];
+  prior_apps: Array<{
+    app_number: number;
+    period_end: string;
+    status: AfpStatus;
+    certified_amount: number | null;
+    cumulative_value: number | null;
+    total_invoice: number | null;
+  }>;
+};
+
 /** One labour-by-cost-code row aggregated from the materials table. */
 export type LabourByCostCode = {
   element_code: string;
