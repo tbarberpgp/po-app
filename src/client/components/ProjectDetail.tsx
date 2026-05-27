@@ -1093,72 +1093,170 @@ function ProjectQuoteUpload({ projectId, disabled }: { projectId: string; disabl
   );
 }
 
-/* ── Portfolio valuation calendar (combined across projects) ─────────── */
+/* ── Portfolio valuation calendar (month grid, navigable) ────────────── */
 
 function PortfolioCalendarPanel({ projectId }: { projectId: string }) {
   type Item = Awaited<ReturnType<typeof api.portfolioCalendar>>[number];
   const [items, setItems] = useState<Item[]>([]);
   const [err, setErr] = useState<string | null>(null);
+  const [cursor, setCursor] = useState<Date>(() => {
+    const d = new Date(); d.setDate(1); d.setHours(0, 0, 0, 0); return d;
+  });
 
   useEffect(() => {
-    api.portfolioCalendar().then(setItems).catch((e) => setErr(e.message));
-  }, []);
+    // Fetch a window slightly wider than the visible 6-week grid so events at
+    // the month boundary don't pop on/off.
+    const from = new Date(cursor); from.setDate(1); from.setDate(from.getDate() - 7);
+    const to = new Date(cursor); to.setMonth(to.getMonth() + 1); to.setDate(to.getDate() + 7);
+    api.portfolioCalendar({ from: localIso(from), to: localIso(to) })
+      .then(setItems)
+      .catch((e) => setErr(e.message));
+  }, [cursor]);
 
-  // Group items by ISO month for display
-  const byMonth = useMemo(() => {
+  const weeks = useMemo(() => buildMonthGrid(cursor), [cursor]);
+  const byDate = useMemo(() => {
     const m = new Map<string, Item[]>();
     for (const it of items) {
-      const key = it.date.slice(0, 7);
+      const key = it.date.slice(0, 10);
       if (!m.has(key)) m.set(key, []);
       m.get(key)!.push(it);
     }
-    return [...m.entries()].sort(([a], [b]) => a.localeCompare(b));
+    return m;
   }, [items]);
+
+  const today = localIso(new Date());
+  const monthLabel = cursor.toLocaleDateString("en-GB", { month: "long", year: "numeric" });
+
+  function shift(delta: number) {
+    const next = new Date(cursor);
+    next.setMonth(next.getMonth() + delta);
+    setCursor(next);
+  }
+  function jumpToday() {
+    const d = new Date(); d.setDate(1);
+    setCursor(d);
+  }
 
   return (
     <div className="card">
-      <div className="card-hd"><h3 style={{ flex: 1 }}>Valuation calendar</h3></div>
-      <div className="card-bd" style={{ maxHeight: 560, overflowY: "auto" }}>
-        {err && <div className="muted" style={{ color: "var(--danger)" }}>{err}</div>}
-        {byMonth.length === 0 ? (
-          <div className="empty" style={{ fontSize: 12 }}>No upcoming valuation dates across the portfolio. Add a schedule entry below to get started.</div>
-        ) : (
-          byMonth.map(([month, list]) => (
-            <div key={month} style={{ marginBottom: 14 }}>
-              <div className="eyebrow" style={{ marginBottom: 6 }}>{formatMonth(month)}</div>
-              {list.map((it, i) => (
-                <CalendarRow key={`${it.kind}-${it.afp_id ?? "s"}-${i}`} it={it} isThisProject={it.project_id === projectId} />
-              ))}
-            </div>
-          ))
-        )}
+      <div className="card-hd">
+        <h3 style={{ flex: 1 }}>Valuation calendar</h3>
+        <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+          <button className="ghost tiny" onClick={() => shift(-1)} aria-label="Previous month">‹</button>
+          <button className="ghost tiny" onClick={jumpToday}>Today</button>
+          <button className="ghost tiny" onClick={() => shift(1)} aria-label="Next month">›</button>
+        </div>
+      </div>
+      <div style={{ padding: 10 }}>
+        {err && <div className="muted" style={{ color: "var(--danger)", marginBottom: 8 }}>{err}</div>}
+        <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 8 }}>{monthLabel}</div>
+
+        {/* Weekday header */}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(7, minmax(0, 1fr))", gap: 3, marginBottom: 3 }}>
+          {["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"].map((d) => (
+            <div key={d} className="muted" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: "0.06em", padding: "2px 4px" }}>{d}</div>
+          ))}
+        </div>
+
+        {weeks.map((week, wi) => (
+          <div key={wi} style={{ display: "grid", gridTemplateColumns: "repeat(7, minmax(0, 1fr))", gap: 3, marginBottom: 3 }}>
+            {week.map((day) => {
+              const key = localIso(day);
+              const evs = byDate.get(key) ?? [];
+              const ours = evs.filter((e) => e.project_id === projectId);
+              const others = evs.filter((e) => e.project_id !== projectId);
+              const inMonth = day.getMonth() === cursor.getMonth();
+              const isToday = key === today;
+              return (
+                <div key={key} style={{
+                  minHeight: 70,
+                  padding: 3,
+                  border: `1px solid ${isToday ? "var(--accent)" : "var(--line)"}`,
+                  borderRadius: 4,
+                  background: inMonth ? "var(--card)" : "var(--card-2)",
+                  opacity: inMonth ? 1 : 0.55,
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 2,
+                  overflow: "hidden",
+                }}>
+                  <div style={{
+                    fontSize: 10, fontWeight: 600,
+                    color: isToday ? "var(--accent)" : "var(--ink-2)",
+                  }}>
+                    {day.getDate()}
+                  </div>
+                  {/* Our project's events first (prominent), others muted */}
+                  {ours.slice(0, 3).map((it, i) => <MiniChip key={`o-${i}`} it={it} prominent />)}
+                  {others.slice(0, Math.max(0, 3 - ours.length)).map((it, i) => <MiniChip key={`x-${i}`} it={it} prominent={false} />)}
+                  {evs.length > 3 && (
+                    <div className="muted" style={{ fontSize: 9 }}>+{evs.length - 3} more</div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        ))}
+
+        <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 10, fontSize: 10 }}>
+          {[
+            { kind: "scheduled-application", label: "Application" },
+            { kind: "scheduled-due", label: "Due" },
+            { kind: "scheduled-notice", label: "Notice" },
+            { kind: "scheduled-final_payment", label: "Final pmt" },
+            { kind: "afp-period-end", label: "AfP period" },
+          ].map((k) => (
+            <span key={k.kind} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+              <span style={{ width: 6, height: 6, background: colorForKind(k.kind), borderRadius: 999 }} />
+              <span className="muted">{k.label}</span>
+            </span>
+          ))}
+        </div>
       </div>
     </div>
   );
 }
 
-function CalendarRow({ it, isThisProject }: { it: Awaited<ReturnType<typeof api.portfolioCalendar>>[number]; isThisProject: boolean }) {
-  const color =
-    it.kind === "afp-period-end" ? "var(--accent-2)"
-    : it.kind === "scheduled-submission" ? "var(--success)"
-    : it.kind === "scheduled-cutoff" ? "var(--warn)"
-    : it.kind === "scheduled-payment" ? "var(--accent)"
-    : "var(--muted)";
+function MiniChip({ it, prominent }: { it: Awaited<ReturnType<typeof api.portfolioCalendar>>[number]; prominent: boolean }) {
+  const color = colorForKind(it.kind);
+  const text = prominent
+    ? it.label.split("(")[0].trim()
+    : it.project_code;
   return (
-    <div style={{
-      display: "flex", alignItems: "baseline", gap: 8,
-      padding: "5px 0", borderBottom: "1px solid var(--line)",
-      fontSize: 12,
-      fontWeight: isThisProject ? 600 : 400,
-    }}>
-      <span style={{ width: 42, color: "var(--muted)", fontVariantNumeric: "tabular-nums" }}>{it.date.slice(8, 10)}</span>
-      <span style={{ width: 6, height: 6, background: color, borderRadius: 999, flexShrink: 0 }} />
-      <span style={{ flex: 1, color: isThisProject ? "var(--ink)" : "var(--muted)" }}>
-        <Link to={`/projects/${it.project_id}`} style={{ fontFamily: "ui-monospace, monospace", fontSize: 11 }}>{it.project_code}</Link>{" — "}
-        {it.afp_id ? <Link to={`/applications/${it.afp_id}`}>{it.label}</Link> : it.label}
-      </span>
+    <div
+      title={`${it.project_code} — ${it.label}`}
+      style={{
+        fontSize: 9,
+        padding: "1px 4px",
+        background: `color-mix(in srgb, ${color} ${prominent ? 18 : 8}%, transparent)`,
+        borderLeft: `2px solid ${color}`,
+        borderRadius: 2,
+        overflow: "hidden",
+        whiteSpace: "nowrap",
+        textOverflow: "ellipsis",
+        fontWeight: prominent ? 600 : 400,
+        color: prominent ? "var(--ink)" : "var(--muted)",
+      }}
+    >
+      {text}
     </div>
   );
+}
+
+function colorForKind(kind: string): string {
+  switch (kind) {
+    case "scheduled-application": return "#16a34a";
+    case "scheduled-due": return "#d97706";
+    case "scheduled-notice": return "#ee5d2b";
+    case "scheduled-final_payment": return "#9333ea";
+    case "afp-period-end": return "#0f1130";
+    // Legacy kinds — keep similar tones.
+    case "scheduled-cutoff": return "#d97706";
+    case "scheduled-submission": return "#16a34a";
+    case "scheduled-certification": return "#ee5d2b";
+    case "scheduled-payment": return "#9333ea";
+    default: return "#6b7280";
+  }
 }
 
 function valuationLabel(t: string): string {
@@ -1171,10 +1269,31 @@ function valuationLabel(t: string): string {
   }
 }
 
-function formatMonth(yyyymm: string): string {
-  const [y, m] = yyyymm.split("-");
-  const d = new Date(Number(y), Number(m) - 1, 1);
-  return d.toLocaleDateString("en-GB", { month: "long", year: "numeric" });
+/** Local-time ISO yyyy-mm-dd (avoid Date.toISOString which uses UTC). */
+function localIso(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+/** 6-row, Monday-anchored grid of dates covering the displayed month. */
+function buildMonthGrid(monthCursor: Date): Date[][] {
+  const first = new Date(monthCursor.getFullYear(), monthCursor.getMonth(), 1);
+  const startOffset = (first.getDay() + 6) % 7;
+  const start = new Date(first);
+  start.setDate(first.getDate() - startOffset);
+  const weeks: Date[][] = [];
+  for (let w = 0; w < 6; w++) {
+    const row: Date[] = [];
+    for (let d = 0; d < 7; d++) {
+      const cell = new Date(start);
+      cell.setDate(start.getDate() + w * 7 + d);
+      row.push(cell);
+    }
+    weeks.push(row);
+  }
+  return weeks;
 }
 
 /* ── Valuation schedule upload + add-entry form ──────────────────────── */
