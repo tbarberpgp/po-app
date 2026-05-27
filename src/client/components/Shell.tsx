@@ -15,6 +15,7 @@ export function Sidebar({ me, approvalsCount }: { me: CurrentUser | null; approv
         <div className="sidebar-group-label">Workspace</div>
         <nav>
           <NavLink to="/" end>Projects</NavLink>
+          <NavLink to="/calendar">Calendar</NavLink>
           <NavLink to="/pos">Purchase Orders</NavLink>
           {me?.is_approver && (
             <NavLink to="/approvals">

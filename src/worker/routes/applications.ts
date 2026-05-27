@@ -698,10 +698,12 @@ applications.post("/:id/mark-paid", async (c) => {
   return c.json({ ok: true });
 });
 
-/** Delete a draft AfP. */
+/**
+ * Delete an AfP. Drafts: anyone with projects.edit can delete. Any other
+ * status: superadmin only (uses the projects.delete permission which is
+ * superadmin-only by design).
+ */
 applications.delete("/:id", async (c) => {
-  const denied = requirePermission(c, "projects.edit");
-  if (denied) return denied;
   const id = Number(c.req.param("id"));
   const afp = await c.env.DB.prepare(
     "SELECT id, status FROM applications_for_payment WHERE id = ?",
@@ -709,7 +711,14 @@ applications.delete("/:id", async (c) => {
     .bind(id)
     .first<{ id: number; status: Status }>();
   if (!afp) return c.json({ error: "not found" }, 404);
-  if (afp.status !== "draft") return c.json({ error: "only drafts can be deleted" }, 409);
+  if (afp.status === "draft") {
+    const denied = requirePermission(c, "projects.edit");
+    if (denied) return denied;
+  } else {
+    // Force-delete an in-flight AfP — superadmin only.
+    const denied = requirePermission(c, "projects.delete");
+    if (denied) return denied;
+  }
   await c.env.DB.prepare("DELETE FROM applications_for_payment WHERE id = ?").bind(id).run();
   return c.json({ ok: true });
 });

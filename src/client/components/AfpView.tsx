@@ -80,6 +80,11 @@ export function AfpView({ me }: { me: CurrentUser | null }) {
     try { await api.deleteAfp(afp.id); navigate(`/projects/${afp.project_id}`); }
     catch (e) { setErr(e instanceof Error ? e.message : "delete failed"); }
   }
+  async function forceDelete() {
+    if (!confirm(`Force-delete AfP #${afp.app_number} (status: ${afp.status})? This bypasses workflow and removes the AfP + all its lines permanently.`)) return;
+    try { await api.deleteAfp(afp.id); navigate(`/projects/${afp.project_id}`); }
+    catch (e) { setErr(e instanceof Error ? e.message : "delete failed"); }
+  }
   async function downloadPdf() {
     if (!detail) return;
     setBusy(true); setErr(null);
@@ -127,6 +132,9 @@ export function AfpView({ me }: { me: CurrentUser | null }) {
             )}
             {canEdit && afp.status === "certified" && (
               <button className="accent" onClick={markPaid} disabled={busy}>Mark paid</button>
+            )}
+            {me?.role === "superadmin" && afp.status !== "draft" && (
+              <button className="danger" onClick={forceDelete} disabled={busy} title="Superadmin force-delete">Delete</button>
             )}
           </>
         }

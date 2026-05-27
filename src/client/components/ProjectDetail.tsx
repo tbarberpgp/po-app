@@ -5,7 +5,8 @@ import { Topbar } from "./Shell";
 import { can } from "../../shared/permissions";
 import type { ApplicationForPayment, CurrentUser, LabourByCostCode, MaterialWithCommitment, Project, ProjectCommercial, PurchaseOrder } from "../../shared/types";
 
-type Tab = "overview" | "materials" | "commercials" | "labour" | "afp" | "pos";
+type Tab = "overview" | "materials" | "commercials" | "labour" | "pos";
+type CommercialsSubtab = "breakdown" | "schedule" | "applications";
 
 type ProjectPORow = PurchaseOrder & { project_code: string; project_name: string };
 
@@ -185,16 +186,6 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
           <button
             type="button"
             role="tab"
-            aria-selected={tab === "afp"}
-            className={`tab-btn${tab === "afp" ? " active" : ""}`}
-            onClick={() => setTab("afp")}
-          >
-            Applications
-            {afps.length > 0 && <span className="count">{afps.length}</span>}
-          </button>
-          <button
-            type="button"
-            role="tab"
             aria-selected={tab === "pos"}
             className={`tab-btn${tab === "pos" ? " active" : ""}`}
             onClick={() => setTab("pos")}
@@ -211,11 +202,15 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
         {tab === "pos" ? (
           <ProjectPOsPanel rows={projectPOs} />
         ) : tab === "commercials" ? (
-          <CommercialsBreakdown rows={commercials} projectId={id ?? ""} canEdit={canEditProject} />
+          <CommercialsBreakdown
+            rows={commercials}
+            projectId={id ?? ""}
+            canEdit={canEditProject}
+            afps={afps}
+            onAfpsRefresh={load}
+          />
         ) : tab === "labour" ? (
           <LabourBreakdown rows={labour} />
-        ) : tab === "afp" ? (
-          <AfpListPanel projectId={id ?? ""} afps={afps} canCreate={canEditProject} onRefresh={load} />
         ) : (
         <>
         {mats.length > 0 && (
@@ -664,19 +659,54 @@ function CommercialsHeadlineKpis({ rows }: { rows: ProjectCommercial[] }) {
 }
 
 /** Full per-category breakdown on the Commercials tab. */
-function CommercialsBreakdown({ rows, projectId, canEdit }: { rows: ProjectCommercial[]; projectId: string; canEdit: boolean }) {
-  // Two-column layout: left = portfolio calendar (combined across projects)
-  // + valuation-schedule upload, right = the per-category breakdown table.
+function CommercialsBreakdown({
+  rows, projectId, canEdit, afps, onAfpsRefresh,
+}: {
+  rows: ProjectCommercial[];
+  projectId: string;
+  canEdit: boolean;
+  afps: ApplicationForPayment[];
+  onAfpsRefresh: () => void;
+}) {
+  const [subtab, setSubtab] = useState<CommercialsSubtab>("breakdown");
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "320px 1fr", gap: 16 }}>
-      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-        <PortfolioCalendarPanel projectId={projectId} />
-        <ValuationScheduleUpload projectId={projectId} canEdit={canEdit} />
-      </div>
-      <div>
-        <CommercialsBreakdownInner rows={rows} />
-      </div>
-    </div>
+    <>
+      <nav className="tabs" role="tablist" style={{ marginBottom: 16 }}>
+        <button
+          type="button" role="tab" aria-selected={subtab === "breakdown"}
+          className={`tab-btn${subtab === "breakdown" ? " active" : ""}`}
+          onClick={() => setSubtab("breakdown")}
+        >
+          Breakdown
+        </button>
+        <button
+          type="button" role="tab" aria-selected={subtab === "schedule"}
+          className={`tab-btn${subtab === "schedule" ? " active" : ""}`}
+          onClick={() => setSubtab("schedule")}
+        >
+          Schedule
+        </button>
+        <button
+          type="button" role="tab" aria-selected={subtab === "applications"}
+          className={`tab-btn${subtab === "applications" ? " active" : ""}`}
+          onClick={() => setSubtab("applications")}
+        >
+          Applications
+          {afps.length > 0 && <span className="count">{afps.length}</span>}
+        </button>
+      </nav>
+
+      {subtab === "breakdown" && <CommercialsBreakdownInner rows={rows} />}
+      {subtab === "schedule" && (
+        <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 320px", gap: 16 }}>
+          <PortfolioCalendarPanel projectId={projectId} />
+          <ValuationScheduleUpload projectId={projectId} canEdit={canEdit} />
+        </div>
+      )}
+      {subtab === "applications" && (
+        <AfpListPanel projectId={projectId} afps={afps} canCreate={canEdit} onRefresh={onAfpsRefresh} />
+      )}
+    </>
   );
 }
 
