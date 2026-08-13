@@ -320,8 +320,22 @@ function readHeaderRow(row: Record<string, unknown>): {
   return { appCol, notesCol, dateCols };
 }
 
+export type ContractCategory = "prelims" | "measured" | "ancil";
+
+/** A material/labour sub-row that builds up a bill item, from the Pricing tab
+ *  (col B name, col C girth/usage, col D qty, col E unit, col F material rate). */
+export type ParsedBillComponent = {
+  name: string;
+  girth: number | null;
+  qty: number | null;
+  unit: string | null;
+  material_rate: number | null;
+};
+
 export type ParsedContractItem = {
   item_no: number;
+  /** Which value section this line belongs to (Summary Cost Sheet roll-up). */
+  category: ContractCategory;
   section: string | null;
   description: string;
   qty: number;
@@ -330,6 +344,8 @@ export type ParsedContractItem = {
   sell_total: number;
   labour_rate: number | null;
   labour_total: number | null;
+  /** Component materials that build up this bill item (Pricing sub-rows). */
+  components: ParsedBillComponent[];
 };
 
 /**
@@ -345,62 +361,168 @@ export type ParsedContractItem = {
  *
  * Headers are on row 6 (1-indexed); data starts row 7 onward.
  */
+type ScanRow = { section: string | null; description: string; qty: number; unit: string | null; rate: number; total: number; labour: number; components: ParsedBillComponent[] };
+
+/**
+ * Scan a Pricing/Ancil-style sheet (A=item, D=qty, E=unit, K=rate, M=total).
+ *   col A populated + col D & col K numeric  → work item
+ *   col A populated + col D/K missing        → section header
+ *   col A empty + col B populated            → material/labour sub-row
+ *   col A empty + col B empty                → subtotal row (ignored)
+ * Each work item's `labour` is the sum of its sub-rows' col I (Labour Value);
+ * subtotal rows are skipped so the item's labour isn't double-counted. The
+ * measured tabs ignore this (labour comes from the Costing-Labour-Only sheet),
+ * but the Ancil tab has no separate labour sheet so we read labour from here.
+ * Stops at a "Total" or "COSTING" row so the cost-version block at the bottom
+ * of the Ancil Items tab isn't double-counted.
+ */
+function scanPricingStyle(ws: XLSX.WorkSheet): ScanRow[] {
+  const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws, { header: "A", defval: null, raw: true });
+  const out: ScanRow[] = [];
+  let section: string | null = null;
+  let current: ScanRow | null = null;
+  for (const r of rows) {
+    const a = str(r["A"]);
+    if (a && /^(total|costing)$/i.test(a)) break;  // stop before the cost block
+    if (!a) {
+      // Sub-component row (col B set) → it's a material/labour line that builds
+      // up the open bill item. Capture it (name/girth/qty/unit/rate) and add its
+      // labour value. Subtotal rows (col B empty) carry the already-summed
+      // labour — skip them.
+      const bname = str(r["B"]);
+      if (current && bname) {
+        const lab = num(r["I"]);
+        if (lab != null) current.labour += lab;
+        current.components.push({
+          name: bname, girth: num(r["C"]), qty: num(r["D"]), unit: str(r["E"]), material_rate: num(r["F"]),
+        });
+      }
+      continue;
+    }
+    const d = num(r["D"]);
+    const k = num(r["K"]);
+    const m = num(r["M"]);
+    if (d == null || k == null) { section = a; current = null; continue; }  // section header
+    current = { section, description: a, qty: d, unit: str(r["E"]), rate: k, total: m ?? d * k, labour: 0, components: [] };
+    out.push(current);
+  }
+  return out;
+}
+
+/**
+ * Scan the Prelims tab. Layout: A=Ref, B=Description, C=Qty, D=Unit,
+ * G=Total Cost, H=Rate, I=Value. Section rows have a whole-number Ref
+ * (1.00, 2.00 → "Management", "Design"); detail rows are 1.01, 1.02…
+ * We keep detail rows with a non-zero Value and skip the section subtotals.
+ */
+function scanPrelims(ws: XLSX.WorkSheet): ScanRow[] {
+  const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws, { header: "A", defval: null, raw: true });
+  const out: ScanRow[] = [];
+  let section: string | null = null;
+  for (const r of rows) {
+    const ref = str(r["A"]);
+    const desc = str(r["B"]);
+    if (!ref || !desc) continue;
+    const refNum = num(ref);
+    if (refNum != null && Number.isInteger(refNum)) { section = desc; continue; }  // section subtotal row
+    const value = num(r["I"]);
+    if (value == null || value === 0) continue;  // excluded / nil lines aren't claimable
+    out.push({
+      section,
+      description: desc,
+      qty: num(r["C"]) ?? 1,
+      unit: str(r["D"]),
+      rate: num(r["H"]) ?? value,
+      total: value,
+      labour: 0,  // prelims carry no subcontract labour
+      components: [],
+    });
+  }
+  return out;
+}
+
 export function parseContractItems(input: ArrayBuffer | XLSX.WorkBook): ParsedContractItem[] {
   const wb = input instanceof ArrayBuffer ? readPricingWorkbook(input) : input;
-  const sellSheet = wb.Sheets[wb.SheetNames.find((n) => n.toLowerCase() === "pricing") ?? ""];
-  if (!sellSheet) return [];
-  const labourSheet = wb.Sheets[wb.SheetNames.find((n) => n.toLowerCase() === "costing labour only") ?? ""];
-
-  const scan = (ws: XLSX.WorkSheet): { items: Array<{ section: string | null; description: string; qty: number; unit: string | null; rate: number; total: number }> } => {
-    const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws, {
-      header: "A", defval: null, raw: true,
-    });
-    const out: Array<{ section: string | null; description: string; qty: number; unit: string | null; rate: number; total: number }> = [];
-    let section: string | null = null;
-    for (let i = 0; i < rows.length; i++) {
-      const r = rows[i];
-      const a = str(r["A"]);
-      if (!a) continue;
-      const d = num(r["D"]);
-      const k = num(r["K"]);
-      const m = num(r["M"]);
-      if (d == null || k == null) {
-        // section header (col A populated but no numeric qty / rate)
-        section = a;
-        continue;
-      }
-      out.push({
-        section,
-        description: a,
-        qty: d,
-        unit: str(r["E"]),
-        rate: k,
-        total: m ?? d * k,
-      });
-    }
-    return { items: out };
+  const findSheet = (...names: string[]) => {
+    const lc = names.map((n) => n.toLowerCase());
+    const name = wb.SheetNames.find((n) => lc.includes(n.toLowerCase()));
+    return name ? wb.Sheets[name] : undefined;
   };
 
-  const sell = scan(sellSheet);
-  const labour = labourSheet ? scan(labourSheet) : { items: [] };
+  // ── Measured works (Pricing tab + position-matched labour sheet) ──────
+  const sellSheet = findSheet("pricing");
+  const labourSheet = findSheet("costing labour only", "labour costing", "labour cost");
+  const measuredRaw: Array<ScanRow & { labour_rate: number | null; labour_total: number | null }> = [];
+  if (sellSheet) {
+    const sell = scanPricingStyle(sellSheet);
+    const labour = labourSheet ? scanPricingStyle(labourSheet) : [];
+    const usedLabour = new Set<number>();
+    sell.forEach((s, i) => {
+      const l = labour[i];
+      // Position-based match, cross-checked on qty + unit (descriptions can
+      // differ between Pricing and the labour sheet for the same BOQ line).
+      const ok = l && Math.abs(l.qty - s.qty) < 0.0001 && (l.unit ?? "") === (s.unit ?? "");
+      if (ok) usedLabour.add(i);
+      measuredRaw.push({ ...s, labour_rate: ok ? l!.rate : null, labour_total: ok ? l!.total : null });
+    });
+    // Fallback pass: when the labour sheet is maintained separately from the
+    // Pricing tab (e.g. MCR010 Block D), rows drift and position matching
+    // misses the tail. Re-bind the leftovers by description tokens + the same
+    // strict qty/unit cross-check, so a shifted row can't mis-bind.
+    const tokens = (t: string) => new Set(t.toLowerCase().replace(/[^a-z0-9 ]+/g, " ").split(/\s+/).filter((w) => w.length >= 2));
+    for (const m of measuredRaw) {
+      if (m.labour_rate != null || m.labour_total != null) continue;
+      const mt = tokens(m.description);
+      if (mt.size === 0) continue;
+      let best = -1, bestScore = 0;
+      labour.forEach((l, j) => {
+        if (usedLabour.has(j)) return;
+        if (Math.abs(l.qty - m.qty) >= 0.0001 || (l.unit ?? "") !== (m.unit ?? "")) return;
+        const lt = tokens(l.description);
+        let overlap = 0;
+        for (const w of mt) if (lt.has(w)) overlap++;
+        const score = overlap === 0 ? 0 : overlap / (mt.size + lt.size - overlap);
+        if (score > bestScore) { bestScore = score; best = j; }
+      });
+      if (best >= 0 && bestScore >= 0.25) {
+        usedLabour.add(best);
+        m.labour_rate = labour[best].rate;
+        m.labour_total = labour[best].total;
+      }
+    }
+  }
 
-  return sell.items.map((s, i) => {
-    const l = labour.items[i];
-    // Only treat the labour row as a match if the description matches — if the
-    // tabs diverge we skip the labour rate rather than silently mis-aligning.
-    const labourMatches = l && l.description === s.description;
-    return {
-      item_no: i + 1,
-      section: s.section,
-      description: s.description,
-      qty: s.qty,
-      unit: s.unit,
-      sell_rate: s.rate,
-      sell_total: s.total,
-      labour_rate: labourMatches ? l.rate : null,
-      labour_total: labourMatches ? l.total : null,
-    };
-  });
+  // ── Ancil Items (same layout as Pricing; value only, no labour sheet) ──
+  const ancilSheet = findSheet("ancil items", "ancillary items", "ancils");
+  const ancilRaw = ancilSheet ? scanPricingStyle(ancilSheet) : [];
+
+  // ── Prelims ───────────────────────────────────────────────────────────
+  const prelimsSheet = findSheet("prelims", "preliminaries");
+  const prelimsRaw = prelimsSheet ? scanPrelims(prelimsSheet) : [];
+
+  // Combine in Summary Cost Sheet order: Prelims → Measured → Ancil.
+  const combined: Array<Omit<ParsedContractItem, "item_no">> = [
+    ...prelimsRaw.map((s) => ({
+      category: "prelims" as const, section: s.section, description: s.description,
+      qty: s.qty, unit: s.unit, sell_rate: s.rate, sell_total: s.total,
+      labour_rate: null, labour_total: null, components: s.components,
+    })),
+    ...measuredRaw.map((s) => ({
+      category: "measured" as const, section: s.section, description: s.description,
+      qty: s.qty, unit: s.unit, sell_rate: s.rate, sell_total: s.total,
+      labour_rate: s.labour_rate, labour_total: s.labour_total, components: s.components,
+    })),
+    ...ancilRaw.map((s) => ({
+      category: "ancil" as const, section: s.section, description: s.description,
+      qty: s.qty, unit: s.unit, sell_rate: s.rate, sell_total: s.total,
+      // Ancil labour comes from the item's own sub-rows (col I), not a separate
+      // labour sheet. Null when the item carries no labour (e.g. supply-only).
+      labour_total: s.labour > 0 ? s.labour : null,
+      labour_rate: s.labour > 0 && s.qty ? s.labour / s.qty : null,
+      components: s.components,
+    })),
+  ];
+  return combined.map((c, i) => ({ item_no: i + 1, ...c }));
 }
 
 export type ParsedCommercialRow = {
@@ -429,11 +551,11 @@ export function reconcileCommercials(
   materials: ParsedMaterial[],
 ): ParsedCommercialRow[] {
   if (commercials.length === 0) return commercials;
-  const measuredCostFromMaterials = materials.reduce(
+  const materialsGrandTotal = materials.reduce(
     (s, m) => s + (m.material_total_cost ?? 0) + (m.labour_total_cost ?? 0),
     0,
   );
-  if (measuredCostFromMaterials === 0) return commercials;
+  if (materialsGrandTotal === 0) return commercials;
 
   const out = commercials.map((r) => ({ ...r }));
 
@@ -449,6 +571,48 @@ export function reconcileCommercials(
   // Inner row is the last occurrence; parent is the first (only when 2+).
   const innerIdx = measuredIdxs[measuredIdxs.length - 1];
   const parentIdx = measuredIdxs.length >= 2 ? measuredIdxs[0] : -1;
+  const totalIdx = out.findIndex((r) => r.is_total || /^\s*total\s*$/i.test(r.category));
+  const prelimsIdx = out.findIndex((r) => /^\s*prelim/i.test(r.category));
+  const directorsIdx = out.findIndex((r) => /director/i.test(r.category));
+  const prelimsCost = prelimsIdx >= 0 ? (out[prelimsIdx].cost ?? 0) : 0;
+  const directorsCost = directorsIdx >= 0 ? (out[directorsIdx].cost ?? 0) : 0;
+  const sheetTotalCost = totalIdx >= 0 ? out[totalIdx].cost : null;
+  const closeTo = (a: number | null, b: number | null) =>
+    a != null && b != null && Math.abs(a - b) <= Math.max(50, Math.abs(b) * 0.01);
+  const recomputeGp = (r: ParsedCommercialRow) => {
+    if (r.value != null && r.cost != null) {
+      r.gross_profit = r.value - r.cost;
+      r.gross_profit_pct = r.value > 0 ? r.gross_profit / r.value : 0;
+    }
+  };
+
+  // ── Is the workbook's cost side already sound? It is when the Total cost
+  //    matches the Materials grand total (col Y+Z — the authority) AND the
+  //    components add up (prelims + measured + directors ≈ total). Then every
+  //    figure, including the per-section measured / ancil split, is the sheet's
+  //    own correct number (e.g. MCR007 Block B, MCR009 Block C): trust it and
+  //    only refresh GP = Value − Cost. Overwriting a sound sheet is what used to
+  //    double-count the prelims and zero-out the ancillaries' cost. ──
+  const topMeasuredCost = parentIdx >= 0 ? out[parentIdx].cost : out[innerIdx].cost;
+  if (
+    closeTo(sheetTotalCost, materialsGrandTotal) &&
+    topMeasuredCost != null &&
+    closeTo(prelimsCost + topMeasuredCost + directorsCost, sheetTotalCost)
+  ) {
+    out.forEach(recomputeGp);
+    return out;
+  }
+
+  // Otherwise the cost side is broken (e.g. an empty inner Measured Works cost
+  // cell → an absurd ~88% GP). Rebuild from the Materials sheet. If the grand
+  // total already includes the preliminaries (some workbooks list PM/SM/QS etc.
+  // as Materials rows, so the grand total == the sheet Total), net them off
+  // first — mirroring the sheet's `H20 = Materials!Z87 − SUM(prelims)` — so the
+  // Preliminaries line isn't added a second time in the total below.
+  const prelimsEmbedded = prelimsCost > 0 && closeTo(materialsGrandTotal, sheetTotalCost);
+  const measuredCostFromMaterials = prelimsEmbedded
+    ? materialsGrandTotal - prelimsCost
+    : materialsGrandTotal;
 
   // If the inner row's cost is materially off (or zero), overwrite from the
   // materials sum. Tolerance is the larger of £50 or 0.5%.
@@ -486,13 +650,10 @@ export function reconcileCommercials(
   }
 
   // Total cost = Preliminaries (top) + Measured Works (parent) + Directors Adj.
-  const totalIdx = out.findIndex((r) => r.is_total || /^\s*total\s*$/i.test(r.category));
+  // With prelims now netted out of Measured Works above, this no longer
+  // double-counts them.
   if (totalIdx >= 0) {
-    const prelimsIdx = out.findIndex((r) => /^\s*prelim/i.test(r.category));
-    const directorsIdx = out.findIndex((r) => /director/i.test(r.category));
     const measuredTopCost = parentIdx >= 0 ? (out[parentIdx].cost ?? 0) : (inner.cost ?? 0);
-    const prelimsCost = prelimsIdx >= 0 ? (out[prelimsIdx].cost ?? 0) : 0;
-    const directorsCost = directorsIdx >= 0 ? (out[directorsIdx].cost ?? 0) : 0;
     const total = out[totalIdx];
     total.cost = prelimsCost + measuredTopCost + directorsCost;
     if (total.value != null) {
@@ -686,7 +847,19 @@ function mapFor(layout: Layout): ColumnMap {
  * burns Worker CPU and on a slow connection bumps into Cloudflare's
  * resource limits. Sheet-restricted reads are ~7× faster.
  */
-const USED_SHEETS = ["Materials", "Summary Cost Sheet", "Pricing"];
+// The labour-rate sheet has shipped under three names across the MCR series
+// ("Costing Labour Only" MCR007, "Labour Costing" MCR009, "Labour Cost"
+// MCR010). List all so the sheet-restricted read picks up whichever exists.
+const USED_SHEETS = [
+  "Materials",
+  "Summary Cost Sheet",
+  "Pricing",
+  "Costing Labour Only",
+  "Labour Costing",
+  "Labour Cost",
+  "Prelims",
+  "Ancil Items",
+];
 
 export function readPricingWorkbook(buffer: ArrayBuffer): XLSX.WorkBook {
   return XLSX.read(buffer, { type: "array", sheets: USED_SHEETS });
@@ -721,21 +894,44 @@ export function parseMaterialsSheet(input: ArrayBuffer | XLSX.WorkBook): ParsedM
   const m = mapFor(layout);
 
   const out: ParsedMaterial[] = [];
+  let blankRun = 0;
   for (let i = headerRowIdx + 1; i < rows.length; i++) {
     const r = rows[i];
     const item = str(r[m.item]);
     const code = r[m.type_or_code];
-    if (!item || code === null || code === undefined || String(code).trim() === "") continue;
+    const codeStr = code == null ? "" : String(code).trim();
+    const elementName = m.element_name ? str(r[m.element_name]) : null;
+    const manufacturerRaw = r[m.manufacturer];
+    const hasCost = num(r[m.cost]) != null;
+
+    // The real Materials list is one contiguous block. Some workbooks keep a
+    // cost/rate staging area further down (e.g. the Ancil fall-arrest & smoke-
+    // vent rate breakdowns) separated by a run of blank rows — stop at that gap
+    // so those calc rows don't surface as bogus materials / unlinked suggestions.
+    const rowEmpty = !item && !codeStr && !elementName && !hasCost && manufacturerRaw == null;
+    if (rowEmpty) {
+      if (out.length > 0 && ++blankRun >= 6) break;
+      continue;
+    }
+    blankRun = 0;
+
+    // A genuine material row has an item name plus *some* classifying data — an
+    // element code, an element name, or a cost. Some workbooks leave the Element
+    // Code column blank but still fill the element name + cost (e.g. MCR009);
+    // requiring a code there dropped every row. Pure separator rows are skipped.
+    if (!item || (!codeStr && !elementName && !hasCost)) continue;
+    // A real manufacturer is text; a number in that column flags a staging/calc
+    // row (a rate or ratio), not a material line — skip it.
+    if (typeof manufacturerRaw === "number") continue;
 
     let displayType: string;
     let elementCode: string | null;
     if (m.hasElementCode && looksLikeElementCode(code)) {
-      elementCode = String(code).trim();
-      const nameCol = m.element_name;
-      displayType = (nameCol ? str(r[nameCol]) : null) ?? elementCode;
+      elementCode = codeStr;
+      displayType = elementName ?? elementCode;
     } else {
       elementCode = null;
-      displayType = String(code).trim();
+      displayType = codeStr || elementName || "—";
     }
 
     out.push({
@@ -762,4 +958,174 @@ export function parseMaterialsSheet(input: ArrayBuffer | XLSX.WorkBook): ParsedM
     });
   }
   return out;
+}
+
+// ── Labour rate schedule (subcontractor cost workbook) ─────────────────────
+// Shared so the BROWSER parses the workbook — the Worker's 10ms CPU budget
+// can't decode a multi-MB cost workbook (that's Cloudflare error 1102). The
+// Worker only receives the parsed rows.
+
+export type LabourRateLine = { description: string; qty: number; unit: string | null; rate: number; total: number };
+
+/** Parse a cell to a number, rejecting header text like "Qty". */
+function numCellLR(v: unknown): number | null {
+  if (typeof v === "number") return Number.isFinite(v) ? v : null;
+  if (typeof v === "string") {
+    const t = v.replace(/[£,\s]/g, "");
+    if (t === "" || !/^-?\d*\.?\d+$/.test(t)) return null;
+    return Number(t);
+  }
+  return null;
+}
+
+/** Read top-level priced labour items from a PowerGrid labour cost workbook.
+ *  Column positions are sniffed from the header row so both layouts work: the
+ *  full cost workbook (Qty=D, Rate=K, Total=M) and the simplified supplier-facing
+ *  labour schedule (Qty=D, Rate=F, Total=H). Falls back to the full-format
+ *  defaults if a sheet has no recognisable "Item …" header. */
+export function parseLabourRates(buf: ArrayBuffer): LabourRateLine[] {
+  // Two-phase read: list sheet names first (cheap), then decode ONLY the sheets
+  // we scan — the schedule is sometimes the full multi-MB pricing workbook.
+  const allNames = XLSX.read(buf, { type: "array", bookSheets: true }).SheetNames ?? [];
+  const out: LabourRateLine[] = [];
+  const targeted = allNames.filter((n) => /costing labour|labour cost|labour only|ancil/i.test(n));
+  const norm = (v: unknown) => String(v ?? "").toLowerCase().replace(/[^a-z]/g, "");
+  const scan = (book: XLSX.WorkBook, names: string[]) => {
+    for (const name of names) {
+      const ws = book.Sheets[name];
+      if (!ws) continue;
+      const rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: null }) as unknown[][];
+      // Defaults = full cost-workbook layout (Qty=D, Rate=K, Total=M, Unit=E).
+      let qtyCol = 3, rateCol = 10, totalCol = 12, unitCol = 4, dataStart = 0;
+      for (let i = 0; i < Math.min(rows.length, 14); i++) {
+        const hdr = rows[i];
+        if (!Array.isArray(hdr) || norm(hdr[0]) !== "item") continue;
+        const labels = hdr.map(norm);
+        const find = (pred: (h: string) => boolean, fromRight = false) => {
+          const idxs = labels.map((h, j) => [h, j] as const).filter(([h]) => h && pred(h)).map(([, j]) => j);
+          return idxs.length ? (fromRight ? idxs[idxs.length - 1] : idxs[0]) : -1;
+        };
+        const q = find((h) => h.includes("qty"));
+        const r = [find((h) => h === "rate"), find((h) => h === "labourrate"), find((h) => h.includes("rate") && !h.includes("material"))].find((x) => x >= 0) ?? -1;
+        const t = find((h) => h.includes("total"), true);
+        const u = find((h) => h === "unit");
+        if (q >= 0) { qtyCol = q; unitCol = q + 1; }
+        if (r >= 0) rateCol = r;
+        if (t >= 0) totalCol = t;
+        if (u >= 0) unitCol = u;
+        dataStart = i + 1;
+        break;
+      }
+      for (let i = dataStart; i < rows.length; i++) {
+        const r = rows[i];
+        if (!Array.isArray(r)) continue;
+        const item = typeof r[0] === "string" ? r[0].trim() : "";
+        if (!item || /^total$/i.test(item)) continue;
+        const qty = numCellLR(r[qtyCol]);
+        const rate = numCellLR(r[rateCol]);
+        const total = numCellLR(r[totalCol]);
+        if (qty == null && total == null) continue;
+        if (rate == null && total == null) continue;
+        out.push({
+          description: item.replace(/\s+/g, " "),
+          qty: qty ?? 0,
+          unit: typeof r[unitCol] === "string" ? (r[unitCol] as string) : null,
+          rate: rate ?? (qty ? (total ?? 0) / qty : 0),
+          total: total ?? 0,
+        });
+      }
+    }
+  };
+  const wb = XLSX.read(buf, { type: "array", sheets: targeted.length ? targeted : undefined });
+  scan(wb, targeted.length ? targeted : allNames);
+  // Belt & braces: if no *labour* sheet matched (only Ancil), or targeted yielded
+  // nothing, decode the remaining sheets so a rename can't silently drop rates.
+  const matchedLabourSheet = targeted.some((n) => !/ancil/i.test(n));
+  if ((out.length === 0 || !matchedLabourSheet) && targeted.length > 0 && targeted.length < allNames.length) {
+    const rest = allNames.filter((n) => !targeted.includes(n));
+    scan(XLSX.read(buf, { type: "array", sheets: rest }), rest);
+  }
+  return out;
+}
+
+// Canonical row shape + validation live in shared/operatives-import.ts (used by
+// both browser preview and Worker import); re-exported here so existing imports
+// from this module keep resolving.
+export type { OperativeImportRow } from "./operatives-import";
+import type { OperativeImportRow } from "./operatives-import";
+
+/**
+ * Parse a flat operatives spreadsheet (one person per row) into import rows.
+ * Sniffs the header so column order/wording can vary: separate first_name +
+ * last_name columns are preferred, but a single combined Name column is split
+ * on the first space. Mobile / Email / Company / Trade / Emergency contact are
+ * matched on keyword. Values are trimmed; `row` is the 1-based sheet row (for
+ * error reporting). Validation + de-dupe are the caller's job.
+ */
+export function parseOperatives(buf: ArrayBuffer): OperativeImportRow[] {
+  const wb = XLSX.read(buf, { type: "array" });
+  const norm = (v: unknown) => String(v ?? "").toLowerCase().replace(/[^a-z]/g, "");
+  for (const sheetName of wb.SheetNames) {
+    const ws = wb.Sheets[sheetName];
+    if (!ws) continue;
+    const rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: null }) as unknown[][];
+    let headerIdx = -1;
+    let cols: Record<string, number> = {};
+    for (let i = 0; i < Math.min(rows.length, 10); i++) {
+      const hdr = rows[i];
+      if (!Array.isArray(hdr)) continue;
+      const labels = hdr.map(norm);
+      const findCol = (preds: Array<(h: string) => boolean>) => {
+        for (const pred of preds) {
+          const j = labels.findIndex((h) => h && pred(h));
+          if (j >= 0) return j;
+        }
+        return -1;
+      };
+      const firstCol = findCol([(h) => h === "firstname" || h === "forename" || h === "givenname" || h === "first"]);
+      const lastCol = findCol([(h) => h === "lastname" || h === "surname" || h === "familyname" || h === "last"]);
+      const nameCol = findCol([
+        (h) => h === "name" || h === "fullname" || h === "operative" || h === "operativename",
+      ]);
+      if (firstCol < 0 && lastCol < 0 && nameCol < 0) continue; // need at least one name column
+      cols = {
+        first: firstCol,
+        last: lastCol,
+        name: nameCol,
+        mobile: findCol([(h) => h.includes("mobile") || h.includes("phone") || h.includes("tel")]),
+        email: findCol([(h) => h.includes("email") || h.includes("mail")]),
+        company: findCol([(h) => h.includes("company") || h.includes("employer") || h.includes("subcontractor") || h.includes("subbie")]),
+        trade: findCol([(h) => h.includes("trade") || h.includes("role") || h.includes("occupation") || h.includes("skill")]),
+        emergency: findCol([(h) => h.includes("emergency") || h.includes("nextofkin") || h.includes("kin") || h === "ice"]),
+      };
+      headerIdx = i;
+      break;
+    }
+    if (headerIdx < 0) continue;
+    const cell = (r: unknown[], c: number) => (c >= 0 ? String(r[c] ?? "").trim() : "");
+    const out: OperativeImportRow[] = [];
+    for (let i = headerIdx + 1; i < rows.length; i++) {
+      const r = rows[i];
+      if (!Array.isArray(r)) continue;
+      let first = cell(r, cols.first);
+      let last = cell(r, cols.last);
+      // Fall back to splitting a single combined Name column on the first space.
+      if (!first && !last && cols.name >= 0) {
+        const full = cell(r, cols.name);
+        const sp = full.indexOf(" ");
+        if (sp > 0) { first = full.slice(0, sp).trim(); last = full.slice(sp + 1).trim(); }
+        else { first = full; last = ""; }
+      }
+      const rec: OperativeImportRow = {
+        first_name: first, last_name: last,
+        mobile: cell(r, cols.mobile), email: cell(r, cols.email),
+        company: cell(r, cols.company), trade: cell(r, cols.trade),
+        emergency_contact: cell(r, cols.emergency), row: i + 1,
+      };
+      if (!rec.first_name && !rec.last_name && !rec.mobile && !rec.email && !rec.company && !rec.trade && !rec.emergency_contact) continue;
+      out.push(rec);
+    }
+    if (out.length) return out;
+  }
+  return [];
 }

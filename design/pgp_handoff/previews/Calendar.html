@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Calendar — PGP</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Source+Serif+Pro:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  :root, [data-theme="light"] {
+    --paper:#fbfaf7; --card:#ffffff; --card-2:#f5f2eb;
+    --ink:#0f1130; --ink-2:#2a2d50; --muted:#6a6d8a;
+    --line:#e6e3da; --line-strong:#c9c4b4;
+    --accent:#ee5d2b; --accent-2:#c64b1f; --accent-soft:#fde5d7;
+    --navy:#0f1130; --navy-soft:#e3e5f4;
+    --success:#2f6f4f; --success-soft:#dff0e3;
+    --warn:#b06a0e; --warn-soft:#fbe8c4;
+    --danger:#b8331f; --danger-soft:#fadbd2;
+    --navy-accent:#26307a; --navy-accent-soft:#e3e5f4;
+  }
+  [data-theme="dark"] {
+    --paper:#080a1c; --card:#11142b; --card-2:#181b35;
+    --ink:#f5f3ec; --ink-2:#c2bfb6; --muted:#7e7c92;
+    --line:#232545; --line-strong:#3a3d62;
+    --accent:#ff8a5a; --accent-2:#ffa37f; --accent-soft:rgba(255,138,90,0.14);
+    --navy:#8ea3ff; --navy-soft:rgba(142,163,255,0.16);
+    --success:#74d49f; --success-soft:rgba(116,212,159,0.14);
+    --warn:#f0b95a; --warn-soft:rgba(240,185,90,0.14);
+    --danger:#f4907a; --danger-soft:rgba(244,144,122,0.14);
+    --navy-accent:#8ea3ff; --navy-accent-soft:rgba(142,163,255,0.16);
+  }
+  * { box-sizing:border-box; }
+  html, body { margin:0; padding:0; }
+  body { font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:var(--paper); color:var(--ink); font-size:14px; line-height:1.45; -webkit-font-smoothing:antialiased; }
+  h1,h2,h3 { font-family:'Cambria','Source Serif Pro',Georgia,serif; font-weight:500; margin:0; letter-spacing:-0.01em; }
+  .num { font-variant-numeric:tabular-nums; }
+  .muted { color:var(--muted); }
+  .eyebrow { font-size:11px; letter-spacing:0.12em; text-transform:uppercase; font-weight:600; color:var(--muted); }
+  .row { display:flex; align-items:center; gap:10px; }
+  .grow { flex:1; min-width:0; }
+
+  .app { display:flex; min-height:100vh; }
+  .sb { width:240px; min-width:240px; background:var(--card); border-right:1px solid var(--line); padding:20px 14px; display:flex; flex-direction:column; gap:2px; position:sticky; top:0; height:100vh; }
+  .sb-logo { display:flex; align-items:center; padding:4px 8px 22px; }
+  .sb-logo img { height:22px; width:auto; }
+  .sb-grp { font-size:10px; letter-spacing:0.1em; text-transform:uppercase; color:var(--muted); padding:14px 10px 4px; }
+  .nav { display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:8px; cursor:pointer; color:var(--ink-2); font-size:13.5px; font-weight:500; }
+  .nav:hover { background:var(--line); }
+  .nav.active { background:var(--accent-soft); color:var(--accent-2); }
+  .sb-user { margin-top:auto; padding:12px; border:1px solid var(--line); border-radius:10px; display:flex; gap:10px; align-items:center; }
+  .avatar { width:32px; height:32px; border-radius:50%; background:var(--navy); color:#fff; display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:600; flex-shrink:0; }
+  [data-theme="dark"] .avatar { color:#0f1130; }
+
+  .main { flex:1; min-width:0; display:flex; flex-direction:column; }
+  .top { padding:22px 36px 18px; display:flex; justify-content:space-between; align-items:flex-start; gap:24px; }
+  .title { font-size:30px; line-height:1.1; }
+  .actions { display:flex; align-items:center; gap:10px; }
+
+  .btn { appearance:none; border:1px solid var(--line-strong); background:var(--card); color:var(--ink); padding:7px 13px; border-radius:8px; font:500 13px 'Inter',sans-serif; cursor:pointer; display:inline-flex; align-items:center; gap:6px; }
+  .btn:hover { background:var(--line); }
+  .btn.icon { padding:7px 9px; }
+
+  .seg { display:inline-flex; background:var(--navy); border-radius:8px; padding:3px; gap:2px; }
+  [data-theme="dark"] .seg { background:var(--card-2); border:1px solid var(--line); }
+  .seg button { appearance:none; border:0; background:transparent; color:rgba(255,255,255,0.6); font:600 12px 'Inter',sans-serif; padding:5px 12px; border-radius:6px; cursor:pointer; }
+  [data-theme="dark"] .seg button { color:var(--muted); }
+  .seg button.on { background:#fff; color:var(--navy); }
+  [data-theme="dark"] .seg button.on { background:var(--navy); color:#0f1130; }
+
+  .content { padding:6px 36px 60px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; }
+  .card-hd { padding:16px 20px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:14px; flex-wrap:wrap; }
+
+  .legend { display:flex; gap:16px; flex-wrap:wrap; font-size:12px; color:var(--ink-2); margin-left:auto; }
+  .legend span { display:inline-flex; align-items:center; gap:6px; }
+  .dotc { width:8px; height:8px; border-radius:50%; }
+
+  .cal { display:grid; grid-template-columns:repeat(7,1fr); }
+  .dow { font-size:10px; letter-spacing:0.06em; text-transform:uppercase; color:var(--muted); font-weight:600; padding:10px 12px; border-bottom:1px solid var(--line); }
+  .cell { min-height:108px; padding:8px 9px; border-right:1px solid var(--line); border-bottom:1px solid var(--line); display:flex; flex-direction:column; gap:4px; }
+  .cell:nth-child(7n+7) { border-right:0; }
+  .cell.today { box-shadow:inset 0 0 0 2px var(--accent); border-radius:4px; }
+  .cell.out { background:var(--card-2); }
+  .cell.out .dn { opacity:0.45; }
+  .cell .dn-row { display:flex; justify-content:space-between; align-items:center; }
+  .cell .dn { font-size:12.5px; color:var(--muted); font-weight:500; }
+  .cell .cnt { font-size:11px; color:var(--muted); font-variant-numeric:tabular-nums; }
+  .ev { font-size:11px; line-height:1.25; padding:3px 7px; border-radius:4px; border-left:3px solid var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .ev .pno { font-weight:700; font-size:10px; margin-right:4px; }
+  .ev.appn   { background:var(--success-soft); border-left-color:var(--success); }
+  .ev.due    { background:var(--warn-soft); border-left-color:var(--warn); }
+  .ev.notice { background:var(--danger-soft); border-left-color:var(--danger); }
+  .ev.final  { background:var(--navy-soft); border-left-color:var(--navy-accent); }
+  .ev.afp    { background:var(--line); border-left-color:var(--ink); }
+
+  .dt { width:100%; border-collapse:separate; border-spacing:0; font-size:13px; }
+  .dt th, .dt td { padding:12px 20px; border-bottom:1px solid var(--line); text-align:left; }
+  .dt th { font-size:11px; letter-spacing:0.06em; text-transform:uppercase; color:var(--muted); font-weight:600; }
+  .dt tr:last-child td { border-bottom:0; }
+  .dt tbody tr:hover td { background:var(--accent-soft); }
+  .link { color:var(--accent); font-weight:600; text-decoration:none; }
+  .kpill { display:inline-flex; align-items:center; gap:6px; padding:3px 10px; border-radius:999px; font-size:11.5px; font-weight:600; }
+  .kpill.appn { background:var(--success-soft); color:var(--success); }
+  .kpill.due { background:var(--warn-soft); color:var(--warn); }
+  .kpill.notice { background:var(--danger-soft); color:var(--danger); }
+  .kpill.final { background:var(--navy-soft); color:var(--navy-accent); }
+
+  .fixnote { display:none; font-size:12.5px; color:var(--ink-2); background:var(--accent-soft); border:1px solid var(--accent); border-left-width:3px; border-radius:8px; padding:10px 14px; margin:0 0 18px; }
+  body.show-fixes .fixnote { display:block; }
+  .fixnote b { color:var(--accent-2); }
+  svg { display:block; }
+</style>
+</head>
+<body data-theme="light" class="show-fixes">
+<div class="app">
+  <aside class="sb">
+    <div class="sb-logo"><img src="assets/pgp-logo.png" alt="PGP" /></div>
+    <div class="sb-grp">Workspace</div>
+    <div class="nav">Projects</div>
+    <div class="nav active">Calendar</div>
+    <div class="nav">Applications</div>
+    <div class="nav">Purchase Orders</div>
+    <div class="nav">Approvals</div>
+    <div class="sb-grp">Master Data</div>
+    <div class="nav">Admin</div>
+    <div class="nav">Product library</div>
+    <div class="nav">Approved suppliers</div>
+    <div class="sb-user">
+      <div class="avatar">TB</div>
+      <div class="grow"><div style="font-size:13px;font-weight:600;">Thomas Barber</div><div style="font-size:12px;" class="muted">Superadmin · Approver</div></div>
+    </div>
+  </aside>
+
+  <div class="main">
+    <header class="top">
+      <div>
+        <div class="eyebrow" style="margin-bottom:4px;">Workspace</div>
+        <h1 class="title">Calendar</h1>
+      </div>
+      <div class="actions">
+        <button class="btn icon">‹</button>
+        <button class="btn">Today</button>
+        <button class="btn icon">›</button>
+        <div class="seg" id="themeSeg"><button class="on" data-theme-set="light">Light</button><button data-theme-set="dark">Dark</button></div>
+      </div>
+    </header>
+
+    <div class="content">
+      <div class="row" style="margin-bottom:18px;gap:10px;">
+        <span class="eyebrow">Demo</span>
+        <div class="seg" id="fixSeg" style="background:var(--card-2);border:1px solid var(--line);">
+          <button class="on" data-fix="on" style="color:var(--muted);">Show polish notes</button>
+          <button data-fix="off" style="color:var(--muted);">Hide</button>
+        </div>
+        <span class="muted" style="font-size:12px;">highlights what changed vs the current build</span>
+      </div>
+
+      <div class="fixnote"><b>Polish · Calendar.</b> "Final date for payment" was purple (outside the PGP palette) — now <b>navy</b>, so the legend is fully on-system. Event chips get a coloured left-accent + bold project tag for faster scanning, today's cell uses the accent ring, and out-of-month days are muted.</div>
+
+      <section class="card" style="margin-bottom:18px;overflow:hidden;">
+        <div class="card-hd">
+          <h2 style="font-size:18px;">June 2026</h2>
+          <div class="legend">
+            <span><span class="dotc" style="background:var(--success);"></span>Application</span>
+            <span><span class="dotc" style="background:var(--warn);"></span>Due date</span>
+            <span><span class="dotc" style="background:var(--danger);"></span>Notice</span>
+            <span><span class="dotc" style="background:var(--navy-accent);"></span>Final date for payment</span>
+            <span><span class="dotc" style="background:var(--ink);"></span>AfP period-end</span>
+          </div>
+        </div>
+        <div class="cal">
+          <div class="dow">Mon</div><div class="dow">Tue</div><div class="dow">Wed</div><div class="dow">Thu</div><div class="dow">Fri</div><div class="dow">Sat</div><div class="dow">Sun</div>
+
+          <div class="cell"><div class="dn-row"><span class="dn">1</span><span class="cnt">1</span></div><span class="ev afp"><span class="pno">26001</span>AfP #4 period-end</span></div>
+          <div class="cell"><div class="dn-row"><span class="dn">2</span></div></div>
+          <div class="cell today"><div class="dn-row"><span class="dn">3</span></div></div>
+          <div class="cell"><div class="dn-row"><span class="dn">4</span><span class="cnt">1</span></div><span class="ev due"><span class="pno">26001</span>Due date #1</span></div>
+          <div class="cell"><div class="dn-row"><span class="dn">5</span></div></div>
+          <div class="cell"><div class="dn-row"><span class="dn">6</span><span class="cnt">1</span></div><span class="ev notice"><span class="pno">26001</span>Notice #1</span></div>
+          <div class="cell"><div class="dn-row"><span class="dn">7</span></div></div>
+
+          <div class="cell"><div class="dn-row"><span class="dn">8</span></div></div>
+          <div class="cell"><div class="dn-row"><span class="dn">9</span><span class="cnt">1</span></div><span class="ev notice"><span class="pno">26001</span>Notice #1</span></div>
+          <div class="cell"><div class="dn-row"><span class="dn">10</span></div></div>
+          <div class="cell"><div class="dn-row"><span class="dn">11</span><span class="cnt">2</span></div><span class="ev appn"><span class="pno">26001</span>Application #2</span><span class="ev appn"><span class="pno">26001</span>Application #4</span></div>
+          <div class="cell"><div class="dn-row"><span class="dn">12</span></div></div>
+          <div class="cell"><div class="dn-row"><span class="dn">13</span><span class="cnt">1</span></div><span class="ev final"><span class="pno">26001</span>Final date for payment #1</span></div>
+          <div class="cell"><div class="dn-row"><span class="dn">14</span></div></div>
+
+          <div class="cell"><div class="dn-row"><span class="dn">15</span></div></div>
+          <div class="cell"><div class="dn-row"><span class="dn">16</span></div></div>
+          <div class="cell"><div class="dn-row"><span class="dn">17</span></div></div>
+          <div class="cell"><div class="dn-row"><span class="dn">18</span><span class="cnt">2</span></div><span class="ev due"><span class="pno">26001</span>Due date #2</span><span class="ev due"><span class="pno">26001</span>Due date #4</span></div>
+          <div class="cell"><div class="dn-row"><span class="dn">19</span></div></div>
+          <div class="cell"><div class="dn-row"><span class="dn">20</span><span class="cnt">1</span></div><span class="ev notice"><span class="pno">26001</span>Notice #1</span></div>
+          <div class="cell"><div class="dn-row"><span class="dn">21</span></div></div>
+
+          <div class="cell"><div class="dn-row"><span class="dn">22</span></div></div>
+          <div class="cell"><div class="dn-row"><span class="dn">23</span><span class="cnt">2</span></div><span class="ev notice"><span class="pno">26001</span>Notice #2</span><span class="ev notice"><span class="pno">26001</span>Notice #4</span></div>
+          <div class="cell"><div class="dn-row"><span class="dn">24</span></div></div>
+          <div class="cell"><div class="dn-row"><span class="dn">25</span><span class="cnt">3</span></div><span class="ev appn"><span class="pno">26001</span>Application #3</span><span class="ev appn"><span class="pno">26001</span>Application #5</span><span class="ev appn"><span class="pno">26001</span>Application #7</span></div>
+          <div class="cell"><div class="dn-row"><span class="dn">26</span></div></div>
+          <div class="cell"><div class="dn-row"><span class="dn">27</span><span class="cnt">1</span></div><span class="ev final"><span class="pno">26001</span>Final date for payment #1</span></div>
+          <div class="cell"><div class="dn-row"><span class="dn">28</span></div></div>
+
+          <div class="cell"><div class="dn-row"><span class="dn">29</span></div></div>
+          <div class="cell"><div class="dn-row"><span class="dn">30</span></div></div>
+          <div class="cell out"><div class="dn-row"><span class="dn">1</span></div></div>
+          <div class="cell out"><div class="dn-row"><span class="dn">2</span><span class="cnt">3</span></div><span class="ev due"><span class="pno">26001</span>Due date #3</span><span class="ev due"><span class="pno">26001</span>Due date #5</span><span class="ev due"><span class="pno">26001</span>Due date #7</span></div>
+          <div class="cell out"><div class="dn-row"><span class="dn">3</span></div></div>
+          <div class="cell out"><div class="dn-row"><span class="dn">4</span><span class="cnt">2</span></div><span class="ev notice"><span class="pno">26001</span>Notice #2</span><span class="ev notice"><span class="pno">26001</span>Notice #4</span></div>
+          <div class="cell out"><div class="dn-row"><span class="dn">5</span></div></div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-hd"><h2 style="font-size:16px;">All events this period</h2></div>
+        <table class="dt">
+          <thead><tr><th>Date</th><th>Project</th><th>Kind</th><th>Label</th></tr></thead>
+          <tbody>
+            <tr><td class="num">1 Jun 2026</td><td><a class="link" href="#">26001</a></td><td><span class="kpill" style="background:var(--line);color:var(--ink-2);">AfP period-end</span></td><td>AfP #4 period-end</td></tr>
+            <tr><td class="num">4 Jun 2026</td><td><a class="link" href="#">26001</a></td><td><span class="kpill due">Due date</span></td><td>Due date #1</td></tr>
+            <tr><td class="num">6 Jun 2026</td><td><a class="link" href="#">26001</a></td><td><span class="kpill notice">Notice</span></td><td>Notice #1</td></tr>
+            <tr><td class="num">11 Jun 2026</td><td><a class="link" href="#">26001</a></td><td><span class="kpill appn">Application</span></td><td>Application #2</td></tr>
+            <tr><td class="num">13 Jun 2026</td><td><a class="link" href="#">26001</a></td><td><span class="kpill final">Final date for payment</span></td><td>Final date for payment #1</td></tr>
+            <tr><td class="num">18 Jun 2026</td><td><a class="link" href="#">26001</a></td><td><span class="kpill due">Due date</span></td><td>Due date #2</td></tr>
+            <tr><td class="num">25 Jun 2026</td><td><a class="link" href="#">26001</a></td><td><span class="kpill appn">Application</span></td><td>Application #3</td></tr>
+            <tr><td class="num">27 Jun 2026</td><td><a class="link" href="#">26001</a></td><td><span class="kpill final">Final date for payment</span></td><td>Final date for payment #1</td></tr>
+          </tbody>
+        </table>
+      </section>
+    </div>
+  </div>
+</div>
+
+<script>
+  document.getElementById('themeSeg').addEventListener('click', function(e){
+    var b = e.target.closest('[data-theme-set]'); if(!b) return;
+    document.body.setAttribute('data-theme', b.dataset.themeSet);
+    this.querySelectorAll('button').forEach(function(x){ x.classList.toggle('on', x===b); });
+  });
+  var fixSeg = document.getElementById('fixSeg');
+  fixSeg.addEventListener('click', function(e){
+    var b = e.target.closest('[data-fix]'); if(!b) return;
+    document.body.classList.toggle('show-fixes', b.dataset.fix==='on');
+    fixSeg.querySelectorAll('button').forEach(function(x){ x.classList.toggle('on', x===b); });
+  });
+</script>
+</body>
+</html>

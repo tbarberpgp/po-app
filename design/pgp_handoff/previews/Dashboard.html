@@ -1,0 +1,407 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Dashboard — PGP</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Source+Serif+Pro:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  :root, [data-theme="light"] {
+    --paper:#fbfaf7; --card:#ffffff; --card-2:#f5f2eb;
+    --ink:#0f1130; --ink-2:#2a2d50; --muted:#6a6d8a;
+    --line:#e6e3da; --line-strong:#c9c4b4;
+    --accent:#ee5d2b; --accent-2:#c64b1f; --accent-soft:#fde5d7;
+    --navy:#0f1130; --navy-soft:#e3e5f4;
+    --blue:#3b5bdb; --blue-soft:#dde3fb;
+    --success:#2f6f4f; --success-soft:#dff0e3;
+    --warn:#b06a0e; --warn-soft:#fbe8c4;
+    --danger:#b8331f; --danger-soft:#fadbd2;
+  }
+  [data-theme="dark"] {
+    --paper:#080a1c; --card:#11142b; --card-2:#181b35;
+    --ink:#f5f3ec; --ink-2:#c2bfb6; --muted:#7e7c92;
+    --line:#232545; --line-strong:#3a3d62;
+    --accent:#ff8a5a; --accent-2:#ffa37f; --accent-soft:rgba(255,138,90,0.14);
+    --navy:#8ea3ff; --navy-soft:rgba(142,163,255,0.16);
+    --blue:#8ea3ff; --blue-soft:rgba(142,163,255,0.16);
+    --success:#74d49f; --success-soft:rgba(116,212,159,0.14);
+    --warn:#f0b95a; --warn-soft:rgba(240,185,90,0.14);
+    --danger:#f4907a; --danger-soft:rgba(244,144,122,0.14);
+  }
+  * { box-sizing:border-box; }
+  html, body { margin:0; padding:0; }
+  body { font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:var(--paper); color:var(--ink); font-size:14px; line-height:1.45; -webkit-font-smoothing:antialiased; }
+  h1,h2,h3 { font-family:'Cambria','Source Serif Pro',Georgia,serif; font-weight:500; margin:0; letter-spacing:-0.01em; }
+  .num { font-variant-numeric:tabular-nums; }
+  .muted { color:var(--muted); }
+  .eyebrow { font-size:11px; letter-spacing:0.12em; text-transform:uppercase; font-weight:600; color:var(--muted); }
+  .row { display:flex; align-items:center; gap:10px; }
+  .grow { flex:1; min-width:0; }
+
+  .app { display:flex; min-height:100vh; }
+  .sb { width:240px; min-width:240px; background:var(--card); border-right:1px solid var(--line); padding:20px 14px; display:flex; flex-direction:column; gap:2px; position:sticky; top:0; height:100vh; }
+  .sb-logo { display:flex; align-items:center; padding:4px 8px 22px; }
+  .sb-logo img { height:22px; width:auto; }
+  .sb-grp { font-size:10px; letter-spacing:0.1em; text-transform:uppercase; color:var(--muted); padding:14px 10px 4px; }
+  .nav { display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:8px; cursor:pointer; color:var(--ink-2); font-size:13.5px; font-weight:500; }
+  .nav:hover { background:var(--line); }
+  .nav.active { background:var(--accent-soft); color:var(--accent-2); }
+  .sb-user { margin-top:auto; padding:12px; border:1px solid var(--line); border-radius:10px; display:flex; gap:10px; align-items:center; }
+  .avatar { width:32px; height:32px; border-radius:50%; background:var(--navy); color:#fff; display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:600; flex-shrink:0; }
+  [data-theme="dark"] .avatar { color:#0f1130; }
+
+  .main { flex:1; min-width:0; display:flex; flex-direction:column; }
+  .top { padding:22px 36px 18px; display:flex; justify-content:space-between; align-items:flex-start; gap:24px; }
+  .title { font-size:30px; line-height:1.1; }
+  .actions { display:flex; align-items:center; gap:16px; }
+  .tlink { color:var(--ink-2); font-size:13px; font-weight:500; cursor:pointer; }
+  .tlink:hover { color:var(--accent); }
+
+  .seg { display:inline-flex; background:var(--navy); border-radius:8px; padding:3px; gap:2px; }
+  [data-theme="dark"] .seg { background:var(--card-2); border:1px solid var(--line); }
+  .seg button { appearance:none; border:0; background:transparent; color:rgba(255,255,255,0.6); font:600 12px 'Inter',sans-serif; padding:5px 12px; border-radius:6px; cursor:pointer; }
+  [data-theme="dark"] .seg button { color:var(--muted); }
+  .seg button.on { background:#fff; color:var(--navy); }
+  [data-theme="dark"] .seg button.on { background:var(--navy); color:#0f1130; }
+
+  .content { padding:6px 36px 60px; }
+  .select { background:var(--card); border:1px solid var(--line-strong); border-radius:8px; padding:9px 12px; font:400 13px 'Inter',sans-serif; color:var(--ink); min-width:200px; }
+
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; }
+  .card-hd { padding:14px 18px; border-bottom:1px solid var(--line); display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; }
+  .card-hd h2 { font-size:15px; white-space:nowrap; flex-shrink:0; }
+  .card-bd { padding:18px; }
+  .sec { display:flex; align-items:baseline; gap:10px; margin:26px 0 12px; }
+  .sec .t { font-size:11px; letter-spacing:0.1em; text-transform:uppercase; font-weight:600; color:var(--muted); }
+  .sec .d { font-size:12px; color:var(--muted); }
+  .sec .more { margin-left:auto; }
+
+  .stats { display:grid; gap:14px; }
+  .s5 { grid-template-columns:repeat(5,1fr); }
+  .s4 { grid-template-columns:repeat(4,1fr); }
+  .stat { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:15px 17px; display:flex; flex-direction:column; gap:3px; }
+  .stat .lbl { font-size:11px; letter-spacing:0.07em; text-transform:uppercase; font-weight:600; color:var(--muted); }
+  .stat .val { font-family:'Cambria',serif; font-size:25px; font-weight:500; }
+  .stat .val.pos { color:var(--success); }
+  .stat .val.attn { color:var(--warn); }
+  .stat .sub { font-size:12px; color:var(--muted); }
+
+  .g2 { display:grid; grid-template-columns:1fr 1fr; gap:18px; }
+
+  .dt { width:100%; border-collapse:separate; border-spacing:0; font-size:13px; }
+  .dt th, .dt td { padding:13px 16px; border-bottom:1px solid var(--line); text-align:left; vertical-align:middle; }
+  .dt th { font-size:11px; letter-spacing:0.06em; text-transform:uppercase; color:var(--muted); font-weight:600; }
+  .dt td.num, .dt th.num { text-align:right; font-variant-numeric:tabular-nums; }
+  .dt tr:last-child td { border-bottom:0; }
+  .dt tbody tr:hover td { background:var(--accent-soft); }
+  .dt tfoot td { font-weight:700; background:var(--card-2); border-bottom:0; }
+  .pill { display:inline-flex; align-items:center; gap:6px; padding:3px 10px; border-radius:999px; font-size:11.5px; font-weight:600; white-space:nowrap; }
+  .pill.success { background:var(--success-soft); color:var(--success); }
+  .pill.warn { background:var(--warn-soft); color:var(--warn); }
+  .pill.danger { background:var(--danger-soft); color:var(--danger); }
+  .pill.dot::before { content:''; width:6px; height:6px; border-radius:50%; background:currentColor; }
+  .link { color:var(--accent); font-weight:600; text-decoration:none; font-size:13px; }
+  .pos { color:var(--success); }
+
+  /* cell bar */
+  .cbar { height:6px; background:var(--line); border-radius:3px; overflow:hidden; }
+  .cbar > i { display:block; height:100%; background:var(--navy); border-radius:3px; }
+  .cbar.warn > i { background:var(--warn); }
+  .cbar.success > i { background:var(--success); }
+  .cnum { font-size:11px; color:var(--muted); margin-top:4px; font-variant-numeric:tabular-nums; }
+  .dl { font-size:11px; font-weight:600; margin-left:6px; white-space:nowrap; font-variant-numeric:tabular-nums; }
+  .dl.up { color:var(--success); }
+  .dl.down { color:var(--danger); }
+
+  /* horizontal bars (labour by project) */
+  .hrow { display:grid; grid-template-columns:1.4fr 2fr 120px; gap:14px; align-items:center; padding:11px 0; border-top:1px solid var(--line); }
+  .hrow:first-child { border-top:0; }
+  .hrow .pn { font-weight:600; font-size:13px; }
+  .hrow .ps { font-size:11.5px; color:var(--muted); }
+  .hbar { height:9px; background:var(--line); border-radius:5px; overflow:hidden; }
+  .hbar > i { display:block; height:100%; background:var(--navy); border-radius:5px; }
+  .hval { text-align:right; font-variant-numeric:tabular-nums; font-size:12.5px; }
+
+  /* applied vs certified vs FFA */
+  .track { height:14px; background:var(--line); border-radius:7px; overflow:hidden; position:relative; }
+  .track > i { position:absolute; left:0; top:0; height:100%; border-radius:7px; }
+  .acrow { display:grid; grid-template-columns:90px 1fr 150px; gap:14px; align-items:center; margin-bottom:14px; }
+  .acrow .lbl { font-size:12px; font-weight:600; color:var(--ink-2); }
+  .acrow .amt { text-align:right; font-variant-numeric:tabular-nums; font-size:13px; }
+  .acrow .amt .pct { color:var(--muted); font-size:11.5px; }
+
+  .pbar { height:12px; background:var(--line); border-radius:6px; overflow:hidden; }
+  .pbar > i { display:block; height:100%; background:var(--navy); }
+
+  /* H&S kpi with drill */
+  .hs { display:grid; grid-template-columns:repeat(4,1fr); gap:14px; }
+  .hscard { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:15px 17px; }
+  .hscard .lbl { font-size:11px; letter-spacing:0.06em; text-transform:uppercase; font-weight:600; color:var(--muted); }
+  .hscard .val { font-family:'Cambria',serif; font-size:24px; margin:4px 0; }
+  .hscard .val.pos { color:var(--success); } .hscard .val.attn { color:var(--warn); } .hscard .val.bad { color:var(--danger); }
+  .hscard .drill { font-size:12px; color:var(--accent); font-weight:600; cursor:pointer; }
+  .miniseg { display:flex; height:8px; border-radius:4px; overflow:hidden; margin:8px 0 6px; background:var(--line); }
+  .miniseg > i { height:100%; }
+
+  .flag { display:flex; align-items:center; gap:11px; padding:11px 0; border-top:1px solid var(--line); }
+  .flag:first-child { border-top:0; }
+  .flag .fd { width:9px; height:9px; border-radius:50%; flex-shrink:0; }
+  .flag .ft { flex:1; font-size:13px; }
+
+  .fixnote { display:none; font-size:12.5px; color:var(--ink-2); background:var(--accent-soft); border:1px solid var(--accent); border-left-width:3px; border-radius:8px; padding:10px 14px; margin:14px 0 6px; }
+  body.show-fixes .fixnote { display:block; }
+  .fixnote b { color:var(--accent-2); }
+  svg { display:block; }
+</style>
+</head>
+<body data-theme="light" class="show-fixes">
+<div class="app">
+  <aside class="sb">
+    <div class="sb-logo"><img src="assets/pgp-logo.png" alt="PGP" /></div>
+    <div class="sb-grp">Workspace</div>
+    <div class="nav">Projects</div>
+    <div class="nav">Calendar</div>
+    <div class="nav">Applications</div>
+    <div class="nav">Purchase Orders</div>
+    <div class="nav">Operatives</div>
+    <div class="nav">Approvals</div>
+    <div class="sb-grp">Master Data</div>
+    <div class="nav active">Dashboard</div>
+    <div class="nav">Admin</div>
+    <div class="nav">Product library</div>
+    <div class="nav">Approved suppliers</div>
+    <div class="sb-user">
+      <div class="avatar">TB</div>
+      <div class="grow"><div style="font-size:13px;font-weight:600;">Thomas Barber</div><div style="font-size:12px;" class="muted">Superadmin · Approver</div></div>
+    </div>
+  </aside>
+
+  <div class="main">
+    <header class="top">
+      <div>
+        <div class="eyebrow" style="margin-bottom:4px;">Reporting</div>
+        <h1 class="title">Dashboard</h1>
+      </div>
+      <div class="actions">
+        <span class="tlink">Export CSV</span>
+        <span class="tlink">Print / PDF</span>
+        <div class="seg" id="themeSeg"><button class="on" data-theme-set="light">Light</button><button data-theme-set="dark">Dark</button></div>
+      </div>
+    </header>
+
+    <div class="content">
+      <div class="row" style="margin-bottom:6px;gap:12px;flex-wrap:wrap;">
+        <div><div class="eyebrow" style="margin-bottom:5px;">Project</div><select class="select"><option>All active projects</option><option>26001 · Dallas Rd Block B Roofing</option><option>25008 · Dallas Rd Balconies</option><option>26002 · Dallas Rd Block C Roofing</option><option>26003 · Dallas Rd Block D Roofing</option></select></div>
+        <div><div class="eyebrow" style="margin-bottom:5px;">Period</div><select class="select" style="min-width:160px;"><option>This financial year</option><option>Last 6 months</option><option>This quarter</option><option>Last quarter</option><option>This month</option><option>All time</option></select></div>
+        <div class="grow"></div>
+        <div class="seg" id="fixSeg" style="background:var(--card-2);border:1px solid var(--line);align-self:flex-end;">
+          <button class="on" data-fix="on" style="color:var(--muted);">Show notes</button>
+          <button data-fix="off" style="color:var(--muted);">Hide</button>
+        </div>
+      </div>
+
+      <div class="fixnote"><b>KPI reassessment.</b> Dropped "POs raised" and "PO commitment by status". The dashboard now leads with <b>portfolio performance</b> then <b>project-by-project commercial</b> (% committed, labour expended, forecast GP%, applied/certified — at a glance). Added <b>applied &amp; certified vs forecast final account</b>, <b>labour expenditure by project</b>, prelims overall + by project, and a high-level <b>H&amp;S / compliance</b> band with drill-downs, plus a needs-attention panel.</div>
+
+      <!-- PORTFOLIO -->
+      <div class="sec"><span class="t">Portfolio — all active projects</span></div>
+      <div class="stats s5">
+        <div class="stat"><span class="lbl">Active projects</span><span class="val num">4</span><span class="sub">3 priced · 1 mobilising</span></div>
+        <div class="stat"><span class="lbl">Forecast final account</span><span class="val num">£1.16M</span><span class="sub">incl. £14k variations</span></div>
+        <div class="stat"><span class="lbl">Forecast GP%</span><span class="val num pos">15.4%</span><span class="sub">Contract 13.5% · ▲ +1.9 pts</span></div>
+        <div class="stat"><span class="lbl">Committed</span><span class="val num">31%</span><span class="sub">£287k of cost budget</span></div>
+        <div class="stat"><span class="lbl">Certified of FFA</span><span class="val num">8.1%</span><span class="sub">£94k certified to date</span></div>
+      </div>
+
+      <!-- COMMERCIAL BY PROJECT -->
+      <div class="sec"><span class="t">Commercial performance — by project</span><span class="d">at a glance</span><a class="link more" href="#">Open projects →</a></div>
+      <section class="card">
+        <table class="dt">
+          <thead><tr><th>Project</th><th class="num">Forecast final acct</th><th style="width:150px;">Committed</th><th style="width:150px;">Labour expended</th><th class="num">Contract GP%</th><th class="num">Forecast GP%</th><th class="num">Applied</th><th class="num">Certified</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><a class="link" href="#">26001</a><div class="muted" style="font-size:12px;">Dallas Rd Block B Roofing</div></td>
+              <td class="num">£369,371</td>
+              <td><div class="cbar warn"><i style="width:62%"></i></div><div class="cnum">62% · £229k</div></td>
+              <td><div class="cbar"><i style="width:17%"></i></div><div class="cnum">17% · £13.2k</div></td>
+              <td class="num muted">13.1%</td>
+              <td class="num">16.6% <span class="dl up">▲ +3.5</span></td>
+              <td class="num">£50,148</td>
+              <td class="num">£34,183</td>
+            </tr>
+            <tr>
+              <td><a class="link" href="#">25008</a><div class="muted" style="font-size:12px;">Dallas Rd Balconies</div></td>
+              <td class="num">£184,500</td>
+              <td><div class="cbar"><i style="width:41%"></i></div><div class="cnum">41% · £62k</div></td>
+              <td><div class="cbar"><i style="width:30%"></i></div><div class="cnum">30% · £15.6k</div></td>
+              <td class="num muted">11.0%</td>
+              <td class="num">12.8% <span class="dl up">▲ +1.8</span></td>
+              <td class="num">£60,000</td>
+              <td class="num">£52,000</td>
+            </tr>
+            <tr>
+              <td><a class="link" href="#">26002</a><div class="muted" style="font-size:12px;">Dallas Rd Block C Roofing</div></td>
+              <td class="num">£298,400</td>
+              <td><div class="cbar"><i style="width:8%"></i></div><div class="cnum">8% · £20k</div></td>
+              <td><div class="cbar"><i style="width:4%"></i></div><div class="cnum">4% · £2.4k</div></td>
+              <td class="num muted">13.0%</td>
+              <td class="num">12.6% <span class="dl down">▼ -0.4</span></td>
+              <td class="num">£12,000</td>
+              <td class="num">£8,000</td>
+            </tr>
+            <tr>
+              <td><a class="link" href="#">26003</a><div class="muted" style="font-size:12px;">Dallas Rd Block D Roofing</div></td>
+              <td class="num">£312,000</td>
+              <td><div class="cbar"><i style="width:2%"></i></div><div class="cnum">2% · £6k</div></td>
+              <td><div class="cbar"><i style="width:0%"></i></div><div class="cnum">0% · £0</div></td>
+              <td class="num muted">14.0%</td>
+              <td class="num">15.0% <span class="dl up">▲ +1.0</span></td>
+              <td class="num muted">—</td>
+              <td class="num muted">—</td>
+            </tr>
+          </tbody>
+          <tfoot>
+            <tr><td>Portfolio</td><td class="num">£1,164,271</td><td>31% committed</td><td>14% expended</td><td class="num">13.5%</td><td class="num">15.4% <span class="dl up">▲ +1.9</span></td><td class="num">£122,148</td><td class="num">£94,183</td></tr>
+          </tfoot>
+        </table>
+      </section>
+
+      <!-- APPLIED VS CERTIFIED VS FFA + LABOUR -->
+      <div class="g2" style="margin-top:18px;">
+        <section class="card">
+          <div class="card-hd"><h2>Applied &amp; certified vs FFA</h2><span class="muted" style="font-size:12px;">portfolio, to date</span></div>
+          <div class="card-bd">
+            <div class="acrow">
+              <span class="lbl">Forecast final account</span>
+              <div class="track"><i style="width:100%;background:var(--line-strong);"></i></div>
+              <span class="amt">£1,164,271</span>
+            </div>
+            <div class="acrow">
+              <span class="lbl">Applied</span>
+              <div class="track"><i style="width:10.5%;background:var(--blue);"></i></div>
+              <span class="amt">£122,148 <span class="pct">10.5%</span></span>
+            </div>
+            <div class="acrow">
+              <span class="lbl">Certified</span>
+              <div class="track"><i style="width:8.1%;background:var(--success);"></i></div>
+              <span class="amt">£94,183 <span class="pct">8.1%</span></span>
+            </div>
+            <div style="border-top:1px solid var(--line);margin-top:6px;padding-top:12px;display:grid;grid-template-columns:repeat(3,1fr);gap:14px;">
+              <div><div class="eyebrow" style="font-size:10px;">Cert / applied</div><div class="num" style="font-family:'Cambria',serif;font-size:18px;margin-top:3px;">77%</div></div>
+              <div><div class="eyebrow" style="font-size:10px;">Awaiting cert</div><div class="num" style="font-family:'Cambria',serif;font-size:18px;margin-top:3px;">£27,965</div></div>
+              <div><div class="eyebrow" style="font-size:10px;">Retention</div><div class="num" style="font-family:'Cambria',serif;font-size:18px;margin-top:3px;">£4,709</div></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="card">
+          <div class="card-hd"><h2>Labour expenditure by project</h2><span class="muted" style="font-size:12px;">certified vs BOQ</span></div>
+          <div class="card-bd" style="padding-top:8px;">
+            <div class="hrow"><div><div class="pn">26001 · Block B</div><div class="ps">£79.9k budget</div></div><div class="hbar"><i style="width:17%"></i></div><div class="hval">£13.2k · 17%</div></div>
+            <div class="hrow"><div><div class="pn">25008 · Balconies</div><div class="ps">£52.0k budget</div></div><div class="hbar"><i style="width:30%"></i></div><div class="hval">£15.6k · 30%</div></div>
+            <div class="hrow"><div><div class="pn">26002 · Block C</div><div class="ps">£61.0k budget</div></div><div class="hbar"><i style="width:4%"></i></div><div class="hval">£2.4k · 4%</div></div>
+            <div class="hrow"><div><div class="pn">26003 · Block D</div><div class="ps">£64.0k budget</div></div><div class="hbar"><i style="width:0%"></i></div><div class="hval">£0 · 0%</div></div>
+          </div>
+        </section>
+      </div>
+
+      <!-- PRELIMS -->
+      <div class="sec"><span class="t">Preliminaries</span><span class="d">budget vs committed</span></div>
+      <section class="card">
+        <div class="card-bd">
+          <div class="row" style="justify-content:space-between;margin-bottom:8px;">
+            <span class="muted" style="font-size:12.5px;">Portfolio prelims budget</span>
+            <span class="num" style="font-weight:600;">£3,610 committed / £12,000</span>
+          </div>
+          <div class="pbar"><i style="width:30%"></i></div>
+          <div class="muted" style="font-size:12.5px;margin-top:8px;">£8,390 remaining · 3 prelim POs · £2,210 plant accrued</div>
+          <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-top:16px;">
+            <div class="hrow" style="grid-template-columns:1fr;border:0;padding:0;"><div><div class="pn">26001 · Block B</div><div class="hbar" style="margin:6px 0 4px;"><i style="width:36%"></i></div><div class="ps">£1,460 / £4,000</div></div></div>
+            <div class="hrow" style="grid-template-columns:1fr;border:0;padding:0;"><div><div class="pn">25008 · Balconies</div><div class="hbar" style="margin:6px 0 4px;"><i style="width:54%"></i></div><div class="ps">£1,620 / £3,000</div></div></div>
+            <div class="hrow" style="grid-template-columns:1fr;border:0;padding:0;"><div><div class="pn">26002 · Block C</div><div class="hbar" style="margin:6px 0 4px;"><i style="width:21%"></i></div><div class="ps">£530 / £2,500</div></div></div>
+            <div class="hrow" style="grid-template-columns:1fr;border:0;padding:0;"><div><div class="pn">26003 · Block D</div><div class="hbar" style="margin:6px 0 4px;"><i style="width:0%"></i></div><div class="ps">£0 / £2,500</div></div></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- HEALTH & SAFETY / COMPLIANCE -->
+      <div class="sec"><span class="t">Health &amp; safety · compliance</span><span class="d">across active sites</span><a class="link more" href="#">Operatives &amp; attendance →</a></div>
+      <div class="hs">
+        <div class="hscard">
+          <div class="lbl">RAMS signed</div>
+          <div class="val pos">78%</div>
+          <div class="miniseg"><i style="width:78%;background:var(--success);"></i><i style="width:22%;background:var(--warn);"></i></div>
+          <div class="row" style="justify-content:space-between;"><span class="muted" style="font-size:11.5px;">18 signed · 5 awaiting</span><span class="drill">View →</span></div>
+        </div>
+        <div class="hscard">
+          <div class="lbl">Inducted</div>
+          <div class="val attn">71%</div>
+          <div class="miniseg"><i style="width:71%;background:var(--success);"></i><i style="width:29%;background:var(--warn);"></i></div>
+          <div class="row" style="justify-content:space-between;"><span class="muted" style="font-size:11.5px;">5 of 7 operatives</span><span class="drill">View →</span></div>
+        </div>
+        <div class="hscard">
+          <div class="lbl">Attendance today</div>
+          <div class="val">7 <span class="pill success dot" style="font-size:10px;vertical-align:middle;">on site</span></div>
+          <div class="muted" style="font-size:11.5px;margin-top:6px;">avg 6.4 / day · 14 days</div>
+          <div class="row" style="justify-content:flex-end;margin-top:6px;"><span class="drill">View →</span></div>
+        </div>
+        <div class="hscard">
+          <div class="lbl">Cards expiring / expired</div>
+          <div class="val bad">1</div>
+          <div class="muted" style="font-size:11.5px;margin-top:6px;">PASMA · P. Shah · expired</div>
+          <div class="row" style="justify-content:flex-end;margin-top:6px;"><span class="drill">View →</span></div>
+        </div>
+      </div>
+
+      <!-- NEEDS ATTENTION + INTEGRATIONS -->
+      <div class="g2" style="margin-top:18px;">
+        <section class="card">
+          <div class="card-hd"><h2>Needs attention</h2><span class="pill warn" style="margin-left:auto;">4</span></div>
+          <div class="card-bd" style="padding:6px 18px 14px;">
+            <div class="flag"><span class="fd" style="background:var(--warn);"></span><span class="ft"><b>VO1</b> · Block B — variation pending director approval</span><a class="link" href="#">Review</a></div>
+            <div class="flag"><span class="fd" style="background:var(--warn);"></span><span class="ft"><b>AfP #4</b> · Block B — submitted, awaiting certification</span><a class="link" href="#">View</a></div>
+            <div class="flag"><span class="fd" style="background:var(--danger);"></span><span class="ft"><b>PASMA cert</b> expired · P. Shah</span><a class="link" href="#">View</a></div>
+            <div class="flag"><span class="fd" style="background:var(--warn);"></span><span class="ft"><b>Block B</b> — 62% committed, watch budget</span><a class="link" href="#">Open</a></div>
+          </div>
+        </section>
+
+        <section class="card">
+          <div class="card-hd"><h2>Upcoming key dates</h2><span class="muted" style="font-size:12px;">next 14 days</span><a class="link more" href="#">Calendar →</a></div>
+          <div class="card-bd" style="padding:6px 18px 14px;">
+            <div class="flag"><span class="num" style="font-family:'Cambria',serif;font-size:15px;min-width:54px;">4 Jun</span><span class="ft">Due date #1 · Block B</span><span class="pill warn">Due</span></div>
+            <div class="flag"><span class="num" style="font-family:'Cambria',serif;font-size:15px;min-width:54px;">11 Jun</span><span class="ft">Application #2, #4 · Block B</span><span class="pill" style="background:var(--success-soft);color:var(--success);">App</span></div>
+            <div class="flag"><span class="num" style="font-family:'Cambria',serif;font-size:15px;min-width:54px;">13 Jun</span><span class="ft">Final date for payment · Block B</span><span class="pill" style="background:var(--navy-soft);color:var(--navy);">Final</span></div>
+          </div>
+        </section>
+      </div>
+
+      <!-- INTEGRATIONS -->
+      <div class="sec"><span class="t">Integrations</span></div>
+      <section class="card" style="max-width:520px;">
+        <div class="card-hd"><h2>Xero</h2><span class="muted" style="font-size:12px;">Power Grid Projects Ltd</span><div class="grow"></div><span class="pill success dot">Connected</span></div>
+        <div class="card-bd" style="display:flex;gap:40px;">
+          <div><div class="eyebrow">POs synced</div><div class="num" style="font-family:'Cambria',serif;font-size:22px;margin-top:3px;">1</div></div>
+          <div><div class="eyebrow">Awaiting push</div><div class="num" style="font-family:'Cambria',serif;font-size:22px;margin-top:3px;">0</div></div>
+          <div><div class="eyebrow">Invoices raised</div><div class="num" style="font-family:'Cambria',serif;font-size:22px;margin-top:3px;">2</div></div>
+        </div>
+      </section>
+    </div>
+  </div>
+</div>
+
+<script>
+  document.getElementById('themeSeg').addEventListener('click', function(e){
+    var b = e.target.closest('[data-theme-set]'); if(!b) return;
+    document.body.setAttribute('data-theme', b.dataset.themeSet);
+    this.querySelectorAll('button').forEach(function(x){ x.classList.toggle('on', x===b); });
+  });
+  var fixSeg = document.getElementById('fixSeg');
+  fixSeg.addEventListener('click', function(e){
+    var b = e.target.closest('[data-fix]'); if(!b) return;
+    document.body.classList.toggle('show-fixes', b.dataset.fix==='on');
+    fixSeg.querySelectorAll('button').forEach(function(x){ x.classList.toggle('on', x===b); });
+  });
+</script>
+</body>
+</html>

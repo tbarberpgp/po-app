@@ -1,7 +1,7 @@
 import type { Context, Next } from "hono";
 import type { Env, Variables } from "./env";
 import type { Role } from "../shared/permissions";
-import { can, type Permission } from "../shared/permissions";
+import { can, normalizeRole, type Permission } from "../shared/permissions";
 
 /**
  * Authentication: Cloudflare Access injects the verified email in the
@@ -77,7 +77,9 @@ export async function authMiddleware(
   }
 
   c.set("userEmail", user.email);
-  c.set("userRole", user.role);
+  // Normalise legacy role strings (e.g. "procurement" → "commercial") so the
+  // rest of the app only ever sees the current Role union.
+  c.set("userRole", normalizeRole(user.role));
   c.set("userName", user.name);
   await next();
 }

@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Check in a delivery — PGP mobile</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Source+Serif+Pro:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --paper:#fbfaf7; --card:#ffffff; --card-2:#f5f2eb;
+    --ink:#0f1130; --ink-2:#2a2d50; --muted:#6a6d8a;
+    --line:#e6e3da; --line-strong:#c9c4b4;
+    --accent:#ee5d2b; --accent-2:#c64b1f; --accent-soft:#fde5d7;
+    --navy:#0f1130; --navy-soft:#e3e5f4;
+    --success:#2f6f4f; --success-soft:#dff0e3;
+    --warn:#b06a0e; --warn-soft:#fbe8c4;
+    --danger:#b8331f; --danger-soft:#fadbd2;
+  }
+  * { box-sizing:border-box; }
+  html,body { margin:0; padding:0; }
+  body { font-family:'Inter',-apple-system,sans-serif; background:#2a2c34; min-height:100vh; display:flex; flex-direction:column; align-items:center; gap:18px; padding:30px 16px 60px; -webkit-font-smoothing:antialiased; }
+  .stagehead { color:#fff; text-align:center; }
+  .stagehead .t { font-family:'Cambria',serif; font-size:20px; }
+  .stagehead .s { font-size:13px; color:rgba(255,255,255,.6); margin-top:4px; }
+  .steps { display:flex; gap:6px; justify-content:center; margin-top:12px; flex-wrap:wrap; }
+  .steps button { appearance:none; border:1px solid rgba(255,255,255,.2); background:rgba(255,255,255,.08); color:rgba(255,255,255,.7); font:600 11px 'Inter',sans-serif; padding:5px 11px; border-radius:999px; cursor:pointer; }
+  .steps button.on { background:var(--accent); border-color:var(--accent); color:#fff; }
+
+  /* phone */
+  .phone { width:390px; height:800px; background:#000; border-radius:46px; padding:11px; box-shadow:0 30px 70px -20px rgba(0,0,0,.6); flex-shrink:0; }
+  .screen { width:100%; height:100%; background:var(--paper); border-radius:36px; overflow:hidden; position:relative; display:flex; flex-direction:column; }
+  .statusbar { height:44px; display:flex; align-items:flex-end; justify-content:space-between; padding:0 24px 7px; font-size:14px; font-weight:600; color:var(--ink); flex-shrink:0; }
+  .statusbar.ondark { color:#fff; }
+  .sb-r { display:flex; gap:6px; }
+
+  .scr { display:none; flex-direction:column; flex:1; min-height:0; }
+  .scr.on { display:flex; }
+
+  .hdr { padding:10px 18px 12px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:12px; flex-shrink:0; }
+  .hdr .back { font-size:22px; color:var(--ink-2); cursor:pointer; line-height:1; }
+  .hdr h1 { font-family:'Cambria',serif; font-size:19px; font-weight:500; margin:0; }
+  .hdr .sub { font-size:12px; color:var(--muted); }
+  .body { flex:1; overflow-y:auto; padding:16px 18px; }
+  .foot { padding:14px 18px calc(14px + env(safe-area-inset-bottom)); border-top:1px solid var(--line); flex-shrink:0; background:var(--card); }
+
+  .btn { appearance:none; border:1px solid var(--line-strong); background:var(--card); color:var(--ink); padding:13px 16px; border-radius:12px; font:600 15px 'Inter',sans-serif; cursor:pointer; width:100%; display:flex; align-items:center; justify-content:center; gap:9px; }
+  .btn.accent { background:var(--accent); color:#fff; border-color:var(--accent); }
+  .btn.ghost { background:transparent; border:0; color:var(--ink-2); }
+  .btn.sm { padding:9px 12px; font-size:13px; border-radius:9px; width:auto; }
+
+  .eyebrow { font-size:11px; letter-spacing:0.1em; text-transform:uppercase; font-weight:700; color:var(--muted); }
+  .muted { color:var(--muted); }
+  .pill { display:inline-flex; align-items:center; gap:6px; padding:3px 10px; border-radius:999px; font-size:11.5px; font-weight:600; white-space:nowrap; background:var(--line); color:var(--ink-2); }
+  .pill.dot::before { content:''; width:6px; height:6px; border-radius:50%; background:currentColor; }
+  .pill.warn { background:var(--warn-soft); color:var(--warn); }
+  .pill.success { background:var(--success-soft); color:var(--success); }
+
+  .card { border:1px solid var(--line); border-radius:14px; background:var(--card); padding:14px; margin-bottom:12px; }
+  .listrow { display:flex; align-items:center; gap:12px; padding:13px 0; border-top:1px solid var(--line); }
+  .listrow:first-child { border-top:0; }
+  .listrow .ic { width:40px; height:40px; border-radius:11px; background:var(--card-2); display:flex; align-items:center; justify-content:center; color:var(--ink-2); flex-shrink:0; }
+  .listrow .t { font-weight:600; font-size:14px; }
+  .listrow .s { font-size:12px; color:var(--muted); margin-top:2px; }
+
+  /* camera */
+  .cam { flex:1; background:#1a1c22; position:relative; overflow:hidden; display:flex; align-items:center; justify-content:center; }
+  .cam .guide { position:absolute; inset:60px 28px; border:2px dashed rgba(255,255,255,.6); border-radius:14px; z-index:2; }
+  .cam .corner { position:absolute; width:26px; height:26px; border:3px solid var(--accent); z-index:3; }
+  .cam .hint { position:absolute; top:24px; left:0; right:0; text-align:center; color:#fff; font-size:13px; z-index:3; }
+  .ticket { width:230px; transform:rotate(-2deg); border-radius:6px; background:#fbfbf7; box-shadow:0 8px 24px rgba(0,0,0,.4); padding:16px 16px 20px; }
+  .ticket .tt { font-family:'Cambria',serif; font-size:14px; font-weight:600; }
+  .ticket .tl { height:6px; background:#e6e3da; border-radius:3px; margin:7px 0; }
+  .ticket .tl.s { width:60%; } .ticket .tl.m { width:80%; }
+  .shutter { width:66px; height:66px; border-radius:50%; background:#fff; border:5px solid rgba(255,255,255,.4); cursor:pointer; }
+  .camfoot { background:#000; display:flex; align-items:center; justify-content:space-between; padding:18px 30px calc(20px + env(safe-area-inset-bottom)); flex-shrink:0; }
+  .camfoot .gallery { color:#fff; font-size:13px; cursor:pointer; }
+
+  /* scan */
+  .scanwrap { position:relative; border-radius:12px; overflow:hidden; border:1px solid var(--line); }
+  .scanline { position:absolute; left:0; right:0; height:3px; background:linear-gradient(90deg,transparent,var(--accent),transparent); box-shadow:0 0 12px var(--accent); animation:scan 1.8s ease-in-out infinite; z-index:2; }
+  @keyframes scan { 0%{top:6%;} 50%{top:92%;} 100%{top:6%;} }
+  .field { display:flex; justify-content:space-between; padding:11px 0; border-top:1px solid var(--line); font-size:14px; }
+  .field:first-child { border-top:0; }
+  .field .k { color:var(--muted); }
+  .field .v { font-weight:600; }
+
+  .qty { display:flex; align-items:center; gap:8px; }
+  .qty button { width:28px; height:28px; border-radius:8px; border:1px solid var(--line-strong); background:var(--card); font-size:16px; cursor:pointer; color:var(--ink); }
+  .qty .n { min-width:30px; text-align:center; font-weight:600; font-variant-numeric:tabular-nums; }
+  .matchbar { display:flex; align-items:center; gap:10px; background:var(--success-soft); border:1px solid var(--success); border-radius:12px; padding:12px 14px; margin-bottom:14px; }
+  .matchbar .pct { margin-left:auto; font-weight:700; color:var(--success); }
+
+  .done-ic { width:84px; height:84px; border-radius:50%; background:var(--success-soft); display:flex; align-items:center; justify-content:center; margin:0 auto 18px; }
+
+  .li { display:grid; grid-template-columns:1fr auto; gap:6px 12px; padding:12px 0; border-top:1px solid var(--line); align-items:center; }
+  .li:first-child { border-top:0; }
+  .li .nm { font-weight:600; font-size:13.5px; }
+  .li .meta { font-size:12px; color:var(--muted); }
+  .li.short .nm::after { content:' · short'; color:var(--warn); font-weight:700; font-size:11px; }
+</style>
+</head>
+<body>
+  <div class="stagehead">
+    <div class="t">Check in a delivery — mobile</div>
+    <div class="s">Photograph the delivery ticket → auto-scan → match to a PO. Tap the dots to step through.</div>
+    <div class="steps" id="steps">
+      <button data-go="0" class="on">1 · Deliveries</button>
+      <button data-go="1">2 · Capture</button>
+      <button data-go="2">3 · Scanning</button>
+      <button data-go="3">4 · Match PO</button>
+      <button data-go="4">5 · Done</button>
+    </div>
+  </div>
+
+  <div class="phone">
+    <div class="screen">
+
+      <!-- SCREEN 0 — Deliveries list -->
+      <div class="scr on" data-screen="0">
+        <div class="statusbar"><span>9:41</span><span class="sb-r">●●● &nbsp;4G&nbsp; ▮</span></div>
+        <div class="hdr"><div><h1>Deliveries</h1><div class="sub">Dallas Rd Block B · 26001</div></div></div>
+        <div class="body">
+          <div class="eyebrow" style="margin-bottom:10px;">Expected today &amp; overdue</div>
+          <div class="card" style="padding:6px 14px;">
+            <div class="listrow"><div class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 7h13v9H3zM16 10h3l2 2v4h-5z"/><circle cx="7" cy="18" r="1.6"/><circle cx="17.5" cy="18" r="1.6"/></svg></div><div class="grow" style="flex:1;"><div class="t">Rockwool · insulation</div><div class="s">PO-26001-0009 · due today</div></div><span class="pill warn dot">Due</span></div>
+            <div class="listrow"><div class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 7h13v9H3zM16 10h3l2 2v4h-5z"/><circle cx="7" cy="18" r="1.6"/><circle cx="17.5" cy="18" r="1.6"/></svg></div><div class="grow" style="flex:1;"><div class="t">Alumasc · felt system</div><div class="s">PO-26001-0007 · expected</div></div><span class="pill">Sched</span></div>
+          </div>
+          <p class="muted" style="font-size:13px;text-align:center;margin-top:18px;">When a lorry arrives, snap the delivery ticket — we'll read it and match it to the right PO automatically.</p>
+        </div>
+        <div class="foot"><button class="btn accent" data-go="1"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7h4l2-2h6l2 2h4v12H3z"/><circle cx="12" cy="13" r="3.5"/></svg>Check in a delivery</button></div>
+      </div>
+
+      <!-- SCREEN 1 — Capture -->
+      <div class="scr" data-screen="1">
+        <div class="statusbar ondark"><span>9:41</span><span class="sb-r">●●● &nbsp;4G&nbsp; ▮</span></div>
+        <div class="cam">
+          <div class="hint">Align the delivery ticket inside the frame</div>
+          <div class="guide"></div>
+          <div class="corner" style="top:56px;left:24px;border-right:0;border-bottom:0;border-radius:14px 0 0 0;"></div>
+          <div class="corner" style="top:56px;right:24px;border-left:0;border-bottom:0;border-radius:0 14px 0 0;"></div>
+          <div class="corner" style="bottom:56px;left:24px;border-right:0;border-top:0;border-radius:0 0 0 14px;"></div>
+          <div class="corner" style="bottom:56px;right:24px;border-left:0;border-top:0;border-radius:0 0 14px 0;"></div>
+          <div class="ticket">
+            <div class="tt">DELIVERY NOTE</div>
+            <div class="muted" style="font-size:10px;">Alumasc Water Management</div>
+            <div class="tl m"></div><div class="tl"></div><div class="tl s"></div>
+            <div class="tl m"></div><div class="tl s"></div>
+            <div class="muted" style="font-size:10px;margin-top:8px;">DN-88421 · 02/06/26</div>
+          </div>
+        </div>
+        <div class="camfoot">
+          <span class="gallery" data-go="0">Cancel</span>
+          <div class="shutter" data-go="2"></div>
+          <span class="gallery" data-go="2">Gallery</span>
+        </div>
+      </div>
+
+      <!-- SCREEN 2 — Scanning -->
+      <div class="scr" data-screen="2">
+        <div class="statusbar"><span>9:41</span><span class="sb-r">●●● &nbsp;4G&nbsp; ▮</span></div>
+        <div class="hdr"><div class="back" data-go="1">‹</div><div><h1>Reading ticket…</h1><div class="sub">Extracting supplier &amp; lines</div></div></div>
+        <div class="body">
+          <div class="scanwrap" style="margin-bottom:16px;">
+            <div class="scanline"></div>
+            <div style="background:#fbfbf7;padding:18px 18px 22px;">
+              <div style="font-family:'Cambria',serif;font-size:15px;font-weight:600;color:#222;">DELIVERY NOTE</div>
+              <div class="muted" style="font-size:11px;">Alumasc Water Management Solutions</div>
+              <div style="height:7px;background:#e6e3da;border-radius:3px;margin:9px 0;width:85%;"></div>
+              <div style="height:7px;background:#e6e3da;border-radius:3px;margin:9px 0;width:70%;"></div>
+              <div style="height:7px;background:#e6e3da;border-radius:3px;margin:9px 0;width:90%;"></div>
+              <div style="height:7px;background:#e6e3da;border-radius:3px;margin:9px 0;width:55%;"></div>
+              <div class="muted" style="font-size:11px;margin-top:10px;">DN-88421 · 02 Jun 2026</div>
+            </div>
+          </div>
+          <div class="card" style="margin:0;">
+            <div class="eyebrow" style="margin-bottom:4px;">Detected</div>
+            <div class="field"><span class="k">Supplier</span><span class="v">Alumasc Water Mgmt</span></div>
+            <div class="field"><span class="k">Delivery note</span><span class="v">DN-88421</span></div>
+            <div class="field"><span class="k">Date</span><span class="v">02 Jun 2026</span></div>
+            <div class="field"><span class="k">Line items</span><span class="v">3 found</span></div>
+          </div>
+        </div>
+        <div class="foot"><button class="btn accent" data-go="3">Match to a PO →</button></div>
+      </div>
+
+      <!-- SCREEN 3 — Match PO -->
+      <div class="scr" data-screen="3">
+        <div class="statusbar"><span>9:41</span><span class="sb-r">●●● &nbsp;4G&nbsp; ▮</span></div>
+        <div class="hdr"><div class="back" data-go="2">‹</div><div><h1>Confirm delivery</h1><div class="sub">Matched against the PO</div></div></div>
+        <div class="body">
+          <div class="matchbar">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--success)" stroke-width="2.4"><path d="M5 13l4 4L19 7"/></svg>
+            <div><div style="font-weight:700;font-size:14px;">PO-26001-0007</div><div class="muted" style="font-size:12px;">Alumasc · felt system</div></div>
+            <span class="pct">98%</span>
+          </div>
+          <div class="eyebrow" style="margin-bottom:8px;">Expected vs received <span class="muted" style="text-transform:none;letter-spacing:0;font-weight:400;">· adjust if short</span></div>
+          <div class="card" style="margin:0;">
+            <div class="li">
+              <div><div class="nm">EuroRoof AVCL</div><div class="meta">expected 27 rolls</div></div>
+              <div class="qty"><button>−</button><span class="n">27</span><button>+</button></div>
+            </div>
+            <div class="li short">
+              <div><div class="nm">Mineral cap sheet</div><div class="meta">expected 60 rolls</div></div>
+              <div class="qty"><button>−</button><span class="n">58</span><button>+</button></div>
+            </div>
+            <div class="li">
+              <div><div class="nm">Cold adhesive</div><div class="meta">expected 12 tubs</div></div>
+              <div class="qty"><button>−</button><span class="n">12</span><button>+</button></div>
+            </div>
+          </div>
+          <div class="card" style="display:flex;align-items:center;gap:10px;margin-top:12px;">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--warn)" stroke-width="2"><path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
+            <span style="font-size:13px;">2 cap sheets short — flagged on the PO &amp; to the buyer.</span>
+          </div>
+        </div>
+        <div class="foot"><button class="btn accent" data-go="4">Confirm check-in</button></div>
+      </div>
+
+      <!-- SCREEN 4 — Done -->
+      <div class="scr" data-screen="4">
+        <div class="statusbar"><span>9:41</span><span class="sb-r">●●● &nbsp;4G&nbsp; ▮</span></div>
+        <div class="body" style="display:flex;flex-direction:column;justify-content:center;text-align:center;">
+          <div class="done-ic"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="var(--success)" stroke-width="2.4"><path d="M5 13l4 4L19 7"/></svg></div>
+          <h1 style="font-family:'Cambria',serif;font-size:24px;margin:0 0 8px;">Delivery checked in</h1>
+          <p class="muted" style="font-size:14px;margin:0 18px;">PO-26001-0007 updated · ticket DN-88421 attached. The buyer's been notified of the 2-unit shortfall.</p>
+          <div class="card" style="margin:22px 18px 0;text-align:left;">
+            <div class="field" style="border:0;"><span class="k">Received</span><span class="v pill success dot">97 of 99 units</span></div>
+          </div>
+        </div>
+        <div class="foot" style="display:flex;flex-direction:column;gap:10px;"><button class="btn accent" data-go="0">Done</button><button class="btn ghost" data-go="1">Check in another</button></div>
+      </div>
+
+    </div>
+  </div>
+
+<script>
+  function go(n){
+    document.querySelectorAll('.scr').forEach(function(s){ s.classList.toggle('on', s.dataset.screen===String(n)); });
+    document.querySelectorAll('#steps button').forEach(function(b){ b.classList.toggle('on', b.dataset.go===String(n)); });
+    var sc = document.querySelector('.scr[data-screen="'+n+'"] .body'); if(sc) sc.scrollTop = 0;
+  }
+  document.body.addEventListener('click', function(e){
+    var el = e.target.closest('[data-go]'); if(!el) return;
+    go(parseInt(el.dataset.go,10));
+  });
+</script>
+</body>
+</html>

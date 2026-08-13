@@ -1,0 +1,377 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Materials — PGP</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Source+Serif+Pro:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  :root, [data-theme="light"] {
+    --paper:#fbfaf7; --card:#ffffff; --card-2:#f5f2eb;
+    --ink:#0f1130; --ink-2:#2a2d50; --muted:#6a6d8a;
+    --line:#e6e3da; --line-strong:#c9c4b4;
+    --accent:#ee5d2b; --accent-2:#c64b1f; --accent-soft:#fde5d7;
+    --navy:#0f1130; --navy-soft:#e3e5f4;
+    --success:#2f6f4f; --success-soft:#dff0e3;
+    --warn:#b06a0e; --warn-soft:#fbe8c4;
+    --danger:#b8331f; --danger-soft:#fadbd2;
+  }
+  [data-theme="dark"] {
+    --paper:#080a1c; --card:#11142b; --card-2:#181b35;
+    --ink:#f5f3ec; --ink-2:#c2bfb6; --muted:#7e7c92;
+    --line:#232545; --line-strong:#3a3d62;
+    --accent:#ff8a5a; --accent-2:#ffa37f; --accent-soft:rgba(255,138,90,0.14);
+    --navy:#8ea3ff; --navy-soft:rgba(142,163,255,0.16);
+    --success:#74d49f; --success-soft:rgba(116,212,159,0.14);
+    --warn:#f0b95a; --warn-soft:rgba(240,185,90,0.14);
+    --danger:#f4907a; --danger-soft:rgba(244,144,122,0.14);
+  }
+  * { box-sizing:border-box; }
+  html, body { margin:0; padding:0; }
+  body { font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:var(--paper); color:var(--ink); font-size:14px; line-height:1.45; -webkit-font-smoothing:antialiased; }
+  h1,h2,h3,h4 { font-family:'Cambria','Source Serif Pro',Georgia,serif; font-weight:500; margin:0; letter-spacing:-0.01em; }
+  .num { font-variant-numeric:tabular-nums; }
+  .muted { color:var(--muted); }
+  .eyebrow { font-size:11px; letter-spacing:0.12em; text-transform:uppercase; font-weight:600; color:var(--muted); }
+  .row { display:flex; align-items:center; gap:10px; }
+  .grow { flex:1; min-width:0; }
+
+  .app { display:flex; min-height:100vh; }
+  .sb { width:240px; min-width:240px; background:var(--card); border-right:1px solid var(--line); padding:20px 14px; display:flex; flex-direction:column; gap:2px; position:sticky; top:0; height:100vh; }
+  .sb-logo { display:flex; align-items:center; padding:4px 8px 22px; }
+  .sb-logo img { height:22px; width:auto; }
+  .sb-grp { font-size:10px; letter-spacing:0.1em; text-transform:uppercase; color:var(--muted); padding:14px 10px 4px; }
+  .nav { display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:8px; cursor:pointer; color:var(--ink-2); font-size:13.5px; font-weight:500; }
+  .nav:hover { background:var(--line); }
+  .nav.active { background:var(--accent-soft); color:var(--accent-2); }
+  .sb-user { margin-top:auto; padding:12px; border:1px solid var(--line); border-radius:10px; display:flex; gap:10px; align-items:center; }
+  .avatar { width:32px; height:32px; border-radius:50%; background:var(--navy); color:#fff; display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:600; flex-shrink:0; }
+  [data-theme="dark"] .avatar { color:#0f1130; }
+
+  .main { flex:1; min-width:0; display:flex; flex-direction:column; }
+  .top { padding:22px 36px 18px; display:flex; justify-content:space-between; align-items:flex-start; gap:24px; }
+  .top > .top-left { flex:1; min-width:0; }
+  .crumb { font-size:13px; color:var(--muted); margin-bottom:4px; }
+  .crumb a { color:var(--accent); text-decoration:none; font-weight:600; }
+  .title { font-size:30px; line-height:1.1; }
+  .actions { display:flex; align-items:center; gap:10px; flex-shrink:0; flex-wrap:wrap; justify-content:flex-end; }
+
+  .btn { appearance:none; border:1px solid var(--line-strong); background:var(--card); color:var(--ink); padding:8px 14px; border-radius:8px; font:500 13px 'Inter',sans-serif; cursor:pointer; display:inline-flex; align-items:center; gap:7px; transition:background .12s,border-color .12s,transform .06s; white-space:nowrap; }
+  .btn:hover { background:var(--line); }
+  .btn:active { transform:translateY(.5px); }
+  .btn.accent { background:var(--accent); color:#fff; border-color:var(--accent); }
+  .btn.accent:hover { background:var(--accent-2); border-color:var(--accent-2); }
+  .btn.ghost { background:transparent; border-color:transparent; color:var(--ink-2); }
+  .btn.ghost:hover { background:var(--line); color:var(--ink); }
+  .btn.danger-outline { border-color:var(--line-strong); color:var(--danger); }
+  .btn.tiny { padding:5px 10px; font-size:12px; border-radius:6px; }
+
+  .seg { display:inline-flex; background:var(--navy); border-radius:8px; padding:3px; gap:2px; }
+  [data-theme="dark"] .seg { background:var(--card-2); border:1px solid var(--line); }
+  .seg button { appearance:none; border:0; background:transparent; color:rgba(255,255,255,0.6); font:600 12px 'Inter',sans-serif; padding:5px 12px; border-radius:6px; cursor:pointer; }
+  [data-theme="dark"] .seg button { color:var(--muted); }
+  .seg button.on { background:#fff; color:var(--navy); }
+  [data-theme="dark"] .seg button.on { background:var(--navy); color:#0f1130; }
+
+  .content { padding:6px 36px 60px; }
+  .pinfo { display:flex; align-items:center; gap:12px; padding:16px 20px; background:var(--card); border:1px solid var(--line); border-radius:12px; margin-bottom:18px; cursor:pointer; }
+  .pinfo strong { white-space:nowrap; flex-shrink:0; }
+  .pinfo .tri { color:var(--muted); font-size:12px; }
+  .pinfo .right { margin-left:auto; color:var(--muted); font-size:13px; }
+  .pinfo .right a { color:var(--accent); text-decoration:none; }
+
+  .tabs { display:flex; gap:26px; border-bottom:1px solid var(--line); margin-bottom:2px; }
+  .tab { padding:10px 2px 14px; font-size:15px; font-weight:500; color:var(--muted); cursor:pointer; border-bottom:2px solid transparent; margin-bottom:-1px; }
+  .tab:hover { color:var(--ink); }
+  .tab.active { color:var(--ink); border-bottom-color:var(--accent); }
+
+  .subtabbar { display:flex; align-items:center; border-bottom:1px solid var(--line); margin:16px 0 24px; }
+  .subtabs { display:flex; gap:22px; flex-wrap:wrap; flex:1; }
+  .subtab { padding:8px 2px 12px; font-size:13.5px; font-weight:500; color:var(--muted); cursor:pointer; border-bottom:2px solid transparent; margin-bottom:-1px; }
+  .subtab:hover { color:var(--ink); }
+  .subtab.active { color:var(--ink); border-bottom-color:var(--accent); }
+  .uploadq { color:var(--accent); font-weight:600; font-size:13px; cursor:pointer; display:inline-flex; gap:6px; align-items:center; padding-bottom:8px; }
+
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; }
+  .card-hd { padding:16px 20px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+  .card-hd h2 { white-space:nowrap; flex-shrink:0; }
+  .card-bd { padding:20px; }
+
+  .pill { display:inline-flex; align-items:center; gap:6px; padding:3px 10px; border-radius:999px; font-size:11.5px; font-weight:600; background:var(--line); color:var(--ink-2); white-space:nowrap; }
+  .pill.dot::before { content:''; width:6px; height:6px; border-radius:50%; background:currentColor; }
+  .pill.success { background:var(--success-soft); color:var(--success); }
+  .pill.warn { background:var(--warn-soft); color:var(--warn); }
+  .pill.navy { background:var(--navy-soft); color:var(--navy); }
+  .pill.muted { background:var(--line); color:var(--muted); }
+
+  .bar { height:6px; background:var(--line); border-radius:3px; overflow:hidden; min-width:90px; }
+  .bar > i { display:block; height:100%; background:var(--navy); border-radius:3px; }
+  .bar.success > i { background:var(--success); }
+  .bar.warn > i { background:var(--warn); }
+
+  .input, .select { background:var(--card); border:1px solid var(--line-strong); border-radius:8px; padding:8px 12px; font:400 13px 'Inter',sans-serif; color:var(--ink); }
+  .input::placeholder { color:var(--muted); }
+  .input:focus, .select:focus { outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); }
+
+  /* switch */
+  .switch { display:inline-flex; align-items:center; gap:8px; cursor:pointer; font-size:12.5px; color:var(--ink-2); white-space:nowrap; }
+  .switch .track { width:34px; height:19px; border-radius:999px; background:var(--line-strong); position:relative; transition:background .15s; flex-shrink:0; }
+  .switch .track::after { content:''; position:absolute; top:2px; left:2px; width:15px; height:15px; border-radius:50%; background:#fff; transition:transform .15s; box-shadow:0 1px 2px rgba(0,0,0,.2); }
+  .switch.on .track { background:var(--accent); }
+  .switch.on .track::after { transform:translateX(15px); }
+
+  .stats { display:grid; gap:14px; margin-bottom:18px; }
+  .stats.s5 { grid-template-columns:repeat(5,1fr); }
+  .stats.s4 { grid-template-columns:repeat(4,1fr); }
+  .stat { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px 18px; display:flex; flex-direction:column; gap:3px; }
+  .stat .lbl { font-size:11px; letter-spacing:0.06em; text-transform:uppercase; font-weight:600; color:var(--muted); }
+  .stat .val { font-family:'Cambria',serif; font-size:24px; font-weight:500; }
+  .stat .val.pos { color:var(--success); }
+  .stat .sub { font-size:12px; color:var(--muted); }
+
+  .dt { width:100%; border-collapse:separate; border-spacing:0; font-size:13px; }
+  .dt th, .dt td { padding:12px 16px; border-bottom:1px solid var(--line); text-align:left; vertical-align:middle; }
+  .dt th { font-size:11px; letter-spacing:0.06em; text-transform:uppercase; color:var(--muted); font-weight:600; }
+  .dt td.num, .dt th.num { text-align:right; font-variant-numeric:tabular-nums; }
+  .dt tr:last-child td { border-bottom:0; }
+  .dt tbody tr:hover td { background:var(--accent-soft); }
+  .delta { font-size:11px; font-weight:600; white-space:nowrap; }
+  .delta.save { color:var(--success); }
+  .delta.over { color:var(--danger); }
+  .pos { color:var(--success); }
+  .link { color:var(--accent); font-weight:600; text-decoration:none; }
+
+  .fixtag { display:none; align-items:center; gap:5px; font-size:10px; font-weight:700; letter-spacing:0.04em; text-transform:uppercase; color:var(--accent-2); background:var(--accent-soft); border:1px solid var(--accent); border-radius:999px; padding:1px 8px; white-space:nowrap; }
+  body.show-fixes .fixtag { display:inline-flex; }
+  .fixnote { display:none; font-size:12.5px; color:var(--ink-2); background:var(--accent-soft); border:1px solid var(--accent); border-left-width:3px; border-radius:8px; padding:10px 14px; margin:0 0 16px; }
+  body.show-fixes .fixnote { display:block; }
+  .fixnote b { color:var(--accent-2); }
+
+  .hidden { display:none !important; }
+  svg { display:block; }
+</style>
+</head>
+<body data-theme="light" class="show-fixes">
+<div class="app">
+  <aside class="sb">
+    <div class="sb-logo"><img src="assets/pgp-logo.png" alt="PGP" /></div>
+    <div class="sb-grp">Workspace</div>
+    <div class="nav">Projects</div>
+    <div class="nav">Calendar</div>
+    <div class="nav">Applications</div>
+    <div class="nav">Purchase Orders</div>
+    <div class="nav">Approvals</div>
+    <div class="sb-grp">Master Data</div>
+    <div class="nav">Admin</div>
+    <div class="nav">Product library</div>
+    <div class="nav">Approved suppliers</div>
+    <div class="sb-user">
+      <div class="avatar">TB</div>
+      <div class="grow"><div style="font-size:13px;font-weight:600;">Thomas Barber</div><div style="font-size:12px;" class="muted">Superadmin · Approver</div></div>
+    </div>
+  </aside>
+
+  <div class="main">
+    <header class="top">
+      <div class="top-left">
+        <div class="crumb"><a href="#">Projects</a> / 26001</div>
+        <h1 class="title">Dallas Rd Block B Roofing</h1>
+        <div class="muted" style="font-size:13px;margin-top:6px;">Client · MCR</div>
+      </div>
+      <div class="actions">
+        <button class="btn ghost">Mark complete</button>
+        <button class="btn danger-outline">Delete project</button>
+        <button class="btn accent">+ Raise PO</button>
+        <div class="seg" id="themeSeg"><button class="on" data-theme-set="light">Light</button><button data-theme-set="dark">Dark</button></div>
+      </div>
+    </header>
+
+    <div class="content">
+      <div class="pinfo">
+        <span class="tri">▸</span><strong style="font-weight:600;">Project Info</strong>
+        <span class="right">Site details · <a href="#">Application terms</a></span>
+      </div>
+
+      <div class="tabs">
+        <div class="tab">Overview</div>
+        <div class="tab">Commercials</div>
+        <div class="tab active">Materials</div>
+        <div class="tab">Operations</div>
+      </div>
+
+      <div class="subtabbar">
+        <div class="subtabs">
+          <div class="subtab active" data-panel="m-materials">Materials</div>
+          <div class="subtab" data-panel="m-pos">Purchase orders</div>
+          <div class="subtab" data-panel="m-help">Help</div>
+        </div>
+        <span class="uploadq"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8 11V3M5 6l3-3 3 3M3 13h10"/></svg>Upload quote</span>
+      </div>
+
+      <div class="row" style="margin-bottom:18px;gap:10px;">
+        <span class="eyebrow">Demo</span>
+        <div class="seg" id="fixSeg" style="background:var(--card-2);border:1px solid var(--line);">
+          <button class="on" data-fix="on" style="color:var(--muted);">Show polish notes</button>
+          <button data-fix="off" style="color:var(--muted);">Hide</button>
+        </div>
+        <span class="muted" style="font-size:12px;">highlights the refinements vs the current build</span>
+      </div>
+
+      <!-- ============ MATERIALS ============ -->
+      <div class="panel" data-panel="m-materials">
+        <div class="stats s5">
+          <div class="stat"><span class="lbl">Priced material budget</span><span class="val num">£197,907.58</span></div>
+          <div class="stat"><span class="lbl">Committed</span><span class="val num">£3,628.80</span><span class="sub">2% of budget</span></div>
+          <div class="stat"><span class="lbl">Remaining</span><span class="val num">£194,278.78</span></div>
+          <div class="stat"><span class="lbl">Unpriced spend</span><span class="val num">£0.00</span><span class="sub">None</span></div>
+          <div class="stat"><span class="lbl">Quote savings</span><span class="val num pos">£3,077.70</span><span class="sub">vs BOQ · 12 items quoted</span></div>
+        </div>
+
+        <section class="card" style="margin-bottom:18px;">
+          <div class="card-hd"><h2 style="font-size:16px;">By supplier</h2><div class="grow"></div><span class="muted" style="font-size:12.5px;">priced vs committed per supplier</span></div>
+          <table class="dt">
+            <thead><tr><th>Supplier</th><th class="num">Items</th><th class="num">Priced</th><th class="num">Committed</th><th class="num">Remaining</th><th style="width:150px;">Usage</th></tr></thead>
+            <tbody>
+              <tr><td>Alumasc Water Management Solutions</td><td class="num">27</td><td class="num">£130,564.01</td><td class="num">£3,628.80</td><td class="num">£126,935.21</td><td><div class="bar"><i style="width:3%"></i></div><div class="muted num" style="font-size:11px;margin-top:3px;">3%</div></td></tr>
+              <tr><td class="muted">Unassigned</td><td class="num">13</td><td class="num">£35,172.71</td><td class="num">£0.00</td><td class="num">£35,172.71</td><td><div class="bar"><i style="width:0%"></i></div><div class="muted num" style="font-size:11px;margin-top:3px;">0%</div></td></tr>
+              <tr><td>Barwell Spares and Services Ltd</td><td class="num">15</td><td class="num">£15,553.78</td><td class="num">£0.00</td><td class="num">£15,553.78</td><td><div class="bar"><i style="width:0%"></i></div><div class="muted num" style="font-size:11px;margin-top:3px;">0%</div></td></tr>
+              <tr><td>Rockwool</td><td class="num">1</td><td class="num">£13,838.10</td><td class="num">£0.00</td><td class="num">£13,838.10</td><td><div class="bar"><i style="width:0%"></i></div><div class="muted num" style="font-size:11px;margin-top:3px;">0%</div></td></tr>
+              <tr><td>Fixfast Ltd</td><td class="num">5</td><td class="num">£2,778.98</td><td class="num">£0.00</td><td class="num">£2,778.98</td><td><div class="bar"><i style="width:0%"></i></div><div class="muted num" style="font-size:11px;margin-top:3px;">0%</div></td></tr>
+            </tbody>
+          </table>
+        </section>
+
+        <div class="fixnote"><b>Polish · Materials toolbar.</b> The "Materials · 41 · priced for this job" label + "Show full library" checkbox were wrapping into a cramped stack. Now a single clean toolbar: title + count pill on the left, a proper toggle and the filters laid out in one row that wraps gracefully. Blank suppliers read <b>"Unassigned"</b> instead of "—". Live price keeps the green ↓ saving / red ↑ over delta (now matching Labour).</div>
+
+        <section class="card">
+          <div class="card-hd">
+            <h2 style="font-size:16px;">Materials</h2>
+            <span class="pill">41</span>
+            <span class="muted" style="font-size:12.5px;">priced for this job</span>
+            <span class="fixtag">✓ polish</span>
+            <div class="grow"></div>
+            <div class="switch" id="libToggle"><span class="track"></span><span>Show full library</span></div>
+          </div>
+          <div class="card-hd" style="border-bottom:1px solid var(--line);gap:10px;">
+            <input class="input" placeholder="Filter items…" style="flex:1;min-width:160px;" />
+            <select class="select" style="min-width:170px;"><option>All suppliers</option></select>
+            <select class="select" style="min-width:150px;"><option>All types</option></select>
+          </div>
+          <table class="dt">
+            <thead><tr><th>Type</th><th>Item</th><th>Supplier</th><th class="num">BOQ cost</th><th class="num">Live</th><th>Unit</th><th class="num">Priced</th><th class="num">Committed</th><th class="num">Remaining</th><th style="width:120px;">Usage</th><th></th></tr></thead>
+            <tbody>
+              <tr>
+                <td class="muted">Preliminaries</td><td>Delivery</td><td class="muted">Unassigned</td>
+                <td class="num">£500.00</td><td class="num muted">—</td><td>ea</td>
+                <td class="num">2</td><td class="num">0</td><td class="num">2</td>
+                <td><div class="bar"><i style="width:0%"></i></div></td>
+                <td style="text-align:right;"><a class="link" href="#">Substitute</a></td>
+              </tr>
+              <tr>
+                <td class="muted">Roofing — Built-up</td><td>Euroroof Self Adhesive AVCL</td><td class="muted">Alumasc Water Mgmt</td>
+                <td class="num">£134.40</td>
+                <td class="num"><div>£131.54</div><div class="delta save">↓ £2.86</div></td><td>roll</td>
+                <td class="num">27</td><td class="num">27</td><td class="num">0</td>
+                <td><div class="bar success"><i style="width:100%"></i></div></td>
+                <td style="text-align:right;"><a class="link" href="#">Substitute</a></td>
+              </tr>
+              <tr>
+                <td class="muted">Roofing — Built-up</td><td>Euroroof Torch on Mineral Cap Sheet: Charcoal</td><td class="muted">Alumasc Water Mgmt</td>
+                <td class="num">£73.43</td><td class="num muted">—</td><td>Roll</td>
+                <td class="num">60</td><td class="num">0</td><td class="num">60</td>
+                <td><div class="bar"><i style="width:0%"></i></div></td>
+                <td style="text-align:right;"><a class="link" href="#">Substitute</a></td>
+              </tr>
+              <tr>
+                <td class="muted">Roofing — Built-up</td><td>Euroroof Torch on Mineral Cap Sheet: Walnut</td><td class="muted">Alumasc Water Mgmt</td>
+                <td class="num">£73.43</td>
+                <td class="num"><div>£71.80</div><div class="delta save">↓ £1.63</div></td><td>Roll</td>
+                <td class="num">2</td><td class="num">0</td><td class="num">2</td>
+                <td><div class="bar"><i style="width:0%"></i></div></td>
+                <td style="text-align:right;"><a class="link" href="#">Substitute</a></td>
+              </tr>
+              <tr>
+                <td class="muted">Insulation</td><td>Rockwool Hardrock Multi-Fix DD</td><td class="muted">Rockwool</td>
+                <td class="num">£42.10</td>
+                <td class="num"><div>£44.90</div><div class="delta over">↑ £2.80</div></td><td>m²</td>
+                <td class="num">328</td><td class="num">0</td><td class="num">328</td>
+                <td><div class="bar"><i style="width:0%"></i></div></td>
+                <td style="text-align:right;"><a class="link" href="#">Substitute</a></td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+      </div>
+
+      <!-- ============ PURCHASE ORDERS ============ -->
+      <div class="panel hidden" data-panel="m-pos">
+        <div class="stats s4">
+          <div class="stat"><span class="lbl">POs raised</span><span class="val num">1</span><span class="sub">all decided</span></div>
+          <div class="stat"><span class="lbl">Committed</span><span class="val num">£3,628.80</span><span class="sub">approved + issued + pending</span></div>
+          <div class="stat"><span class="lbl">In Xero</span><span class="val num">1</span><span class="sub">synced</span></div>
+          <div class="stat"><span class="lbl">Total value</span><span class="val num">£3,628.80</span><span class="sub">across all statuses</span></div>
+        </div>
+        <section class="card" style="margin-top:22px;">
+          <div class="card-hd"><h2 style="font-size:16px;">Purchase orders on this project</h2><div class="grow"></div><span class="pill">1</span></div>
+          <table class="dt">
+            <thead><tr><th>PO</th><th>Supplier</th><th class="num">Value</th><th>Status</th><th>Xero</th><th>Raised</th><th>By</th></tr></thead>
+            <tbody>
+              <tr>
+                <td><a class="link" href="#">PO-26001-0007</a></td>
+                <td>Alumasc Water Management Solutions</td>
+                <td class="num">£3,628.80</td>
+                <td><span class="pill success dot">approved</span></td>
+                <td><span class="pill success">✓ PO-0121</span></td>
+                <td class="muted">02 Jun 2026</td>
+                <td class="muted">tbarber@pgp.group</td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+      </div>
+
+      <!-- ============ HELP ============ -->
+      <div class="panel hidden" data-panel="m-help">
+        <section class="card">
+          <div class="card-hd"><h2 style="font-size:17px;">Help &amp; FAQ</h2><span class="muted" style="font-size:12.5px;">Materials</span></div>
+          <div class="card-bd" style="display:grid;grid-template-columns:repeat(3,1fr);gap:24px 32px;">
+            <div><div class="serif" style="font-family:'Cambria',serif;font-size:15px;margin-bottom:5px;">Pricing workbook</div><p class="muted" style="margin:0;font-size:13px;">Upload the project's pricing workbook to populate the materials list, labour BOQ and commercials. Re-uploading replaces the active snapshot.</p></div>
+            <div><div class="serif" style="font-family:'Cambria',serif;font-size:15px;margin-bottom:5px;">Supplier quotes</div><p class="muted" style="margin:0;font-size:13px;">Use ↑ Upload quote to add a supplier quote PDF. It's matched to the BOQ lines — review the deltas, then apply.</p></div>
+            <div><div class="serif" style="font-family:'Cambria',serif;font-size:15px;margin-bottom:5px;">Quote savings</div><p class="muted" style="margin:0;font-size:13px;">Applying a quote sets the Live price per material. Quote savings = (BOQ cost − live price) × quantity.</p></div>
+            <div><div class="serif" style="font-family:'Cambria',serif;font-size:15px;margin-bottom:5px;">Substitutions</div><p class="muted" style="margin:0;font-size:13px;">Swap a specified product for an alternative — the substitute's cost / supplier flows through to PO line defaults.</p></div>
+            <div><div class="serif" style="font-family:'Cambria',serif;font-size:15px;margin-bottom:5px;">Purchase orders</div><p class="muted" style="margin:0;font-size:13px;">Raise POs against priced materials. Over-budget / unpriced POs route for approval by tier; approved POs push to Xero.</p></div>
+            <div><div class="serif" style="font-family:'Cambria',serif;font-size:15px;margin-bottom:5px;">By supplier</div><p class="muted" style="margin:0;font-size:13px;">The By-supplier panel rolls up priced vs committed per supplier, so you can see who's been ordered against and what's left.</p></div>
+          </div>
+        </section>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<script>
+  document.getElementById('themeSeg').addEventListener('click', function(e){
+    var b = e.target.closest('[data-theme-set]'); if(!b) return;
+    document.body.setAttribute('data-theme', b.dataset.themeSet);
+    this.querySelectorAll('button').forEach(function(x){ x.classList.toggle('on', x===b); });
+  });
+  var subtabs = document.querySelector('.subtabs');
+  subtabs.addEventListener('click', function(e){
+    var t = e.target.closest('.subtab'); if(!t) return;
+    subtabs.querySelectorAll('.subtab').forEach(function(x){ x.classList.remove('active'); });
+    t.classList.add('active');
+    document.querySelectorAll('.panel').forEach(function(p){ p.classList.toggle('hidden', p.dataset.panel !== t.dataset.panel); });
+  });
+  var fixSeg = document.getElementById('fixSeg');
+  fixSeg.addEventListener('click', function(e){
+    var b = e.target.closest('[data-fix]'); if(!b) return;
+    document.body.classList.toggle('show-fixes', b.dataset.fix==='on');
+    fixSeg.querySelectorAll('button').forEach(function(x){ x.classList.toggle('on', x===b); });
+  });
+  var lib = document.getElementById('libToggle');
+  lib.addEventListener('click', function(){ lib.classList.toggle('on'); });
+</script>
+</body>
+</html>

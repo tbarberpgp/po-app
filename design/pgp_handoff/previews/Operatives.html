@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Operatives — PGP</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Source+Serif+Pro:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  :root, [data-theme="light"] {
+    --paper:#fbfaf7; --card:#ffffff; --card-2:#f5f2eb;
+    --ink:#0f1130; --ink-2:#2a2d50; --muted:#6a6d8a;
+    --line:#e6e3da; --line-strong:#c9c4b4;
+    --accent:#ee5d2b; --accent-2:#c64b1f; --accent-soft:#fde5d7;
+    --navy:#0f1130; --navy-soft:#e3e5f4;
+    --success:#2f6f4f; --success-soft:#dff0e3;
+    --warn:#b06a0e; --warn-soft:#fbe8c4;
+    --danger:#b8331f; --danger-soft:#fadbd2;
+  }
+  [data-theme="dark"] {
+    --paper:#080a1c; --card:#11142b; --card-2:#181b35;
+    --ink:#f5f3ec; --ink-2:#c2bfb6; --muted:#7e7c92;
+    --line:#232545; --line-strong:#3a3d62;
+    --accent:#ff8a5a; --accent-2:#ffa37f; --accent-soft:rgba(255,138,90,0.14);
+    --navy:#8ea3ff; --navy-soft:rgba(142,163,255,0.16);
+    --success:#74d49f; --success-soft:rgba(116,212,159,0.14);
+    --warn:#f0b95a; --warn-soft:rgba(240,185,90,0.14);
+    --danger:#f4907a; --danger-soft:rgba(244,144,122,0.14);
+  }
+  * { box-sizing:border-box; }
+  html, body { margin:0; padding:0; }
+  body { font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:var(--paper); color:var(--ink); font-size:14px; line-height:1.45; -webkit-font-smoothing:antialiased; }
+  h1,h2,h3 { font-family:'Cambria','Source Serif Pro',Georgia,serif; font-weight:500; margin:0; letter-spacing:-0.01em; }
+  .num { font-variant-numeric:tabular-nums; }
+  .muted { color:var(--muted); }
+  .eyebrow { font-size:11px; letter-spacing:0.12em; text-transform:uppercase; font-weight:600; color:var(--muted); }
+  .row { display:flex; align-items:center; gap:10px; }
+  .grow { flex:1; min-width:0; }
+
+  .app { display:flex; min-height:100vh; }
+  .sb { width:240px; min-width:240px; background:var(--card); border-right:1px solid var(--line); padding:20px 14px; display:flex; flex-direction:column; gap:2px; position:sticky; top:0; height:100vh; }
+  .sb-logo { display:flex; align-items:center; padding:4px 8px 22px; }
+  .sb-logo img { height:22px; width:auto; }
+  .sb-grp { font-size:10px; letter-spacing:0.1em; text-transform:uppercase; color:var(--muted); padding:14px 10px 4px; }
+  .nav { display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:8px; cursor:pointer; color:var(--ink-2); font-size:13.5px; font-weight:500; }
+  .nav:hover { background:var(--line); }
+  .nav.active { background:var(--accent-soft); color:var(--accent-2); }
+  .sb-user { margin-top:auto; padding:12px; border:1px solid var(--line); border-radius:10px; display:flex; gap:10px; align-items:center; }
+  .avatar { width:32px; height:32px; border-radius:50%; background:var(--navy); color:#fff; display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:600; flex-shrink:0; }
+  [data-theme="dark"] .avatar { color:#0f1130; }
+
+  .main { flex:1; min-width:0; display:flex; flex-direction:column; }
+  .top { padding:22px 36px 18px; display:flex; justify-content:space-between; align-items:flex-start; gap:24px; }
+  .title { font-size:30px; line-height:1.1; }
+  .actions { display:flex; align-items:center; gap:10px; }
+
+  .btn { appearance:none; border:1px solid var(--line-strong); background:var(--card); color:var(--ink); padding:8px 14px; border-radius:8px; font:500 13px 'Inter',sans-serif; cursor:pointer; display:inline-flex; align-items:center; gap:7px; transition:background .12s,border-color .12s; white-space:nowrap; }
+  .btn:hover { background:var(--line); }
+  .btn:disabled { opacity:.5; cursor:not-allowed; }
+  .btn.accent { background:var(--accent); color:#fff; border-color:var(--accent); }
+  .btn.accent:hover { background:var(--accent-2); border-color:var(--accent-2); }
+  .btn.primary { background:var(--navy); color:#fff; border-color:var(--navy); }
+  [data-theme="dark"] .btn.primary { color:#0f1130; }
+  .btn.ghost { background:transparent; border-color:transparent; color:var(--ink-2); }
+  .btn.ghost:hover { background:var(--line); color:var(--ink); }
+  .btn.danger-outline { border-color:var(--line-strong); color:var(--danger); }
+  .btn.danger-outline:hover { background:var(--danger-soft); }
+  .btn.tiny { padding:5px 10px; font-size:12px; border-radius:6px; }
+
+  .seg { display:inline-flex; background:var(--navy); border-radius:8px; padding:3px; gap:2px; }
+  [data-theme="dark"] .seg { background:var(--card-2); border:1px solid var(--line); }
+  .seg button { appearance:none; border:0; background:transparent; color:rgba(255,255,255,0.6); font:600 12px 'Inter',sans-serif; padding:5px 12px; border-radius:6px; cursor:pointer; }
+  [data-theme="dark"] .seg button { color:var(--muted); }
+  .seg button.on { background:#fff; color:var(--navy); }
+  [data-theme="dark"] .seg button.on { background:var(--navy); color:#0f1130; }
+
+  .content { padding:6px 36px 60px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; }
+  .card-hd { padding:16px 20px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:12px; }
+  .card-bd { padding:20px; }
+
+  .pill { display:inline-flex; align-items:center; gap:6px; padding:3px 10px; border-radius:999px; font-size:11.5px; font-weight:600; background:var(--line); color:var(--ink-2); white-space:nowrap; }
+  .pill.dot::before { content:''; width:6px; height:6px; border-radius:50%; background:currentColor; }
+  .pill.success { background:var(--success-soft); color:var(--success); }
+  .pill.warn { background:var(--warn-soft); color:var(--warn); }
+  .pill.danger { background:var(--danger-soft); color:var(--danger); }
+  .pill.count { background:var(--line); color:var(--ink-2); }
+  .ok { color:var(--success); }
+
+  .dt { width:100%; border-collapse:separate; border-spacing:0; font-size:13px; }
+  .dt th, .dt td { padding:13px 18px; border-bottom:1px solid var(--line); text-align:left; vertical-align:middle; }
+  .dt th { font-size:11px; letter-spacing:0.06em; text-transform:uppercase; color:var(--muted); font-weight:600; }
+  .dt tr:last-child td { border-bottom:0; }
+  .dt tbody tr { cursor:pointer; }
+  .dt tbody tr:hover td { background:var(--accent-soft); }
+  .dt tbody tr.sel td { background:var(--accent-soft); }
+  .dt .nm { font-weight:600; }
+
+  .field-label { font-size:11px; letter-spacing:0.08em; text-transform:uppercase; font-weight:600; color:var(--muted); margin-bottom:6px; display:block; }
+  .input { width:100%; background:var(--card); border:1px solid var(--line-strong); border-radius:8px; padding:9px 12px; font:400 13px 'Inter',sans-serif; color:var(--ink); }
+  .input:focus { outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); }
+  .readonly { background:var(--card-2); color:var(--muted); border-style:dashed; }
+  .select { background:var(--card); border:1px solid var(--line-strong); border-radius:8px; padding:9px 12px; font:400 13px 'Inter',sans-serif; color:var(--ink); }
+  .check { display:inline-flex; align-items:center; gap:8px; font-size:12.5px; color:var(--ink-2); cursor:pointer; text-transform:uppercase; letter-spacing:0.04em; font-weight:600; }
+  .check input { width:15px; height:15px; accent-color:var(--accent); }
+
+  .chip { appearance:none; border:1px solid var(--line-strong); background:var(--card); color:var(--ink-2); padding:7px 12px; border-radius:999px; font:500 12.5px 'Inter',sans-serif; cursor:pointer; display:inline-flex; align-items:center; gap:7px; }
+  .chip:hover { border-color:var(--accent); }
+  .chip .bx { width:14px; height:14px; border-radius:4px; border:1.5px solid var(--line-strong); display:inline-flex; align-items:center; justify-content:center; font-size:10px; color:transparent; flex-shrink:0; }
+  .chip.on { background:var(--accent-soft); border-color:var(--accent); color:var(--accent-2); }
+  .chip.on .bx { background:var(--accent); border-color:var(--accent); color:#fff; }
+
+  .info { border:1px solid var(--line); border-radius:12px; padding:16px 18px; }
+  .info .l { font-size:11px; letter-spacing:0.08em; text-transform:uppercase; font-weight:600; color:var(--muted); }
+  .info .v { font-family:'Cambria',serif; font-size:20px; margin-top:4px; }
+  .info .v.warn { color:var(--warn); }
+  .info .s { font-size:12px; color:var(--muted); margin-top:3px; }
+
+  .qcard { display:inline-flex; align-items:center; gap:8px; padding:8px 12px; border:1px solid var(--line-strong); border-radius:8px; font-size:13px; }
+  .qcard.expired { border-color:var(--danger); background:var(--danger-soft); color:var(--danger); }
+
+  .fixnote { display:none; font-size:12.5px; color:var(--ink-2); background:var(--accent-soft); border:1px solid var(--accent); border-left-width:3px; border-radius:8px; padding:10px 14px; margin:0 0 18px; }
+  body.show-fixes .fixnote { display:block; }
+  .fixnote b { color:var(--accent-2); }
+  svg { display:block; }
+</style>
+</head>
+<body data-theme="light" class="show-fixes">
+<div class="app">
+  <aside class="sb">
+    <div class="sb-logo"><img src="assets/pgp-logo.png" alt="PGP" /></div>
+    <div class="sb-grp">Workspace</div>
+    <div class="nav">Dashboard</div>
+    <div class="nav">Projects</div>
+    <div class="nav">Calendar</div>
+    <div class="nav">Applications</div>
+    <div class="nav">Purchase Orders</div>
+    <div class="nav active">Operatives</div>
+    <div class="nav">Approvals</div>
+    <div class="sb-grp">Master Data</div>
+    <div class="nav">Admin</div>
+    <div class="nav">Product library</div>
+    <div class="nav">Approved suppliers</div>
+    <div class="sb-user">
+      <div class="avatar">TB</div>
+      <div class="grow"><div style="font-size:13px;font-weight:600;">Thomas Barber</div><div style="font-size:12px;" class="muted">Superadmin · Approver</div></div>
+    </div>
+  </aside>
+
+  <div class="main">
+    <header class="top">
+      <div>
+        <div class="eyebrow" style="margin-bottom:4px;">Operations</div>
+        <h1 class="title">Operatives</h1>
+      </div>
+      <div class="actions">
+        <button class="btn accent">+ New operative</button>
+        <div class="seg" id="themeSeg"><button class="on" data-theme-set="light">Light</button><button data-theme-set="dark">Dark</button></div>
+      </div>
+    </header>
+
+    <div class="content">
+      <div class="row" style="margin-bottom:18px;gap:10px;">
+        <span class="eyebrow">Demo</span>
+        <div class="seg" id="fixSeg" style="background:var(--card-2);border:1px solid var(--line);">
+          <button class="on" data-fix="on" style="color:var(--muted);">Show polish notes</button>
+          <button data-fix="off" style="color:var(--muted);">Hide</button>
+        </div>
+        <span class="muted" style="font-size:12px;">click a row to open its profile</span>
+      </div>
+
+      <div class="fixnote"><b>Operatives workspace.</b> Register with semantic induction / RAMS statuses, and a click-to-open profile. Polished: induction reads <span style="color:var(--success);font-weight:600;">green when done</span> / <span style="color:var(--warn);font-weight:600;">amber when outstanding</span>, cards flag <span style="color:var(--danger);font-weight:600;">red when expired</span>, "Mark inducted" is a primary action and "Send RAMS" stays disabled until a site is chosen.</div>
+
+      <!-- Register -->
+      <section class="card" style="margin-bottom:18px;">
+        <div class="card-hd"><h2 style="font-size:17px;">Register</h2><span class="pill count">6</span><div class="grow"></div><input class="input" placeholder="Search name or company" style="width:240px;" /></div>
+        <table class="dt">
+          <thead><tr><th>Name</th><th>Company</th><th>Trade</th><th>Induction</th><th>Cards</th><th>RAMS</th></tr></thead>
+          <tbody id="reg"></tbody>
+        </table>
+      </section>
+
+      <!-- Profile -->
+      <section class="card">
+        <div class="card-hd">
+          <div class="row" style="gap:10px;">
+            <div class="avatar" id="pAv">PS</div>
+            <div>
+              <h2 style="font-size:18px;" id="pName">Priya Shah</h2>
+              <div class="muted" style="font-size:12.5px;" id="pMeta">SafeAccess · MEWP operator</div>
+            </div>
+          </div>
+          <div class="grow"></div>
+          <button class="btn primary">Mark inducted</button>
+          <button class="btn danger-outline">Remove</button>
+        </div>
+        <div class="card-bd">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:20px;">
+            <div class="info"><div class="l">Company induction</div><div class="v warn">Outstanding</div><div class="s">Not yet inducted to PGP</div></div>
+            <div class="info"><div class="l">Phone</div><div class="v num">07771 938872</div><div class="s">used to match site sign-ins</div></div>
+          </div>
+
+          <label class="field-label">Send their profile / RAMS link</label>
+          <div class="row" style="gap:10px;margin-bottom:8px;">
+            <input class="input" value="priya.shah@safeaccess.co.uk" style="max-width:320px;" />
+            <button class="btn accent">Email link</button>
+          </div>
+          <div class="row" style="gap:10px;margin-bottom:6px;">
+            <input class="input readonly" value="https://pgpprojects.com/operative/d68d1a08f48e4503" readonly style="max-width:420px;" />
+            <button class="btn tiny">Copy</button>
+            <a href="#" style="color:var(--accent);font-weight:600;font-size:13px;text-decoration:none;">Open</a>
+          </div>
+          <p class="muted" style="font-size:12.5px;margin:0 0 22px;">Email it, or copy the link for WhatsApp/text — they open it to read &amp; sign RAMS, see their cards and upload qualifications. No login needed.</p>
+
+          <div class="row" style="margin-bottom:10px;"><label class="field-label" style="margin:0;">Qualification cards</label><div class="grow"></div><button class="btn tiny">+ Add card / upload</button></div>
+          <div class="row" style="gap:10px;margin-bottom:22px;flex-wrap:wrap;">
+            <span class="qcard expired"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3.5" width="12" height="9" rx="1.5"/><path d="M2 6.5h12"/></svg>PASMA · expired 28 May 2026</span>
+            <span class="qcard"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3.5" width="12" height="9" rx="1.5"/><path d="M2 6.5h12"/></svg>CSCS · valid to Mar 2028</span>
+          </div>
+
+          <label class="field-label">RAMS</label>
+          <div class="info" style="padding:16px 18px;">
+            <p class="muted" style="font-size:12.5px;margin:0 0 12px;">Allocate to a site, then choose one or more RAMS to send — they sign each from their profile link.</p>
+            <div class="field-label">Site</div>
+            <select class="select" id="siteSel" style="min-width:280px;margin-bottom:14px;"><option value="">— select site —</option><option>26001 · Dallas Rd Block B Roofing</option><option>26003 · Dallas Rd Block D Roofing</option><option>26010 · Cornwall Wind Tie-in</option><option>26014 · Sizewell Yard</option></select>
+            <div class="field-label">RAMS to send</div>
+            <div class="row" style="flex-wrap:wrap;gap:8px;margin-bottom:14px;" id="ramsChips" data-locked="1">
+              <button class="chip" data-rams><span class="bx">✓</span>Roofing RAMS v3</button>
+              <button class="chip" data-rams><span class="bx">✓</span>Working at Height method</button>
+              <button class="chip" data-rams><span class="bx">✓</span>Hot works permit</button>
+              <button class="chip" data-rams><span class="bx">✓</span>Fragile roofs &amp; rooflights</button>
+            </div>
+            <div class="row" style="gap:10px;margin-bottom:12px;flex-wrap:wrap;">
+              <button class="btn accent" id="sendRams" disabled>Send <span id="ramsCount">0</span> RAMS</button>
+              <span class="muted" id="siteHint" style="font-size:12px;">Select a site to choose RAMS</span>
+              <label class="check"><input type="checkbox" checked /> Also send them the link now (email &amp; SMS)</label>
+            </div>
+            <div style="border-top:1px solid var(--line);padding-top:12px;">
+              <div class="row" style="gap:10px;">
+                <span class="pill warn dot">Awaiting signature</span>
+                <span style="font-size:13px;">Roofing RAMS v3</span>
+                <span class="muted" style="font-size:12.5px;">Dallas Rd Block B Roofing · sent 27 May</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+</div>
+
+<script>
+  var OPS = [
+    ['DW','Daniel Whyte','Apex Roofing Ltd','Roofer','in','CSCS','ok','daniel.whyte@apexroofing.co.uk','07700 900118'],
+    ['MN','Marek Nowak','Apex Roofing Ltd','Roofer','in','CSCS','ok','marek.nowak@apexroofing.co.uk','07700 900233'],
+    ['LC','Liam Carter','Heightline Scaffolding','Scaffolder','in','CISRS','ok','liam@heightline.co.uk','07700 900471'],
+    ['PS','Priya Shah','SafeAccess','MEWP operator','out','PASMA expired','pending','priya.shah@safeaccess.co.uk','07771 938872'],
+    ['SO','Sam Okafor','PGP','Site supervisor','in','CSCS · First aid','ok','s.okafor@pgp.group','07700 900662'],
+    ['JR','John Reilly','Apex Roofing Ltd','Labourer','out','CSCS','ok','john.reilly@apexroofing.co.uk','07700 900804']
+  ];
+  function indPill(s){ return s==='in' ? '<span class="pill success dot">Inducted</span>' : '<span class="pill warn dot">Not inducted</span>'; }
+  function cardsCell(s){ return /expired/i.test(s) ? '<span class="pill danger">'+s+'</span>' : '<span style="font-size:12.5px;color:var(--ink-2);">'+s+'</span>'; }
+  function ramsCell(s){ return s==='ok' ? '<span class="ok">✓</span>' : '<span class="pill warn dot">Pending</span>'; }
+
+  var reg = document.getElementById('reg');
+  reg.innerHTML = OPS.map(function(o,i){
+    return '<tr data-i="'+i+'"'+(i===3?' class="sel"':'')+'>'+
+      '<td><div class="row" style="gap:10px;"><div class="avatar" style="width:28px;height:28px;font-size:10px;">'+o[0]+'</div><span class="nm">'+o[1]+'</span></div></td>'+
+      '<td>'+o[2]+'</td><td>'+o[3]+'</td><td>'+indPill(o[4])+'</td><td>'+cardsCell(o[5])+'</td><td>'+ramsCell(o[6])+'</td></tr>';
+  }).join('');
+
+  reg.addEventListener('click', function(e){
+    var tr = e.target.closest('tr'); if(!tr) return;
+    reg.querySelectorAll('tr').forEach(function(x){ x.classList.remove('sel'); });
+    tr.classList.add('sel');
+    var o = OPS[parseInt(tr.dataset.i,10)];
+    document.getElementById('pAv').textContent = o[0];
+    document.getElementById('pName').textContent = o[1];
+    document.getElementById('pMeta').textContent = o[2]+' · '+o[3];
+  });
+
+  // Single site → unlocks multi-select RAMS chips
+  var siteSel = document.getElementById('siteSel');
+  var ramsChips = document.getElementById('ramsChips');
+  var sendRams = document.getElementById('sendRams');
+  var ramsCount = document.getElementById('ramsCount');
+  var siteHint = document.getElementById('siteHint');
+  function refreshRams(){
+    var locked = !siteSel.value;
+    ramsChips.style.opacity = locked ? '0.45' : '1';
+    ramsChips.style.pointerEvents = locked ? 'none' : 'auto';
+    if(locked){ ramsChips.querySelectorAll('.chip.on').forEach(function(c){ c.classList.remove('on'); }); }
+    var n = ramsChips.querySelectorAll('.chip.on').length;
+    ramsCount.textContent = n;
+    sendRams.disabled = !(!locked && n > 0);
+    siteHint.textContent = locked ? 'Select a site to choose RAMS' : (n ? 'to ' + siteSel.value : 'Choose at least one RAMS');
+  }
+  siteSel.addEventListener('change', refreshRams);
+  ramsChips.addEventListener('click', function(e){
+    var c = e.target.closest('.chip'); if(!c) return;
+    c.classList.toggle('on'); refreshRams();
+  });
+  refreshRams();
+
+  document.getElementById('themeSeg').addEventListener('click', function(e){
+    var b = e.target.closest('[data-theme-set]'); if(!b) return;
+    document.body.setAttribute('data-theme', b.dataset.themeSet);
+    this.querySelectorAll('button').forEach(function(x){ x.classList.toggle('on', x===b); });
+  });
+  var fixSeg = document.getElementById('fixSeg');
+  fixSeg.addEventListener('click', function(e){
+    var b = e.target.closest('[data-fix]'); if(!b) return;
+    document.body.classList.toggle('show-fixes', b.dataset.fix==='on');
+    fixSeg.querySelectorAll('button').forEach(function(x){ x.classList.toggle('on', x===b); });
+  });
+</script>
+</body>
+</html>

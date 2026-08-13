@@ -1,0 +1,1296 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Briefings &amp; Toolbox — PGP</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Source+Serif+Pro:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  :root, [data-theme="light"] {
+    --paper:#fbfaf7; --card:#ffffff; --card-2:#f5f2eb;
+    --ink:#0f1130; --ink-2:#2a2d50; --muted:#6a6d8a;
+    --line:#e6e3da; --line-strong:#c9c4b4;
+    --accent:#ee5d2b; --accent-2:#c64b1f; --accent-soft:#fde5d7;
+    --navy:#0f1130; --navy-soft:#e3e5f4;
+    --success:#2f6f4f; --success-soft:#dff0e3;
+    --warn:#b06a0e; --warn-soft:#fbe8c4;
+    --danger:#b8331f; --danger-soft:#fadbd2;
+  }
+  [data-theme="dark"] {
+    --paper:#080a1c; --card:#11142b; --card-2:#181b35;
+    --ink:#f5f3ec; --ink-2:#c2bfb6; --muted:#7e7c92;
+    --line:#232545; --line-strong:#3a3d62;
+    --accent:#ff8a5a; --accent-2:#ffa37f; --accent-soft:rgba(255,138,90,0.14);
+    --navy:#8ea3ff; --navy-soft:rgba(142,163,255,0.16);
+    --success:#74d49f; --success-soft:rgba(116,212,159,0.14);
+    --warn:#f0b95a; --warn-soft:rgba(240,185,90,0.14);
+    --danger:#f4907a; --danger-soft:rgba(244,144,122,0.14);
+  }
+  * { box-sizing:border-box; }
+  html, body { margin:0; padding:0; }
+  body {
+    font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+    background:var(--paper); color:var(--ink);
+    font-size:14px; line-height:1.45;
+    -webkit-font-smoothing:antialiased;
+  }
+  h1,h2,h3,h4 { font-family:'Cambria','Source Serif Pro',Georgia,serif; font-weight:500; margin:0; letter-spacing:-0.01em; }
+  .serif { font-family:'Cambria','Source Serif Pro',Georgia,serif; }
+  .num { font-variant-numeric:tabular-nums; }
+  .muted { color:var(--muted); }
+  .eyebrow { font-size:11px; letter-spacing:0.12em; text-transform:uppercase; font-weight:600; color:var(--muted); }
+  .row { display:flex; align-items:center; gap:10px; }
+  .grow { flex:1; min-width:0; }
+
+  /* shell */
+  .app { display:flex; min-height:100vh; }
+  .sb {
+    width:240px; min-width:240px; background:var(--card);
+    border-right:1px solid var(--line); padding:20px 14px;
+    display:flex; flex-direction:column; gap:2px; position:sticky; top:0; height:100vh;
+  }
+  .sb-logo { display:flex; align-items:center; padding:4px 8px 22px; }
+  .sb-logo img { height:22px; width:auto; }
+  .sb-grp { font-size:10px; letter-spacing:0.1em; text-transform:uppercase; color:var(--muted); padding:14px 10px 4px; }
+  .nav { display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:8px; cursor:pointer; color:var(--ink-2); font-size:13.5px; font-weight:500; }
+  .nav:hover { background:var(--line); }
+  .nav.active { background:var(--accent-soft); color:var(--accent-2); }
+  .sb-user { margin-top:auto; padding:12px; border:1px solid var(--line); border-radius:10px; display:flex; gap:10px; align-items:center; }
+  .avatar { width:32px; height:32px; border-radius:50%; background:var(--navy); color:#fff; display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:600; flex-shrink:0; }
+  [data-theme="dark"] .avatar { color:#0f1130; }
+
+  .main { flex:1; min-width:0; display:flex; flex-direction:column; }
+  .top { padding:22px 36px 18px; display:flex; justify-content:space-between; align-items:flex-start; gap:24px; }
+  .top > .top-left { flex:1; min-width:0; }
+  .crumb { font-size:13px; color:var(--muted); margin-bottom:4px; }
+  .crumb a { color:var(--accent); text-decoration:none; font-weight:600; }
+  .title { font-size:30px; line-height:1.1; }
+  .actions { display:flex; align-items:center; gap:10px; flex-shrink:0; flex-wrap:wrap; justify-content:flex-end; }
+
+  .btn { appearance:none; border:1px solid var(--line-strong); background:var(--card); color:var(--ink); padding:8px 14px; border-radius:8px; font:500 13px 'Inter',sans-serif; cursor:pointer; display:inline-flex; align-items:center; gap:7px; transition:background .12s,border-color .12s,transform .06s; white-space:nowrap; }
+  .btn:hover { background:var(--line); }
+  .btn:active { transform:translateY(.5px); }
+  .btn.primary { background:var(--navy); color:#fff; border-color:var(--navy); }
+  [data-theme="dark"] .btn.primary { color:#0f1130; }
+  .btn.primary:hover { filter:brightness(1.08); }
+  .btn.accent { background:var(--accent); color:#fff; border-color:var(--accent); }
+  .btn.accent:hover { background:var(--accent-2); border-color:var(--accent-2); }
+  .btn.ghost { background:transparent; border-color:transparent; color:var(--ink-2); }
+  .btn.ghost:hover { background:var(--line); color:var(--ink); }
+  .btn.danger-outline { border-color:var(--line-strong); color:var(--danger); }
+  .btn.danger-outline:hover { background:var(--danger-soft); }
+  .btn.tiny { padding:5px 10px; font-size:12px; border-radius:6px; }
+
+  /* theme seg */
+  .seg { display:inline-flex; background:var(--navy); border-radius:8px; padding:3px; gap:2px; }
+  [data-theme="dark"] .seg { background:var(--card-2); border:1px solid var(--line); }
+  .seg button { appearance:none; border:0; background:transparent; color:rgba(255,255,255,0.6); font:600 12px 'Inter',sans-serif; padding:5px 12px; border-radius:6px; cursor:pointer; }
+  [data-theme="dark"] .seg button { color:var(--muted); }
+  .seg button.on { background:#fff; color:var(--navy); }
+  [data-theme="dark"] .seg button.on { background:var(--navy); color:#0f1130; }
+
+  .content { padding:6px 36px 60px; }
+
+  /* project info bar */
+  .pinfo { display:flex; align-items:center; gap:12px; padding:16px 20px; background:var(--card); border:1px solid var(--line); border-radius:12px; margin-bottom:18px; cursor:pointer; }
+  .pinfo strong { white-space:nowrap; flex-shrink:0; }
+  .pinfo .tri { color:var(--muted); font-size:12px; }
+  .pinfo .right { margin-left:auto; color:var(--muted); font-size:13px; }
+  .pinfo .right a { color:var(--accent); text-decoration:none; }
+
+  /* tabs */
+  .tabs { display:flex; gap:26px; border-bottom:1px solid var(--line); margin-bottom:2px; }
+  .tab { padding:10px 2px 14px; font-size:15px; font-weight:500; color:var(--muted); cursor:pointer; border-bottom:2px solid transparent; margin-bottom:-1px; }
+  .tab:hover { color:var(--ink); }
+  .tab.active { color:var(--ink); border-bottom-color:var(--accent); }
+
+  .subtabs { display:flex; gap:22px; flex-wrap:wrap; border-bottom:1px solid var(--line); margin:16px 0 24px; }
+  .subtab { padding:8px 2px 12px; font-size:13.5px; font-weight:500; color:var(--muted); cursor:pointer; border-bottom:2px solid transparent; margin-bottom:-1px; }
+  .subtab:hover { color:var(--ink); }
+  .subtab.active { color:var(--ink); border-bottom-color:var(--accent); }
+
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; }
+  .card-hd { padding:16px 20px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:12px; }
+  .card-hd h2 { white-space:nowrap; flex-shrink:0; }
+  .card-hd .pill { flex-shrink:0; }
+  .card-hd .hint { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0; }
+  .card-bd { padding:20px; }
+
+  .pill { display:inline-flex; align-items:center; gap:6px; padding:3px 10px; border-radius:999px; font-size:11.5px; font-weight:600; background:var(--line); color:var(--ink-2); white-space:nowrap; }
+  .pill.dot::before { content:''; width:6px; height:6px; border-radius:50%; background:currentColor; }
+  .pill.success { background:var(--success-soft); color:var(--success); }
+  .pill.warn { background:var(--warn-soft); color:var(--warn); }
+  .pill.navy { background:var(--navy-soft); color:var(--navy); }
+  [data-theme="light"] .pill.navy { color:var(--navy); }
+  .pill.muted { background:var(--line); color:var(--muted); }
+
+  .bar { height:6px; background:var(--line); border-radius:3px; overflow:hidden; }
+  .bar > i { display:block; height:100%; background:var(--navy); border-radius:3px; }
+  .bar.warn > i { background:var(--warn); }
+  .bar.success > i { background:var(--success); }
+
+  .field-label { font-size:11px; letter-spacing:0.08em; text-transform:uppercase; font-weight:600; color:var(--muted); margin-bottom:6px; display:block; }
+  .input, .textarea { width:100%; background:var(--card); border:1px solid var(--line-strong); border-radius:8px; padding:10px 12px; font:400 14px 'Inter',sans-serif; color:var(--ink); }
+  .input::placeholder, .textarea::placeholder { color:var(--muted); }
+  .input:focus, .textarea:focus { outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); }
+  .textarea { min-height:96px; resize:vertical; line-height:1.5; }
+
+  /* daily briefing card */
+  .daily { border-left:3px solid var(--navy); }
+  .daily .card-hd { gap:10px; }
+
+  .ack { display:flex; align-items:center; gap:12px; }
+  .ack .nums { font-family:'Cambria',serif; font-size:18px; }
+
+  /* toolbox list */
+  .tb-list { display:flex; flex-direction:column; }
+  .tb-row { display:grid; grid-template-columns:1fr 200px 150px 90px; gap:16px; align-items:center; padding:16px 20px; border-top:1px solid var(--line); cursor:pointer; }
+  .tb-row:hover { background:var(--accent-soft); }
+  .tb-row:first-child { border-top:0; }
+  .tb-title { font-weight:600; font-size:14px; }
+  .tb-sub { font-size:12.5px; color:var(--muted); margin-top:2px; }
+  .tb-icon { width:38px; height:38px; border-radius:9px; background:var(--card-2); display:flex; align-items:center; justify-content:center; flex-shrink:0; color:var(--ink-2); }
+
+  /* empty state */
+  .empty { text-align:center; padding:44px 24px; }
+  .empty .ic { width:52px; height:52px; border-radius:14px; background:var(--card-2); display:inline-flex; align-items:center; justify-content:center; color:var(--muted); margin-bottom:14px; }
+  .templates { display:flex; flex-wrap:wrap; gap:10px; justify-content:center; max-width:560px; margin:18px auto 0; }
+  .tmpl { display:inline-flex; align-items:center; gap:8px; padding:9px 14px; border:1px solid var(--line-strong); border-radius:999px; font-size:13px; font-weight:500; cursor:pointer; background:var(--card); }
+  .tmpl:hover { border-color:var(--accent); color:var(--accent-2); background:var(--accent-soft); }
+  .tmpl.on { border-color:var(--accent); color:var(--accent-2); background:var(--accent-soft); }
+  .tmpl .bx { width:13px; height:13px; border-radius:4px; border:1.5px solid var(--line-strong); display:inline-flex; align-items:center; justify-content:center; font-size:9px; color:transparent; }
+  .tmpl.on .bx { background:var(--accent); border-color:var(--accent); color:#fff; }
+  .chipf { padding:6px 11px; border:1px solid var(--line-strong); border-radius:999px; font-size:12px; font-weight:600; background:var(--card); cursor:pointer; color:var(--ink-2); }
+  .chipf.on { background:var(--ink); color:var(--paper); border-color:var(--ink); }
+  .rcp-row { display:flex; align-items:center; gap:10px; padding:9px 12px; border-top:1px solid var(--line); cursor:pointer; }
+  .rcp-row:first-child { border-top:0; }
+  .rcp-row input { width:15px; height:15px; accent-color:var(--accent); flex-shrink:0; }
+  .rcp-row .av { width:26px; height:26px; border-radius:50%; background:var(--navy); color:#fff; display:flex; align-items:center; justify-content:center; font-size:9px; font-weight:700; flex-shrink:0; }
+  [data-theme="dark"] .rcp-row .av { color:#0f1130; }
+  .rcp-row .nm { font-weight:600; font-size:13px; }
+  .rcp-row .sub { font-size:11.5px; color:var(--muted); }
+  .tmpl .req { font-size:10px; font-weight:700; color:var(--warn); background:var(--warn-soft); padding:1px 6px; border-radius:999px; letter-spacing:0.04em; }
+
+  .section-gap { height:24px; }
+  .hidden { display:none !important; }
+
+  /* attendance */
+  .stats { display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin-bottom:18px; }
+  .stat { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px 16px; display:flex; flex-direction:column; gap:3px; }
+  .stat-val { font-family:'Cambria','Source Serif Pro',Georgia,serif; font-size:24px; font-weight:500; }
+  .att-grid { display:grid; grid-template-columns:288px 1fr; gap:18px; align-items:start; }
+  .att-tools { display:flex; gap:8px; align-items:center; flex-shrink:0; }
+  .att-search { display:flex; align-items:center; gap:7px; color:var(--muted); }
+  .att-search svg { flex-shrink:0; }
+
+  /* faux QR */
+  .qr { display:grid; grid-template-columns:repeat(var(--n,25),1fr); grid-template-rows:repeat(var(--n,25),1fr); width:190px; height:190px; margin:0 auto; padding:10px; background:#fff; border:1px solid var(--line); border-radius:10px; gap:0; }
+  .qr > i { background:#0f1130; display:block; }
+
+  /* roster */
+  .roster-head, .roster-row { display:grid; grid-template-columns:1.4fr 1fr 74px 1fr 1fr 132px; gap:14px; align-items:center; }
+  .roster-head { padding:10px 20px; font-size:11px; letter-spacing:0.06em; text-transform:uppercase; font-weight:600; color:var(--muted); border-bottom:1px solid var(--line); }
+  .roster-row { padding:12px 20px; border-top:1px solid var(--line); }
+  .roster-row:first-child { border-top:0; }
+  .roster-row:hover { background:var(--accent-soft); }
+  .roster-row.is-out { opacity:0.6; }
+
+  /* sign-in location map */
+  .attmap { position:relative; height:230px; margin:0 20px 4px; border:1px solid var(--line); border-radius:10px; overflow:hidden; background:#eef1ea; }
+  [data-theme="dark"] .attmap { background:#0e1326; }
+  .attmap .mlabel { position:absolute; top:10px; left:10px; z-index:3; background:var(--card); border:1px solid var(--line); border-radius:7px; padding:5px 10px; font-size:11.5px; font-weight:600; color:var(--ink-2); display:flex; align-items:center; gap:7px; }
+  .attmap .mlabel .d { width:8px; height:8px; border-radius:50%; background:var(--accent); }
+  .attmap .attrib { position:absolute; bottom:6px; right:8px; z-index:3; font-size:10px; color:var(--muted); }
+  .pin { position:absolute; transform:translate(-50%,-100%); z-index:2; }
+  .pin .head { width:26px; height:26px; border-radius:50% 50% 50% 0; background:var(--accent); transform:rotate(-45deg); border:2px solid var(--card); box-shadow:0 2px 5px rgba(0,0,0,.25); display:flex; align-items:center; justify-content:center; }
+  .pin .head span { transform:rotate(45deg); color:#fff; font-size:9px; font-weight:700; }
+  .pin.out .head { background:var(--muted); }
+  .r-name { font-weight:600; font-size:13.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .r-sub { font-size:12px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .r-trade { font-size:13px; color:var(--ink-2); }
+
+  /* generic list rows (deliveries / docs / plant) */
+  .lhead { padding:10px 20px; font-size:11px; letter-spacing:0.06em; text-transform:uppercase; font-weight:600; color:var(--muted); border-bottom:1px solid var(--line); display:grid; gap:14px; align-items:center; }
+  .lrow { padding:14px 20px; border-top:1px solid var(--line); display:grid; gap:14px; align-items:center; }
+  .lrow:first-of-type { border-top:0; }
+  .lrow:hover { background:var(--accent-soft); }
+  .lrow.is-muted { opacity:0.6; }
+  .l-title { font-weight:600; font-size:13.5px; }
+  .l-sub { font-size:12px; color:var(--muted); margin-top:2px; }
+  .grp-head { padding:14px 20px 6px; font-size:11px; letter-spacing:0.08em; text-transform:uppercase; font-weight:600; color:var(--muted); }
+
+  /* mini signed bar */
+  .minibar { display:flex; align-items:center; gap:8px; }
+  .minibar .bar { flex:1; min-width:60px; max-width:120px; height:5px; }
+
+  /* progress gallery */
+  .gallery { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; padding:16px 20px; }
+  .photo { border:1px solid var(--line); border-radius:10px; overflow:hidden; background:var(--card); cursor:pointer; transition:transform .08s; }
+  .photo:hover { transform:translateY(-2px); }
+  .ph-img { aspect-ratio:4/3; display:flex; align-items:center; justify-content:center; color:var(--muted); background:repeating-linear-gradient(135deg,var(--card-2) 0 10px,transparent 10px 11px); position:relative; }
+  .ph-tag { position:absolute; top:8px; left:8px; }
+  .ph-cap { padding:9px 11px; }
+  .ph-cap .t { font-size:13px; font-weight:600; }
+  .ph-cap .s { font-size:11.5px; color:var(--muted); margin-top:1px; }
+
+  /* upload dropzone */
+  .dropzone { border:1px dashed var(--line-strong); border-radius:12px; padding:28px; text-align:center; color:var(--muted); margin:16px 20px; }
+
+  svg { display:block; }
+</style>
+</head>
+<body data-theme="light">
+<div class="app">
+  <!-- Sidebar -->
+  <aside class="sb">
+    <div class="sb-logo"><img src="assets/pgp-logo.png" alt="PGP" /></div>
+    <div class="sb-grp">Workspace</div>
+    <div class="nav">Projects</div>
+    <div class="nav">Calendar</div>
+    <div class="nav">Applications</div>
+    <div class="nav">Purchase Orders</div>
+    <div class="nav">Approvals</div>
+    <div class="sb-grp">Master Data</div>
+    <div class="nav">Admin</div>
+    <div class="nav">Product library</div>
+    <div class="nav">Deleted projects</div>
+    <div class="nav">Approved suppliers</div>
+    <div class="sb-user">
+      <div class="avatar">TB</div>
+      <div class="grow">
+        <div style="font-size:13px;font-weight:600;">Thomas Barber</div>
+        <div style="font-size:12px;" class="muted">Superadmin · Approver</div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <div class="main">
+    <header class="top">
+      <div class="top-left">
+        <div class="crumb"><a href="#">Projects</a> / 26001</div>
+        <h1 class="title">Dallas Rd Block B Roofing</h1>
+        <div class="muted" style="font-size:13px;margin-top:6px;">Client · MCR</div>
+      </div>
+      <div class="actions">
+        <button class="btn ghost">Mark complete</button>
+        <button class="btn danger-outline">Delete project</button>
+        <div class="seg" id="themeSeg">
+          <button class="on" data-theme-set="light">Light</button>
+          <button data-theme-set="dark">Dark</button>
+        </div>
+      </div>
+    </header>
+
+    <div class="content">
+      <div class="pinfo">
+        <span class="tri">▸</span>
+        <strong style="font-weight:600;">Project Info</strong>
+        <span class="right">Site details · <a href="#">Application terms</a></span>
+      </div>
+
+      <div class="tabs">
+        <div class="tab">Overview</div>
+        <div class="tab">Commercials</div>
+        <div class="tab">Materials</div>
+        <div class="tab active">Operations</div>
+      </div>
+
+      <div class="subtabs">
+        <div class="subtab active" data-panel="attendance">Attendance</div>
+        <div class="subtab" data-panel="operatives">Operatives</div>
+        <div class="subtab" data-panel="briefings">Briefings &amp; toolbox</div>
+        <div class="subtab" data-panel="deliveries">Deliveries</div>
+        <div class="subtab" data-panel="rams">RAMS &amp; docs</div>
+        <div class="subtab" data-panel="progress">Progress photos</div>
+        <div class="subtab" data-panel="plant">Plant on site</div>
+      </div>
+
+      <!-- Preview state toggle (demo only) -->
+      <div class="row" style="margin-bottom:18px;gap:10px;">
+        <span class="eyebrow">Preview state</span>
+        <div class="seg" id="stateSeg" style="background:var(--card-2);border:1px solid var(--line);">
+          <button class="on" data-state="active" style="color:var(--muted);">Populated</button>
+          <button data-state="empty" style="color:var(--muted);">Empty / first run</button>
+        </div>
+        <span class="muted" style="font-size:12px;">demo toggle — not part of the page</span>
+      </div>
+
+      <!-- ================= ATTENDANCE PANEL ================= -->
+      <div class="panel" data-panel="attendance">
+        <!-- summary stats -->
+        <div class="stats" data-when="populated">
+          <div class="stat">
+            <span class="eyebrow">On site now</span>
+            <span class="stat-val num">7 <span class="pill success dot" style="margin-left:4px;vertical-align:middle;">live</span></span>
+          </div>
+          <div class="stat">
+            <span class="eyebrow">Signed in today</span>
+            <span class="stat-val num">9</span>
+          </div>
+          <div class="stat">
+            <span class="eyebrow">Briefing acknowledged</span>
+            <span class="stat-val num">8 <span class="muted" style="font-size:15px;">/ 9</span></span>
+            <span class="muted" style="font-size:12px;">1 awaiting on sign-in</span>
+          </div>
+          <div class="stat">
+            <span class="eyebrow">First sign-in</span>
+            <span class="stat-val num">06:40</span>
+            <span class="muted" style="font-size:12px;">S. Okafor · supervisor</span>
+          </div>
+        </div>
+
+        <div class="att-grid">
+          <!-- Site sign-in QR card -->
+          <aside class="card" style="height:fit-content;">
+            <div class="card-bd" style="text-align:center;">
+              <h3 class="serif" style="font-size:17px;margin-bottom:14px;">Site sign-in</h3>
+              <div class="qr" id="qr" aria-label="Sign-in QR code"></div>
+              <p class="muted" style="font-size:12.5px;margin:14px 4px 16px;line-height:1.5;">Operatives scan this (or open the link) to sign in, acknowledge today's briefing and record their location.</p>
+              <div class="row" style="gap:8px;">
+                <div class="input" style="flex:1;min-width:0;padding:8px 10px;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted);">https://pgpprojects.com/site/v9k2…</div>
+                <button class="btn tiny">Copy</button>
+              </div>
+              <div class="row" style="gap:18px;margin-top:14px;justify-content:center;">
+                <a href="#" style="color:var(--accent);font-weight:600;font-size:13px;text-decoration:none;">Open</a>
+                <a href="#" style="color:var(--ink-2);font-size:13px;text-decoration:none;">Print QR</a>
+                <a href="#" style="color:var(--ink-2);font-size:13px;text-decoration:none;">Reset link</a>
+              </div>
+            </div>
+          </aside>
+
+          <!-- Roster -->
+          <section class="card">
+            <div class="card-hd">
+              <h2 style="font-size:17px;">On site</h2>
+              <span class="pill" data-when="populated">7 here · 2 signed out</span>
+              <div class="grow"></div>
+              <div class="att-tools">
+                <div class="input att-search" style="padding:7px 10px;">
+                  <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="7" cy="7" r="5"/><path d="M11 11l3 3" stroke-linecap="round"/></svg>
+                  <span class="muted" style="font-size:13px;">Search name or company</span>
+                </div>
+                <button class="btn tiny" id="signOutAll">Sign out all</button>
+                <input type="date" class="input" value="2026-06-02" style="width:auto;padding:7px 10px;" />
+              </div>
+            </div>
+
+            <!-- populated roster -->
+            <div data-when="populated">
+              <div class="attmap">
+                <div class="mlabel"><span class="d"></span>Sign-in locations · today</div>
+                <span class="attrib">© OpenStreetMap</span>
+                <svg width="100%" height="100%" viewBox="0 0 900 230" preserveAspectRatio="xMidYMid slice" style="position:absolute;inset:0;">
+                  <rect width="900" height="230" fill="#eef1ea"/>
+                  <rect x="120" y="20" width="150" height="90" rx="4" fill="#d8e6cf"/>
+                  <rect x="640" y="120" width="170" height="95" rx="4" fill="#d8e6cf"/>
+                  <g stroke="#cfd3c8" stroke-width="10" fill="none">
+                    <path d="M-20 70 L920 95"/>
+                    <path d="M-20 165 L920 150"/>
+                    <path d="M180 -20 L210 250"/>
+                    <path d="M470 -20 L500 250"/>
+                    <path d="M700 -20 L730 250"/>
+                  </g>
+                  <g stroke="#e2e5db" stroke-width="4" fill="none">
+                    <path d="M-20 120 L920 120"/>
+                    <path d="M330 -20 L350 250"/>
+                    <path d="M590 -20 L610 250"/>
+                  </g>
+                  <g stroke="#c9b89a" stroke-width="3" stroke-dasharray="2 6" fill="none"><path d="M-20 40 L920 55"/></g>
+                </svg>
+                <!-- pins: clustered on-site + signed out -->
+                <div class="pin" style="left:47%;top:54%;"><div class="head"><span>DW</span></div></div>
+                <div class="pin" style="left:50%;top:48%;"><div class="head"><span>MN</span></div></div>
+                <div class="pin" style="left:44%;top:60%;"><div class="head"><span>TK</span></div></div>
+                <div class="pin" style="left:53%;top:58%;"><div class="head"><span>SO</span></div></div>
+                <div class="pin" style="left:40%;top:50%;"><div class="head"><span>LC</span></div></div>
+                <div class="pin" style="left:57%;top:52%;"><div class="head"><span>JR</span></div></div>
+                <div class="pin" style="left:49%;top:64%;"><div class="head"><span>PS</span></div></div>
+                <div class="pin out" style="left:71%;top:40%;"><div class="head"><span>AB</span></div></div>
+              </div>
+              <div class="roster-head">
+                <span>Operative</span><span>Trade</span><span>Signed in</span><span>Briefing</span><span>Location</span><span style="text-align:right;">Status</span>
+              </div>
+              <div class="tb-list" id="rosterRows"></div>
+            </div>
+
+            <!-- empty roster -->
+            <div data-when="empty" class="hidden">
+              <div class="card-bd">
+                <div style="border:1px dashed var(--line-strong);border-radius:12px;padding:48px 24px;text-align:center;">
+                  <div class="empty-ic" style="width:46px;height:46px;border-radius:12px;background:var(--card-2);display:inline-flex;align-items:center;justify-content:center;color:var(--muted);margin-bottom:12px;">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11a3 3 0 100-6 3 3 0 000 6zM4 19c0-2.8 2.2-5 5-5M15 8l2 2 4-4"/></svg>
+                  </div>
+                  <div class="serif" style="font-size:17px;margin-bottom:4px;">No sign-ins for 3 Jun 2026</div>
+                  <p class="muted" style="font-size:13px;margin:0 auto;max-width:320px;">Operatives appear here the moment they scan the sign-in QR. Share the code with the site to get started.</p>
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
+      </div>
+
+      <!-- ================= BRIEFINGS PANEL ================= -->
+      <div class="panel hidden" data-panel="briefings">
+      <!-- ACTIVE state -->
+      <section class="card daily" id="dailyActive" data-when="populated">
+        <div class="card-hd">
+          <h2 style="font-size:17px;">Daily briefing</h2>
+          <span class="pill success dot">Active</span>
+          <span class="muted hint" style="font-size:12.5px;">Shown &amp; acknowledged at every sign-in until changed.</span>
+          <div class="grow"></div>
+          <button class="btn tiny" id="editDaily">Edit</button>
+          <button class="btn tiny ghost">Clear</button>
+        </div>
+        <div class="card-bd">
+          <div class="row" style="align-items:flex-start;gap:28px;">
+            <div class="grow">
+              <h3 class="serif" style="font-size:18px;margin-bottom:6px;">Site rules &amp; today's hazards — crane lift, bay 2</h3>
+              <p style="margin:0;color:var(--ink-2);max-width:680px;">Exclusion zone around the crane lift in bay 2 until 12:00. Harnesses mandatory above the second lift — clip to the running line, not the scaffold. Report any damaged edge protection to your supervisor <em>before</em> starting work.</p>
+              <div class="muted" style="font-size:12.5px;margin-top:12px;">Updated by Thomas Barber · today 07:42</div>
+            </div>
+            <div style="width:230px;flex-shrink:0;">
+              <div class="eyebrow" style="margin-bottom:8px;">Acknowledged at sign-in</div>
+              <div class="ack" style="margin-bottom:8px;">
+                <span class="nums num">18 <span class="muted" style="font-size:13px;">/ 24</span></span>
+                <span class="pill warn" style="margin-left:auto;">6 outstanding</span>
+              </div>
+              <div class="bar warn"><i style="width:75%"></i></div>
+              <button class="btn tiny ghost" style="margin-top:12px;padding-left:0;">View who's signed →</button>
+            </div>
+          </div>
+
+          <!-- inline editor (hidden until Edit) -->
+          <div id="dailyEditor" class="hidden" style="margin-top:18px;padding-top:18px;border-top:1px solid var(--line);">
+            <label class="field-label">Title</label>
+            <input class="input" style="margin-bottom:14px;" value="Site rules &amp; today's hazards — crane lift, bay 2" />
+            <label class="field-label">Briefing</label>
+            <textarea class="textarea" style="margin-bottom:14px;">Exclusion zone around the crane lift in bay 2 until 12:00. Harnesses mandatory above the second lift — clip to the running line, not the scaffold. Report any damaged edge protection to your supervisor before starting work.</textarea>
+            <div class="row">
+              <button class="btn primary" id="saveDaily">Update briefing</button>
+              <button class="btn ghost" id="cancelDaily">Cancel</button>
+              <span class="muted" style="font-size:12.5px;margin-left:6px;">Re-acknowledgement will be required from everyone on next sign-in.</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- EMPTY state -->
+      <section class="card daily hidden" id="dailyEmpty" data-when="empty">
+        <div class="card-hd">
+          <h2 style="font-size:17px;">Daily briefing</h2>
+          <span class="pill muted dot">Not set</span>
+          <span class="muted" style="font-size:12.5px;">Shown &amp; acknowledged at every sign-in until changed.</span>
+          <div class="grow"></div>
+          <button class="btn primary tiny" id="setDaily">Set daily briefing</button>
+        </div>
+        <div class="card-bd" id="dailyEmptyBody">
+          <div class="row" style="gap:14px;">
+            <div class="tb-icon" style="width:42px;height:42px;">
+              <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4h14v9H7l-4 3z"/><path d="M6 7h8M6 10h5"/></svg>
+            </div>
+            <div class="grow">
+              <div style="font-weight:600;">No daily briefing at sign-in</div>
+              <div class="muted" style="font-size:13px;">Operatives will sign in without reading a site message. Set one for today's hazards, exclusion zones, or weather calls.</div>
+            </div>
+          </div>
+          <!-- editor revealed on Set -->
+          <div id="dailyEmptyEditor" class="hidden" style="margin-top:18px;padding-top:18px;border-top:1px solid var(--line);">
+            <label class="field-label">Title</label>
+            <input class="input" style="margin-bottom:14px;" placeholder="e.g. Site rules &amp; today's hazards" />
+            <label class="field-label">Briefing</label>
+            <textarea class="textarea" style="margin-bottom:14px;" placeholder="What every operative must read &amp; acknowledge before signing in…"></textarea>
+            <div class="row">
+              <button class="btn primary">Set briefing</button>
+              <button class="btn ghost" id="cancelDailyEmpty">Cancel</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <div class="section-gap"></div>
+
+      <!-- ============ TOOLBOX TALKS ============ -->
+      <section class="card">
+        <div class="card-hd">
+          <h2 style="font-size:17px;">Toolbox talks</h2>
+          <span class="pill" id="tbCount" data-when="populated">4 delivered</span>
+          <span class="muted" style="font-size:12.5px;">Recorded safety talks &amp; their acknowledgements.</span>
+          <div class="grow"></div>
+          <button class="btn ghost tiny" id="tbFilter">All topics ▾</button>
+          <button class="btn accent tiny">+ New toolbox talk</button>
+        </div>
+
+        <!-- POPULATED list -->
+        <div class="tb-list" id="tbList" data-when="populated">
+          <!-- row -->
+          <div class="tb-row">
+            <div class="row">
+              <div class="tb-icon">
+                <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10 2v6M10 8l-5 8M10 8l5 8M5 16h10"/></svg>
+              </div>
+              <div>
+                <div class="tb-title">Working at Height &amp; edge protection</div>
+                <div class="tb-sub">Delivered by Thomas Barber · 2 Jun 2026</div>
+              </div>
+            </div>
+            <div>
+              <div class="row" style="justify-content:space-between;margin-bottom:5px;">
+                <span class="muted" style="font-size:12px;">Acknowledged</span>
+                <span class="num" style="font-size:12.5px;font-weight:600;">24 / 24</span>
+              </div>
+              <div class="bar success"><i style="width:100%"></i></div>
+            </div>
+            <div><span class="pill success dot">Complete</span></div>
+            <div style="text-align:right;"><button class="btn tiny ghost">Open →</button></div>
+          </div>
+
+          <div class="tb-row">
+            <div class="row">
+              <div class="tb-icon">
+                <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4h14v12H3z"/><path d="M3 4l7 7 7-7"/></svg>
+              </div>
+              <div>
+                <div class="tb-title">Fragile roofs &amp; rooflights</div>
+                <div class="tb-sub">Delivered by S. Okafor · 28 May 2026</div>
+              </div>
+            </div>
+            <div>
+              <div class="row" style="justify-content:space-between;margin-bottom:5px;">
+                <span class="muted" style="font-size:12px;">Acknowledged</span>
+                <span class="num" style="font-size:12.5px;font-weight:600;">22 / 24</span>
+              </div>
+              <div class="bar warn"><i style="width:92%"></i></div>
+            </div>
+            <div><span class="pill warn dot">2 outstanding</span></div>
+            <div style="text-align:right;"><button class="btn tiny ghost">Open →</button></div>
+          </div>
+
+          <div class="tb-row">
+            <div class="row">
+              <div class="tb-icon">
+                <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10 2c2 3-1 4 0 7M7 9c-1 2-1 6 3 7 4-1 4-5 3-7-1 2-2 1-2-1-2 1-3 0-4 1z"/></svg>
+              </div>
+              <div>
+                <div class="tb-title">Hot works &amp; torch-on felt</div>
+                <div class="tb-sub">Delivered by Thomas Barber · 21 May 2026</div>
+              </div>
+            </div>
+            <div>
+              <div class="row" style="justify-content:space-between;margin-bottom:5px;">
+                <span class="muted" style="font-size:12px;">Acknowledged</span>
+                <span class="num" style="font-size:12.5px;font-weight:600;">24 / 24</span>
+              </div>
+              <div class="bar success"><i style="width:100%"></i></div>
+            </div>
+            <div><span class="pill success dot">Complete</span></div>
+            <div style="text-align:right;"><button class="btn tiny ghost">Open →</button></div>
+          </div>
+
+          <div class="tb-row">
+            <div class="row">
+              <div class="tb-icon">
+                <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h12M4 12a3 3 0 016 0M16 12a3 3 0 00-6 0M7 9V5a3 3 0 016 0v4"/></svg>
+              </div>
+              <div>
+                <div class="tb-title">Manual handling</div>
+                <div class="tb-sub">Delivered by S. Okafor · 14 May 2026</div>
+              </div>
+            </div>
+            <div>
+              <div class="row" style="justify-content:space-between;margin-bottom:5px;">
+                <span class="muted" style="font-size:12px;">Acknowledged</span>
+                <span class="num" style="font-size:12.5px;font-weight:600;">20 / 24</span>
+              </div>
+              <div class="bar warn"><i style="width:83%"></i></div>
+            </div>
+            <div><span class="pill warn dot">4 outstanding</span></div>
+            <div style="text-align:right;"><button class="btn tiny ghost">Open →</button></div>
+          </div>
+        </div>
+
+        <!-- EMPTY toolbox -->
+        <div class="empty hidden" id="tbEmpty" data-when="empty">
+          <div class="ic">
+            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8h18v11H3z"/><path d="M3 8l3-4h12l3 4M9 12h6"/></svg>
+          </div>
+          <h3 class="serif" style="font-size:19px;margin-bottom:6px;">No toolbox talks recorded yet</h3>
+          <p class="muted" style="max-width:440px;margin:0 auto;">Record a safety talk and capture each operative's acknowledgement. Start from a roofing template, or write your own.</p>
+          <div class="templates">
+            <button class="tmpl">Working at Height <span class="req">Required</span></button>
+            <button class="tmpl">Fragile roofs &amp; rooflights <span class="req">Required</span></button>
+            <button class="tmpl">Hot works / torch-on</button>
+            <button class="tmpl">Manual handling</button>
+            <button class="tmpl">High winds &amp; weather</button>
+            <button class="tmpl">PPE &amp; harness checks</button>
+          </div>
+          <div style="margin-top:22px;">
+            <button class="btn accent">+ New toolbox talk</button>
+          </div>
+        </div>
+      </section>
+      </div><!-- /briefings panel -->
+
+      <!-- ================= OPERATIVES PANEL ================= -->
+      <div class="panel hidden" data-panel="operatives">
+        <div class="stats" data-when="populated">
+          <div class="stat"><span class="eyebrow">Assigned to site</span><span class="stat-val num">7</span></div>
+          <div class="stat"><span class="eyebrow">Inducted</span><span class="stat-val num">5 <span class="muted" style="font-size:15px;">/ 7</span></span><span class="muted" style="font-size:12px;">2 outstanding</span></div>
+          <div class="stat"><span class="eyebrow">RAMS signed</span><span class="stat-val num">6 <span class="muted" style="font-size:15px;">/ 7</span></span></div>
+          <div class="stat"><span class="eyebrow">Cards expiring / expired</span><span class="stat-val num">1</span><span class="muted" style="font-size:12px;">PASMA · P. Shah</span></div>
+        </div>
+
+        <section class="card" data-when="populated">
+          <div class="card-hd">
+            <h2 style="font-size:17px;">Operatives on site</h2>
+            <span class="pill">7</span>
+            <span class="muted hint" style="font-size:12.5px;">Assigned to this project — induction, cards &amp; RAMS at a glance.</span>
+            <div class="grow"></div>
+            <button class="btn tiny">↗ Send RAMS for signature</button>
+            <button class="btn accent tiny">+ Assign operative</button>
+          </div>
+          <div class="lhead" style="grid-template-columns:1.5fr 1fr 0.9fr 120px 1fr 96px 130px;">
+            <span>Name</span><span>Company</span><span>Trade</span><span>Induction</span><span>Cards</span><span>RAMS</span><span></span>
+          </div>
+          <div id="opRows"></div>
+        </section>
+
+        <div class="card hidden" data-when="empty">
+          <div class="card-hd"><h2 style="font-size:17px;">Operatives on site</h2><div class="grow"></div><button class="btn accent tiny">+ Assign operative</button></div>
+          <div class="empty">
+            <div class="ic"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11a3 3 0 100-6 3 3 0 000 6zM3 20c0-3.3 2.7-6 6-6M15.5 8.5l2 2 3.5-3.5M14 20c0-2.6 1.6-4.8 4-5.6"/></svg></div>
+            <h3 class="serif" style="font-size:19px;margin-bottom:6px;">No operatives assigned to this site</h3>
+            <p class="muted" style="max-width:440px;margin:0 auto;">Assign operatives from the workspace register to this project. They'll appear at site sign-in and you can track induction, cards and RAMS here.</p>
+            <div style="margin-top:20px;"><button class="btn accent">+ Assign operative</button></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ================= DELIVERIES PANEL ================= -->
+      <div class="panel hidden" data-panel="deliveries">
+        <div class="stats" data-when="populated">
+          <div class="stat"><span class="eyebrow">Expected this week</span><span class="stat-val num">4</span><span class="muted" style="font-size:12px;">from 4 open POs</span></div>
+          <div class="stat"><span class="eyebrow">Checked in today</span><span class="stat-val num">2</span></div>
+          <div class="stat"><span class="eyebrow">Awaiting</span><span class="stat-val num">2</span><span class="muted" style="font-size:12px;">1 overdue</span></div>
+          <div class="stat"><span class="eyebrow">Short / damaged</span><span class="stat-val num">1</span><span class="muted" style="font-size:12px;">Rockwool · 2 slabs</span></div>
+        </div>
+
+        <!-- UPCOMING (from POs) -->
+        <section class="card" data-when="populated" style="margin-bottom:18px;">
+          <div class="card-hd">
+            <h2 style="font-size:17px;">Upcoming</h2>
+            <span class="pill">4 expected</span>
+            <span class="muted hint" style="font-size:12.5px;">Pulled from open purchase orders.</span>
+            <div class="grow"></div>
+            <button class="btn accent tiny">+ Check in a delivery</button>
+          </div>
+          <div class="lhead" style="grid-template-columns:1.6fr 1fr 1fr 110px 120px;">
+            <span>Supplier</span><span>PO</span><span>Items</span><span>Expected</span><span style="text-align:right;">Status</span>
+          </div>
+          <div class="lrow" style="grid-template-columns:1.6fr 1fr 1fr 110px 120px;">
+            <div><div class="l-title">Alumasc Water Mgmt</div><div class="l-sub">Felt roof system</div></div>
+            <div><span class="sk-link" style="color:var(--accent);font-weight:600;font-size:13px;">PO-26001-0007</span></div>
+            <div class="num">27 lines</div>
+            <div class="num">4 Jun</div>
+            <div style="text-align:right;"><span class="pill">Scheduled</span></div>
+          </div>
+          <div class="lrow" style="grid-template-columns:1.6fr 1fr 1fr 110px 120px;">
+            <div><div class="l-title">Rockwool</div><div class="l-sub">Insulation slabs</div></div>
+            <div><span style="color:var(--accent);font-weight:600;font-size:13px;">PO-26001-0009</span></div>
+            <div class="num">40</div>
+            <div class="num">5 Jun</div>
+            <div style="text-align:right;"><span class="pill warn dot">Due today</span></div>
+          </div>
+          <div class="lrow" style="grid-template-columns:1.6fr 1fr 1fr 110px 120px;">
+            <div><div class="l-title">Fixfast Ltd</div><div class="l-sub">Fixings &amp; fasteners</div></div>
+            <div><span style="color:var(--accent);font-weight:600;font-size:13px;">PO-26001-0011</span></div>
+            <div class="num">5 lines</div>
+            <div class="num">6 Jun</div>
+            <div style="text-align:right;"><span class="pill">Scheduled</span></div>
+          </div>
+          <div class="lrow" style="grid-template-columns:1.6fr 1fr 1fr 110px 120px;">
+            <div><div class="l-title">Barwell Spares</div><div class="l-sub">Site sundries</div></div>
+            <div><span style="color:var(--accent);font-weight:600;font-size:13px;">PO-26001-0008</span></div>
+            <div class="num">15 lines</div>
+            <div class="num">2 Jun</div>
+            <div style="text-align:right;"><span class="pill" style="background:var(--danger-soft);color:var(--danger);">Overdue</span></div>
+          </div>
+        </section>
+
+        <!-- RECEIVED -->
+        <section class="card" data-when="populated">
+          <div class="card-hd">
+            <h2 style="font-size:17px;">Received</h2>
+            <span class="pill">2 today</span>
+            <span class="muted hint" style="font-size:12.5px;">Expected vs received, matched to the PO.</span>
+            <div class="grow"></div>
+            <input type="date" class="input" value="2026-06-02" style="width:auto;padding:7px 10px;" />
+          </div>
+          <div class="lhead" style="grid-template-columns:1.6fr 1fr 1.3fr 1fr 120px;">
+            <span>Supplier</span><span>PO</span><span>Expected vs received</span><span>Checked in</span><span style="text-align:right;">Condition</span>
+          </div>
+          <div class="lrow" style="grid-template-columns:1.6fr 1fr 1.3fr 1fr 120px;">
+            <div><div class="l-title">Alumasc Water Mgmt</div><div class="l-sub">📄 Delivery note attached</div></div>
+            <div><span style="color:var(--accent);font-weight:600;font-size:13px;">PO-26001-0007</span></div>
+            <div class="minibar"><div class="bar success"><i style="width:100%"></i></div><span class="num" style="font-size:12.5px;font-weight:600;">27/27</span></div>
+            <div><div class="l-title" style="font-weight:500;">02 Jun 14:10</div><div class="l-sub">D. Whyte</div></div>
+            <div style="text-align:right;"><span class="pill success dot">Good</span></div>
+          </div>
+          <div class="lrow" style="grid-template-columns:1.6fr 1fr 1.3fr 1fr 120px;">
+            <div><div class="l-title">Rockwool</div><div class="l-sub">📄 Delivery note attached</div></div>
+            <div><span style="color:var(--accent);font-weight:600;font-size:13px;">PO-26001-0009</span></div>
+            <div class="minibar"><div class="bar warn"><i style="width:95%"></i></div><span class="num" style="font-size:12.5px;font-weight:600;">38/40</span></div>
+            <div><div class="l-title" style="font-weight:500;">02 Jun 09:25</div><div class="l-sub">S. Okafor</div></div>
+            <div style="text-align:right;"><span class="pill warn dot">2 short</span></div>
+          </div>
+        </section>
+
+        <!-- EMPTY -->
+        <div class="card hidden" data-when="empty">
+          <div class="card-hd">
+            <h2 style="font-size:17px;">Deliveries</h2>
+            <div class="grow"></div>
+            <button class="btn accent tiny">+ Check in a delivery</button>
+          </div>
+          <div class="empty">
+            <div class="ic"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8h13v9H3z"/><path d="M16 11h3l2 2v4h-5z"/><circle cx="7" cy="19" r="1.6"/><circle cx="17.5" cy="19" r="1.6"/></svg></div>
+            <h3 class="serif" style="font-size:19px;margin-bottom:6px;">No deliveries checked in yet</h3>
+            <p class="muted" style="max-width:460px;margin:0 auto 4px;">When a delivery arrives, check it in against its PO to record what actually turned up — quantities, condition and the delivery note.</p>
+            <p class="muted" style="max-width:460px;margin:0 auto;font-size:12.5px;">You have <strong style="color:var(--accent);">4 deliveries expected</strong> from open POs this week.</p>
+            <div style="margin-top:20px;"><button class="btn accent">+ Check in a delivery</button></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ================= RAMS & DOCS PANEL ================= -->
+      <div class="panel hidden" data-panel="rams">
+        <div class="stats" data-when="populated">
+          <div class="stat"><span class="eyebrow">Documents</span><span class="stat-val num">6</span><span class="muted" style="font-size:12px;">across 4 categories</span></div>
+          <div class="stat"><span class="eyebrow">Expiring ≤ 14 days</span><span class="stat-val num">1</span><span class="muted" style="font-size:12px;">Scaffold cert · 9 Jun</span></div>
+          <div class="stat"><span class="eyebrow">Expired</span><span class="stat-val num">1</span><span class="muted" style="font-size:12px;">PASMA · P. Shah</span></div>
+          <div class="stat"><span class="eyebrow">Acknowledged</span><span class="stat-val num">82%</span><span class="muted" style="font-size:12px;">across signable docs</span></div>
+        </div>
+
+        <section class="card" data-when="populated">
+          <div class="card-hd">
+            <h2 style="font-size:17px;">Documents</h2>
+            <span class="pill">6</span>
+            <div class="grow"></div>
+            <button class="btn ghost tiny">All categories ▾</button>
+            <button class="btn accent tiny">+ Upload document</button>
+          </div>
+          <div style="display:flex;align-items:center;gap:11px;padding:11px 20px;background:var(--accent-soft);border-bottom:1px solid var(--line);">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent-2)" stroke-width="1.8"><path d="M12 16V4M8 8l4-4 4 4M5 20h14"/></svg>
+            <span style="font-size:12.5px;color:var(--ink-2);">New RAMS uploaded? <b>Distribute for signature</b> to the operatives assigned to this site.</span>
+            <div class="grow"></div>
+            <button class="btn accent tiny" id="distToggle">Distribute…</button>
+          </div>
+          <div id="distPanel" class="hidden" style="padding:14px 20px;border-bottom:1px solid var(--line);background:var(--card-2);">
+            <div class="row" style="gap:10px;margin-bottom:12px;flex-wrap:wrap;">
+              <span class="field-label" style="margin:0;">Document</span>
+              <select class="input" style="width:auto;padding:9px 12px;"><option>Roofing RAMS v3 (just uploaded)</option><option>Hot works permit</option><option>Working at Height method</option></select>
+              <button class="btn accent" id="distSend">Send to <span id="rcpCount">1</span> operative</button>
+              <div class="grow"></div>
+              <input class="input" id="rcpSearch" placeholder="🔍 Search name, company or trade" style="width:250px;padding:9px 12px;" />
+            </div>
+            <div class="row" style="gap:8px;margin-bottom:10px;flex-wrap:wrap;">
+              <button class="chipf on" data-f="all">All</button>
+              <button class="chipf" data-f="pending">Pending only</button>
+              <button class="chipf" data-f="notinducted">Not inducted</button>
+              <div class="grow"></div>
+              <label class="check" style="font-size:12.5px;font-weight:600;"><input type="checkbox" id="selAllChk" style="width:15px;height:15px;accent-color:var(--accent);" /> <span id="selAllLbl">Select all shown</span></label>
+            </div>
+            <div id="rcpList" style="max-height:188px;overflow-y:auto;border:1px solid var(--line);border-radius:10px;background:var(--card);"></div>
+          </div>
+          <div class="lhead" style="grid-template-columns:2fr 1fr 70px 110px 1.2fr 70px;">
+            <span>Document</span><span>Category</span><span>Version</span><span>Expiry</span><span>Signed</span><span></span>
+          </div>
+
+          <div class="lrow" style="grid-template-columns:2fr 1fr 70px 110px 1.2fr 70px;">
+            <div><div class="l-title">Roofing RAMS</div><div class="l-sub">Uploaded 27 May · T. Barber</div></div>
+            <div><span class="pill navy">RAMS</span></div>
+            <div class="num">v3</div>
+            <div class="num muted" style="font-size:13px;">31 Dec 26</div>
+            <div class="minibar"><div class="bar warn"><i style="width:92%"></i></div><span class="num" style="font-size:12px;font-weight:600;">22/24</span></div>
+            <div style="text-align:right;"><button class="btn tiny ghost">↗</button></div>
+          </div>
+
+          <div class="lrow" style="grid-template-columns:2fr 1fr 70px 110px 1.2fr 70px;">
+            <div><div class="l-title">Working at Height — method statement</div><div class="l-sub">Uploaded 24 May · S. Okafor</div></div>
+            <div><span class="pill">Method</span></div>
+            <div class="num">v2</div>
+            <div class="num muted" style="font-size:13px;">—</div>
+            <div class="minibar"><div class="bar success"><i style="width:100%"></i></div><span class="num" style="font-size:12px;font-weight:600;">24/24</span></div>
+            <div style="text-align:right;"><button class="btn tiny ghost">↗</button></div>
+          </div>
+
+          <div class="lrow" style="grid-template-columns:2fr 1fr 70px 110px 1.2fr 70px;">
+            <div><div class="l-title">Bitumen / adhesives COSHH</div><div class="l-sub">Uploaded 21 May · S. Okafor</div></div>
+            <div><span class="pill">COSHH</span></div>
+            <div class="num">v1</div>
+            <div class="num muted" style="font-size:13px;">12 Aug 26</div>
+            <div class="minibar"><div class="bar warn"><i style="width:83%"></i></div><span class="num" style="font-size:12px;font-weight:600;">20/24</span></div>
+            <div style="text-align:right;"><button class="btn tiny ghost">↗</button></div>
+          </div>
+
+          <div class="lrow" style="grid-template-columns:2fr 1fr 70px 110px 1.2fr 70px;">
+            <div><div class="l-title">Hot works permit</div><div class="l-sub">Uploaded 21 May · T. Barber</div></div>
+            <div><span class="pill">Permit</span></div>
+            <div class="num">v1</div>
+            <div class="num muted" style="font-size:13px;">30 Jun 26</div>
+            <div class="minibar"><div class="bar warn"><i style="width:75%"></i></div><span class="num" style="font-size:12px;font-weight:600;">18/24</span></div>
+            <div style="text-align:right;"><button class="btn tiny ghost">↗</button></div>
+          </div>
+
+          <div class="lrow" style="grid-template-columns:2fr 1fr 70px 110px 1.2fr 70px;">
+            <div><div class="l-title">Scaffold handover certificate</div><div class="l-sub">Heightline Scaffolding</div></div>
+            <div><span class="pill">Certificate</span></div>
+            <div class="num">—</div>
+            <div class="num" style="font-size:13px;color:var(--warn);font-weight:600;">9 Jun 26</div>
+            <div class="muted" style="font-size:12px;">no signature</div>
+            <div style="text-align:right;"><button class="btn tiny ghost">↗</button></div>
+          </div>
+
+          <div class="lrow is-muted" style="grid-template-columns:2fr 1fr 70px 110px 1.2fr 70px;">
+            <div><div class="l-title">PASMA card — P. Shah</div><div class="l-sub">SafeAccess · MEWP operator</div></div>
+            <div><span class="pill">Certificate</span></div>
+            <div class="num">—</div>
+            <div class="num" style="font-size:13px;color:var(--danger);font-weight:600;">28 May 26</div>
+            <div><span class="pill" style="background:var(--danger-soft);color:var(--danger);">Expired</span></div>
+            <div style="text-align:right;"><button class="btn tiny ghost">↗</button></div>
+          </div>
+
+          <div style="padding:12px 20px;border-top:1px solid var(--line);">
+            <button class="btn tiny ghost" style="padding-left:0;">View all signatures &amp; outstanding →</button>
+          </div>
+        </section>
+
+        <!-- EMPTY -->
+        <div class="card hidden" data-when="empty">
+          <div class="card-hd">
+            <h2 style="font-size:17px;">RAMS &amp; docs</h2>
+            <div class="grow"></div>
+            <button class="btn accent tiny">+ Upload document</button>
+          </div>
+          <div class="empty">
+            <div class="ic"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2h8l4 4v16H6z"/><path d="M14 2v4h4M9 13h6M9 17h6"/></svg></div>
+            <h3 class="serif" style="font-size:19px;margin-bottom:6px;">No documents uploaded</h3>
+            <p class="muted" style="max-width:460px;margin:0 auto;">Upload RAMS, method statements, COSHH sheets, permits and operative certs. Set an expiry and operatives acknowledge them at sign-in.</p>
+            <div class="templates">
+              <button class="tmpl">Roofing RAMS <span class="req">Required</span></button>
+              <button class="tmpl">Working at Height method</button>
+              <button class="tmpl">COSHH sheet</button>
+              <button class="tmpl">Hot works permit</button>
+              <button class="tmpl">Scaffold handover cert</button>
+            </div>
+            <div style="margin-top:20px;"><button class="btn accent">+ Upload document</button></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ================= PROGRESS PHOTOS PANEL ================= -->
+      <div class="panel hidden" data-panel="progress">
+        <div class="stats" data-when="populated">
+          <div class="stat"><span class="eyebrow">Photos</span><span class="stat-val num">38</span></div>
+          <div class="stat"><span class="eyebrow">This week</span><span class="stat-val num">11</span></div>
+          <div class="stat"><span class="eyebrow">Areas</span><span class="stat-val num">5</span><span class="muted" style="font-size:12px;">bays &amp; elevations</span></div>
+          <div class="stat"><span class="eyebrow">Last upload</span><span class="stat-val num">Today</span><span class="muted" style="font-size:12px;">08:40 · D. Whyte</span></div>
+        </div>
+
+        <section class="card" data-when="populated">
+          <div class="card-hd">
+            <h2 style="font-size:17px;">Progress photos</h2>
+            <span class="pill">38</span>
+            <div class="grow"></div>
+            <button class="btn ghost tiny">All areas ▾</button>
+            <button class="btn accent tiny">+ Add photos</button>
+          </div>
+          <div class="grp-head">Today · 3 Jun 2026</div>
+          <div class="gallery" style="padding-top:4px;">
+            <div class="photo"><div class="ph-img"><span class="pill ph-tag" style="background:rgba(0,0,0,.5);color:#fff;">Bay 2</span><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M3 7h4l2-2h6l2 2h4v12H3z"/><circle cx="12" cy="13" r="3.5"/></svg></div><div class="ph-cap"><div class="t">Felt laid — east slope</div><div class="s">08:40 · D. Whyte</div></div></div>
+            <div class="photo"><div class="ph-img"><span class="pill ph-tag" style="background:rgba(0,0,0,.5);color:#fff;">Bay 2</span><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M3 7h4l2-2h6l2 2h4v12H3z"/><circle cx="12" cy="13" r="3.5"/></svg></div><div class="ph-cap"><div class="t">Detailing — parapet</div><div class="s">08:42 · D. Whyte</div></div></div>
+            <div class="photo"><div class="ph-img"><span class="pill ph-tag" style="background:rgba(0,0,0,.5);color:#fff;">North</span><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M3 7h4l2-2h6l2 2h4v12H3z"/><circle cx="12" cy="13" r="3.5"/></svg></div><div class="ph-cap"><div class="t">Scaffold inspection</div><div class="s">07:55 · L. Carter</div></div></div>
+            <div class="photo"><div class="ph-img"><span class="pill ph-tag" style="background:rgba(0,0,0,.5);color:#fff;">Bay 1</span><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M3 7h4l2-2h6l2 2h4v12H3z"/><circle cx="12" cy="13" r="3.5"/></svg></div><div class="ph-cap"><div class="t">Insulation set out</div><div class="s">09:10 · J. Reilly</div></div></div>
+          </div>
+          <div class="grp-head">2 Jun 2026</div>
+          <div class="gallery" style="padding-top:4px;">
+            <div class="photo"><div class="ph-img"><span class="pill ph-tag" style="background:rgba(0,0,0,.5);color:#fff;">Bay 2</span><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M3 7h4l2-2h6l2 2h4v12H3z"/><circle cx="12" cy="13" r="3.5"/></svg></div><div class="ph-cap"><div class="t">Deck prep complete</div><div class="s">15:20 · D. Whyte</div></div></div>
+            <div class="photo"><div class="ph-img"><span class="pill ph-tag" style="background:rgba(0,0,0,.5);color:#fff;">Compound</span><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M3 7h4l2-2h6l2 2h4v12H3z"/><circle cx="12" cy="13" r="3.5"/></svg></div><div class="ph-cap"><div class="t">Materials delivery</div><div class="s">14:10 · S. Okafor</div></div></div>
+            <div class="photo"><div class="ph-img"><span class="pill ph-tag" style="background:rgba(0,0,0,.5);color:#fff;">East</span><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M3 7h4l2-2h6l2 2h4v12H3z"/><circle cx="12" cy="13" r="3.5"/></svg></div><div class="ph-cap"><div class="t">Edge protection</div><div class="s">11:05 · L. Carter</div></div></div>
+            <div class="photo" style="display:flex;align-items:center;justify-content:center;background:var(--card-2);border-style:dashed;"><div style="text-align:center;color:var(--muted);padding:10px;"><div class="serif" style="font-size:18px;">+31</div><div style="font-size:12px;">more photos</div></div></div>
+          </div>
+        </section>
+
+        <!-- EMPTY -->
+        <div class="card hidden" data-when="empty">
+          <div class="card-hd">
+            <h2 style="font-size:17px;">Progress photos</h2>
+            <div class="grow"></div>
+            <button class="btn accent tiny">+ Add photos</button>
+          </div>
+          <div class="empty">
+            <div class="ic"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7h4l2-2h6l2 2h4v12H3z"/><circle cx="12" cy="13" r="3.5"/></svg></div>
+            <h3 class="serif" style="font-size:19px;margin-bottom:6px;">No progress photos yet</h3>
+            <p class="muted" style="max-width:460px;margin:0 auto;">Capture site progress by area. Photos are time- and date-stamped automatically and tagged to the operative who took them — handy for applications and disputes.</p>
+            <div class="dropzone" style="margin:18px auto 0;max-width:440px;">
+              <div style="font-weight:600;color:var(--ink);">Drag photos here</div>
+              <div style="font-size:12.5px;">or use the site app to upload from your phone</div>
+            </div>
+            <div style="margin-top:18px;"><button class="btn accent">+ Add photos</button></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ================= PLANT ON SITE PANEL ================= -->
+      <div class="panel hidden" data-panel="plant">
+        <div class="stats" data-when="populated">
+          <div class="stat"><span class="eyebrow">On site now</span><span class="stat-val num">4</span><span class="muted" style="font-size:12px;">items on hire</span></div>
+          <div class="stat"><span class="eyebrow">On-hire value</span><span class="stat-val num">£1,790</span><span class="muted" style="font-size:12px;">accrued, items on hire</span></div>
+          <div class="stat"><span class="eyebrow">Total accrued</span><span class="stat-val num">£2,210</span><span class="muted" style="font-size:12px;">incl. off-hired</span></div>
+          <div class="stat"><span class="eyebrow">Off-hired this week</span><span class="stat-val num">1</span><span class="muted" style="font-size:12px;">Telehandler</span></div>
+        </div>
+
+        <section class="card" data-when="populated">
+          <div class="card-hd">
+            <h2 style="font-size:17px;">Plant on site</h2>
+            <span class="pill">4 on hire</span>
+            <span class="muted hint" style="font-size:12.5px;">Daily or weekly rate × time on site — feeds the Prelims accrual cross-check.</span>
+            <div class="grow"></div>
+            <button class="btn accent tiny">+ Add plant</button>
+          </div>
+          <div class="lhead" style="grid-template-columns:1.8fr 1.2fr 120px 90px 110px 110px;">
+            <span>Item</span><span>Supplier</span><span class="num" style="text-align:right;">Rate</span><span class="num" style="text-align:right;">On site</span><span class="num" style="text-align:right;">Accrued</span><span style="text-align:right;">Status</span>
+          </div>
+          <div class="lrow" style="grid-template-columns:1.8fr 1.2fr 120px 90px 110px 110px;">
+            <div><div class="l-title">Scissor lift</div><div class="l-sub">On hire 28 May</div></div>
+            <div class="r-trade">SafeAccess</div>
+            <div class="num" style="text-align:right;">£85<span class="muted" style="font-size:11px;"> /day</span></div>
+            <div class="num" style="text-align:right;">7 days</div>
+            <div class="num" style="text-align:right;font-weight:600;">£595</div>
+            <div style="text-align:right;"><span class="pill navy dot">On hire</span></div>
+          </div>
+          <div class="lrow" style="grid-template-columns:1.8fr 1.2fr 120px 90px 110px 110px;">
+            <div><div class="l-title">Tower scaffold</div><div class="l-sub">On hire 26 May</div></div>
+            <div class="r-trade">Heightline</div>
+            <div class="num" style="text-align:right;">£160<span class="muted" style="font-size:11px;"> /wk</span></div>
+            <div class="num" style="text-align:right;">2 wks</div>
+            <div class="num" style="text-align:right;font-weight:600;">£320</div>
+            <div style="text-align:right;"><span class="pill navy dot">On hire</span></div>
+          </div>
+          <div class="lrow" style="grid-template-columns:1.8fr 1.2fr 120px 90px 110px 110px;">
+            <div><div class="l-title">Welfare unit</div><div class="l-sub">On hire 20 May</div></div>
+            <div class="r-trade">PGP Plant</div>
+            <div class="num" style="text-align:right;">£250<span class="muted" style="font-size:11px;"> /wk</span></div>
+            <div class="num" style="text-align:right;">3 wks</div>
+            <div class="num" style="text-align:right;font-weight:600;">£750</div>
+            <div style="text-align:right;"><span class="pill navy dot">On hire</span></div>
+          </div>
+          <div class="lrow" style="grid-template-columns:1.8fr 1.2fr 120px 90px 110px 110px;">
+            <div><div class="l-title">Waste skip</div><div class="l-sub">On hire 30 May</div></div>
+            <div class="r-trade">Biffa</div>
+            <div class="num" style="text-align:right;">£25<span class="muted" style="font-size:11px;"> /day</span></div>
+            <div class="num" style="text-align:right;">5 days</div>
+            <div class="num" style="text-align:right;font-weight:600;">£125</div>
+            <div style="text-align:right;"><span class="pill navy dot">On hire</span></div>
+          </div>
+          <div class="lrow is-muted" style="grid-template-columns:1.8fr 1.2fr 120px 90px 110px 110px;">
+            <div><div class="l-title">Telehandler</div><div class="l-sub">24 → 27 May</div></div>
+            <div class="r-trade">AFI Hire</div>
+            <div class="num" style="text-align:right;">£140<span class="muted" style="font-size:11px;"> /day</span></div>
+            <div class="num" style="text-align:right;">3 days</div>
+            <div class="num" style="text-align:right;font-weight:600;">£420</div>
+            <div style="text-align:right;"><span class="pill muted">Off-hired</span></div>
+          </div>
+          <div class="lrow" style="grid-template-columns:1.8fr 1.2fr 120px 90px 110px 110px;background:var(--card-2);">
+            <div style="font-weight:600;">Accrued total</div>
+            <div></div><div></div><div></div>
+            <div class="num" style="text-align:right;font-weight:700;font-family:'Cambria',serif;font-size:16px;">£2,210</div>
+            <div style="text-align:right;" class="muted"><span style="font-size:12px;">incl. off-hired</span></div>
+          </div>
+        </section>
+
+        <!-- EMPTY -->
+        <div class="card hidden" data-when="empty">
+          <div class="card-hd">
+            <h2 style="font-size:17px;">Plant on site</h2>
+            <div class="grow"></div>
+            <button class="btn accent tiny">+ Add plant</button>
+          </div>
+          <div class="empty">
+            <div class="ic"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 14h7V8h4l4 4v2h-2M3 14v3h2M19 14v3h-2M7 19a1.6 1.6 0 100-3.2A1.6 1.6 0 007 19zM15 19a1.6 1.6 0 100-3.2A1.6 1.6 0 0015 19z"/></svg></div>
+            <h3 class="serif" style="font-size:19px;margin-bottom:6px;">No plant logged</h3>
+            <p class="muted" style="max-width:460px;margin:0 auto;">Log hired plant with a daily or weekly rate. We accrue rate × time on site so the Prelims budget always reflects what's running.</p>
+            <div class="templates">
+              <button class="tmpl">MEWP / scissor lift</button>
+              <button class="tmpl">Tower scaffold</button>
+              <button class="tmpl">Welfare unit</button>
+              <button class="tmpl">Telehandler</button>
+              <button class="tmpl">Waste skip</button>
+            </div>
+            <div style="margin-top:20px;"><button class="btn accent">+ Add plant</button></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  // Theme toggle
+  document.getElementById('themeSeg').addEventListener('click', function(e){
+    var b = e.target.closest('[data-theme-set]'); if(!b) return;
+    document.body.setAttribute('data-theme', b.dataset.themeSet);
+    this.querySelectorAll('button').forEach(function(x){ x.classList.toggle('on', x===b); });
+  });
+
+  // Sub-tab panel switching
+  var subtabs = document.querySelector('.subtabs');
+  function showPanel(name){
+    document.querySelectorAll('.panel').forEach(function(p){
+      p.classList.toggle('hidden', p.dataset.panel !== name);
+    });
+    subtabs.querySelectorAll('.subtab').forEach(function(t){
+      t.classList.toggle('active', t.dataset.panel === name && !t.dataset.done);
+    });
+  }
+  subtabs.addEventListener('click', function(e){
+    var t = e.target.closest('.subtab'); if(!t) return;
+    // mark the clicked tab active even within the shared "soon" panel
+    subtabs.querySelectorAll('.subtab').forEach(function(x){ x.classList.remove('active'); });
+    t.classList.add('active');
+    document.querySelectorAll('.panel').forEach(function(p){
+      p.classList.toggle('hidden', p.dataset.panel !== t.dataset.panel);
+    });
+  });
+
+  // Demo: populated vs empty — toggles every [data-when] element on the page
+  var stateSeg = document.getElementById('stateSeg');
+  function setState(s){
+    var empty = s === 'empty';
+    document.querySelectorAll('[data-when="populated"]').forEach(function(el){ el.classList.toggle('hidden', empty); });
+    document.querySelectorAll('[data-when="empty"]').forEach(function(el){ el.classList.toggle('hidden', !empty); });
+    stateSeg.querySelectorAll('button').forEach(function(x){ x.classList.toggle('on', x.dataset.state===s); });
+  }
+  stateSeg.addEventListener('click', function(e){
+    var b = e.target.closest('[data-state]'); if(!b) return; setState(b.dataset.state);
+  });
+
+  // Daily briefing inline editor (active)
+  var ed = document.getElementById('dailyEditor');
+  document.getElementById('editDaily').addEventListener('click', function(){ ed.classList.remove('hidden'); });
+  document.getElementById('cancelDaily').addEventListener('click', function(){ ed.classList.add('hidden'); });
+  document.getElementById('saveDaily').addEventListener('click', function(){ ed.classList.add('hidden'); });
+
+  // Daily briefing editor (empty)
+  var ed2 = document.getElementById('dailyEmptyEditor');
+  document.getElementById('setDaily').addEventListener('click', function(){ ed2.classList.remove('hidden'); });
+  document.getElementById('cancelDailyEmpty').addEventListener('click', function(){ ed2.classList.add('hidden'); });
+
+  // ── Faux QR (demo only — real app renders an actual sign-in QR) ──
+  (function(){
+    var el = document.getElementById('qr'); if(!el) return;
+    var N = 25, seed = 7;
+    function rnd(){ seed = (seed*9301+49297) % 233280; return seed/233280; }
+    var cells = '';
+    function finder(gx, gy){
+      // returns true if (gx,gy) inside a 7x7 finder pattern ring/box
+      var inBox = gx<7 && gy<7;
+      if(!inBox) return null;
+      var ring = (gx===0||gx===6||gy===0||gy===6);
+      var core = (gx>=2&&gx<=4&&gy>=2&&gy<=4);
+      return ring||core;
+    }
+    for(var y=0;y<N;y++){
+      for(var x=0;x<N;x++){
+        var on;
+        var f = finder(x,y);
+        var f2 = finder(x-(N-7), y); // top-right
+        var f3 = finder(x, y-(N-7)); // bottom-left
+        if(f!==null) on=f;
+        else if(f2!==null) on=f2;
+        else if(f3!==null) on=f3;
+        else on = rnd() > 0.52;
+        if(on) cells += '<i style="grid-column:'+(x+1)+';grid-row:'+(y+1)+'"></i>';
+      }
+    }
+    el.style.setProperty('--n', N);
+    el.innerHTML = cells;
+  })();
+
+  // ── Roster rows ──
+  (function(){
+    var rows = [
+      ['SO','Sam Okafor','PGP','Site supervisor','06:40','ack','Site office','here'],
+      ['DW','Daniel Whyte','Apex Roofing Ltd','Roofer','06:52','ack','Bay 2 roof','here'],
+      ['MN','Marek Nowak','Apex Roofing Ltd','Roofer','07:01','ack','Bay 2 roof','here'],
+      ['LC','Liam Carter','Heightline Scaffolding','Scaffolder','07:15','ack','North elevation','here'],
+      ['TK','Tomasz Kowalski','Apex Roofing Ltd','Roofer','07:20','ack','Bay 2 roof','here'],
+      ['PS','Priya Shah','SafeAccess','MEWP operator','07:32','pending','Compound','here'],
+      ['JR','John Reilly','Apex Roofing Ltd','Labourer','07:48','ack','Bay 1','here'],
+      ['AB','Aaron Bennett','Apex Roofing Ltd','Roofer','08:05','ack','Bay 2 roof','out 14:30','self'],
+      ['KM','Kofi Mensah','PGP','QS (visit)','09:10','ack','Site office','out 11:00','self']
+    ];
+    var host = document.getElementById('rosterRows'); if(!host) return;
+
+    function statusCell(r){
+      if(r[7]==='here'){
+        return '<div style="text-align:right;"><span class="pill success dot">On site</span>'+
+          '<div style="margin-top:5px;"><button class="btn tiny ghost so-btn" style="padding:2px 9px;">Sign out</button></div></div>';
+      }
+      var by = r[8]==='self' ? 'signed out' : 'by '+(r[8]||'supervisor');
+      return '<div style="text-align:right;"><span class="pill muted">Signed '+r[7]+'</span>'+
+        '<div class="r-sub" style="margin-top:3px;">'+by+'</div></div>';
+    }
+
+    function render(){
+      host.innerHTML = rows.map(function(r,i){
+        var here = r[7]==='here';
+        var ackPill = r[5]==='ack'
+          ? '<span class="pill success dot">Acknowledged</span>'
+          : '<span class="pill warn dot">Pending</span>';
+        return '<div class="roster-row'+(here?'':' is-out')+'" data-i="'+i+'">'+
+          '<div class="row" style="gap:10px;min-width:0;"><div class="avatar" style="width:30px;height:30px;font-size:11px;">'+r[0]+'</div>'+
+            '<div style="min-width:0;"><div class="r-name">'+r[1]+'</div><div class="r-sub">'+r[2]+'</div></div></div>'+
+          '<div class="r-trade">'+r[3]+'</div>'+
+          '<div class="num">'+r[4]+'</div>'+
+          '<div>'+ackPill+'</div>'+
+          '<div class="row" style="gap:6px;color:var(--muted);font-size:13px;"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 1.5c-2.5 0-4.5 2-4.5 4.4C3.5 9.2 8 14.5 8 14.5s4.5-5.3 4.5-8.6C12.5 3.5 10.5 1.5 8 1.5z"/><circle cx="8" cy="6" r="1.6"/></svg>'+r[6]+'</div>'+
+          statusCell(r)+
+        '</div>';
+      }).join('');
+    }
+
+    function nowHM(){
+      var d = new Date();
+      return ('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2);
+    }
+    function signOut(i){
+      if(rows[i][7]!=='here') return;
+      rows[i][7] = 'out '+nowHM();
+      rows[i][8] = 'T. Barber';   // current supervisor
+      render();
+    }
+
+    host.addEventListener('click', function(e){
+      var btn = e.target.closest('.so-btn'); if(!btn) return;
+      var row = e.target.closest('.roster-row');
+      signOut(parseInt(row.dataset.i,10));
+    });
+    var allBtn = document.getElementById('signOutAll');
+    if(allBtn) allBtn.addEventListener('click', function(){
+      if(!confirm('Sign out everyone still on site? This records you as the signer.')) return;
+      rows.forEach(function(r,i){ if(r[7]==='here') signOut(i); });
+    });
+
+    render();
+  })();
+
+  // ── Operatives on site rows ──
+  (function(){
+    var rows = [
+      ['SO','Sam Okafor','PGP','Site supervisor','in','CSCS · First aid','ok'],
+      ['DW','Daniel Whyte','Apex Roofing Ltd','Roofer','in','CSCS','ok'],
+      ['MN','Marek Nowak','Apex Roofing Ltd','Roofer','in','CSCS','ok'],
+      ['LC','Liam Carter','Heightline Scaffolding','Scaffolder','in','CISRS','ok'],
+      ['TK','Tomasz Kowalski','Apex Roofing Ltd','Roofer','in','CSCS','ok'],
+      ['PS','Priya Shah','SafeAccess','MEWP operator','out','PASMA expired','pending'],
+      ['JR','John Reilly','Apex Roofing Ltd','Labourer','out','CSCS','ok']
+    ];
+    var host = document.getElementById('opRows'); if(!host) return;
+    host.innerHTML = rows.map(function(r){
+      var ind = r[4]==='in' ? '<span class="pill success dot">Inducted</span>' : '<span class="pill warn dot">Not inducted</span>';
+      var cards = /expired/i.test(r[5])
+        ? '<span class="pill" style="background:var(--danger-soft);color:var(--danger);">'+r[5]+'</span>'
+        : '<span class="sk-small">'+r[5]+'</span>';
+      var rams = r[6]==='ok' ? '<span class="pill success dot">Signed</span>' : '<span class="pill warn dot">Pending</span>';
+      return '<div class="roster-row" style="grid-template-columns:1.5fr 1fr 0.9fr 120px 1fr 96px 130px;">'+
+        '<div class="row" style="gap:10px;min-width:0;"><div class="avatar" style="width:30px;height:30px;font-size:11px;">'+r[0]+'</div><div class="r-name">'+r[1]+'</div></div>'+
+        '<div class="r-trade">'+r[2]+'</div>'+
+        '<div class="r-trade">'+r[3]+'</div>'+
+        '<div>'+ind+'</div>'+
+        '<div style="font-size:12.5px;color:var(--ink-2);">'+cards+'</div>'+
+        '<div>'+rams+'</div>'+
+        '<div style="text-align:right;">'+(r[6]==='ok'?'<button class="btn tiny ghost">View</button>':'<button class="btn tiny">Send RAMS</button>')+'</div>'+
+      '</div>';
+    }).join('');
+  })();
+
+  // ── Selective RAMS distribute (scales to large crews) ──
+  (function(){
+    var toggle = document.getElementById('distToggle');
+    var panel = document.getElementById('distPanel');
+    if(!toggle || !panel) return;
+    var list = document.getElementById('rcpList');
+    var search = document.getElementById('rcpSearch');
+    var count = document.getElementById('rcpCount');
+    var send = document.getElementById('distSend');
+    var selAllChk = document.getElementById('selAllChk');
+    var selAllLbl = document.getElementById('selAllLbl');
+    // Representative crew — in the real app this is the full project register (could be 100+)
+    var people = [
+      ['SO','Sam Okafor','PGP · Site supervisor','ok',true],
+      ['DW','Daniel Whyte','Apex Roofing · Roofer','ok',true],
+      ['MN','Marek Nowak','Apex Roofing · Roofer','ok',true],
+      ['LC','Liam Carter','Heightline · Scaffolder','ok',true],
+      ['TK','Tomasz Kowalski','Apex Roofing · Roofer','ok',true],
+      ['PS','Priya Shah','SafeAccess · MEWP operator','pending',false],
+      ['JR','John Reilly','Apex Roofing · Labourer','ok',false]
+    ];
+    var sel = {5:true}; // Priya pre-selected (still pending)
+    var filter = 'all';
+
+    function visible(){
+      var q = (search.value||'').toLowerCase();
+      return people.map(function(p,i){return [p,i];}).filter(function(pi){
+        var p = pi[0];
+        if(filter==='pending' && p[3]!=='pending') return false;
+        if(filter==='notinducted' && p[4]) return false;
+        if(q && (p[1]+' '+p[2]).toLowerCase().indexOf(q)<0) return false;
+        return true;
+      });
+    }
+    function render(){
+      var vis = visible();
+      list.innerHTML = vis.map(function(pi){
+        var p=pi[0], i=pi[1];
+        var rams = p[3]==='ok' ? '<span class="pill success dot">Signed</span>' : '<span class="pill warn dot">Pending</span>';
+        return '<label class="rcp-row" data-i="'+i+'">'+
+          '<input type="checkbox" '+(sel[i]?'checked':'')+' />'+
+          '<div class="av">'+p[0]+'</div>'+
+          '<div style="flex:1;min-width:0;"><div class="nm">'+p[1]+'</div><div class="sub">'+p[2]+'</div></div>'+
+          rams+'</label>';
+      }).join('') || '<div style="padding:18px;text-align:center;color:var(--muted);font-size:13px;">No operatives match</div>';
+      // select-all reflects filtered set
+      var allSel = vis.length>0 && vis.every(function(pi){ return sel[pi[1]]; });
+      selAllChk.checked = allSel;
+      selAllLbl.textContent = 'Select all shown ('+vis.length+')';
+      var n = Object.keys(sel).filter(function(k){return sel[k];}).length;
+      count.textContent = n;
+      send.firstChild ? null : null;
+      send.childNodes[2] && (send.childNodes[2].textContent = n===1 ? ' operative' : ' operatives');
+      send.disabled = n===0;
+    }
+    toggle.addEventListener('click', function(){ panel.classList.toggle('hidden'); });
+    list.addEventListener('change', function(e){
+      var row = e.target.closest('.rcp-row'); if(!row) return;
+      var i = +row.dataset.i; sel[i] = e.target.checked; render();
+    });
+    search.addEventListener('input', render);
+    panel.querySelectorAll('.chipf').forEach(function(c){
+      c.addEventListener('click', function(){
+        panel.querySelectorAll('.chipf').forEach(function(x){x.classList.remove('on');});
+        c.classList.add('on'); filter = c.dataset.f; render();
+      });
+    });
+    selAllChk.addEventListener('change', function(){
+      var vis = visible();
+      vis.forEach(function(pi){ sel[pi[1]] = selAllChk.checked; });
+      render();
+    });
+    render();
+  })();
+</script>
+</body>
+</html>

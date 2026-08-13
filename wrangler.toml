@@ -14,10 +14,33 @@ database_name = "po_app_db"
 database_id = "0ef48eae-4bcc-4bf3-9083-70954588dfc3"
 migrations_dir = "./migrations"
 
+# Object storage for Operations Phase 2 — delivery-ticket photos, RAMS
+# documents and daily progress photos. Local `wrangler dev` simulates this
+# in .wrangler/state; add `remote = true` to test against the real bucket.
+[[r2_buckets]]
+binding = "R2"
+bucket_name = "po-app-files"
+
+# Browser Rendering — renders the rich site report to a PDF for email attachment
+# (renderReportPdf in routes/report-pdf.ts). Included on the Workers Paid plan.
+[browser]
+binding = "BROWSER"
+
+# Images transformations — downscale report photos before embedding in the PDF.
+[images]
+binding = "IMAGES"
+
 # Set in dashboard / `wrangler secret put` — do not commit values.
 # RESEND_API_KEY     — for transactional email
 # APP_BASE_URL       — e.g. https://po.yourdomain.com (used in email links)
 # DEV_USER_EMAIL     — only used in `wrangler dev` to fake Cloudflare Access identity
+
+# Hourly cron. Handler: scheduled() in src/worker/index.ts, evaluated in UK local
+# time: 02:00 generates the day's reports (silent) + resets the sandbox, 07:00
+# sends plant off-hire reminders, and every hour fires the auto-distribute rules
+# whose chosen send time is that hour.
+[triggers]
+crons = ["0 * * * *"]
 
 [vars]
 APP_NAME = "PowerGrid Purchase Orders"
@@ -26,3 +49,11 @@ DEFAULT_CURRENCY = "GBP"
 
 [observability]
 enabled = true
+
+# On the Workers PAID plan (upgraded Jul 2026). The per-request CPU safety cap
+# below is the default 30s (was a hard 10ms on free — the cause of the earlier
+# 1102s). It can be raised up to 300000 (5 min) if a future route ever needs it;
+# keeping it at 30s bounds the cost of a runaway request. AI image work is still
+# best kept off the Worker's CPU (Claude reads WhatsApp photos by URL).
+[limits]
+cpu_ms = 30000

@@ -1,0 +1,352 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Overview — PGP</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Source+Serif+Pro:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  :root, [data-theme="light"] {
+    --paper:#fbfaf7; --card:#ffffff; --card-2:#f5f2eb;
+    --ink:#0f1130; --ink-2:#2a2d50; --muted:#6a6d8a;
+    --line:#e6e3da; --line-strong:#c9c4b4;
+    --accent:#ee5d2b; --accent-2:#c64b1f; --accent-soft:#fde5d7;
+    --navy:#0f1130; --navy-soft:#e3e5f4;
+    --success:#2f6f4f; --success-soft:#dff0e3;
+    --warn:#b06a0e; --warn-soft:#fbe8c4;
+    --danger:#b8331f; --danger-soft:#fadbd2;
+  }
+  [data-theme="dark"] {
+    --paper:#080a1c; --card:#11142b; --card-2:#181b35;
+    --ink:#f5f3ec; --ink-2:#c2bfb6; --muted:#7e7c92;
+    --line:#232545; --line-strong:#3a3d62;
+    --accent:#ff8a5a; --accent-2:#ffa37f; --accent-soft:rgba(255,138,90,0.14);
+    --navy:#8ea3ff; --navy-soft:rgba(142,163,255,0.16);
+    --success:#74d49f; --success-soft:rgba(116,212,159,0.14);
+    --warn:#f0b95a; --warn-soft:rgba(240,185,90,0.14);
+    --danger:#f4907a; --danger-soft:rgba(244,144,122,0.14);
+  }
+  * { box-sizing:border-box; }
+  html, body { margin:0; padding:0; }
+  body { font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:var(--paper); color:var(--ink); font-size:14px; line-height:1.45; -webkit-font-smoothing:antialiased; }
+  h1,h2,h3,h4 { font-family:'Cambria','Source Serif Pro',Georgia,serif; font-weight:500; margin:0; letter-spacing:-0.01em; }
+  .num { font-variant-numeric:tabular-nums; }
+  .muted { color:var(--muted); }
+  .eyebrow { font-size:11px; letter-spacing:0.12em; text-transform:uppercase; font-weight:600; color:var(--muted); }
+  .row { display:flex; align-items:center; gap:10px; }
+  .grow { flex:1; min-width:0; }
+
+  .app { display:flex; min-height:100vh; }
+  .sb { width:240px; min-width:240px; background:var(--card); border-right:1px solid var(--line); padding:20px 14px; display:flex; flex-direction:column; gap:2px; position:sticky; top:0; height:100vh; }
+  .sb-logo { display:flex; align-items:center; padding:4px 8px 22px; }
+  .sb-logo img { height:22px; width:auto; }
+  .sb-grp { font-size:10px; letter-spacing:0.1em; text-transform:uppercase; color:var(--muted); padding:14px 10px 4px; }
+  .nav { display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:8px; cursor:pointer; color:var(--ink-2); font-size:13.5px; font-weight:500; }
+  .nav:hover { background:var(--line); }
+  .nav.active { background:var(--accent-soft); color:var(--accent-2); }
+  .sb-user { margin-top:auto; padding:12px; border:1px solid var(--line); border-radius:10px; display:flex; gap:10px; align-items:center; }
+  .avatar { width:32px; height:32px; border-radius:50%; background:var(--navy); color:#fff; display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:600; flex-shrink:0; }
+  [data-theme="dark"] .avatar { color:#0f1130; }
+
+  .main { flex:1; min-width:0; display:flex; flex-direction:column; }
+  .top { padding:22px 36px 18px; display:flex; justify-content:space-between; align-items:flex-start; gap:24px; }
+  .top > .top-left { flex:1; min-width:0; }
+  .crumb { font-size:13px; color:var(--muted); margin-bottom:4px; }
+  .crumb a { color:var(--accent); text-decoration:none; font-weight:600; }
+  .title { font-size:30px; line-height:1.1; }
+  .actions { display:flex; align-items:center; gap:10px; flex-shrink:0; flex-wrap:wrap; justify-content:flex-end; }
+
+  .btn { appearance:none; border:1px solid var(--line-strong); background:var(--card); color:var(--ink); padding:8px 14px; border-radius:8px; font:500 13px 'Inter',sans-serif; cursor:pointer; display:inline-flex; align-items:center; gap:7px; transition:background .12s,border-color .12s; white-space:nowrap; }
+  .btn:hover { background:var(--line); }
+  .btn.ghost { background:transparent; border-color:transparent; color:var(--ink-2); }
+  .btn.ghost:hover { background:var(--line); color:var(--ink); }
+  .btn.danger-outline { border-color:var(--line-strong); color:var(--danger); }
+  .btn.tiny { padding:5px 10px; font-size:12px; border-radius:6px; }
+
+  .seg { display:inline-flex; background:var(--navy); border-radius:8px; padding:3px; gap:2px; }
+  [data-theme="dark"] .seg { background:var(--card-2); border:1px solid var(--line); }
+  .seg button { appearance:none; border:0; background:transparent; color:rgba(255,255,255,0.6); font:600 12px 'Inter',sans-serif; padding:5px 12px; border-radius:6px; cursor:pointer; }
+  [data-theme="dark"] .seg button { color:var(--muted); }
+  .seg button.on { background:#fff; color:var(--navy); }
+  [data-theme="dark"] .seg button.on { background:var(--navy); color:#0f1130; }
+
+  .content { padding:6px 36px 60px; }
+  .pinfo { display:flex; align-items:center; gap:12px; padding:16px 20px; background:var(--card); border:1px solid var(--line); border-radius:12px; margin-bottom:18px; cursor:pointer; }
+  .pinfo strong { white-space:nowrap; flex-shrink:0; }
+  .pinfo .tri { color:var(--muted); font-size:12px; }
+  .pinfo .right { margin-left:auto; color:var(--muted); font-size:13px; }
+  .pinfo .right a { color:var(--accent); text-decoration:none; }
+
+  .tabs { display:flex; gap:26px; border-bottom:1px solid var(--line); margin-bottom:24px; }
+  .tab { padding:10px 2px 14px; font-size:15px; font-weight:500; color:var(--muted); cursor:pointer; border-bottom:2px solid transparent; margin-bottom:-1px; }
+  .tab:hover { color:var(--ink); }
+  .tab.active { color:var(--ink); border-bottom-color:var(--accent); }
+
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; }
+  .card-hd { padding:15px 18px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:10px; }
+  .card-hd h2 { white-space:nowrap; flex-shrink:0; }
+  .card-bd { padding:18px; }
+
+  .pill { display:inline-flex; align-items:center; gap:6px; padding:3px 10px; border-radius:999px; font-size:11.5px; font-weight:600; background:var(--line); color:var(--ink-2); white-space:nowrap; }
+  .pill.dot::before { content:''; width:6px; height:6px; border-radius:50%; background:currentColor; }
+  .pill.success { background:var(--success-soft); color:var(--success); }
+  .pill.warn { background:var(--warn-soft); color:var(--warn); }
+  .pill.danger { background:var(--danger-soft); color:var(--danger); }
+  .pill.navy { background:var(--navy-soft); color:var(--navy); }
+
+  .link { color:var(--accent); font-weight:600; text-decoration:none; font-size:13px; }
+
+  /* KPI cards */
+  .stats { display:grid; grid-template-columns:repeat(4,1fr); gap:14px; }
+  .stat { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px 18px; display:flex; flex-direction:column; gap:3px; }
+  .stat .lbl { font-size:11px; letter-spacing:0.06em; text-transform:uppercase; font-weight:600; color:var(--muted); }
+  .stat .val { font-family:'Cambria',serif; font-size:25px; font-weight:500; }
+  .stat .val.pos { color:var(--success); }
+  .stat .sub { font-size:12px; color:var(--muted); }
+
+  .grid2 { display:grid; grid-template-columns:1fr 330px; gap:18px; align-items:start; }
+  .stack { display:flex; flex-direction:column; gap:18px; }
+
+  /* burn bar */
+  .sbar { height:16px; border-radius:8px; background:var(--line); overflow:hidden; display:flex; }
+  .sbar .seg-cost { background:var(--navy); }
+  .sbar .seg-profit { background:var(--success); }
+  .blegend { display:flex; gap:18px; flex-wrap:wrap; margin-top:12px; font-size:12.5px; }
+  .blegend .k { display:inline-flex; align-items:center; gap:7px; }
+  .dotc { width:9px; height:9px; border-radius:2px; }
+  .bnums { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; margin-top:18px; }
+  .bnum .l { font-size:11px; letter-spacing:0.05em; text-transform:uppercase; color:var(--muted); font-weight:600; }
+  .bnum .v { font-family:'Cambria',serif; font-size:19px; margin-top:2px; }
+  .bnum .v.pos { color:var(--success); }
+
+  /* dates strip */
+  .dates { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; }
+  .dcard { border:1px solid var(--line); border-radius:10px; padding:12px 14px; }
+  .dcard .l { font-size:10.5px; letter-spacing:0.05em; text-transform:uppercase; color:var(--muted); font-weight:600; }
+  .dcard .d { font-family:'Cambria',serif; font-size:18px; margin-top:3px; }
+  .dcard .s { font-size:11.5px; color:var(--muted); margin-top:2px; }
+
+  /* operations mini */
+  .ops { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; }
+  .opc { border:1px solid var(--line); border-radius:10px; padding:12px 14px; display:flex; flex-direction:column; gap:2px; }
+  .opc .l { font-size:10.5px; letter-spacing:0.05em; text-transform:uppercase; color:var(--muted); font-weight:600; }
+  .opc .v { font-family:'Cambria',serif; font-size:20px; }
+
+  /* flags */
+  .flag { display:flex; align-items:center; gap:11px; padding:11px 0; border-top:1px solid var(--line); }
+  .flag:first-child { border-top:0; }
+  .flag .fdot { width:9px; height:9px; border-radius:50%; flex-shrink:0; }
+  .flag .ftext { flex:1; font-size:13px; }
+  .flag .ftext b { font-weight:600; }
+
+  /* activity */
+  .tl { display:flex; flex-direction:column; }
+  .tl-item { display:flex; gap:11px; padding:10px 0; border-top:1px solid var(--line); }
+  .tl-item:first-child { border-top:0; }
+  .tl-dot { width:8px; height:8px; border-radius:50%; background:var(--navy); margin-top:5px; flex-shrink:0; }
+  .tl-dot.accent { background:var(--accent); }
+  .tl-txt { flex:1; font-size:13px; }
+  .tl-txt .w { font-size:11.5px; color:var(--muted); margin-top:1px; }
+
+  /* quick links */
+  .qlinks { display:flex; flex-direction:column; }
+  .qlink { display:flex; align-items:center; gap:10px; padding:11px 0; border-top:1px solid var(--line); cursor:pointer; color:var(--ink); font-size:13.5px; font-weight:500; }
+  .qlink:first-child { border-top:0; }
+  .qlink:hover { color:var(--accent-2); }
+  .qlink .ic { width:30px; height:30px; border-radius:8px; background:var(--card-2); display:flex; align-items:center; justify-content:center; color:var(--ink-2); flex-shrink:0; }
+  .qlink .ch { margin-left:auto; color:var(--muted); }
+
+  .enrichnote { display:none; font-size:12.5px; color:var(--ink-2); background:var(--accent-soft); border:1px solid var(--accent); border-left-width:3px; border-radius:8px; padding:10px 14px; margin:0 0 18px; }
+  body.show-fixes .enrichnote { display:block; }
+  .enrichnote b { color:var(--accent-2); }
+  .enrichtag { display:none; align-items:center; gap:5px; font-size:10px; font-weight:700; letter-spacing:0.04em; text-transform:uppercase; color:var(--accent-2); background:var(--accent-soft); border:1px solid var(--accent); border-radius:999px; padding:1px 8px; }
+  body.show-fixes .enrichtag { display:inline-flex; }
+
+  svg { display:block; }
+</style>
+</head>
+<body data-theme="light" class="show-fixes">
+<div class="app">
+  <aside class="sb">
+    <div class="sb-logo"><img src="assets/pgp-logo.png" alt="PGP" /></div>
+    <div class="sb-grp">Workspace</div>
+    <div class="nav">Projects</div>
+    <div class="nav">Calendar</div>
+    <div class="nav">Applications</div>
+    <div class="nav">Purchase Orders</div>
+    <div class="nav">Approvals</div>
+    <div class="sb-grp">Master Data</div>
+    <div class="nav">Admin</div>
+    <div class="nav">Product library</div>
+    <div class="nav">Approved suppliers</div>
+    <div class="sb-user">
+      <div class="avatar">TB</div>
+      <div class="grow"><div style="font-size:13px;font-weight:600;">Thomas Barber</div><div style="font-size:12px;" class="muted">Superadmin · Approver</div></div>
+    </div>
+  </aside>
+
+  <div class="main">
+    <header class="top">
+      <div class="top-left">
+        <div class="crumb"><a href="#">Projects</a> / 26001</div>
+        <h1 class="title">Dallas Rd Block B Roofing</h1>
+        <div class="muted" style="font-size:13px;margin-top:6px;">Client · MCR</div>
+      </div>
+      <div class="actions">
+        <button class="btn ghost">Mark complete</button>
+        <button class="btn danger-outline">Delete project</button>
+        <div class="seg" id="themeSeg"><button class="on" data-theme-set="light">Light</button><button data-theme-set="dark">Dark</button></div>
+      </div>
+    </header>
+
+    <div class="content">
+      <div class="pinfo">
+        <span class="tri">▸</span><strong style="font-weight:600;">Project Info</strong>
+        <span class="right">Site details · <a href="#">Application terms</a></span>
+      </div>
+
+      <div class="tabs">
+        <div class="tab active">Overview</div>
+        <div class="tab">Commercials</div>
+        <div class="tab">Materials</div>
+        <div class="tab">Operations</div>
+      </div>
+
+      <div class="row" style="margin-bottom:18px;gap:10px;">
+        <span class="eyebrow">Demo</span>
+        <div class="seg" id="fixSeg" style="background:var(--card-2);border:1px solid var(--line);">
+          <button class="on" data-fix="on" style="color:var(--muted);">Show what's new</button>
+          <button data-fix="off" style="color:var(--muted);">Hide</button>
+        </div>
+        <span class="muted" style="font-size:12px;">+ Raise PO removed · empty space now a project-at-a-glance</span>
+      </div>
+
+      <!-- headline KPIs -->
+      <div class="stats" style="margin-bottom:18px;">
+        <div class="stat"><span class="lbl">Project value</span><span class="val num">£367,370.60</span></div>
+        <div class="stat"><span class="lbl">Cost</span><span class="val num">£319,392.07</span></div>
+        <div class="stat"><span class="lbl">Gross profit</span><span class="val num pos">£47,978.53</span></div>
+        <div class="stat"><span class="lbl">GP margin</span><span class="val num pos">13.1%</span></div>
+      </div>
+
+      <div class="enrichnote"><b>Enriched Overview.</b> Removed the global <b>+ Raise PO</b> (Materials-only now). The empty space below is a real project-at-a-glance: budget burn, key dates, a needs-attention panel, recent activity, quick links, and headline Operations KPIs — each linking into its sub-tab.</div>
+
+      <div class="grid2">
+        <!-- LEFT -->
+        <div class="stack">
+          <!-- Budget burn -->
+          <section class="card">
+            <div class="card-hd"><h2 style="font-size:16px;">Forecast outturn</h2><span class="enrichtag">✓ new</span><div class="grow"></div><span class="pill success dot">+£13,192 · +27.5% vs contract</span></div>
+            <div class="card-bd">
+              <div class="row" style="justify-content:space-between;margin-bottom:10px;gap:12px;">
+                <span class="muted" style="font-size:12.5px;">Forecast final cost vs final account</span>
+                <span class="num" style="font-size:12.5px;font-weight:600;white-space:nowrap;">83% cost · 17% profit</span>
+              </div>
+              <div class="sbar"><div class="seg-cost" style="width:83.4%"></div><div class="seg-profit" style="width:16.6%"></div></div>
+              <div class="blegend">
+                <span class="k"><span class="dotc" style="background:var(--navy);"></span>Forecast final cost</span>
+                <span class="k"><span class="dotc" style="background:var(--success);"></span>Forecast profit</span>
+              </div>
+              <div class="bnums">
+                <div class="bnum"><div class="l">Final account</div><div class="v num">£369,370.60</div></div>
+                <div class="bnum"><div class="l">Final cost</div><div class="v num">£308,200.07</div></div>
+                <div class="bnum"><div class="l">Profit · 16.6%</div><div class="v num pos">£61,170.53</div><div class="num pos" style="font-size:11.5px;font-weight:600;margin-top:2px;">▲ +27.5% · +3.5 pts margin</div></div>
+              </div>
+            </div>
+          </section>
+
+          <!-- Key dates -->
+          <section class="card">
+            <div class="card-hd"><h2 style="font-size:16px;">Key dates</h2><span class="enrichtag">✓ new</span><div class="grow"></div><a class="link" href="#">Schedule →</a></div>
+            <div class="card-bd">
+              <div class="dates">
+                <div class="dcard"><div class="l">Next application</div><div class="d">11 Jun</div><div class="s">AfP #5 · 8 days</div></div>
+                <div class="dcard"><div class="l">Next due date</div><div class="d">18 Jun</div><div class="s">valuation #2</div></div>
+                <div class="dcard"><div class="l">Final date for pmt</div><div class="d">27 Jun</div><div class="s">val #1</div></div>
+                <div class="dcard"><div class="l">Forecast completion</div><div class="d">31 Aug</div><div class="s">Q3 2026</div></div>
+              </div>
+            </div>
+          </section>
+
+          <!-- Operations at a glance -->
+          <section class="card">
+            <div class="card-hd"><h2 style="font-size:16px;">On site today</h2><span class="enrichtag">✓ new</span><div class="grow"></div><a class="link" href="#">Operations →</a></div>
+            <div class="card-bd">
+              <div class="ops">
+                <div class="opc"><span class="l">On site now</span><span class="v num">7 <span class="pill success dot" style="vertical-align:middle;font-size:10px;">live</span></span></div>
+                <div class="opc"><span class="l">Briefing ack</span><span class="v num">8/9</span></div>
+                <div class="opc"><span class="l">Deliveries awaiting</span><span class="v num">2</span></div>
+                <div class="opc"><span class="l">Plant accrued</span><span class="v num">£2,210</span></div>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <!-- RIGHT -->
+        <div class="stack">
+          <!-- Needs attention -->
+          <section class="card">
+            <div class="card-hd"><h2 style="font-size:15px;">Needs attention</h2><span class="pill warn" style="margin-left:auto;">3</span></div>
+            <div class="card-bd" style="padding:6px 18px 14px;">
+              <div class="flag"><span class="fdot" style="background:var(--warn);"></span><span class="ftext"><b>VO1</b> pending director approval</span><a class="link" href="#">View</a></div>
+              <div class="flag"><span class="fdot" style="background:var(--warn);"></span><span class="ftext"><b>AfP #4</b> awaiting certification</span><a class="link" href="#">View</a></div>
+              <div class="flag"><span class="fdot" style="background:var(--danger);"></span><span class="ftext"><b>PASMA cert</b> expired · P. Shah</span><a class="link" href="#">View</a></div>
+            </div>
+          </section>
+
+          <!-- Recent activity -->
+          <section class="card">
+            <div class="card-hd"><h2 style="font-size:15px;">Recent activity</h2></div>
+            <div class="card-bd" style="padding:6px 18px 14px;">
+              <div class="tl">
+                <div class="tl-item"><span class="tl-dot accent"></span><div class="tl-txt">Daily briefing updated<div class="w">today 07:42 · T. Barber</div></div></div>
+                <div class="tl-item"><span class="tl-dot"></span><div class="tl-txt">PO-26001-0007 approved · £3,628.80<div class="w">2 Jun · synced to Xero</div></div></div>
+                <div class="tl-item"><span class="tl-dot"></span><div class="tl-txt">AfP #4 submitted · £50,148.09<div class="w">1 Jun</div></div></div>
+                <div class="tl-item"><span class="tl-dot"></span><div class="tl-txt">Quote applied — Euroroof AVCL ↓£2.86<div class="w">31 May · Alumasc</div></div></div>
+                <div class="tl-item"><span class="tl-dot"></span><div class="tl-txt">VO1 raised — change to roof<div class="w">28 May</div></div></div>
+              </div>
+            </div>
+          </section>
+
+          <!-- Quick links -->
+          <section class="card">
+            <div class="card-hd"><h2 style="font-size:15px;">Jump to</h2></div>
+            <div class="card-bd" style="padding:6px 18px 14px;">
+              <div class="qlinks">
+                <div class="qlink"><span class="ic"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 13V3M6 13V6M10 13V8M14 13V4"/></svg></span>Commercials · Applications<span class="ch">›</span></div>
+                <div class="qlink"><span class="ic"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 4h10v9H3zM3 4l2-2h6l2 2M6 8h4"/></svg></span>Materials · Raise PO<span class="ch">›</span></div>
+                <div class="qlink"><span class="ic"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M6 7a2 2 0 100-4 2 2 0 000 4zM2 13c0-2 1.5-3.5 4-3.5S10 11 10 13M11 7l2 2 3-3"/></svg></span>Operations · Attendance<span class="ch">›</span></div>
+                <div class="qlink"><span class="ic"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 2h6l3 3v9H4zM10 2v3h3M6 9h4"/></svg></span>RAMS &amp; docs<span class="ch">›</span></div>
+              </div>
+            </div>
+          </section>
+        </div>
+      </div>
+
+      <!-- Pricing snapshot -->
+      <section class="card" style="margin-top:18px;">
+        <div class="card-hd"><h2 style="font-size:16px;">Pricing snapshot</h2><div class="grow"></div><button class="btn tiny">Replace .xlsx</button></div>
+        <div class="card-bd"><span class="muted" style="font-size:13px;">MCR007 Dallas Rd Block B Roofing.xlsx · uploaded 02 Jun 2026 · 70 materials</span></div>
+      </section>
+
+    </div>
+  </div>
+</div>
+
+<script>
+  document.getElementById('themeSeg').addEventListener('click', function(e){
+    var b = e.target.closest('[data-theme-set]'); if(!b) return;
+    document.body.setAttribute('data-theme', b.dataset.themeSet);
+    this.querySelectorAll('button').forEach(function(x){ x.classList.toggle('on', x===b); });
+  });
+  var fixSeg = document.getElementById('fixSeg');
+  fixSeg.addEventListener('click', function(e){
+    var b = e.target.closest('[data-fix]'); if(!b) return;
+    document.body.classList.toggle('show-fixes', b.dataset.fix==='on');
+    fixSeg.querySelectorAll('button').forEach(function(x){ x.classList.toggle('on', x===b); });
+  });
+</script>
+</body>
+</html>

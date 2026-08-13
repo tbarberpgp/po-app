@@ -38,7 +38,7 @@ valuations.get("/project/:projectId", async (c) => {
 
 /** Add a single schedule entry. */
 valuations.post("/project/:projectId", async (c) => {
-  const denied = requirePermission(c, "projects.edit");
+  const denied = requirePermission(c, "commercial.edit");
   if (denied) return denied;
   const projectId = c.req.param("projectId");
   const body = await c.req.json<{
@@ -64,9 +64,23 @@ valuations.post("/project/:projectId", async (c) => {
   return c.json({ id: inserted?.id });
 });
 
+/** Clear a project's whole payment schedule — every valuation entry plus the
+ *  last-uploaded-file note, so a wrong workbook can be wiped and redone. */
+valuations.delete("/project/:projectId", async (c) => {
+  const denied = requirePermission(c, "commercial.edit");
+  if (denied) return denied;
+  const projectId = c.req.param("projectId");
+  const r = await c.env.DB.prepare("DELETE FROM valuation_schedule_entries WHERE project_id = ?")
+    .bind(projectId).run();
+  await c.env.DB.prepare(
+    "UPDATE projects SET valuation_schedule_filename = NULL, valuation_schedule_uploaded_at = NULL, valuation_schedule_uploaded_by = NULL WHERE id = ?",
+  ).bind(projectId).run().catch(() => {});
+  return c.json({ ok: true, deleted: r.meta.changes ?? 0 });
+});
+
 /** Delete a schedule entry. */
 valuations.delete("/entries/:id", async (c) => {
-  const denied = requirePermission(c, "projects.edit");
+  const denied = requirePermission(c, "commercial.edit");
   if (denied) return denied;
   const id = Number(c.req.param("id"));
   await c.env.DB.prepare("DELETE FROM valuation_schedule_entries WHERE id = ?")
@@ -77,7 +91,7 @@ valuations.delete("/entries/:id", async (c) => {
 
 /** Record that a valuation schedule file was uploaded for a project. */
 valuations.post("/project/:projectId/upload-meta", async (c) => {
-  const denied = requirePermission(c, "projects.edit");
+  const denied = requirePermission(c, "commercial.edit");
   if (denied) return denied;
   const projectId = c.req.param("projectId");
   const body = await c.req.json<{ filename: string }>();
@@ -101,7 +115,7 @@ valuations.post("/project/:projectId/upload-meta", async (c) => {
  * re-upload of the same file doesn't create duplicates.
  */
 valuations.post("/project/:projectId/upload", async (c) => {
-  const denied = requirePermission(c, "projects.edit");
+  const denied = requirePermission(c, "commercial.edit");
   if (denied) return denied;
   const projectId = c.req.param("projectId");
   const project = await c.env.DB.prepare("SELECT id FROM projects WHERE id = ?")

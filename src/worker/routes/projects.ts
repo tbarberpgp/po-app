@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import Anthropic from "@anthropic-ai/sdk";
 import type { Env, Variables } from "../env";
 import { requirePermission } from "../auth";
 
@@ -6,7 +7,10 @@ export const projects = new Hono<{ Bindings: Env; Variables: Variables }>();
 
 projects.get("/", async (c) => {
   const rows = await c.env.DB.prepare(
-    `SELECT p.*, s.id AS active_snapshot_id
+    `SELECT p.*, s.id AS active_snapshot_id,
+            (SELECT g.name FROM site_groups g WHERE g.id = p.site_group_id) AS site_group_name,
+            (SELECT g.base_project_id FROM site_groups g WHERE g.id = p.site_group_id) AS site_group_base,
+            CASE WHEN p.id = 'sandbox' THEN 1 ELSE 0 END AS is_sandbox
      FROM projects p
      LEFT JOIN material_snapshots s ON s.project_id = p.id AND s.is_active = 1
      WHERE p.deleted_at IS NULL
@@ -114,7 +118,7 @@ projects.post("/", async (c) => {
 projects.get("/:id", async (c) => {
   const id = c.req.param("id");
   const project = await c.env.DB.prepare(
-    "SELECT * FROM projects WHERE id = ? AND deleted_at IS NULL",
+    "SELECT *, CASE WHEN id = 'sandbox' THEN 1 ELSE 0 END AS is_sandbox FROM projects WHERE id = ? AND deleted_at IS NULL",
   )
     .bind(id)
     .first();
@@ -165,6 +169,73 @@ projects.delete("/:id", async (c) => {
   return c.json({ ok: true });
 });
 
+/* ── Contract / client-PO extraction ─────────────────────────────────────
+ * Upload the signed contract or the client's purchase order; Claude reads it
+ * and returns the commercial details so the UI can offer them field-by-field
+ * (nothing is applied automatically). */
+
+const CONTRACT_TOOL: Anthropic.Tool = {
+  name: "extract_contract",
+  description: "Record the commercial details extracted from a construction contract or client purchase order.",
+  input_schema: {
+    type: "object",
+    properties: {
+      client_name: { type: ["string", "null"], description: "The client / employer we are contracting with (not Power Grid Projects)" },
+      client_contact_name: { type: ["string", "null"] },
+      client_email: { type: ["string", "null"] },
+      reference: { type: ["string", "null"], description: "Contract or order reference number" },
+      contract_sum: { type: ["number", "null"], description: "Contract sum / order value ex VAT, plain number" },
+      payment_terms: { type: ["string", "null"], description: "Payment terms as stated, e.g. '30 days from application'" },
+      application_cadence: { type: ["string", "null"], enum: ["weekly", "biweekly", "monthly", null], description: "How often applications/valuations are made, if stated" },
+      retention_pct: { type: ["number", "null"], description: "Retention percentage, e.g. 3 for 3%" },
+      site_address: { type: ["string", "null"], description: "Site / delivery address for the works" },
+      start_date: { type: ["string", "null"], description: "Commencement date YYYY-MM-DD if stated" },
+      completion_date: { type: ["string", "null"], description: "Completion date YYYY-MM-DD if stated" },
+    },
+    required: [],
+  },
+};
+
+function contractBufToBase64(buf: ArrayBuffer): string {
+  const bytes = new Uint8Array(buf);
+  let bin = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) bin += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  return btoa(bin);
+}
+
+projects.post("/:id/extract-contract", async (c) => {
+  const denied = requirePermission(c, "projects.edit");
+  if (denied) return denied;
+  if (!c.env.ANTHROPIC_API_KEY) return c.json({ error: "ANTHROPIC_API_KEY not configured (needed to read contracts)" }, 500);
+  const form = await c.req.formData();
+  const file = form.get("file");
+  if (!(file instanceof File)) return c.json({ error: "file required" }, 400);
+  if (!(file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf"))) {
+    return c.json({ error: "Upload the contract as a PDF." }, 400);
+  }
+  const client = new Anthropic({ apiKey: c.env.ANTHROPIC_API_KEY });
+  const response = await client.messages.create({
+    model: "claude-opus-4-7",
+    max_tokens: 2048,
+    system:
+      "You are a UK construction commercial manager reading a contract, subcontract order or client purchase order issued TO Power Grid Projects Ltd. " +
+      "Extract the commercial particulars. The CLIENT is the party engaging Power Grid Projects — never Power Grid Projects itself. " +
+      "Numbers plain (no £ or commas); dates as YYYY-MM-DD; leave anything not stated null rather than guessing.",
+    tools: [CONTRACT_TOOL],
+    tool_choice: { type: "tool", name: "extract_contract" },
+    messages: [{
+      role: "user",
+      content: [
+        { type: "document", source: { type: "base64", media_type: "application/pdf", data: contractBufToBase64(await file.arrayBuffer()) } },
+        { type: "text", text: "Extract the commercial details via extract_contract." },
+      ],
+    }],
+  });
+  const toolUse = response.content.find((b): b is Anthropic.ToolUseBlock => b.type === "tool_use");
+  return c.json({ extracted: toolUse?.input ?? {} });
+});
+
 projects.put("/:id", async (c) => {
   const denied = requirePermission(c, "projects.edit");
   if (denied) return denied;
@@ -174,37 +245,61 @@ projects.put("/:id", async (c) => {
     client?: string | null;
     client_email?: string | null;
     client_contact_name?: string | null;
+    site_manager_email?: string | null;
+    project_manager_email?: string | null;
+    commercial_manager_email?: string | null;
     delivery_address?: string | null;
     site_contact_name?: string | null;
     site_contact_phone?: string | null;
     delivery_instructions?: string | null;
     retention_pct?: number;
+    client_vat_pct?: number;
+    client_retention_pct?: number;
+    labour_vat_pct?: number;
+    labour_retention_pct?: number;
   }>();
   const allowed = [
     "name",
     "client",
     "client_email",
     "client_contact_name",
+    "site_manager_email",
+    "project_manager_email",
+    "commercial_manager_email",
+    "payment_terms",
+    "application_cadence",
     "delivery_address",
     "site_contact_name",
     "site_contact_phone",
     "delivery_instructions",
     "retention_pct",
+    "client_vat_pct",
+    "client_retention_pct",
+    "labour_vat_pct",
+    "labour_retention_pct",
   ] as const;
-  const sets: string[] = [];
-  const binds: unknown[] = [];
+  const entries: Array<{ col: string; val: unknown }> = [];
   for (const k of allowed) {
     if (k in body) {
-      sets.push(`${k} = ?`);
       const v = (body as Record<string, unknown>)[k];
-      binds.push(typeof v === "string" ? v.trim() || null : v ?? null);
+      entries.push({ col: k, val: typeof v === "string" ? v.trim() || null : v ?? null });
     }
   }
-  if (sets.length === 0) return c.json({ error: "nothing to update" }, 400);
-  binds.push(id);
-  await c.env.DB.prepare(`UPDATE projects SET ${sets.join(", ")} WHERE id = ?`)
-    .bind(...binds)
-    .run();
+  if (entries.length === 0) return c.json({ error: "nothing to update" }, 400);
+  // Columns added by migration 0045; if it hasn't been applied to this DB yet
+  // the UPDATE throws, so we retry without them rather than 500 the whole save.
+  const runUpdate = async (cols: Array<{ col: string; val: unknown }>) => {
+    if (cols.length === 0) return;
+    await c.env.DB.prepare(`UPDATE projects SET ${cols.map((e) => `${e.col} = ?`).join(", ")} WHERE id = ?`)
+      .bind(...cols.map((e) => e.val), id)
+      .run();
+  };
+  try {
+    await runUpdate(entries);
+  } catch (e) {
+    console.warn("project update fell back (pre-0045):", e instanceof Error ? e.message : e);
+    await runUpdate(entries.filter((e) => e.col !== "project_manager_email" && e.col !== "commercial_manager_email"));
+  }
   await c.env.DB.prepare(
     `INSERT INTO audit_log (entity_type, entity_id, action, actor, details, created_at)
      VALUES ('project', ?, 'updated', ?, ?, ?)`,
@@ -214,20 +309,75 @@ projects.put("/:id", async (c) => {
   return c.json({ ok: true });
 });
 
+/** Mark a project complete / re-open it. Completion is a soft status flag — the
+ *  project stays fully editable (POs/applications can still be raised); the
+ *  workspace can filter on it. Re-open clears the flag. */
+projects.post("/:id/complete", async (c) => {
+  const denied = requirePermission(c, "projects.edit");
+  if (denied) return denied;
+  const id = c.req.param("id");
+  const project = await c.env.DB.prepare(
+    "SELECT id FROM projects WHERE id = ? AND deleted_at IS NULL",
+  ).bind(id).first<{ id: string }>();
+  if (!project) return c.json({ error: "not found" }, 404);
+  const now = new Date().toISOString();
+  const actor = c.get("userEmail");
+  await c.env.DB.prepare(
+    "UPDATE projects SET completed_at = ?, completed_by = ? WHERE id = ?",
+  ).bind(now, actor, id).run();
+  await c.env.DB.prepare(
+    `INSERT INTO audit_log (entity_type, entity_id, action, actor, details, created_at)
+     VALUES ('project', ?, 'completed', ?, ?, ?)`,
+  ).bind(id, actor, JSON.stringify({ completed_at: now }), now).run();
+  return c.json({ ok: true, completed_at: now });
+});
+
+projects.post("/:id/reopen", async (c) => {
+  const denied = requirePermission(c, "projects.edit");
+  if (denied) return denied;
+  const id = c.req.param("id");
+  const project = await c.env.DB.prepare(
+    "SELECT id FROM projects WHERE id = ? AND deleted_at IS NULL",
+  ).bind(id).first<{ id: string }>();
+  if (!project) return c.json({ error: "not found" }, 404);
+  const now = new Date().toISOString();
+  const actor = c.get("userEmail");
+  await c.env.DB.prepare(
+    "UPDATE projects SET completed_at = NULL, completed_by = NULL WHERE id = ?",
+  ).bind(id).run();
+  await c.env.DB.prepare(
+    `INSERT INTO audit_log (entity_type, entity_id, action, actor, details, created_at)
+     VALUES ('project', ?, 'reopened', ?, ?, ?)`,
+  ).bind(id, actor, "{}", now).run();
+  return c.json({ ok: true });
+});
+
 projects.get("/:id/summary", async (c) => {
   const id = c.req.param("id");
-  // Spend that's outside the priced BOQ — sum of unpriced PO lines on this project
-  // that are still in play (not rejected).
-  const unpriced = await c.env.DB.prepare(
-    `SELECT COALESCE(SUM(pl.line_total), 0) AS v
+  // Spend outside the priced BOQ — the unpriced PO lines still in play (not
+  // rejected). Returned as the actual lines (not just a sum) so the UI can drill
+  // into "what made up unpriced spend". Call-offs are EXCLUDED: a framework
+  // reserves the value and its call-offs draw within it, so counting call-off
+  // lines here would double-book (matches the committed/forecast-cost rule).
+  // Lines CODED to a budget line (material_id set) are excluded: their £ folds
+  // into that material's committed spend, so listing them here too would tell
+  // the story twice. Assigning a line from the Unexpected-spend drill is what
+  // moves it from this list into the budget.
+  const unpricedLines = await c.env.DB.prepare(
+    `SELECT po.id AS po_id, pl.id AS line_id, po.po_number AS po_number, po.supplier AS supplier,
+            pl.item AS item, pl.qty AS qty, pl.unit AS unit,
+            COALESCE(pl.line_total, 0) AS line_total, po.status AS status
      FROM po_lines pl
      JOIN purchase_orders po ON po.id = pl.po_id
      WHERE po.project_id = ?
        AND po.status IN ('approved', 'issued', 'pending_approval')
-       AND pl.is_unpriced = 1`,
+       AND pl.is_unpriced = 1
+       AND pl.material_id IS NULL
+       AND COALESCE(po.order_type, 'standard') != 'call_off'
+     ORDER BY pl.line_total DESC`,
   )
     .bind(id)
-    .first<{ v: number }>();
+    .all<{ po_id: string; line_id: number; po_number: string; supplier: string | null; item: string; qty: number | null; unit: string | null; line_total: number; status: string }>();
 
   const counts = await c.env.DB.prepare(
     `SELECT status, COUNT(*) AS n, COALESCE(SUM(total_value), 0) AS v
@@ -236,8 +386,131 @@ projects.get("/:id/summary", async (c) => {
     .bind(id)
     .all<{ status: string; n: number; v: number }>();
 
+  const unpriced_spend = unpricedLines.results.reduce((s, r) => s + (r.line_total ?? 0), 0);
   return c.json({
-    unpriced_spend: unpriced?.v ?? 0,
+    unpriced_spend,
+    unpriced_lines: unpricedLines.results,
     by_status: counts.results,
   });
+});
+
+// ── Contract register (Commercials → Contract) ──────────────────────────────
+// Risk register + key contract items. Commercial readers see them; commercial
+// editors maintain them.
+
+projects.get("/:id/contract-register", async (c) => {
+  const denied = requirePermission(c, "commercial.view");
+  if (denied) return denied;
+  const id = c.req.param("id");
+  const [risks, items] = await Promise.all([
+    c.env.DB.prepare(
+      `SELECT * FROM project_risks WHERE project_id = ?
+        ORDER BY status = 'closed', likelihood * impact DESC, created_at`,
+    ).bind(id).all(),
+    c.env.DB.prepare(
+      `SELECT * FROM project_key_items WHERE project_id = ?
+        ORDER BY status = 'done', due_date IS NULL, due_date, created_at`,
+    ).bind(id).all(),
+  ]);
+  return c.json({ risks: risks.results, key_items: items.results });
+});
+
+projects.post("/:id/risks", async (c) => {
+  const denied = requirePermission(c, "commercial.edit");
+  if (denied) return denied;
+  const id = c.req.param("id");
+  const b = await c.req.json<{ title?: string; category?: string; likelihood?: number; impact?: number; mitigation?: string; owner?: string; cost_exposure?: number }>();
+  const title = (b.title ?? "").trim();
+  if (!title) return c.json({ error: "title required" }, 400);
+  const clamp = (n: unknown) => Math.min(5, Math.max(1, Math.round(Number(n) || 3)));
+  const row = await c.env.DB.prepare(
+    `INSERT INTO project_risks (project_id, title, category, likelihood, impact, mitigation, owner, cost_exposure, created_at, created_by)
+     VALUES (?,?,?,?,?,?,?,?,?,?) RETURNING *`,
+  ).bind(
+    id, title, b.category?.trim() || null, clamp(b.likelihood), clamp(b.impact),
+    b.mitigation?.trim() || null, b.owner?.trim() || null,
+    b.cost_exposure != null && Number.isFinite(Number(b.cost_exposure)) ? Number(b.cost_exposure) : null,
+    new Date().toISOString(), c.get("userEmail") ?? null,
+  ).first();
+  return c.json(row);
+});
+
+projects.patch("/risks/:riskId", async (c) => {
+  const denied = requirePermission(c, "commercial.edit");
+  if (denied) return denied;
+  const b = await c.req.json<Record<string, unknown>>();
+  const sets: string[] = [];
+  const binds: unknown[] = [];
+  const clamp = (n: unknown) => Math.min(5, Math.max(1, Math.round(Number(n) || 3)));
+  for (const k of ["title", "category", "mitigation", "owner"] as const) {
+    if (k in b) { sets.push(`${k} = ?`); binds.push(typeof b[k] === "string" && (b[k] as string).trim() ? (b[k] as string).trim() : null); }
+  }
+  if ("likelihood" in b) { sets.push("likelihood = ?"); binds.push(clamp(b.likelihood)); }
+  if ("impact" in b) { sets.push("impact = ?"); binds.push(clamp(b.impact)); }
+  if ("cost_exposure" in b) {
+    sets.push("cost_exposure = ?");
+    binds.push(b.cost_exposure != null && Number.isFinite(Number(b.cost_exposure)) ? Number(b.cost_exposure) : null);
+  }
+  if ("status" in b) {
+    const st = b.status === "closed" ? "closed" : "open";
+    sets.push("status = ?", "closed_at = ?");
+    binds.push(st, st === "closed" ? new Date().toISOString() : null);
+  }
+  if (!sets.length) return c.json({ error: "nothing to update" }, 400);
+  binds.push(c.req.param("riskId"));
+  const row = await c.env.DB.prepare(`UPDATE project_risks SET ${sets.join(", ")} WHERE id = ? RETURNING *`).bind(...binds).first();
+  if (!row) return c.json({ error: "not found" }, 404);
+  return c.json(row);
+});
+
+projects.delete("/risks/:riskId", async (c) => {
+  const denied = requirePermission(c, "commercial.edit");
+  if (denied) return denied;
+  await c.env.DB.prepare("DELETE FROM project_risks WHERE id = ?").bind(c.req.param("riskId")).run();
+  return c.json({ ok: true });
+});
+
+projects.post("/:id/key-items", async (c) => {
+  const denied = requirePermission(c, "commercial.edit");
+  if (denied) return denied;
+  const id = c.req.param("id");
+  const b = await c.req.json<{ title?: string; detail?: string; due_date?: string }>();
+  const title = (b.title ?? "").trim();
+  if (!title) return c.json({ error: "title required" }, 400);
+  const row = await c.env.DB.prepare(
+    `INSERT INTO project_key_items (project_id, title, detail, due_date, created_at, created_by)
+     VALUES (?,?,?,?,?,?) RETURNING *`,
+  ).bind(
+    id, title, b.detail?.trim() || null, b.due_date?.slice(0, 10) || null,
+    new Date().toISOString(), c.get("userEmail") ?? null,
+  ).first();
+  return c.json(row);
+});
+
+projects.patch("/key-items/:itemId", async (c) => {
+  const denied = requirePermission(c, "commercial.edit");
+  if (denied) return denied;
+  const b = await c.req.json<Record<string, unknown>>();
+  const sets: string[] = [];
+  const binds: unknown[] = [];
+  if ("title" in b && typeof b.title === "string" && b.title.trim()) { sets.push("title = ?"); binds.push(b.title.trim()); }
+  if ("detail" in b) { sets.push("detail = ?"); binds.push(typeof b.detail === "string" && b.detail.trim() ? b.detail.trim() : null); }
+  if ("due_date" in b) { sets.push("due_date = ?"); binds.push(typeof b.due_date === "string" && b.due_date ? b.due_date.slice(0, 10) : null); }
+  if ("status" in b) {
+    const st = b.status === "done" ? "done" : "open";
+    sets.push("status = ?", "done_at = ?");
+    binds.push(st, st === "done" ? new Date().toISOString() : null);
+  }
+  if (!sets.length) return c.json({ error: "nothing to update" }, 400);
+  binds.push(c.req.param("itemId"));
+  const row = await c.env.DB.prepare(`UPDATE project_key_items SET ${sets.join(", ")} WHERE id = ? RETURNING *`).bind(...binds).first();
+  if (!row) return c.json({ error: "not found" }, 404);
+  return c.json(row);
+});
+
+projects.delete("/key-items/:itemId", async (c) => {
+  const denied = requirePermission(c, "commercial.edit");
+  if (denied) return denied;
+  await c.env.DB.prepare("DELETE FROM project_key_items WHERE id = ?").bind(c.req.param("itemId")).run();
+  return c.json({ ok: true });
 });

@@ -1,22 +1,18 @@
-// Client-side PDF generator for a purchase order — matches the Power Grid
-// Projects template (see Purchase Order PO0102.pdf).
+// Client-side PDF generator for a purchase order — "PO app rev 1" house style.
 //
-// Layout zones (top → bottom):
+// Layout (top → bottom):
 //   ┌────────────────────────────────────────────────────────┐
-//   │ PURCHASE ORDER                              [LOGO]     │  ← header band
+//   │ Purchase Order (serif)                       [LOGO]     │
 //   │ <supplier>                                              │
-//   │                                                         │
-//   │   [Field labels + values]   [Company trading address]  │
-//   │                                                         │
-//   │─────────────────────────────────────────────────────── │
-//   │ Description | Qty | Unit £ | Disc. | VAT | Amount £   │  ← line table
-//   │ ...                                                     │
-//   │                          Subtotal / VAT 20% / TOTAL    │
-//   │─────────────────────────────────────────────────────── │
-//   │ DELIVERY DETAILS                                        │
-//   │ Address | Attention/Telephone | Instructions            │
-//   │─────────────────────────────────────────────────────── │
-//   │ Company Registration No / Registered Office (footer)    │
+//   │ [order-type chip]                                       │
+//   │ ════════════════════ thick navy rule ═════════════════ │
+//   │ ORDER DETAILS            │ BUYER & DELIVER TO            │
+//   │ label …………… value        │ company / VAT / deliver-to    │
+//   │ # · ITEM · QTY · UNIT · UNIT PRICE · VAT · NET AMOUNT   │
+//   │ …rows…                                                  │
+//   │ <notes>                          Subtotal / VAT / Total │
+//   │ ORDER TERMS                                             │
+//   │ PO no · company                  Generated … · domain   │
 //   └────────────────────────────────────────────────────────┘
 
 import { PDFDocument, StandardFonts, rgb, PDFFont, PDFImage, PDFPage } from "pdf-lib";
@@ -30,17 +26,45 @@ type Input = PurchaseOrder & {
   project_site_contact_name?: string | null;
   project_site_contact_phone?: string | null;
   project_delivery_instructions?: string | null;
+  /** Framework PO number this call-off draws against (when order_type === 'call_off'). */
+  parent_po_number?: string | null;
 };
 
-// A4 portrait dimensions in points
+// A4 portrait, points.
 const PAGE_W = 595.28;
 const PAGE_H = 841.89;
-const MARGIN = 40;
+const MARGIN = 56;
 const CONTENT_W = PAGE_W - 2 * MARGIN;
+const RIGHT = PAGE_W - MARGIN;
 
-const BLACK = rgb(0.06, 0.07, 0.19); // PGP ink navy
-const GREY = rgb(0.42, 0.43, 0.54);
-const RULE = rgb(0.90, 0.89, 0.85);
+const INK = rgb(0.059, 0.067, 0.188);   // PGP navy
+const GREY = rgb(0.416, 0.427, 0.541);  // muted labels
+const FAINT = rgb(0.62, 0.63, 0.70);    // row numbers
+const RULE = rgb(0.886, 0.871, 0.835);  // hairlines
+const ACCENT = rgb(0.933, 0.365, 0.169);// orange
+const ACCENT_SOFT = rgb(0.992, 0.898, 0.843); // chip background
+
+// Line-table geometry (right edge of right-aligned cols; left edge of unit).
+const T = {
+  numL: MARGIN,
+  itemL: MARGIN + 22,
+  qtyR: MARGIN + 312,
+  unitL: MARGIN + 324,
+  upR: MARGIN + 418,
+  amtR: RIGHT,
+};
+const ITEM_W = T.qtyR - T.itemL - 14;
+const FOOTER_TOP = 64;       // body must stay above this; footer text sits ~38
+
+type Ctx = {
+  pdf: PDFDocument;
+  page: PDFPage;
+  reg: PDFFont;
+  bold: PDFFont;
+  serif: PDFFont;
+  logo: PDFImage | null;
+  y: number;
+};
 
 export async function generatePoPdf(po: Input, project?: Project | null): Promise<Uint8Array> {
   const delivery = {
@@ -51,17 +75,19 @@ export async function generatePoPdf(po: Input, project?: Project | null): Promis
   };
 
   const pdf = await PDFDocument.create();
-  const page = pdf.addPage([PAGE_W, PAGE_H]);
-  const regular = await pdf.embedFont(StandardFonts.Helvetica);
+  const reg = await pdf.embedFont(StandardFonts.Helvetica);
   const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
+  const serif = await pdf.embedFont(StandardFonts.TimesRomanBold);
   const logo = await loadLogo(pdf).catch(() => null);
 
-  const ctx = { page, regular, bold, logo };
+  const ctx: Ctx = { pdf, page: pdf.addPage([PAGE_W, PAGE_H]), reg, bold, serif, logo, y: PAGE_H - MARGIN };
 
-  const headerBottom = drawHeader(ctx, po);
-  const tableBottom = drawLineTable(ctx, po, headerBottom - 24);
-  drawDeliveryDetails(ctx, po, Math.min(tableBottom - 30, 220), delivery);
-  drawFooter(ctx);
+  drawHeader(ctx, po);
+  drawInfoBlock(ctx, po, delivery);
+  const subtotal = drawLineTable(ctx, po);
+  drawTotalsAndNotes(ctx, po, subtotal);
+  drawOrderTerms(ctx);
+  drawFooters(ctx, po);
 
   return await pdf.save();
 }
@@ -70,215 +96,225 @@ async function loadLogo(pdf: PDFDocument): Promise<PDFImage | null> {
   try {
     const res = await fetch("/logo.png");
     if (!res.ok) return null;
-    const bytes = new Uint8Array(await res.arrayBuffer());
-    return await pdf.embedPng(bytes);
+    return await pdf.embedPng(new Uint8Array(await res.arrayBuffer()));
   } catch {
     return null;
   }
 }
 
-type Ctx = { page: PDFPage; regular: PDFFont; bold: PDFFont; logo: PDFImage | null };
-
 /* ── Header ──────────────────────────────────────────────────────────── */
 
-function drawHeader(ctx: Ctx, po: Input): number {
-  const { page, regular, bold, logo } = ctx;
+function drawHeader(ctx: Ctx, po: Input): void {
+  const { page, bold, serif, logo } = ctx;
   const top = PAGE_H - MARGIN;
 
-  // Logo top-right, scale to ~140pt wide max, 40pt tall max — whichever hits first.
-  let logoBottom = top;
+  // Logo top-right.
   if (logo) {
-    const maxW = 160;
-    const maxH = 44;
-    const scale = Math.min(maxW / logo.width, maxH / logo.height);
-    const w = logo.width * scale;
-    const h = logo.height * scale;
-    page.drawImage(logo, { x: PAGE_W - MARGIN - w, y: top - h, width: w, height: h });
-    logoBottom = top - h;
+    const scale = Math.min(150 / logo.width, 46 / logo.height);
+    const w = logo.width * scale, h = logo.height * scale;
+    page.drawImage(logo, { x: RIGHT - w, y: top - h + 4, width: w, height: h });
   }
 
-  // "PURCHASE ORDER" heading + supplier line, on the left.
-  // Cap heading width so it never bleeds into the field column.
-  const headingMaxW = 250;
-  let headingSize = 26;
-  while (bold.widthOfTextAtSize("PURCHASE ORDER", headingSize) > headingMaxW && headingSize > 18) {
-    headingSize -= 1;
-  }
-  page.drawText("PURCHASE ORDER", { x: MARGIN, y: top - headingSize, font: bold, size: headingSize, color: BLACK });
-  const supplierY = top - headingSize - 18;
-  page.drawText(truncate(po.supplier, 50), { x: MARGIN, y: supplierY, font: regular, size: 11, color: BLACK });
+  page.drawText("Purchase Order", { x: MARGIN, y: top - 26, font: serif, size: 30, color: INK });
+  page.drawText(truncate(po.supplier, 56), { x: MARGIN, y: top - 48, font: bold, size: 13, color: INK });
 
-  // Labelled fields — middle column, starts well clear of the heading.
-  const labelX = MARGIN + 290;
-  const fields: Array<[string, string]> = [
-    ["Purchase Order Date", formatDate(po.created_at)],
-    ["Delivery Date", po.delivery_date ? formatDate(po.delivery_date) : "—"],
-    ["Purchase Order Number", po.po_number],
-    ["Reference", po.notes?.trim() ? truncate(po.notes.trim().split(/\r?\n/)[0], 36) : ""],
-    ["VAT Number", COMPANY.vat_number],
-  ];
-  let y = top - 6;
-  for (const [label, value] of fields) {
-    page.drawText(label, { x: labelX, y, font: bold, size: 9, color: BLACK });
-    if (value) page.drawText(value, { x: labelX, y: y - 11, font: regular, size: 10, color: BLACK });
-    y -= 26;
-  }
-  const fieldsBottom = y;
-
-  // Company trading address — right-aligned to the page right margin so the
-  // longest line never bleeds past the edge.
-  const addressRightX = PAGE_W - MARGIN;
-  let ry = logoBottom - 14;
-  drawRightAligned(page, COMPANY.name, addressRightX, ry, bold, 10, BLACK);
-  for (const line of COMPANY.trading_address_lines) {
-    ry -= 12;
-    drawRightAligned(page, line, addressRightX, ry, regular, 10, BLACK);
+  let ruleY = top - 70;
+  const chip = po.order_type === "call_off" ? "CALL-OFF ORDER"
+    : po.order_type === "framework" ? "FRAMEWORK / BLANKET ORDER" : null;
+  if (chip) {
+    const cy = top - 64;
+    const tw = bold.widthOfTextAtSize(chip, 8.5);
+    page.drawRectangle({ x: MARGIN, y: cy - 4, width: tw + 16, height: 17, color: ACCENT_SOFT });
+    page.drawText(chip, { x: MARGIN + 8, y: cy, font: bold, size: 8.5, color: ACCENT });
+    ruleY = cy - 18;
   }
 
-  return Math.min(fieldsBottom, ry, supplierY) - 4;
+  page.drawLine({ start: { x: MARGIN, y: ruleY }, end: { x: RIGHT, y: ruleY }, thickness: 2, color: INK });
+  ctx.y = ruleY - 28;
 }
 
-/* ── Line items table ───────────────────────────────────────────────── */
+/* ── Order details / Buyer & deliver-to ─────────────────────────────── */
 
-function drawLineTable(ctx: Ctx, po: Input, startY: number): number {
-  const { page, regular, bold } = ctx;
+function drawInfoBlock(ctx: Ctx, po: Input, d: { address: string | null; contact_name: string | null; contact_phone: string | null }): void {
+  const { page, reg, bold } = ctx;
+  const top = ctx.y;
+  const colR = MARGIN + 230;        // right edge of the left column's values
+  const rightX = MARGIN + 290;      // left edge of the right column
 
-  // Right edges (x positions where each column's right-aligned content sits).
-  // Generously spaced so headers + worst-case 8-digit numbers don't collide.
-  const right = {
-    quantity:   MARGIN + 300,
-    unit_price: MARGIN + 360,
-    discount:   MARGIN + 415,
-    vat:        MARGIN + 450,
-    amount:     MARGIN + CONTENT_W,
-  };
-  const descriptionLeft = MARGIN;
-  const descriptionWidth = right.quantity - descriptionLeft - 50; // leave 50pt gap before Qty
+  // Left: ORDER DETAILS
+  page.drawText("ORDER DETAILS", { x: MARGIN, y: top, font: bold, size: 8.5, color: GREY });
+  const rows: Array<[string, string]> = [
+    ["PO number", po.po_number],
+    ["Order date", formatDate(po.created_at)],
+    ["Delivery date", po.delivery_date ? formatDate(po.delivery_date) : "—"],
+    ["Project", truncate([po.project_code, po.project_name].filter(Boolean).join(" · "), 34)],
+    ["Raised / approved by", personName(po.approved_by)],
+  ];
+  let ly = top - 20;
+  for (const [label, value] of rows) {
+    page.drawText(label, { x: MARGIN, y: ly, font: reg, size: 10, color: GREY });
+    drawRightAligned(page, value, colR, ly, bold, 10, INK);
+    hairline(page, MARGIN, ly - 8, colR);
+    ly -= 26;
+  }
 
-  // Header
-  let y = startY;
-  page.drawText("Description", { x: descriptionLeft, y, font: bold, size: 9, color: GREY });
-  drawRightAligned(page, "Quantity",   right.quantity,   y, bold, 9, GREY);
-  drawRightAligned(page, "Unit Price", right.unit_price, y, bold, 9, GREY);
-  drawRightAligned(page, "Discount",   right.discount,   y, bold, 9, GREY);
-  drawRightAligned(page, "VAT",        right.vat,        y, bold, 9, GREY);
-  drawRightAligned(page, "Amount GBP", right.amount,     y, bold, 9, GREY);
-  y -= 6;
-  hairline(page, MARGIN, y, PAGE_W - MARGIN);
-  y -= 14;
+  // Right: BUYER & DELIVER TO
+  page.drawText("BUYER & DELIVER TO", { x: rightX, y: top, font: bold, size: 8.5, color: GREY });
+  let ry = top - 20;
+  page.drawText(COMPANY.name, { x: rightX, y: ry, font: bold, size: 11, color: INK }); ry -= 15;
+  page.drawText(truncate(COMPANY.trading_address_lines.join(", "), 46), { x: rightX, y: ry, font: reg, size: 10, color: INK }); ry -= 14;
+  page.drawText(`VAT ${COMPANY.vat_number} · Co. ${COMPANY.company_number}`, { x: rightX, y: ry, font: reg, size: 10, color: INK }); ry -= 26;
 
-  const vatRate = COMPANY.default_vat_rate;
+  page.drawText("Deliver to — site", { x: rightX, y: ry, font: bold, size: 11, color: INK }); ry -= 15;
+  const addr = (d.address?.trim() || po.project_name);
+  for (const line of wrapText(addr, reg, 10, CONTENT_W - 290)) { page.drawText(line, { x: rightX, y: ry, font: reg, size: 10, color: INK }); ry -= 14; }
+  if (d.contact_name || d.contact_phone) {
+    const c = ["Site contact:", d.contact_name, d.contact_phone && `· ${d.contact_phone}`].filter(Boolean).join(" ");
+    page.drawText(truncate(c, 46), { x: rightX, y: ry, font: reg, size: 10, color: GREY }); ry -= 14;
+  }
+
+  ctx.y = Math.min(ly, ry) - 16;
+}
+
+/* ── Line items ─────────────────────────────────────────────────────── */
+
+function drawTableHeader(ctx: Ctx): void {
+  const { page, bold } = ctx;
+  const y = ctx.y;
+  page.drawText("#", { x: T.numL, y, font: bold, size: 8, color: GREY });
+  page.drawText("ITEM", { x: T.itemL, y, font: bold, size: 8, color: GREY });
+  drawRightAligned(page, "QTY", T.qtyR, y, bold, 8, GREY);
+  page.drawText("UNIT", { x: T.unitL, y, font: bold, size: 8, color: GREY });
+  drawRightAligned(page, "UNIT", T.upR, y, bold, 8, GREY);
+  drawRightAligned(page, "PRICE", T.upR, y - 9, bold, 8, GREY);
+  drawRightAligned(page, "NET", T.amtR, y, bold, 8, GREY);
+  drawRightAligned(page, "AMOUNT", T.amtR, y - 9, bold, 8, GREY);
+  const ry = y - 16;
+  hairline(page, MARGIN, ry, RIGHT);
+  ctx.y = ry - 16;
+}
+
+function drawLineTable(ctx: Ctx, po: Input): number {
+  const { reg, bold } = ctx;
+  drawTableHeader(ctx);
   let subtotal = 0;
 
-  for (const ln of po.lines) {
-    const description = describe(ln);
-    const sublines = wrapText(description, regular, 10, descriptionWidth);
-    const lineHeight = 12;
-    const codeHeight = ln.cost_code ? 11 : 0;
-    const rowH = Math.max(sublines.length * lineHeight + codeHeight, lineHeight + 4);
+  po.lines.forEach((ln, i) => {
+    const itemLines = wrapText(ln.item, bold, 10, ITEM_W);
+    const sub = [ln.manufacturer, ln.cost_code].filter(Boolean).join("   ·   ");
+    const rowH = itemLines.length * 12 + (sub ? 11 : 0) + 24;
 
-    let dy = y;
-    for (const t of sublines) {
-      page.drawText(t, { x: descriptionLeft, y: dy, font: regular, size: 10, color: BLACK });
-      dy -= lineHeight;
-    }
-    if (ln.cost_code) {
-      page.drawText(ln.cost_code, { x: descriptionLeft, y: dy, font: regular, size: 9, color: GREY });
-      dy -= codeHeight;
-    }
-    drawRightAligned(page, formatNumber(ln.qty),       right.quantity,   y, regular, 10);
-    drawRightAligned(page, formatNumber(ln.unit_cost), right.unit_price, y, regular, 10);
-    drawRightAligned(page, "0.00%",                    right.discount,   y, regular, 10);
-    drawRightAligned(page, pctLabel(vatRate),          right.vat,        y, regular, 10);
-    drawRightAligned(page, formatNumber(ln.line_total),right.amount,     y, regular, 10);
+    if (ctx.y - rowH < FOOTER_TOP) { newPage(ctx); drawTableHeader(ctx); }
+
+    const page = ctx.page;
+    const topY = ctx.y;
+    page.drawText(String(i + 1), { x: T.numL, y: topY, font: reg, size: 9, color: FAINT });
+    let dy = topY;
+    for (const l of itemLines) { page.drawText(l, { x: T.itemL, y: dy, font: bold, size: 10, color: INK }); dy -= 12; }
+    if (sub) { page.drawText(truncate(sub, 60), { x: T.itemL, y: dy, font: reg, size: 8.5, color: GREY }); dy -= 11; }
+
+    drawRightAligned(page, formatQty(ln.qty), T.qtyR, topY, reg, 10, INK);
+    page.drawText(truncate(ln.unit ?? "", 8), { x: T.unitL, y: topY, font: reg, size: 10, color: INK });
+    drawRightAligned(page, formatNumber(ln.unit_cost), T.upR, topY, reg, 10, INK);
+    drawRightAligned(page, formatNumber(ln.line_total), T.amtR, topY, reg, 10, INK);
 
     subtotal += ln.line_total;
-    y = (sublines.length > 1 || ln.cost_code ? dy : y - rowH) - 4;
-    hairline(page, MARGIN, y + 4, PAGE_W - MARGIN);
-    y -= 8;
-  }
+    const rowBottom = dy - 8;
+    hairline(page, MARGIN, rowBottom, RIGHT);
+    ctx.y = rowBottom - 12;   // gap below the rule so the next row's figures clear it
+  });
 
-  const vatTotal = round2(subtotal * vatRate);
-  const grand = round2(subtotal + vatTotal);
+  return subtotal;
+}
 
-  // Totals — right-aligned labels in a fixed column, values in the Amount column.
-  // Plenty of horizontal gap between label-right and value-right edges.
-  const labelRightX = right.vat - 10;   // labels end well to the left of values
-  const valueRightX = right.amount;
+/* ── Totals (right) + notes (left) ──────────────────────────────────── */
 
+function drawTotalsAndNotes(ctx: Ctx, po: Input, subtotal: number): void {
+  const vatRate = COMPANY.default_vat_rate;
+  const vat = round2(subtotal * vatRate);
+  const grand = round2(subtotal + vat);
+
+  // Keep the whole block on one page.
+  if (ctx.y - 130 < FOOTER_TOP) newPage(ctx);
+  const { page, reg, bold, serif } = ctx;
+  const startY = ctx.y - 14;
+
+  // Totals — right half.
+  const labelL = MARGIN + 250;
+  let y = startY;
+  page.drawText("Subtotal (ex VAT)", { x: labelL, y, font: reg, size: 10.5, color: GREY });
+  drawRightAligned(page, money(subtotal), T.amtR, y, bold, 10.5, INK);
+  y -= 22;
+  page.drawText(`VAT @ ${pctLabel(vatRate)}`, { x: labelL, y, font: reg, size: 10.5, color: GREY });
+  drawRightAligned(page, money(vat), T.amtR, y, bold, 10.5, INK);
   y -= 12;
-  drawRightAligned(page, "Subtotal", labelRightX, y, regular, 10, GREY);
-  drawRightAligned(page, formatNumber(subtotal), valueRightX, y, regular, 10);
-  y -= 16;
-  drawRightAligned(page, `TOTAL VAT  ${pctLabel(vatRate)}`, labelRightX, y, regular, 10, GREY);
-  drawRightAligned(page, formatNumber(vatTotal), valueRightX, y, regular, 10);
-  y -= 8;
-  page.drawLine({ start: { x: labelRightX + 20, y }, end: { x: valueRightX, y }, thickness: 0.5, color: BLACK });
-  y -= 16;
-  drawRightAligned(page, "TOTAL GBP", labelRightX, y, bold, 12, BLACK);
-  drawRightAligned(page, formatNumber(grand), valueRightX, y, bold, 12, BLACK);
+  page.drawLine({ start: { x: labelL, y }, end: { x: T.amtR, y }, thickness: 0.7, color: RULE });
+  y -= 24;
+  page.drawText("Total GBP", { x: labelL, y, font: serif, size: 14, color: INK });
+  drawRightAligned(page, money(grand), T.amtR, y, serif, 17, INK);
+  const totalsBottom = y - 6;
 
-  return y - 20;
+  // Notes — left half, aligned to the totals' top.
+  const noteW = labelL - MARGIN - 24;
+  let ny = startY;
+  const lead = po.order_type === "call_off" ? "Call-off order."
+    : po.order_type === "framework" ? "Framework / blanket order." : null;
+  const bodyBits = [
+    po.order_type === "call_off" && po.parent_po_number ? `Drawn down against framework order ${po.parent_po_number}.` : "",
+    po.notes?.trim() ?? "",
+  ].filter(Boolean);
+  if (lead) { page.drawText(lead, { x: MARGIN, y: ny, font: bold, size: 9.5, color: INK }); ny -= 14; }
+  for (const line of wrapText(bodyBits.join(" "), reg, 9.5, noteW)) {
+    if (!line) break;
+    page.drawText(line, { x: MARGIN, y: ny, font: reg, size: 9.5, color: GREY }); ny -= 13;
+  }
+  if (lead || bodyBits.length) ny -= 6;
+  page.drawText("VAT — all lines standard-rated (20%).", { x: MARGIN, y: ny, font: reg, size: 9.5, color: GREY });
+  ny -= 13;
+
+  ctx.y = Math.min(totalsBottom, ny) - 10;
 }
 
-/* ── Delivery details ───────────────────────────────────────────────── */
+/* ── Order terms ────────────────────────────────────────────────────── */
 
-function drawDeliveryDetails(
-  ctx: Ctx,
-  po: Input,
-  y: number,
-  delivery: { address: string | null; contact_name: string | null; contact_phone: string | null; instructions: string | null },
-) {
-  const { page, regular, bold } = ctx;
-  hairline(page, MARGIN, y + 22, PAGE_W - MARGIN);
-  page.drawText("DELIVERY DETAILS", { x: MARGIN, y, font: bold, size: 14, color: BLACK });
+const ORDER_TERMS =
+  "Goods supplied against PGP standard purchase terms. Substitutions or price changes " +
+  "must be agreed in writing before delivery. Invoices not quoting this PO number may be returned.";
 
-  const headerY = y - 28;
-  const colW = CONTENT_W / 3;
-  const colXs = [MARGIN, MARGIN + colW, MARGIN + 2 * colW];
-
-  page.drawText("Delivery Address",     { x: colXs[0], y: headerY, font: bold, size: 9, color: BLACK });
-  page.drawText("Attention",            { x: colXs[1], y: headerY, font: bold, size: 9, color: BLACK });
-  page.drawText("Delivery Instructions",{ x: colXs[2], y: headerY, font: bold, size: 9, color: BLACK });
-
-  const addressBody = delivery.address?.trim() ?? po.project_name;
-  drawMultiline(page, regular, 10, addressBody, colXs[0], headerY - 14, colW - 12);
-
-  let ay = headerY - 14;
-  if (delivery.contact_name) {
-    page.drawText(delivery.contact_name, { x: colXs[1], y: ay, font: regular, size: 10, color: BLACK });
-    ay -= 14;
+function drawOrderTerms(ctx: Ctx): void {
+  if (ctx.y - 50 < FOOTER_TOP) newPage(ctx);
+  const { page, reg, bold } = ctx;
+  let y = ctx.y;
+  hairline(page, MARGIN, y + 8, RIGHT);
+  page.drawText("ORDER TERMS", { x: MARGIN, y, font: bold, size: 8.5, color: GREY });
+  y -= 16;
+  for (const line of wrapText(ORDER_TERMS, reg, 9.5, CONTENT_W)) {
+    page.drawText(line, { x: MARGIN, y, font: reg, size: 9.5, color: GREY }); y -= 13;
   }
-  ay -= 6;
-  page.drawText("Telephone", { x: colXs[1], y: ay, font: bold, size: 9, color: BLACK });
-  if (delivery.contact_phone) {
-    page.drawText(delivery.contact_phone, { x: colXs[1], y: ay - 12, font: regular, size: 10, color: BLACK });
-  }
-
-  if (delivery.instructions) {
-    drawMultiline(page, regular, 10, delivery.instructions, colXs[2], headerY - 14, colW - 12);
-  }
+  ctx.y = y;
 }
 
-function drawFooter(ctx: Ctx) {
-  const { page, regular } = ctx;
-  const text = `Company Registration No: ${COMPANY.company_number}.  Registered Office: ${COMPANY.registered_office}.`;
-  page.drawText(text, { x: MARGIN, y: 28, font: regular, size: 8, color: GREY });
+/* ── Footer (every page) ────────────────────────────────────────────── */
+
+function drawFooters(ctx: Ctx, po: Input): void {
+  const pages = ctx.pdf.getPages();
+  const left = `${po.po_number} · ${COMPANY.name}`;
+  const right = `Generated ${formatDate(new Date().toISOString())} · pgpprojects.com`;
+  pages.forEach((page) => {
+    page.drawText(left, { x: MARGIN, y: 38, font: ctx.reg, size: 8, color: GREY });
+    drawRightAligned(page, right, RIGHT, 38, ctx.reg, 8, GREY);
+  });
 }
 
 /* ── helpers ────────────────────────────────────────────────────────── */
 
-function drawRightAligned(
-  page: PDFPage,
-  text: string,
-  rightX: number,
-  y: number,
-  font: PDFFont,
-  size: number,
-  color = BLACK,
-) {
-  const w = font.widthOfTextAtSize(text, size);
-  page.drawText(text, { x: rightX - w, y, font, size, color });
+function newPage(ctx: Ctx): void {
+  ctx.page = ctx.pdf.addPage([PAGE_W, PAGE_H]);
+  ctx.y = PAGE_H - MARGIN;
+}
+
+function drawRightAligned(page: PDFPage, text: string, rightX: number, y: number, font: PDFFont, size: number, color = INK) {
+  page.drawText(text, { x: rightX - font.widthOfTextAtSize(text, size), y, font, size, color });
 }
 
 function hairline(page: PDFPage, x1: number, y: number, x2: number) {
@@ -295,54 +331,41 @@ function wrapText(text: string, font: PDFFont, size: number, maxWidth: number): 
     if (font.widthOfTextAtSize(trial, size) > maxWidth) {
       if (line) lines.push(line);
       line = w;
-    } else {
-      line = trial;
-    }
+    } else line = trial;
   }
   if (line) lines.push(line);
   return lines.length ? lines : [""];
 }
 
-function drawMultiline(
-  page: PDFPage,
-  font: PDFFont,
-  size: number,
-  text: string,
-  x: number,
-  y: number,
-  maxWidth: number,
-) {
-  const lines = text.split(/\r?\n/).flatMap((line) => wrapText(line, font, size, maxWidth));
-  let cy = y;
-  for (const ln of lines) {
-    page.drawText(ln, { x, y: cy, font, size, color: BLACK });
-    cy -= 12;
-  }
-}
-
-function describe(ln: { item: string; manufacturer: string | null }): string {
-  return ln.manufacturer ? `${ln.item} — ${ln.manufacturer}` : ln.item;
-}
-
-function pctLabel(rate: number): string {
-  return `${(rate * 100).toFixed(0)}%`;
-}
-function round2(n: number): number {
-  return Math.round(n * 100) / 100;
-}
+function pctLabel(rate: number): string { return `${(rate * 100).toFixed(0)}%`; }
+function round2(n: number): number { return Math.round(n * 100) / 100; }
 function formatNumber(n: number): string {
   return n.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
+function money(n: number): string { return `£${formatNumber(n)}`; }
+/** Quantities show their true value with no trailing ".00" (e.g. 561, 1,259.2). */
+function formatQty(n: number): string {
+  return n.toLocaleString("en-GB", { maximumFractionDigits: 2 });
+}
 function formatDate(iso: string): string {
-  const d = new Date(iso);
-  return d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+  return new Date(iso).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
 }
 function truncate(s: string, n: number): string {
   return s.length > n ? s.slice(0, n - 1) + "…" : s;
 }
+/** "t.barber@…" / "Tom Barber" → "T. Barber"; "auto"/empty → "—". */
+function personName(s: string | null): string {
+  const v = (s ?? "").trim();
+  if (!v || v.toLowerCase() === "auto") return "—";
+  const local = v.includes("@") ? v.split("@")[0] : v;
+  const parts = local.split(/[._\s]+/).filter(Boolean);
+  const cap = (w: string) => w.charAt(0).toUpperCase() + w.slice(1);
+  if (parts.length >= 2) return `${parts[0].charAt(0).toUpperCase()}. ${cap(parts[parts.length - 1])}`;
+  return cap(local);
+}
 
 export function downloadPdf(bytes: Uint8Array, filename: string) {
-  const blob = new Blob([bytes], { type: "application/pdf" });
+  const blob = new Blob([new Uint8Array(bytes)], { type: "application/pdf" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;

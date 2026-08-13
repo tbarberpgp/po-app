@@ -4,6 +4,7 @@
 // totals box sits at the top.
 
 import * as XLSX from "xlsx";
+import { afpDocLabel } from "../../shared/types";
 import type { AfpDetail } from "../../shared/types";
 
 type Row = (string | number | null)[];
@@ -13,7 +14,7 @@ export function generateAfpXlsx(detail: AfpDetail): Uint8Array {
   const rows: Row[] = [];
 
   // ── Header block ──
-  rows.push([`APPLICATION FOR PAYMENT #${afp.app_number}`]);
+  rows.push([`${afpDocLabel(afp.direction, afp.status).toUpperCase()} #${afp.app_number}`]);
   rows.push([`${afp.project_code ?? ""} — ${afp.project_name ?? ""}`]);
   rows.push([`Client: ${afp.project_client ?? ""}`]);
   rows.push([`Period ending: ${formatDate(afp.period_end)}`]);
@@ -34,8 +35,16 @@ export function generateAfpXlsx(detail: AfpDetail): Uint8Array {
   rows.push([]);
 
   // ── Line items ──
+  // The two trailing columns ("% certified" / "Certified £") are left blank for
+  // the recipient to fill in and return — that's the certificate. The inbound
+  // clientcerts@ parser reads those certified columns (to the right of the
+  // applied figures) rather than the applied ones.
+  const isOutgoing = afp.direction === "outgoing";
   rows.push(["Works claimed"]);
-  rows.push(["Section", "Item", "Qty", "Unit", "Rate £", "Contract £", "% complete", "Cumulative £"]);
+  rows.push([
+    "Section", "Item", "Qty", "Unit", "Rate £", "Contract £", "% complete", "Cumulative £",
+    ...(isOutgoing ? ["% certified", "Certified £"] : []),
+  ]);
 
   // Group by section preserving document order
   type Grp = { section: string; lines: AfpDetail["lines"] };
@@ -60,6 +69,7 @@ export function generateAfpXlsx(detail: AfpDetail): Uint8Array {
         round2(l.contract_value),
         round2(l.percent_complete),
         round2(l.cumulative_value),
+        ...(isOutgoing ? ["", ""] : []),   // % certified / Certified £ — client fills in
       ]);
       sectionTotal += l.contract_value;
       sectionCum += l.cumulative_value;
@@ -87,6 +97,7 @@ export function generateAfpXlsx(detail: AfpDetail): Uint8Array {
     { wch: 14 }, // contract £
     { wch: 11 }, // %
     { wch: 14 }, // cumulative £
+    ...(isOutgoing ? [{ wch: 11 }, { wch: 14 }] : []),  // % certified / Certified £
   ];
 
   const wb = XLSX.utils.book_new();

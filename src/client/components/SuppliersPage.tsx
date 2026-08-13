@@ -12,23 +12,7 @@ const STATUS_LABEL: Record<SupplierStatus, string> = {
   pending: "Pending",
 };
 
-/** UK trade payment terms. Anything stored on a supplier outside this list is
- * preserved by prepending it as a one-off "(custom)" option in the dropdown. */
-const PAYMENT_TERMS_OPTIONS = [
-  "Pro forma",
-  "COD",
-  "Net 7 days",
-  "Net 14 days",
-  "Net 21 days",
-  "Net 30 days",
-  "Net 30 days EOM",
-  "Net 45 days",
-  "Net 60 days",
-  "Net 60 days EOM",
-  "Net 75 days",
-  "Net 90 days",
-  "2/10 Net 30",
-];
+import { CIS_RATES, PAYMENT_TERMS_OPTIONS, cisRateLabel } from "../../shared/payment-terms";
 
 const STATUS_PILL: Record<SupplierStatus, string> = {
   approved: "approved",
@@ -43,12 +27,15 @@ export function SuppliersPage({ me }: { me: CurrentUser | null }) {
   const [elements, setElements] = useState<Element[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
-  const [showAdd, setShowAdd] = useState(false);
+  const [showAdd, setShowAdd] = useState<false | "materials" | "labour">(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [statusFilter, setStatusFilter] = useState<"all" | SupplierStatus>("all");
   const [filter, setFilter] = useState("");
+  const [section, setSection] = useState<"materials" | "labour">("materials");
   const [xeroConnected, setXeroConnected] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [pushingId, setPushingId] = useState<number | null>(null);
+  const [pushingAll, setPushingAll] = useState(false);
   const uploadRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
   const [supplierPicker, setSupplierPicker] = useState<{
@@ -58,7 +45,9 @@ export function SuppliersPage({ me }: { me: CurrentUser | null }) {
     extractedCount: number;
   } | null>(null);
 
-  const canManage = can(me?.role, "approvers.manage");
+  // Managing the register (add / edit / delete suppliers) is suppliers.manage —
+  // which Commercial holds — not approvers.manage (that's PO sign-off).
+  const canManage = can(me?.role, "suppliers.manage");
   const canUploadQuotes = can(me?.role, "suppliers.manage");
 
   async function handleUpload(file: File, supplierId?: number) {
@@ -107,11 +96,13 @@ export function SuppliersPage({ me }: { me: CurrentUser | null }) {
   useEffect(refresh, []);
 
   async function syncFromXero() {
-    if (!confirm("Pull supplier contacts from Xero? Existing suppliers will be matched by Xero ID or name and updated; unknown ones will be created as 'approved'.")) return;
+    if (!confirm("Sync with Xero? Linked suppliers' current details (incl. bank) are pushed up to their Xero contact, then contacts are pulled down — matched by Xero ID or name and updated; unknown ones created as 'approved'.")) return;
     setSyncing(true); setErr(null); setInfo(null);
     try {
       const res = await api.xeroSyncSuppliers();
-      setInfo(`Synced from Xero: ${res.created} created, ${res.updated} updated${res.skipped ? `, ${res.skipped} skipped (no name)` : ""}. ${res.total_from_xero} contacts pulled.`);
+      const pushBit = res.pushed != null ? `${res.pushed} pushed up (incl. bank)` : "";
+      const pullBit = `${res.created} created, ${res.updated} updated${res.skipped ? `, ${res.skipped} skipped (no name)` : ""} from ${res.total_from_xero} pulled`;
+      setInfo(`Synced with Xero — ${[pushBit, pullBit].filter(Boolean).join("; ")}.${res.push_failed?.length ? ` Push issues: ${res.push_failed.slice(0, 3).join("; ")}${res.push_failed.length > 3 ? "…" : ""}` : ""}`);
       refresh();
     } catch (e) {
       setErr(e instanceof Error ? e.message : "sync failed");
@@ -120,9 +111,46 @@ export function SuppliersPage({ me }: { me: CurrentUser | null }) {
     }
   }
 
+  async function pushToXero(s: Supplier) {
+    setPushingId(s.id); setErr(null); setInfo(null);
+    try {
+      const r = await api.xeroPushSupplier(s.id);
+      setInfo(r.created ? `${s.name} created in Xero.` : `${s.name} synced to Xero — details (incl. bank) updated.`);
+      refresh();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Push to Xero failed");
+    } finally {
+      setPushingId(null);
+    }
+  }
+
+  // Push every supplier that isn't linked to a Xero contact yet — clears the
+  // backlog of suppliers whose auto-push on create failed (or that were created
+  // via a PO / subbie flow that doesn't auto-push), and reports any that fail.
+  async function pushAllUnlinked() {
+    const unlinked = rows.filter((s) => !s.xero_contact_id);
+    if (unlinked.length === 0) return;
+    if (!confirm(`Push ${unlinked.length} un-linked supplier${unlinked.length === 1 ? "" : "s"} to Xero (create or link their contacts)?`)) return;
+    setPushingAll(true); setErr(null); setInfo(null);
+    let ok = 0; const fails: string[] = [];
+    for (const s of unlinked) {
+      try { await api.xeroPushSupplier(s.id); ok++; }
+      catch (e) { fails.push(`${s.name} — ${e instanceof Error ? e.message : "failed"}`); }
+    }
+    setPushingAll(false); refresh();
+    if (fails.length === 0) setInfo(`Pushed ${ok} supplier${ok === 1 ? "" : "s"} to Xero.`);
+    else setErr(`Pushed ${ok}. ${fails.length} couldn't push:\n• ${fails.slice(0, 6).join("\n• ")}${fails.length > 6 ? `\n…and ${fails.length - 6} more` : ""}`);
+  }
+
   const visible = rows
     .filter((s) => statusFilter === "all" || s.status === statusFilter)
     .filter((s) => !filter || (s.name + (s.contact_name ?? "") + (s.contact_email ?? "")).toLowerCase().includes(filter.toLowerCase()));
+
+  // The register holds both kinds; show them as their own sections with the
+  // columns that matter for each (materials: scope/credit/products, labour:
+  // UTR/bank — the details needed before a subbie can actually be paid).
+  const materials = visible.filter((s) => !s.is_labour_supplier);
+  const labour = visible.filter((s) => s.is_labour_supplier);
 
   const byStatus = useMemo(() => {
     const m: Record<SupplierStatus, number> = { approved: 0, preferred: 0, suspended: 0, pending: 0 };
@@ -156,12 +184,18 @@ export function SuppliersPage({ me }: { me: CurrentUser | null }) {
                 </button>
               </>
             )}
-            {canManage && xeroConnected && (
-              <button className="ghost" onClick={syncFromXero} disabled={syncing}>
-                {syncing ? "Syncing…" : "↻ Sync from Xero"}
+            {canManage && xeroConnected && rows.some((s) => !s.xero_contact_id) && (
+              <button className="ghost" onClick={pushAllUnlinked} disabled={pushingAll}
+                title="Create/link a Xero contact for every supplier not yet in Xero">
+                {pushingAll ? "Pushing…" : `↑ Push ${rows.filter((s) => !s.xero_contact_id).length} to Xero`}
               </button>
             )}
-            {canManage && <button className="accent" onClick={() => setShowAdd(true)}>+ New supplier</button>}
+            {canManage && xeroConnected && (
+              <button className="ghost" onClick={syncFromXero} disabled={syncing}>
+                {syncing ? "Syncing…" : "↻ Sync with Xero"}
+              </button>
+            )}
+            {canManage && <button className="accent" onClick={() => setShowAdd("materials")}>+ New supplier</button>}
           </>
         }
       />
@@ -176,43 +210,50 @@ export function SuppliersPage({ me }: { me: CurrentUser | null }) {
           <KpiSmall label="Suspended" value={byStatus.suspended} tone="danger" />
         </div>
 
-        {showAdd && (
-          <SupplierForm
-            elements={elements}
-            onCancel={() => setShowAdd(false)}
-            onSaved={() => { setShowAdd(false); refresh(); }}
+        <div className="row" style={{ margin: "4px 0 12px", gap: 8, alignItems: "center" }}>
+          <div className="seg">
+            <button className={`seg-btn${section === "materials" ? " active" : ""}`} onClick={() => setSection("materials")}>
+              Materials suppliers ({materials.length})
+            </button>
+            <button className={`seg-btn${section === "labour" ? " active" : ""}`} onClick={() => setSection("labour")}>
+              Labour subcontractors ({labour.length})
+            </button>
+          </div>
+          <input
+            placeholder="Filter by name / contact…"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            style={{ width: 260 }}
           />
-        )}
+          <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as typeof statusFilter)}>
+            <option value="all">All statuses</option>
+            <option value="preferred">Preferred</option>
+            <option value="approved">Approved</option>
+            <option value="pending">Pending</option>
+            <option value="suspended">Suspended</option>
+          </select>
+        </div>
 
+        {/* ── Materials suppliers ── */}
+        {section === "materials" && (
         <div className="card">
           <div className="card-hd">
-            <h2 style={{ flex: 1 }}>Suppliers</h2>
-            <input
-              placeholder="Filter by name / contact…"
-              value={filter}
-              onChange={(e) => setFilter(e.target.value)}
-              style={{ width: 240 }}
-            />
-            <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as typeof statusFilter)}>
-              <option value="all">All statuses</option>
-              <option value="preferred">Preferred</option>
-              <option value="approved">Approved</option>
-              <option value="pending">Pending</option>
-              <option value="suspended">Suspended</option>
-            </select>
+            <h2 style={{ flex: 1 }}>
+              Materials suppliers <span className="muted" style={{ fontWeight: 400, fontSize: 13 }}>({materials.length})</span>
+            </h2>
           </div>
-          {visible.length === 0 ? (
+          {materials.length === 0 ? (
             <div style={{ padding: 32 }}>
               <div className="empty">
                 {rows.length === 0
                   ? canManage
                     ? "No suppliers yet — click + New supplier to add the first one."
                     : "No suppliers configured."
-                  : "No suppliers match the current filter."}
+                  : "No materials suppliers match the current filter."}
               </div>
             </div>
           ) : (
-            <table>
+            <table className="register">
               <thead>
                 <tr>
                   <th>Supplier</th>
@@ -226,23 +267,19 @@ export function SuppliersPage({ me }: { me: CurrentUser | null }) {
                 </tr>
               </thead>
               <tbody>
-                {visible.map((s) =>
-                  editingId === s.id ? (
-                    <SupplierForm
-                      key={s.id}
-                      asRow
-                      initial={s}
-                      elements={elements}
-                      onCancel={() => setEditingId(null)}
-                      onSaved={() => { setEditingId(null); refresh(); }}
-                    />
-                  ) : (
-                    <tr key={s.id}>
-                      <td>
-                        <div style={{ fontWeight: 500 }}>{s.name}</div>
-                        {s.scope_notes && <div className="muted" style={{ fontSize: 12, marginTop: 2 }}>{s.scope_notes}</div>}
+                {materials.map((s) => (
+                    <tr key={s.id} onClick={() => canManage && setEditingId(s.id)} title={canManage ? "Click to view / edit" : undefined}>
+                      <td style={{ maxWidth: 320 }}>
+                        <div style={{ display: "flex", alignItems: "baseline", gap: 8, minWidth: 0 }}>
+                          <span style={{ fontWeight: 500, whiteSpace: "nowrap" }}>{s.name}</span>
+                          {s.scope_notes && (
+                            <span className="muted" style={{ fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={s.scope_notes}>
+                              {s.scope_notes}
+                            </span>
+                          )}
+                        </div>
                       </td>
-                      <td className="center">
+                      <td className="center" style={{ whiteSpace: "nowrap" }}>
                         <span className={`pill ${STATUS_PILL[s.status]}`}>{STATUS_LABEL[s.status]}</span>
                         {s.xero_contact_id && (
                           <span className="pill issued" style={{ marginLeft: 6, fontSize: 10 }} title={`Xero Contact ID: ${s.xero_contact_id}`}>Xero</span>
@@ -252,37 +289,41 @@ export function SuppliersPage({ me }: { me: CurrentUser | null }) {
                         {s.approved_elements.length === 0 ? (
                           <span className="muted" style={{ fontSize: 12 }}>—</span>
                         ) : (
-                          <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-                            {s.approved_elements.slice(0, 6).map((code) => (
-                              <span key={code} className="badge" title={elements.find((e) => e.code === code)?.name ?? code} style={{ fontFamily: "ui-monospace, monospace" }}>{code}</span>
+                          <div style={{ display: "flex", flexWrap: "nowrap", gap: 4, overflow: "hidden" }}
+                            title={s.approved_elements.map((code) => elements.find((e) => e.code === code)?.name ?? code).join(", ")}>
+                            {s.approved_elements.slice(0, 4).map((code) => (
+                              <span key={code} className="badge" style={{ fontFamily: "ui-monospace, monospace" }}>{code}</span>
                             ))}
-                            {s.approved_elements.length > 6 && (
-                              <span className="badge draft">+{s.approved_elements.length - 6}</span>
+                            {s.approved_elements.length > 4 && (
+                              <span className="badge draft">+{s.approved_elements.length - 4}</span>
                             )}
                           </div>
                         )}
                       </td>
-                      <td className="muted" style={{ fontSize: 13 }}>{s.payment_terms ?? "—"}</td>
-                      <td className="muted" style={{ fontSize: 12 }}>
-                        {s.contact_name && <div>{s.contact_name}</div>}
-                        {s.contact_email && <div>{s.contact_email}</div>}
-                        {s.contact_phone && <div>{s.contact_phone}</div>}
-                        {!s.contact_name && !s.contact_email && !s.contact_phone && "—"}
+                      <td className="muted" style={{ fontSize: 13, whiteSpace: "nowrap" }}>{s.payment_terms ?? "—"}</td>
+                      <td className="muted" style={{ fontSize: 12, maxWidth: 230 }}>
+                        <div
+                          style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                          title={[s.contact_name, s.contact_email, s.contact_phone].filter(Boolean).join(" · ") || undefined}
+                        >
+                          {s.contact_email ?? s.contact_name ?? s.contact_phone ?? "—"}
+                        </div>
                       </td>
                       <td className="num">
                         {s.credit_limit_gbp != null ? fmtMoney(s.credit_limit_gbp) : <span className="muted">—</span>}
                       </td>
                       <td className="num">{s.product_supplier_count}</td>
-                      <td>
+                      <td style={{ whiteSpace: "nowrap" }} onClick={(e) => e.stopPropagation()}>
                         {canManage && (
                           <>
                             <QuoteActionsCell supplier={s} />
-                            <button className="ghost tiny" onClick={() => setEditingId(s.id)}>Edit</button>{" "}
-                            <button className="ghost tiny" onClick={async () => {
-                              if (!confirm(`Remove ${s.name}? Existing product-level supplier entries with this name will be preserved.`)) return;
-                              await api.removeSupplier(s.id);
-                              refresh();
-                            }}>×</button>
+                            <RowActions
+                              s={s}
+                              xeroConnected={xeroConnected}
+                              pushingId={pushingId}
+                              onPush={() => pushToXero(s)}
+                              onRemoved={refresh}
+                            />
                           </>
                         )}
                       </td>
@@ -293,7 +334,128 @@ export function SuppliersPage({ me }: { me: CurrentUser | null }) {
             </table>
           )}
         </div>
+
+        )}
+
+        {/* ── Labour subcontractors ── */}
+        {section === "labour" && (
+        <div className="card">
+          <div className="card-hd">
+            <h2 style={{ flex: 1 }}>
+              Labour subcontractors <span className="muted" style={{ fontWeight: 400, fontSize: 13 }}>({labour.length})</span>
+            </h2>
+            {canManage && (
+              <button className="ghost" onClick={() => setShowAdd("labour")} title="Add a subcontractor to the approved list — appears in the incoming-labour AfP picker">
+                + New subcontractor
+              </button>
+            )}
+          </div>
+          {labour.length === 0 ? (
+            <div style={{ padding: 32 }}>
+              <div className="empty">
+                {rows.some((s) => s.is_labour_supplier)
+                  ? "No labour subcontractors match the current filter."
+                  : "No labour subcontractors yet — add one here, or tick “Labour supplier” when editing an existing supplier."}
+              </div>
+            </div>
+          ) : (
+            <table className="register">
+              <thead>
+                <tr>
+                  <th>Subcontractor</th>
+                  <th className="center">Status</th>
+                  <th>Payment terms</th>
+                  <th className="center">CIS</th>
+                  <th className="center">UTR</th>
+                  <th className="center">Bank details</th>
+                  <th className="center">VAT no.</th>
+                  <th>Contact</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {labour.map((s) => (
+                    <tr key={s.id} onClick={() => canManage && setEditingId(s.id)} title={canManage ? "Click to view / edit" : undefined}>
+                      <td style={{ maxWidth: 320 }}>
+                        <div style={{ display: "flex", alignItems: "baseline", gap: 8, minWidth: 0 }}>
+                          <span style={{ fontWeight: 500, whiteSpace: "nowrap" }}>{s.name}</span>
+                          {s.scope_notes && (
+                            <span className="muted" style={{ fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={s.scope_notes}>
+                              {s.scope_notes}
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="center" style={{ whiteSpace: "nowrap" }}>
+                        <span className={`pill ${STATUS_PILL[s.status]}`}>{STATUS_LABEL[s.status]}</span>
+                        {s.xero_contact_id && (
+                          <span className="pill issued" style={{ marginLeft: 6, fontSize: 10 }} title={`Xero Contact ID: ${s.xero_contact_id}`}>Xero</span>
+                        )}
+                      </td>
+                      <td className="muted" style={{ fontSize: 13, whiteSpace: "nowrap" }}>{s.payment_terms ?? "—"}</td>
+                      <td className="center">
+                        {s.cis_rate == null
+                          ? <span className="pill pending" style={{ fontSize: 10 }} title="No CIS rate set — their labour certificates will push to Xero with no deduction. Edit the subcontractor to set it.">Not set</span>
+                          : <span className={`pill ${s.cis_rate === 0 ? "neutral" : "approved"}`} style={{ fontSize: 10 }} title={s.cis_rate === 0 ? "Gross payment status — no deduction taken" : `${s.cis_rate}% deducted from the labour element of their certificates`}>{cisRateLabel(s.cis_rate).replace("CIS ", "")}</span>}
+                      </td>
+                      <td className="center">
+                        {s.utr
+                          ? <span style={{ fontFamily: "ui-monospace, monospace", fontSize: 12 }}>{s.utr}</span>
+                          : <span className="pill pending" style={{ fontSize: 10 }} title="No UTR on file — needed for CIS. Edit the subcontractor to add it.">Missing</span>}
+                      </td>
+                      <td className="center">
+                        {s.bank_account_number
+                          ? <span className="pill approved" style={{ fontSize: 10 }} title={`${s.bank_account_name ?? s.name} · ${s.bank_sort_code ?? "no sort code"} · ${s.bank_account_number}${s.bank_name ? ` · ${s.bank_name}` : ""}`}>On file</span>
+                          : <span className="pill pending" style={{ fontSize: 10 }} title="No bank account on file — needed to pay them. Edit the subcontractor to add it.">Missing</span>}
+                      </td>
+                      <td className="center">
+                        {s.vat_number
+                          ? <span style={{ fontFamily: "ui-monospace, monospace", fontSize: 12 }}>{s.vat_number}</span>
+                          : <span className="muted" style={{ fontSize: 12 }}>—</span>}
+                      </td>
+                      <td className="muted" style={{ fontSize: 12, maxWidth: 230 }}>
+                        <div
+                          style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                          title={[s.contact_name, s.contact_email, s.contact_phone].filter(Boolean).join(" · ") || undefined}
+                        >
+                          {s.contact_email ?? s.contact_name ?? s.contact_phone ?? "—"}
+                        </div>
+                      </td>
+                      <td style={{ whiteSpace: "nowrap" }} onClick={(e) => e.stopPropagation()}>
+                        {canManage && (
+                          <RowActions
+                            s={s}
+                            xeroConnected={xeroConnected}
+                            pushingId={pushingId}
+                            onPush={() => pushToXero(s)}
+                            onRemoved={refresh}
+                          />
+                        )}
+                      </td>
+                    </tr>
+                  ),
+                )}
+              </tbody>
+            </table>
+          )}
+        </div>
+        )}
       </main>
+
+      {/* Add / edit slide-over — same chrome as the drill drawers elsewhere. */}
+      <SupplierDrawer
+        open={showAdd !== false || editingId != null}
+        editing={editingId != null ? rows.find((r) => r.id === editingId) : undefined}
+        addKind={showAdd}
+        elements={elements}
+        onClose={() => { setShowAdd(false); setEditingId(null); }}
+        onSaved={(created) => {
+          setShowAdd(false); setEditingId(null); refresh();
+          if (created && created.xero_pushed === false && xeroConnected) {
+            setInfo("Supplier saved — but it didn't auto-push to Xero. Use the “↑ Push to Xero” button to retry.");
+          }
+        }}
+      />
 
       {supplierPicker && (
         <SupplierConfirmModal
@@ -306,6 +468,81 @@ export function SuppliersPage({ me }: { me: CurrentUser | null }) {
           onConfirm={(supplierId) => handleUpload(supplierPicker.file, supplierId)}
         />
       )}
+    </>
+  );
+}
+
+/* ── Add / edit slide-over ──────────────────────────────────────────────── */
+
+function SupplierDrawer({ open, editing, addKind, elements, onClose, onSaved }: {
+  open: boolean;
+  editing?: Supplier;
+  addKind: false | "materials" | "labour";
+  elements: Element[];
+  onClose: () => void;
+  onSaved: (created?: { id: number; xero_pushed?: boolean }) => void;
+}) {
+  const title = editing
+    ? `Edit — ${editing.name}`
+    : addKind === "labour" ? "New subcontractor" : "New supplier";
+  return (
+    <>
+      <div className={`drill-scrim${open ? " show" : ""}`} aria-hidden onClick={onClose} />
+      <aside className={`od-drawer report-drawer${open ? " open" : ""}`} role="dialog" aria-modal="false" aria-label={title}>
+        {open && (
+          <div className="od-inner">
+            <div className="card-hd od-hd" style={{ alignItems: "flex-start", gap: 8 }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <h3 style={{ margin: 0 }}>{title}</h3>
+                {editing && (
+                  <div className="muted" style={{ fontSize: 12.5, marginTop: 3 }}>
+                    {editing.is_labour_supplier ? "Labour subcontractor" : "Materials supplier"} · added {editing.created_at?.slice(0, 10) ?? "—"}
+                  </div>
+                )}
+              </div>
+              <button className="ghost tiny" onClick={onClose} aria-label="Close">✕</button>
+            </div>
+            <div style={{ padding: "4px 20px 24px" }}>
+              <SupplierForm
+                key={editing?.id ?? `new-${addKind}`}
+                initial={editing}
+                elements={elements}
+                defaultLabour={addKind === "labour"}
+                onCancel={onClose}
+                onSaved={onSaved}
+              />
+            </div>
+          </div>
+        )}
+      </aside>
+    </>
+  );
+}
+
+/** Push-to-Xero / remove — shared by both register sections (the row itself
+ * opens the edit drawer, so there's no Edit button). */
+function RowActions({ s, xeroConnected, pushingId, onPush, onRemoved }: {
+  s: Supplier;
+  xeroConnected: boolean;
+  pushingId: number | null;
+  onPush: () => void;
+  onRemoved: () => void;
+}) {
+  return (
+    <>
+      {xeroConnected && (
+        <>
+          <button className="ghost tiny" disabled={pushingId === s.id} onClick={onPush}
+            title={s.xero_contact_id ? "Re-sync this supplier's details (incl. bank) to its Xero contact" : "Create this supplier as a contact in Xero"}>
+            {pushingId === s.id ? (s.xero_contact_id ? "Syncing…" : "Pushing…") : (s.xero_contact_id ? "↻ Xero" : "↑ Xero")}
+          </button>{" "}
+        </>
+      )}
+      <button className="ghost tiny" onClick={async () => {
+        if (!confirm(`Remove ${s.name}? Existing product-level supplier entries with this name will be preserved.`)) return;
+        await api.removeSupplier(s.id);
+        onRemoved();
+      }}>×</button>
     </>
   );
 }
@@ -326,13 +563,14 @@ function KpiSmall({ label, value, tone }: { label: string; value: number; tone: 
 /* ── Supplier add/edit form ─────────────────────────────────────────────── */
 
 function SupplierForm({
-  asRow, initial, elements, onCancel, onSaved,
+  initial, elements, defaultLabour, onCancel, onSaved,
 }: {
-  asRow?: boolean;
   initial?: Supplier;
   elements: Element[];
+  /** Pre-tick the labour flag — used by “+ New subcontractor”. */
+  defaultLabour?: boolean;
   onCancel: () => void;
-  onSaved: () => void;
+  onSaved: (created?: { id: number; xero_pushed?: boolean }) => void;
 }) {
   const [form, setForm] = useState({
     name: initial?.name ?? "",
@@ -344,8 +582,16 @@ function SupplierForm({
     contact_phone: initial?.contact_phone ?? "",
     address: initial?.address ?? "",
     vat_number: initial?.vat_number ?? "",
+    utr: initial?.utr ?? "",
+    bank_account_name: initial?.bank_account_name ?? "",
+    bank_sort_code: initial?.bank_sort_code ?? "",
+    bank_account_number: initial?.bank_account_number ?? "",
+    bank_name: initial?.bank_name ?? "",
     credit_limit_gbp: initial?.credit_limit_gbp?.toString() ?? "",
     notes: initial?.notes ?? "",
+    is_labour_supplier: initial?.is_labour_supplier ?? defaultLabour ?? false,
+    // "" = not applicable (stored as NULL); "0" | "20" | "30" = the CIS rate.
+    cis_rate: initial?.cis_rate != null ? String(initial.cis_rate) : "",
   });
   const [scope, setScope] = useState<Set<string>>(
     () => new Set(initial?.approved_elements ?? []),
@@ -374,13 +620,21 @@ function SupplierForm({
         contact_phone: form.contact_phone.trim() || null,
         address: form.address.trim() || null,
         vat_number: form.vat_number.trim() || null,
+        utr: form.utr.trim() || null,
+        bank_account_name: form.bank_account_name.trim() || null,
+        bank_sort_code: form.bank_sort_code.trim() || null,
+        bank_account_number: form.bank_account_number.trim() || null,
+        bank_name: form.bank_name.trim() || null,
         credit_limit_gbp: form.credit_limit_gbp ? Number(form.credit_limit_gbp) : null,
         notes: form.notes.trim() || null,
+        is_labour_supplier: form.is_labour_supplier,
+        // CIS only applies to labour subcontractors — clearing the labour flag
+        // clears the rate so a materials supplier can't carry one.
+        cis_rate: form.is_labour_supplier && form.cis_rate !== "" ? Number(form.cis_rate) : null,
         approved_elements: [...scope].sort(),
       };
-      if (initial) await api.updateSupplier(initial.id, payload);
-      else await api.addSupplier(payload);
-      onSaved();
+      if (initial) { await api.updateSupplier(initial.id, payload); onSaved(); }
+      else { const created = await api.addSupplier(payload); onSaved(created); }
     } catch (e) {
       setErr(e instanceof Error ? e.message : "save failed");
     } finally {
@@ -428,6 +682,38 @@ function SupplierForm({
       </div>
 
       <div style={{ marginTop: 12 }}>
+        <label style={{ display: "flex", alignItems: "center", gap: 8, textTransform: "none", letterSpacing: 0, color: "var(--ink)", cursor: "pointer", fontSize: 14, fontWeight: 500 }}>
+          <input
+            type="checkbox"
+            checked={form.is_labour_supplier}
+            onChange={(e) => setForm({ ...form, is_labour_supplier: e.target.checked })}
+            style={{ minHeight: 0 }}
+          />
+          <span>Labour supplier (subcontractor)</span>
+        </label>
+        <div className="muted" style={{ fontSize: 12, marginTop: 4, marginLeft: 24 }}>
+          Tick if this supplier provides labour. Only ticked suppliers appear in the
+          "Incoming labour" Application-for-Payment subcontractor picker.
+        </div>
+      </div>
+
+      {form.is_labour_supplier && (
+        <div style={{ marginTop: 12 }}>
+          <label>CIS deduction</label>
+          <select value={form.cis_rate} onChange={(e) => setForm({ ...form, cis_rate: e.target.value })}>
+            {CIS_RATES.map((r) => (
+              <option key={String(r.value)} value={r.value == null ? "" : String(r.value)}>{r.label}</option>
+            ))}
+          </select>
+          <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+            Applied to the <b>labour element</b> of their certificates (expense lines sit outside CIS)
+            and shown as a deduction on the draft bill pushed to Xero. Verify the subbie with HMRC to
+            confirm the rate{form.utr.trim() ? "" : " — their UTR is blank above"}.
+          </div>
+        </div>
+      )}
+
+      <div style={{ marginTop: 12 }}>
         <label>Approved elements (tick all this supplier is approved to provide)</label>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 4, padding: 8, border: "1px solid var(--line)", borderRadius: 8, background: "var(--card-2)" }}>
           {elements.map((e) => (
@@ -450,15 +736,15 @@ function SupplierForm({
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginTop: 12 }}>
         <div>
-          <label>Contact name</label>
+          <label>Supplier contact name</label>
           <input value={form.contact_name} onChange={(e) => setForm({ ...form, contact_name: e.target.value })} />
         </div>
         <div>
-          <label>Contact email</label>
+          <label>Supplier contact email</label>
           <input type="email" value={form.contact_email} onChange={(e) => setForm({ ...form, contact_email: e.target.value })} />
         </div>
         <div>
-          <label>Contact phone</label>
+          <label>Supplier contact phone</label>
           <input value={form.contact_phone} onChange={(e) => setForm({ ...form, contact_phone: e.target.value })} />
         </div>
       </div>
@@ -473,8 +759,32 @@ function SupplierForm({
           <input value={form.vat_number} onChange={(e) => setForm({ ...form, vat_number: e.target.value })} />
         </div>
         <div>
+          <label>UTR</label>
+          <input value={form.utr} onChange={(e) => setForm({ ...form, utr: e.target.value })} placeholder="CIS Unique Taxpayer Reference" />
+        </div>
+        <div>
           <label>Credit limit (£)</label>
           <input type="number" step="100" className="num" value={form.credit_limit_gbp} onChange={(e) => setForm({ ...form, credit_limit_gbp: e.target.value })} />
+        </div>
+      </div>
+
+      <div className="eyebrow" style={{ marginTop: 16, marginBottom: 4 }}>Payment information <span className="muted" style={{ textTransform: "none", letterSpacing: 0, fontWeight: 400 }}>· bank account we pay this supplier into</span></div>
+      <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 2fr", gap: 12 }}>
+        <div>
+          <label>Account name</label>
+          <input value={form.bank_account_name} onChange={(e) => setForm({ ...form, bank_account_name: e.target.value })} placeholder="Name on the account" />
+        </div>
+        <div>
+          <label>Sort code</label>
+          <input value={form.bank_sort_code} onChange={(e) => setForm({ ...form, bank_sort_code: e.target.value })} placeholder="00-00-00" />
+        </div>
+        <div>
+          <label>Account number</label>
+          <input value={form.bank_account_number} onChange={(e) => setForm({ ...form, bank_account_number: e.target.value })} placeholder="12345678" />
+        </div>
+        <div>
+          <label>Bank name</label>
+          <input value={form.bank_name} onChange={(e) => setForm({ ...form, bank_name: e.target.value })} placeholder="e.g. Barclays" />
         </div>
       </div>
 
@@ -492,19 +802,7 @@ function SupplierForm({
     </>
   );
 
-  if (asRow) {
-    return (
-      <tr style={{ background: "var(--accent-soft)" }}>
-        <td colSpan={8} style={{ padding: 20 }}>{body}</td>
-      </tr>
-    );
-  }
-  return (
-    <div className="card">
-      <div className="card-hd"><h3>{initial ? "Edit supplier" : "New supplier"}</h3></div>
-      <div className="card-bd">{body}</div>
-    </div>
-  );
+  return body;
 }
 
 /* ── Per-row quote indicator (jump to pending review only) ─────────────── */

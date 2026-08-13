@@ -1,12 +1,50 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, fmtMoney } from "../lib/api";
 import { Topbar } from "./Shell";
+import { GroupedCombobox, type ComboGroup, type ComboOption } from "./GroupedCombobox";
 import { can } from "../../shared/permissions";
 import { buildProductCode } from "../../shared/types";
 import type { CurrentUser, Element, Product, ProductSupplier, ResourceType } from "../../shared/types";
 
 type Suggestion = Awaited<ReturnType<typeof api.productSuggestions>>[number];
 type Tab = "library" | "suggestions";
+
+// Element codes group by their leading digit (the cost-code "decade").
+const ELEMENT_DECADE_LABEL: Record<string, string> = {
+  "1": "Preliminaries",
+  "2": "Roofing",
+  "3": "Wall cladding",
+  "4": "Rooflights & vents",
+  "5": "Rainwater, flashings & soffits",
+  "6": "Insulation, membranes & fixings",
+  "7": "Edge protection",
+  "8": "Plant & access",
+  "9": "Subcontract & variations",
+};
+
+/** Build the grouped element options for the searchable picker. */
+function elementGroups(elements: Element[]): ComboGroup[] {
+  const byDecade = new Map<string, ComboOption[]>();
+  for (const e of [...elements].sort((a, b) => a.code.localeCompare(b.code))) {
+    const decade = String(e.code).trim().charAt(0) || "9";
+    const arr = byDecade.get(decade) ?? [];
+    arr.push({ value: e.code, label: `${e.code} · ${e.name}` });
+    byDecade.set(decade, arr);
+  }
+  return [...byDecade.keys()].sort().map((d) => ({ label: ELEMENT_DECADE_LABEL[d] ?? "Other", options: byDecade.get(d)! }));
+}
+
+/** Approved suppliers grouped by status, for the manufacturer/supplier pickers. */
+function supplierGroups(suppliers: { name: string; status: string }[]): ComboGroup[] {
+  const groups: ComboGroup[] = [];
+  const pref = suppliers.filter((s) => s.status === "preferred");
+  const appr = suppliers.filter((s) => s.status === "approved");
+  const other = suppliers.filter((s) => s.status !== "preferred" && s.status !== "approved");
+  if (pref.length) groups.push({ label: "⭐ Preferred", options: pref.map((s) => ({ value: s.name, label: s.name })) });
+  if (appr.length) groups.push({ label: "Approved", options: appr.map((s) => ({ value: s.name, label: s.name })) });
+  if (other.length) groups.push({ label: "Other suppliers", options: other.map((s) => ({ value: s.name, label: s.name, hint: s.status })) });
+  return groups;
+}
 
 export function ProductLibrary({ me }: { me: CurrentUser | null }) {
   const [tab, setTab] = useState<Tab>("library");
@@ -23,7 +61,8 @@ export function ProductLibrary({ me }: { me: CurrentUser | null }) {
     api.listProducts().then(setProducts).catch((e) => setErr(e.message));
     api.listElements().then(setElements).catch((e) => setErr(e.message));
     api.listResourceTypes().then(setResourceTypes).catch((e) => setErr(e.message));
-    api.productSuggestions().then(setSuggestions).catch(() => {});
+    // Suggestions is a manager-only promote-to-library workflow — skip for viewers.
+    if (canManage) api.productSuggestions().then(setSuggestions).catch(() => {});
   }
   useEffect(refresh, []);
 
@@ -52,12 +91,17 @@ export function ProductLibrary({ me }: { me: CurrentUser | null }) {
         title="Product library"
         actions={
           <>
-            <div className="theme-toggle" style={{ marginRight: 8 }}>
-              <button type="button" className={tab === "library" ? "active" : ""} onClick={() => setTab("library")}>Library</button>
-              <button type="button" className={tab === "suggestions" ? "active" : ""} onClick={() => setTab("suggestions")}>
-                Suggestions{unlinkedSuggestionCount > 0 ? ` · ${unlinkedSuggestionCount}` : ""}
-              </button>
-            </div>
+            {/* Suggestions is a manager-only promote-to-library workflow, so the
+                Library/Suggestions switcher only shows for managers. Everyone else
+                sees the read-only catalogue with no tabs. */}
+            {canManage && (
+              <div className="theme-toggle" style={{ marginRight: 8 }}>
+                <button type="button" className={tab === "library" ? "active" : ""} onClick={() => setTab("library")}>Library</button>
+                <button type="button" className={tab === "suggestions" ? "active" : ""} onClick={() => setTab("suggestions")}>
+                  Suggestions{unlinkedSuggestionCount > 0 ? ` · ${unlinkedSuggestionCount}` : ""}
+                </button>
+              </div>
+            )}
             {canManage && tab === "library" && (
               <button className="accent" onClick={() => setShowAdd(true)}>+ New product</button>
             )}
@@ -67,7 +111,7 @@ export function ProductLibrary({ me }: { me: CurrentUser | null }) {
       <main>
         {err && <div className="flash error">{err}</div>}
 
-        {tab === "library" ? (
+        {tab === "library" || !canManage ? (
           <LibraryTab
             products={products}
             elements={elements}
@@ -110,6 +154,9 @@ function LibraryTab({
   const [elementFilter, setElementFilter] = useState("");
   const [editingId, setEditingId] = useState<number | null>(null);
   const [expandedId, setExpandedId] = useState<number | null>(null);
+  const [mergeSourceId, setMergeSourceId] = useState<number | null>(null);
+  const [mergeBusy, setMergeBusy] = useState(false);
+  const [mergeErr, setMergeErr] = useState<string | null>(null);
 
   const visible = products
     .filter((p) => !elementFilter || p.element_code === elementFilter)
@@ -213,6 +260,7 @@ function LibraryTab({
                         {canManage && (
                           <>
                             <button className="ghost tiny" onClick={() => setEditingId(p.id)}>Edit</button>{" "}
+                            <button className="ghost tiny" title="This product is a duplicate of another — fold it in as an alternate supplier" onClick={() => { setMergeErr(null); setMergeSourceId(p.id); }}>Merge…</button>{" "}
                             <button className="ghost tiny" onClick={async () => {
                               if (!confirm(`Delete product "${p.product_code} ${p.description}"? Linked project materials will be unlinked but kept.`)) return;
                               await api.removeProduct(p.id);
@@ -236,6 +284,54 @@ function LibraryTab({
           </table>
         )}
       </div>
+      {mergeSourceId != null && (() => {
+        const src = products.find((x) => x.id === mergeSourceId);
+        if (!src) return null;
+        const groups = [...new Map(products.filter((x) => x.id !== src.id).map((x) => [x.element_code, x.element_name])).entries()]
+          .map(([code, name]) => ({
+            label: `${code} · ${name.replace(/^[A-Za-z]+ - /, "")}`,
+            options: products.filter((x) => x.id !== src.id && x.element_code === code)
+              .map((x) => ({ value: String(x.id), label: `${x.product_code} — ${x.description}`, hint: [x.supplier, x.usage_count ? `${x.usage_count} uses` : null].filter(Boolean).join(" · ") || undefined })),
+          }));
+        return (
+          <div style={{ position: "fixed", inset: 0, background: "rgba(15,17,48,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100 }} onClick={() => !mergeBusy && setMergeSourceId(null)}>
+            <div className="card" style={{ maxWidth: 560, width: "calc(100% - 32px)" }} onClick={(e) => e.stopPropagation()}>
+              <div className="card-hd">
+                <h3 style={{ flex: 1 }}>Merge “{src.product_code} — {src.description}” into…</h3>
+                <button onClick={() => setMergeSourceId(null)} disabled={mergeBusy} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--muted)", fontSize: 18, padding: 0 }}>✕</button>
+              </div>
+              <div className="card-bd" style={{ display: "grid", gap: 10 }}>
+                <p className="muted" style={{ margin: 0, fontSize: 13 }}>
+                  Same material listed twice (usually once per supplier)? Pick the listing to keep. “{src.supplier ?? src.manufacturer ?? "its supplier"}” becomes an
+                  alternate supplier offer at {src.unit_cost != null ? fmtMoney(src.unit_cost) : "its price"} on the kept product, everything linked to this one
+                  ({src.usage_count} use{src.usage_count === 1 ? "" : "s"}, quote matches, variations) follows it over, and this listing is removed.
+                </p>
+                <GroupedCombobox
+                  groups={groups}
+                  value=""
+                  onChange={async (v) => {
+                    if (!v || mergeBusy) return;
+                    setMergeBusy(true); setMergeErr(null);
+                    try {
+                      await api.mergeProduct(src.id, Number(v));
+                      setMergeSourceId(null);
+                      onChanged();
+                    } catch (e) {
+                      setMergeErr(e instanceof Error ? e.message : "merge failed");
+                    } finally {
+                      setMergeBusy(false);
+                    }
+                  }}
+                  placeholder={mergeBusy ? "Merging…" : "Pick the product to keep…"}
+                  searchPlaceholder="Search the library…"
+                  ariaLabel="Product to merge into"
+                />
+                {mergeErr && <span style={{ fontSize: 12.5, color: "var(--danger)" }}>{mergeErr}</span>}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </>
   );
 }
@@ -277,6 +373,15 @@ function ProductForm({
   const [researchQuery, setResearchQuery] = useState("");
   const [researching, setResearching] = useState(false);
   const [researchInfo, setResearchInfo] = useState<{ confidence: string; notes?: string } | null>(null);
+  // Approved suppliers power the manufacturer + supplier pickers.
+  const [suppliers, setSuppliers] = useState<{ name: string; status: string }[]>([]);
+  useEffect(() => {
+    api.listSuppliers()
+      .then((rs) => setSuppliers(rs.map((s) => ({ name: s.name, status: s.status }))))
+      .catch(() => setSuppliers([]));
+  }, []);
+  const elGroups = useMemo(() => elementGroups(elements), [elements]);
+  const supGroups = useMemo(() => supplierGroups(suppliers), [suppliers]);
 
   async function research() {
     if (!researchQuery.trim()) return;
@@ -373,9 +478,14 @@ function ProductForm({
       <div style={{ display: "grid", gridTemplateColumns: "1.5fr 80px 100px 1fr", gap: 12 }}>
         <div>
           <label>Element</label>
-          <select value={form.element_code} onChange={(e) => setForm({ ...form, element_code: e.target.value })}>
-            {elements.map((el) => <option key={el.code} value={el.code}>{el.code} · {el.name}</option>)}
-          </select>
+          <GroupedCombobox
+            groups={elGroups}
+            value={form.element_code}
+            onChange={(v) => setForm({ ...form, element_code: v })}
+            placeholder="— element —"
+            searchPlaceholder="Search elements…"
+            ariaLabel="Element"
+          />
         </div>
         <div>
           <label>Item #</label>
@@ -397,7 +507,15 @@ function ProductForm({
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 100px 120px 80px", gap: 12, marginTop: 12 }}>
         <div>
           <label>Manufacturer</label>
-          <input value={form.manufacturer} onChange={(e) => setForm({ ...form, manufacturer: e.target.value })} />
+          <GroupedCombobox
+            groups={supGroups}
+            value={form.manufacturer}
+            onChange={(v) => setForm({ ...form, manufacturer: v })}
+            placeholder="e.g. Kingspan"
+            searchPlaceholder="Search or type a manufacturer…"
+            allowCustom
+            ariaLabel="Manufacturer"
+          />
         </div>
         <div>
           <label style={{ display: "flex", alignItems: "center", gap: 6, textTransform: "none", letterSpacing: 0, fontSize: 11 }}>
@@ -412,12 +530,19 @@ function ProductForm({
               same as manufacturer
             </label>
           </label>
-          <input
-            value={sameAsMfr ? form.manufacturer : form.supplier}
-            onChange={(e) => setForm({ ...form, supplier: e.target.value })}
-            readOnly={sameAsMfr}
-            placeholder={sameAsMfr ? "—" : "e.g. SIG Roofing"}
-          />
+          {sameAsMfr ? (
+            <input value={form.manufacturer} readOnly placeholder="—" />
+          ) : (
+            <GroupedCombobox
+              groups={supGroups}
+              value={form.supplier}
+              onChange={(v) => setForm({ ...form, supplier: v })}
+              placeholder="e.g. SIG Roofing"
+              searchPlaceholder="Search or type a supplier…"
+              allowCustom
+              ariaLabel="Supplier"
+            />
+          )}
         </div>
         <div>
           <label>Unit</label>
@@ -497,7 +622,7 @@ function SuggestionsTab({
     });
   }
   function toggleAll() {
-    setSelected((prev) => {
+    setSelected(() => {
       if (allUnlinkedSelected) return new Set();
       return new Set(unlinkedSuggestions.map((s) => s.key));
     });
@@ -506,7 +631,7 @@ function SuggestionsTab({
   async function linkExisting(s: Suggestion, productId: number) {
     setBusy(true); setErr(null);
     try {
-      await api.linkMaterialsToProduct(productId, s.material_ids);
+      await api.linkMaterialsToProduct(productId, s.material_ids, { substitutionIds: s.substitution_ids });
       onChanged();
     } catch (e) {
       setErr(e instanceof Error ? e.message : "link failed");
@@ -520,6 +645,34 @@ function SuggestionsTab({
     [suggestions, selected],
   );
 
+  async function dismiss(s: Suggestion) {
+    if (!confirm(`Remove "${s.sample_description}" from suggestions? Hidden suggestions can be restored later.`)) return;
+    setBusy(true); setErr(null);
+    try {
+      await api.dismissSuggestion(s.key, s.project_codes);
+      setSelected((prev) => { const n = new Set(prev); n.delete(s.key); return n; });
+      onChanged();
+    } catch (e) { setErr(e instanceof Error ? e.message : "remove failed"); }
+    finally { setBusy(false); }
+  }
+  async function dismissSelected() {
+    if (selectedSuggestions.length === 0) return;
+    if (!confirm(`Remove ${selectedSuggestions.length} suggestion${selectedSuggestions.length === 1 ? "" : "s"}? They can be restored later.`)) return;
+    setBusy(true); setErr(null);
+    try {
+      for (const s of selectedSuggestions) await api.dismissSuggestion(s.key, s.project_codes);
+      setSelected(new Set());
+      onChanged();
+    } catch (e) { setErr(e instanceof Error ? e.message : "remove failed"); }
+    finally { setBusy(false); }
+  }
+  async function restoreHidden() {
+    setBusy(true); setErr(null);
+    try { await api.restoreSuggestions(); onChanged(); }
+    catch (e) { setErr(e instanceof Error ? e.message : "restore failed"); }
+    finally { setBusy(false); }
+  }
+
   return (
     <>
       {canManage && selectedSuggestions.length > 0 && (
@@ -530,6 +683,7 @@ function SuggestionsTab({
               <span className="muted" style={{ marginLeft: 8 }}>· Promote them all to the master library in one pass</span>
             </div>
             <button className="ghost" onClick={() => setSelected(new Set())}>Clear</button>
+            <button className="ghost" onClick={dismissSelected} disabled={busy}>Remove {selectedSuggestions.length}</button>
             <button className="accent" onClick={() => setBulkOpen(true)}>Promote {selectedSuggestions.length} selected →</button>
           </div>
         </div>
@@ -541,6 +695,9 @@ function SuggestionsTab({
           <span className="muted" style={{ fontSize: 12 }}>
             {suggestions.length} distinct items across all active project snapshots
           </span>
+          {canManage && (
+            <button className="ghost tiny" onClick={restoreHidden} disabled={busy} title="Un-hide all previously dismissed suggestions">Restore hidden</button>
+          )}
         </div>
         <div className="card-bd">
           <p className="muted" style={{ marginTop: 0 }}>
@@ -591,7 +748,14 @@ function SuggestionsTab({
                       />
                     )}
                   </td>
-                  <td>{s.sample_description}</td>
+                  <td>
+                    {s.sample_description}
+                    {s.substitution_ids.length > 0 && (
+                      <span className="badge" style={{ marginLeft: 6, fontSize: 10, background: "var(--accent-soft)", color: "var(--accent-2)" }} title="Substituted in on a project — not yet in the library">
+                        substitution
+                      </span>
+                    )}
+                  </td>
                   <td className="muted">{s.manufacturer ?? "—"}</td>
                   <td className="muted center">{s.type}</td>
                   <td className="num">{s.project_codes.length}</td>
@@ -604,9 +768,12 @@ function SuggestionsTab({
                       <span className="badge draft">unlinked</span>
                     )}
                   </td>
-                  <td>
+                  <td style={{ whiteSpace: "nowrap" }}>
                     {canManage && !s.linked_product_id && (
                       <button className="ghost tiny" onClick={() => setPromoting(s)}>Promote →</button>
+                    )}{" "}
+                    {canManage && (
+                      <button className="ghost tiny" onClick={() => dismiss(s)} disabled={busy} title="Remove this suggestion">×</button>
                     )}
                   </td>
                 </tr>
@@ -667,7 +834,7 @@ function SuggestionsTab({
                 suggestion={promoting}
                 elements={elements}
                 onCreated={async (productId) => {
-                  await api.linkMaterialsToProduct(productId, promoting.material_ids);
+                  await api.linkMaterialsToProduct(productId, promoting.material_ids, { substitutionIds: promoting.substitution_ids });
                   setPromoting(null);
                   onChanged();
                 }}
@@ -694,6 +861,14 @@ function PromoteToNewProduct({
   const [manufacturer, setManufacturer] = useState(suggestion.manufacturer ?? "");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [suppliers, setSuppliers] = useState<{ name: string; status: string }[]>([]);
+  useEffect(() => {
+    api.listSuppliers()
+      .then((rs) => setSuppliers(rs.map((s) => ({ name: s.name, status: s.status }))))
+      .catch(() => setSuppliers([]));
+  }, []);
+  const elGroups = useMemo(() => elementGroups(elements), [elements]);
+  const supGroups = useMemo(() => supplierGroups(suppliers), [suppliers]);
 
   async function create() {
     setBusy(true); setErr(null);
@@ -720,9 +895,14 @@ function PromoteToNewProduct({
       <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr 1fr auto", gap: 12, marginTop: 8 }}>
         <div>
           <label>Element</label>
-          <select value={element} onChange={(e) => setElement(e.target.value)}>
-            {elements.map((el) => <option key={el.code} value={el.code}>{el.code} · {el.name}</option>)}
-          </select>
+          <GroupedCombobox
+            groups={elGroups}
+            value={element}
+            onChange={setElement}
+            placeholder="— element —"
+            searchPlaceholder="Search elements…"
+            ariaLabel="Element"
+          />
         </div>
         <div>
           <label>Variant (optional)</label>
@@ -730,7 +910,15 @@ function PromoteToNewProduct({
         </div>
         <div>
           <label>Manufacturer</label>
-          <input value={manufacturer} onChange={(e) => setManufacturer(e.target.value)} placeholder="e.g. Kingspan" />
+          <GroupedCombobox
+            groups={supGroups}
+            value={manufacturer}
+            onChange={setManufacturer}
+            placeholder="e.g. Kingspan"
+            searchPlaceholder="Search or type a manufacturer…"
+            allowCustom
+            ariaLabel="Manufacturer"
+          />
         </div>
         <div style={{ alignSelf: "end" }}>
           <button className="accent" onClick={create} disabled={busy || !element}>Create &amp; link</button>
@@ -846,15 +1034,20 @@ function AlternateSupplierForm({
     notes: "",
     is_preferred: false,
   });
-  const [approvedSupplierNames, setApprovedSupplierNames] = useState<string[]>([]);
+  const [approvedSuppliers, setApprovedSuppliers] = useState<Array<{ name: string; labour: boolean }>>([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
     api.listSuppliers()
-      .then((rs) => setApprovedSupplierNames(rs.map((s) => s.name).sort()))
-      .catch(() => setApprovedSupplierNames([]));
+      .then((rs) => setApprovedSuppliers(rs.map((s) => ({ name: s.name, labour: s.is_labour_supplier })).sort((a, b) => a.name.localeCompare(b.name))))
+      .catch(() => setApprovedSuppliers([]));
   }, []);
+  // Merchants first — labour subbies are rarely who stocks a product.
+  const supplierGroups = [
+    { label: "Suppliers", options: approvedSuppliers.filter((s) => !s.labour).map((s) => ({ value: s.name, label: s.name })) },
+    { label: "Labour subcontractors", options: approvedSuppliers.filter((s) => s.labour).map((s) => ({ value: s.name, label: s.name })) },
+  ].filter((g) => g.options.length > 0);
 
   async function save() {
     setBusy(true); setErr(null);
@@ -882,15 +1075,15 @@ function AlternateSupplierForm({
         <div style={{ display: "grid", gridTemplateColumns: "1.5fr 1fr 120px 110px auto", gap: 12 }}>
           <div>
             <label>Supplier name</label>
-            <input
+            <GroupedCombobox
+              groups={supplierGroups}
               value={form.supplier_name}
-              onChange={(e) => setForm({ ...form, supplier_name: e.target.value })}
-              placeholder="e.g. SIG Roofing"
-              list="approved-supplier-names"
+              onChange={(v) => setForm({ ...form, supplier_name: v })}
+              placeholder="Pick from the approved list — or type a new name"
+              searchPlaceholder="Search suppliers…"
+              allowCustom
+              ariaLabel="Supplier name"
             />
-            <datalist id="approved-supplier-names">
-              {approvedSupplierNames.map((n) => <option key={n} value={n} />)}
-            </datalist>
           </div>
           <div>
             <label>Their SKU (optional)</label>
@@ -994,7 +1187,8 @@ function AlternateSupplierRow({
     <tr>
       <td>
         {row.supplier_name}
-        {row.is_preferred && <span className="badge approved" style={{ marginLeft: 6, fontSize: 10 }}>preferred</span>}
+        {/* is_preferred is 0/1 from the DB — a bare && would render the 0. */}
+        {row.is_preferred ? <span className="badge approved" style={{ marginLeft: 6, fontSize: 10 }}>preferred</span> : null}
       </td>
       <td className="muted" style={{ fontFamily: "ui-monospace, monospace", fontSize: 12 }}>{row.supplier_sku ?? "—"}</td>
       <td className="num">{row.unit_cost != null ? fmtMoney(row.unit_cost) : <span className="muted">—</span>}</td>
@@ -1090,7 +1284,7 @@ function BulkPromoteModal({
           unit_cost: r.suggestion.avg_unit_cost ?? undefined,
           default_resource: "M",
         });
-        await api.linkMaterialsToProduct(product.id, r.suggestion.material_ids);
+        await api.linkMaterialsToProduct(product.id, r.suggestion.material_ids, { substitutionIds: r.suggestion.substitution_ids });
         const code = `${r.element_code}.${String(product.item_no).padStart(2, "0")}${product.variant ? "." + product.variant : ""}`;
         update(i, { status: "done", product_code: code });
       } catch (e) {

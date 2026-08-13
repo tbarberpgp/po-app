@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { Env, Variables } from "../env";
 import type { Role } from "../../shared/permissions";
-import { outranks, ROLES } from "../../shared/permissions";
+import { normalizeRole, outranks, ROLES } from "../../shared/permissions";
 import { requirePermission } from "../auth";
 
 export const users = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -18,8 +18,9 @@ users.use("/*", async (c, next) => {
 users.get("/", async (c) => {
   const rows = await c.env.DB.prepare(
     "SELECT email, name, role, active, created_at, created_by FROM users ORDER BY role, email",
-  ).all();
-  return c.json(rows.results);
+  ).all<{ role: string } & Record<string, unknown>>();
+  // Normalise legacy role strings (e.g. "procurement") for display + rank checks.
+  return c.json(rows.results.map((r) => ({ ...r, role: normalizeRole(r.role) })));
 });
 
 users.post("/", async (c) => {

@@ -24,7 +24,11 @@ const CONNECTIONS_URL = "https://api.xero.com/connections";
 //   openid                     — REQUIRED by Xero for OAuth 2.0 conformance
 //   offline_access             — gives us a refresh_token (otherwise we
 //                                lose access after the 30-min token expiry)
-//   accounting.contacts.read   — read supplier contacts (for sync FROM Xero)
+//   accounting.contacts        — read + WRITE supplier contacts. Must be the
+//                                read+write scope (not accounting.contacts.read)
+//                                because pushing a supplier CREATES a contact
+//                                (POST /Contacts); the read-only scope 401s the
+//                                write and no amount of reconnecting fixes it.
 //   accounting.invoices        — read + write (POs sit under the
 //                                Invoices/Bills branch of Xero's data model;
 //                                this is the closest granular scope that
@@ -32,8 +36,16 @@ const CONNECTIONS_URL = "https://api.xero.com/connections";
 export const XERO_SCOPES = [
   "openid",
   "offline_access",
-  "accounting.contacts.read",
+  "accounting.contacts",
   "accounting.invoices",
+  // Needed to read TrackingCategories so client invoices can be tagged to the
+  // matching project tracking option. Without it /TrackingCategories returns 401.
+  "accounting.settings.read",
+  // Lets us attach the source document (supplier invoice PDF / labour application)
+  // to the bill in Xero via POST /Invoices/{id}/Attachments. A connection made
+  // before this scope was added must be reconnected (Admin → Xero) to grant it;
+  // attachment uploads are best-effort, so the bill still pushes without it.
+  "accounting.attachments",
 ].join(" ");
 
 export function getRedirectUri(env: Env): string {

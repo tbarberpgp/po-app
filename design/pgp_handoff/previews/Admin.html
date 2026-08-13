@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Admin — PGP</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Source+Serif+Pro:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  :root, [data-theme="light"] {
+    --paper:#fbfaf7; --card:#ffffff; --card-2:#f5f2eb;
+    --ink:#0f1130; --ink-2:#2a2d50; --muted:#6a6d8a;
+    --line:#e6e3da; --line-strong:#c9c4b4;
+    --accent:#ee5d2b; --accent-2:#c64b1f; --accent-soft:#fde5d7;
+    --navy:#0f1130; --navy-soft:#e3e5f4;
+    --success:#2f6f4f; --success-soft:#dff0e3;
+    --warn:#b06a0e; --warn-soft:#fbe8c4;
+    --danger:#b8331f; --danger-soft:#fadbd2;
+  }
+  [data-theme="dark"] {
+    --paper:#080a1c; --card:#11142b; --card-2:#181b35;
+    --ink:#f5f3ec; --ink-2:#c2bfb6; --muted:#7e7c92;
+    --line:#232545; --line-strong:#3a3d62;
+    --accent:#ff8a5a; --accent-2:#ffa37f; --accent-soft:rgba(255,138,90,0.14);
+    --navy:#8ea3ff; --navy-soft:rgba(142,163,255,0.16);
+    --success:#74d49f; --success-soft:rgba(116,212,159,0.14);
+    --warn:#f0b95a; --warn-soft:rgba(240,185,90,0.14);
+    --danger:#f4907a; --danger-soft:rgba(244,144,122,0.14);
+  }
+  * { box-sizing:border-box; }
+  html, body { margin:0; padding:0; }
+  body { font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:var(--paper); color:var(--ink); font-size:14px; line-height:1.45; -webkit-font-smoothing:antialiased; }
+  h1,h2,h3 { font-family:'Cambria','Source Serif Pro',Georgia,serif; font-weight:500; margin:0; letter-spacing:-0.01em; }
+  .num { font-variant-numeric:tabular-nums; }
+  .muted { color:var(--muted); }
+  .eyebrow { font-size:11px; letter-spacing:0.12em; text-transform:uppercase; font-weight:600; color:var(--muted); }
+  .row { display:flex; align-items:center; gap:10px; }
+  .grow { flex:1; min-width:0; }
+
+  .app { display:flex; min-height:100vh; }
+  .sb { width:240px; min-width:240px; background:var(--card); border-right:1px solid var(--line); padding:20px 14px; display:flex; flex-direction:column; gap:2px; position:sticky; top:0; height:100vh; }
+  .sb-logo { display:flex; align-items:center; padding:4px 8px 22px; }
+  .sb-logo img { height:22px; width:auto; }
+  .sb-grp { font-size:10px; letter-spacing:0.1em; text-transform:uppercase; color:var(--muted); padding:14px 10px 4px; }
+  .nav { display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:8px; cursor:pointer; color:var(--ink-2); font-size:13.5px; font-weight:500; }
+  .nav:hover { background:var(--line); }
+  .nav.active { background:var(--accent-soft); color:var(--accent-2); }
+  .sb-user { margin-top:auto; padding:12px; border:1px solid var(--line); border-radius:10px; display:flex; gap:10px; align-items:center; }
+  .avatar { width:32px; height:32px; border-radius:50%; background:var(--navy); color:#fff; display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:600; flex-shrink:0; }
+  [data-theme="dark"] .avatar { color:#0f1130; }
+
+  .main { flex:1; min-width:0; display:flex; flex-direction:column; }
+  .top { padding:22px 36px 18px; display:flex; justify-content:space-between; align-items:flex-start; gap:24px; }
+  .title { font-size:30px; line-height:1.1; }
+
+  .btn { appearance:none; border:1px solid var(--line-strong); background:var(--card); color:var(--ink); padding:8px 14px; border-radius:8px; font:500 13px 'Inter',sans-serif; cursor:pointer; display:inline-flex; align-items:center; gap:7px; white-space:nowrap; }
+  .btn:hover { background:var(--line); }
+  .btn:disabled { opacity:.5; cursor:not-allowed; }
+  .btn.accent { background:var(--accent); color:#fff; border-color:var(--accent); }
+  .btn.accent:hover { background:var(--accent-2); border-color:var(--accent-2); }
+  .btn.primary { background:var(--navy); color:#fff; border-color:var(--navy); }
+  [data-theme="dark"] .btn.primary { color:#0f1130; }
+  .btn.ghost { background:transparent; border-color:transparent; color:var(--ink-2); }
+  .btn.ghost:hover { background:var(--line); color:var(--ink); }
+  .btn.danger-outline { border-color:var(--line-strong); color:var(--danger); }
+  .btn.danger-outline:hover { background:var(--danger-soft); }
+  .btn.tiny { padding:5px 10px; font-size:12px; border-radius:6px; }
+
+  .seg { display:inline-flex; background:var(--navy); border-radius:8px; padding:3px; gap:2px; }
+  [data-theme="dark"] .seg { background:var(--card-2); border:1px solid var(--line); }
+  .seg button { appearance:none; border:0; background:transparent; color:rgba(255,255,255,0.6); font:600 12px 'Inter',sans-serif; padding:5px 12px; border-radius:6px; cursor:pointer; }
+  [data-theme="dark"] .seg button { color:var(--muted); }
+  .seg button.on { background:#fff; color:var(--navy); }
+  [data-theme="dark"] .seg button.on { background:var(--navy); color:#0f1130; }
+
+  .content { padding:6px 36px 60px; max-width:1100px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; margin-bottom:18px; }
+  .card-bd { padding:22px 24px; }
+  .card h2 { font-size:18px; }
+  .lead { font-size:13px; color:var(--muted); margin:6px 0 0; max-width:760px; }
+
+  .label { font-size:11px; letter-spacing:0.07em; text-transform:uppercase; font-weight:600; color:var(--muted); margin-bottom:6px; display:block; }
+  .input, .select { width:100%; background:var(--card); border:1px solid var(--line-strong); border-radius:8px; padding:9px 12px; font:400 13px 'Inter',sans-serif; color:var(--ink); }
+  .input:focus, .select:focus { outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); }
+
+  .meta3 { display:grid; grid-template-columns:repeat(3,1fr); gap:20px; margin:14px 0 16px; }
+  .meta .l { font-size:11px; letter-spacing:0.07em; text-transform:uppercase; font-weight:600; color:var(--muted); }
+  .meta .v { font-size:15px; font-weight:600; margin-top:3px; }
+  .meta .s { font-size:12px; color:var(--muted); }
+
+  .divider { border:0; border-top:1px solid var(--line); margin:18px 0; }
+  .codes { display:grid; grid-template-columns:repeat(3,1fr); gap:18px; }
+  .code .ct { font-size:13px; font-weight:600; }
+  .code .cs { font-size:11.5px; color:var(--muted); margin:3px 0 8px; min-height:30px; }
+  .codetag { font-family:ui-monospace,monospace; font-size:12px; background:var(--card-2); border:1px solid var(--line); border-radius:5px; padding:1px 6px; }
+
+  .dt { width:100%; border-collapse:separate; border-spacing:0; font-size:13px; }
+  .dt th, .dt td { padding:13px 8px; border-bottom:1px solid var(--line); text-align:left; vertical-align:middle; }
+  .dt th { font-size:11px; letter-spacing:0.06em; text-transform:uppercase; color:var(--muted); font-weight:600; }
+  .dt tr:last-child td { border-bottom:0; }
+  .dt .nm { font-weight:600; }
+  .pill { display:inline-flex; align-items:center; gap:6px; padding:3px 10px; border-radius:999px; font-size:11.5px; font-weight:600; white-space:nowrap; background:var(--line); color:var(--ink-2); }
+  .pill.dot::before { content:''; width:6px; height:6px; border-radius:50%; background:currentColor; }
+  .pill.success { background:var(--success-soft); color:var(--success); }
+  .pill.role { background:var(--navy-soft); color:var(--navy); }
+  [data-theme="light"] .pill.role { color:var(--navy); }
+  .pill.role-su { background:var(--accent-soft); color:var(--accent-2); }
+  .acts { display:flex; gap:14px; justify-content:flex-end; }
+  .acts a { color:var(--ink-2); font-size:12.5px; font-weight:500; cursor:pointer; text-decoration:none; }
+  .acts a:hover { color:var(--accent); }
+  .acts a.del:hover { color:var(--danger); }
+
+  .addrow { display:grid; gap:12px; align-items:end; margin-bottom:6px; }
+  .thr { margin:14px 0 0; padding:0; list-style:none; display:flex; flex-direction:column; gap:10px; }
+  .thr li { display:flex; align-items:center; gap:12px; font-size:14px; }
+  .thr .band { font-family:'Cambria',serif; font-size:15px; min-width:120px; }
+  .thr .arr { color:var(--muted); }
+  .thr .tier { font-weight:600; }
+  .thr .note { color:var(--muted); font-size:13px; }
+
+  .fixnote { display:none; font-size:12.5px; color:var(--ink-2); background:var(--accent-soft); border:1px solid var(--accent); border-left-width:3px; border-radius:8px; padding:10px 14px; margin:0 0 18px; }
+  body.show-fixes .fixnote { display:block; }
+  .fixnote b { color:var(--accent-2); }
+  svg { display:block; }
+</style>
+</head>
+<body data-theme="light" class="show-fixes">
+<div class="app">
+  <aside class="sb">
+    <div class="sb-logo"><img src="assets/pgp-logo.png" alt="PGP" /></div>
+    <div class="sb-grp">Workspace</div>
+    <div class="nav">Projects</div>
+    <div class="nav">Calendar</div>
+    <div class="nav">Applications</div>
+    <div class="nav">Purchase Orders</div>
+    <div class="nav">Operatives</div>
+    <div class="nav">Approvals</div>
+    <div class="sb-grp">Master Data</div>
+    <div class="nav">Dashboard</div>
+    <div class="nav active">Admin</div>
+    <div class="nav">Product library</div>
+    <div class="nav">Approved suppliers</div>
+    <div class="sb-user">
+      <div class="avatar">TB</div>
+      <div class="grow"><div style="font-size:13px;font-weight:600;">Thomas Barber</div><div style="font-size:12px;" class="muted">Superadmin · Approver</div></div>
+    </div>
+  </aside>
+
+  <div class="main">
+    <header class="top">
+      <div>
+        <div class="eyebrow" style="margin-bottom:4px;">Master data</div>
+        <h1 class="title">Admin</h1>
+      </div>
+      <div class="seg" id="themeSeg"><button class="on" data-theme-set="light">Light</button><button data-theme-set="dark">Dark</button></div>
+    </header>
+
+    <div class="content">
+      <div class="row" style="margin-bottom:16px;gap:10px;">
+        <span class="eyebrow">Demo</span>
+        <div class="seg" id="fixSeg" style="background:var(--card-2);border:1px solid var(--line);">
+          <button class="on" data-fix="on" style="color:var(--muted);">Show polish notes</button>
+          <button data-fix="off" style="color:var(--muted);">Hide</button>
+        </div>
+      </div>
+      <div class="fixnote"><b>Admin polish.</b> Same structure, tightened to the design system: connection metadata as a clean 3-up, account codes as labelled cards, role/status as semantic pills, and the washed-out "Save" is now a proper accent button that's disabled until a code changes.</div>
+
+      <!-- XERO -->
+      <section class="card">
+        <div class="card-bd">
+          <div class="row" style="align-items:flex-start;">
+            <div class="grow">
+              <h2>Xero integration</h2>
+              <p class="lead">Approved POs are automatically pushed into Xero as draft Purchase Orders for AP to match against incoming invoices. Supplier contacts can be synced from the Approved Suppliers page.</p>
+            </div>
+            <span class="pill success dot">Connected</span>
+          </div>
+
+          <div class="meta3">
+            <div class="meta"><div class="l">Organisation</div><div class="v">Power Grid Projects Ltd</div></div>
+            <div class="meta"><div class="l">Connected by</div><div class="v">tbarber@pgp.group</div><div class="s">2 Jun 2026</div></div>
+            <div class="meta"><div class="l">Token expires</div><div class="v num">02/06/2026 · 23:48</div><div class="s">auto-refreshes</div></div>
+          </div>
+
+          <div class="row" style="gap:10px;">
+            <button class="btn">Re-authorise / switch organisation</button>
+            <button class="btn ghost">Re-check paid status now</button>
+            <div class="grow"></div>
+            <button class="btn danger-outline">Disconnect</button>
+          </div>
+
+          <hr class="divider" />
+
+          <div class="eyebrow" style="margin-bottom:4px;">Xero account codes</div>
+          <p class="lead" style="margin-bottom:16px;">Chart-of-Accounts codes applied to the lines we post to Xero — e.g. <span class="codetag">200</span> Sales, <span class="codetag">310</span> Cost of goods sold.</p>
+          <div class="codes">
+            <div class="code">
+              <div class="ct">Client invoices (revenue)</div>
+              <div class="cs">Sales/revenue account for certified client applications. Required.</div>
+              <select class="select code-input"><option>200 · Sales</option><option>201 · Construction revenue</option></select>
+            </div>
+            <div class="code">
+              <div class="ct">Purchase orders (materials)</div>
+              <div class="cs">Expense account pre-coded onto material PO lines. Optional.</div>
+              <select class="select code-input"><option>310 · Cost of Goods Sold</option><option>311 · Materials</option></select>
+            </div>
+            <div class="code">
+              <div class="ct">Labour certificates</div>
+              <div class="cs">Expense account pre-coded onto subcontractor labour-cert lines. Optional.</div>
+              <select class="select code-input"><option>321 · CIS Labour Expense</option><option>320 · Labour</option></select>
+            </div>
+          </div>
+          <p class="lead" style="margin:16px 0 16px;">Client-invoice VAT follows each project's setting (Commercials → Application terms): a project on <b>0% / reverse charge (CIS)</b> posts under your org's Domestic Reverse Charge rate; 20% posts as standard.</p>
+          <button class="btn accent" id="saveCodes" disabled>Save account codes</button>
+        </div>
+      </section>
+
+      <!-- USERS -->
+      <section class="card">
+        <div class="card-bd">
+          <h2>Users &amp; permissions</h2>
+          <p class="lead">Anyone past Cloudflare Access lands here as <b>Viewer</b> by default. Promote them to Procurement to raise POs, Admin to manage users and projects, or Superadmin for full control (incl. deleting POs).</p>
+          <div class="addrow" style="grid-template-columns:1fr 1fr 180px auto;margin-top:16px;">
+            <div><span class="label">Email</span><input class="input" placeholder="person@pgp.group" /></div>
+            <div><span class="label">Name</span><input class="input" placeholder="Full name" /></div>
+            <div><span class="label">Role</span><select class="select"><option>Viewer</option><option>Procurement</option><option>Admin</option><option>Superadmin</option></select></div>
+            <button class="btn primary">Add</button>
+          </div>
+          <table class="dt" style="margin-top:8px;">
+            <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th></th></tr></thead>
+            <tbody>
+              <tr><td class="nm">Arsalan Barmand</td><td class="muted">abarmand@pgp.group</td><td><span class="pill role">Admin</span></td><td><span class="pill success dot">Active</span></td><td><div class="acts"><a>Edit</a><a class="del">Deactivate</a></div></td></tr>
+              <tr><td class="nm">Thomas Barber <span class="muted" style="font-weight:400;">(you)</span></td><td class="muted">tbarber@pgp.group</td><td><span class="pill role-su">Superadmin</span></td><td><span class="pill success dot">Active</span></td><td><div class="acts"><a>Edit</a></div></td></tr>
+              <tr><td class="nm">Sam Okafor</td><td class="muted">s.okafor@pgp.group</td><td><span class="pill role">Procurement</span></td><td><span class="pill success dot">Active</span></td><td><div class="acts"><a>Edit</a><a class="del">Deactivate</a></div></td></tr>
+              <tr><td class="nm">Jess Whitlock</td><td class="muted">j.whitlock@pgp.group</td><td><span class="pill">Viewer</span></td><td><span class="pill">Invited</span></td><td><div class="acts"><a>Edit</a><a class="del">Remove</a></div></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- THRESHOLDS -->
+      <section class="card">
+        <div class="card-bd">
+          <h2>Approval thresholds</h2>
+          <p class="lead">PO total value determines the tier when approval is required. Edit the values in the <span class="codetag">settings</span> table to adjust.</p>
+          <ul class="thr">
+            <li><span class="band num">Up to £2,000</span><span class="arr">→</span><span class="tier">Line Manager</span></li>
+            <li><span class="band num">Up to £10,000</span><span class="arr">→</span><span class="tier">Commercial Manager</span></li>
+            <li><span class="band num">Above £10,000</span><span class="arr">→</span><span class="tier">Director</span></li>
+            <li><span class="band">Any unpriced</span><span class="arr">→</span><span class="note">escalates at least to Commercial Manager</span></li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- APPROVERS -->
+      <section class="card" style="margin-bottom:0;">
+        <div class="card-bd">
+          <h2>Approvers</h2>
+          <p class="lead">People listed here receive approval emails and can approve/reject POs in the Approvals tab. Edit any row in place.</p>
+          <div class="addrow" style="grid-template-columns:1fr 1fr 1.6fr 1fr auto;margin-top:16px;">
+            <div><span class="label">Project</span><select class="select"><option>All projects (default)</option><option>26001 · Block B</option><option>25008 · Balconies</option></select></div>
+            <div><span class="label">Tier</span><select class="select"><option>Line Manager</option><option>Commercial Manager</option><option>Director</option></select></div>
+            <div><span class="label">Email</span><input class="input" placeholder="approver@pgp.group" /></div>
+            <div><span class="label">Name</span><input class="input" placeholder="Full name" /></div>
+            <button class="btn primary">Add</button>
+          </div>
+          <table class="dt" style="margin-top:8px;">
+            <thead><tr><th>Scope</th><th>Tier</th><th>Name</th><th>Email</th><th></th></tr></thead>
+            <tbody>
+              <tr><td><span class="pill">All</span></td><td>Line Manager</td><td class="nm">Default Line Manager</td><td class="muted">tbarber@pgp.group</td><td><div class="acts"><a>Edit</a><a class="del">×</a></div></td></tr>
+              <tr><td><span class="pill">All</span></td><td>Commercial Manager</td><td class="nm">Default Commercial Manager</td><td class="muted">tbarber@pgp.group</td><td><div class="acts"><a>Edit</a><a class="del">×</a></div></td></tr>
+              <tr><td><span class="pill">All</span></td><td>Director</td><td class="nm">Default Director</td><td class="muted">tbarber@pgp.group</td><td><div class="acts"><a>Edit</a><a class="del">×</a></div></td></tr>
+              <tr><td><span class="pill role">26001</span></td><td>Commercial Manager</td><td class="nm">Arsalan Barmand</td><td class="muted">abarmand@pgp.group</td><td><div class="acts"><a>Edit</a><a class="del">×</a></div></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  </div>
+</div>
+
+<script>
+  document.getElementById('themeSeg').addEventListener('click', function(e){
+    var b = e.target.closest('[data-theme-set]'); if(!b) return;
+    document.body.setAttribute('data-theme', b.dataset.themeSet);
+    this.querySelectorAll('button').forEach(function(x){ x.classList.toggle('on', x===b); });
+  });
+  var fixSeg = document.getElementById('fixSeg');
+  fixSeg.addEventListener('click', function(e){
+    var b = e.target.closest('[data-fix]'); if(!b) return;
+    document.body.classList.toggle('show-fixes', b.dataset.fix==='on');
+    fixSeg.querySelectorAll('button').forEach(function(x){ x.classList.toggle('on', x===b); });
+  });
+  // Save enabled when a code changes
+  var saveBtn = document.getElementById('saveCodes');
+  document.querySelectorAll('.code-input').forEach(function(s){
+    s.addEventListener('change', function(){ saveBtn.disabled = false; });
+  });
+  saveBtn.addEventListener('click', function(){ saveBtn.disabled = true; });
+</script>
+</body>
+</html>

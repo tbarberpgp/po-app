@@ -1,0 +1,55 @@
+/* PGP Projects — Design Tokens
+ * Drop into the codebase as the single source of truth. Scoped to [data-theme]
+ * so light/dark co-exist. Every screen in /previews uses these values.
+ */
+:root, [data-theme="light"] {
+  /* Surfaces */
+  --pgp-paper:#fbfaf7;       /* page background (warm off-white) */
+  --pgp-card:#ffffff;        /* cards, sidebar, topbar */
+  --pgp-card-2:#f5f2eb;      /* subtle fill / hover / footers */
+  /* Ink */
+  --pgp-ink:#0f1130;         /* primary text + headings (PGP navy) */
+  --pgp-ink-2:#2a2d50;       /* secondary text */
+  --pgp-muted:#6a6d8a;       /* captions, eyebrows */
+  /* Lines */
+  --pgp-line:#e6e3da;        /* borders, dividers */
+  --pgp-line-strong:#c9c4b4; /* input borders */
+  /* Accent (PGP orange) */
+  --pgp-accent:#ee5d2b;
+  --pgp-accent-2:#c64b1f;
+  --pgp-accent-soft:#fde5d7;
+  /* Navy (secondary brand / primary buttons / "navy" pills) */
+  --pgp-navy:#0f1130;
+  --pgp-navy-soft:#e3e5f4;
+  /* Data viz blue (applied vs certified only) */
+  --pgp-blue:#3b5bdb;
+  /* Semantic */
+  --pgp-success:#2f6f4f; --pgp-success-soft:#dff0e3;  /* profit, signed, on-site, certified, paid */
+  --pgp-warn:#b06a0e;    --pgp-warn-soft:#fbe8c4;     /* pending, due, outstanding, expiring */
+  --pgp-danger:#b8331f;  --pgp-danger-soft:#fadbd2;   /* rejected, expired, overspend */
+}
+[data-theme="dark"] {
+  --pgp-paper:#080a1c; --pgp-card:#11142b; --pgp-card-2:#181b35;
+  --pgp-ink:#f5f3ec; --pgp-ink-2:#c2bfb6; --pgp-muted:#7e7c92;
+  --pgp-line:#232545; --pgp-line-strong:#3a3d62;
+  --pgp-accent:#ff8a5a; --pgp-accent-2:#ffa37f; --pgp-accent-soft:rgba(255,138,90,0.14);
+  --pgp-navy:#8ea3ff; --pgp-navy-soft:rgba(142,163,255,0.16);
+  --pgp-blue:#8ea3ff;
+  --pgp-success:#74d49f; --pgp-success-soft:rgba(116,212,159,0.14);
+  --pgp-warn:#f0b95a;    --pgp-warn-soft:rgba(240,185,90,0.14);
+  --pgp-danger:#f4907a;  --pgp-danger-soft:rgba(244,144,122,0.14);
+}
+
+/* Typography */
+:root {
+  --pgp-font-sans:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+  --pgp-font-serif:'Cambria','Source Serif Pro',Georgia,serif; /* headings, KPI values, money */
+}
+
+/* Type scale (px): display 30-36 · h1 28-30 · h2 16-18 · h3 15 · body 14 · small 12.5 · tiny 11
+   Headings + numeric KPI values use the serif. Body/labels/table data use sans.
+   Numbers: font-variant-numeric: tabular-nums. Eyebrow labels: 11px, 0.1em, uppercase, 600, muted. */
+
+/* Spacing scale (px): 4 6 8 10 12 14 16 18 20 24 28 36
+   Radii: 6 (pills/sm) · 8 (buttons/inputs) · 10-12 (inner) · 14 (cards) · 999 (pills)
+   Cards are flat: 1px solid var(--pgp-line), no shadow. */

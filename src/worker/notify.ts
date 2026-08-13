@@ -1,6 +1,12 @@
 import type { Env } from "./env";
 import type { ApprovalTier, PurchaseOrder } from "../shared/types";
 
+/** Single configurable sender for all outbound email. Set the RESEND_FROM
+ *  secret to a verified Resend domain; falls back to the legacy address. */
+function resendFrom(env: Env): string {
+  return env.RESEND_FROM || "PowerGrid Projects <afp@notifications.powergridprojects.co.uk>";
+}
+
 const tierLabel: Record<ApprovalTier, string> = {
   line_manager: "Line Manager",
   commercial_manager: "Commercial Manager",
@@ -35,8 +41,8 @@ export async function emailApprovers(
   const html = `
     <p>A purchase order needs your approval.</p>
     <table style="border-collapse:collapse">
-      <tr><td><b>PO number</b></td><td>${po.po_number}</td></tr>
-      <tr><td><b>Project</b></td><td>${project.code} — ${project.name}</td></tr>
+      <tr><td><b>PO number</b></td><td>${escapeHtml(po.po_number)}</td></tr>
+      <tr><td><b>Project</b></td><td>${escapeHtml(project.code)} — ${escapeHtml(project.name)}</td></tr>
       <tr><td><b>Supplier</b></td><td>${escapeHtml(po.supplier)}</td></tr>
       <tr><td><b>Total value</b></td><td>£${po.total_value.toFixed(2)}</td></tr>
       <tr><td><b>Raised by</b></td><td>${escapeHtml(po.created_by)}</td></tr>
@@ -52,11 +58,40 @@ export async function emailApprovers(
       Authorization: `Bearer ${env.RESEND_API_KEY}`,
     },
     body: JSON.stringify({
-      from: "PO App <po@notifications.powergridprojects.co.uk>",
+      from: resendFrom(env),
       to: approvers.map((a) => a.email),
       subject,
       html,
     }),
+  }).catch((err) => console.error("Resend error", err));
+}
+
+/** Remind the PM + commercial manager that hired plant is due to be off-hired. */
+export async function emailPlantOffHire(
+  env: Env,
+  to: string[],
+  info: { projectCode: string; projectName: string; item: string; supplier: string | null; offHireDate: string; daysOut: number; poNumber: string | null; link: string },
+) {
+  if (!env.RESEND_API_KEY) { console.warn("RESEND_API_KEY not set — skipping plant off-hire email"); return; }
+  const recipients = [...new Set(to.filter((e) => e && e.includes("@")))];
+  if (recipients.length === 0) { console.warn("No off-hire recipients for plant on", info.projectCode); return; }
+  const when = info.daysOut <= 0 ? "is due to be off-hired today" : `is due to be off-hired in ${info.daysOut} day${info.daysOut === 1 ? "" : "s"}`;
+  const subject = `[Off-hire] ${escapeHtml(info.item)} — ${info.projectCode} ${info.daysOut <= 0 ? "due today" : `in ${info.daysOut}d`}`;
+  const html = `
+    <p><b>${escapeHtml(info.item)}</b> on <b>${info.projectCode} — ${escapeHtml(info.projectName)}</b> ${when}.</p>
+    <table style="border-collapse:collapse">
+      <tr><td><b>Item</b></td><td>${escapeHtml(info.item)}</td></tr>
+      ${info.supplier ? `<tr><td><b>Supplier</b></td><td>${escapeHtml(info.supplier)}</td></tr>` : ""}
+      <tr><td><b>Off-hire date</b></td><td>${escapeHtml(info.offHireDate)}</td></tr>
+      ${info.poNumber ? `<tr><td><b>PO</b></td><td>${escapeHtml(info.poNumber)}</td></tr>` : ""}
+    </table>
+    <p>If it's no longer needed, arrange collection and mark it off-hired so the prelims accrual stops.</p>
+    <p><a href="${info.link}">Open the project →</a></p>
+  `;
+  await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${env.RESEND_API_KEY}` },
+    body: JSON.stringify({ from: resendFrom(env), to: recipients, subject, html }),
   }).catch((err) => console.error("Resend error", err));
 }
 
@@ -80,7 +115,7 @@ export async function emailAfpApprovers(
     <p>An AfP needs director sign-off before it goes out.</p>
     <table style="border-collapse:collapse">
       <tr><td><b>${direction}</b></td><td>#${args.afp.app_number}</td></tr>
-      <tr><td><b>Project</b></td><td>${args.project.code} — ${escapeHtml(args.project.name)}</td></tr>
+      <tr><td><b>Project</b></td><td>${escapeHtml(args.project.code)} — ${escapeHtml(args.project.name)}</td></tr>
       <tr><td><b>Total invoice</b></td><td>£${(args.afp.total_invoice ?? 0).toFixed(2)}</td></tr>
       <tr><td><b>Raised by</b></td><td>${escapeHtml(args.raisedBy)}</td></tr>
     </table>
@@ -89,7 +124,7 @@ export async function emailAfpApprovers(
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${env.RESEND_API_KEY}` },
     body: JSON.stringify({
-      from: "AfP App <afp@notifications.powergridprojects.co.uk>",
+      from: resendFrom(env),
       to: args.approvers.map((a) => a.email),
       subject,
       html,
@@ -118,7 +153,7 @@ export async function emailAfpCounterparty(
       ? "Please find our Application for Payment for the period ending below."
       : "We acknowledge receipt of your payment application and confirm the recorded values below."}</p>
     <table style="border-collapse:collapse">
-      <tr><td><b>Project</b></td><td>${args.project.code} — ${escapeHtml(args.project.name)}</td></tr>
+      <tr><td><b>Project</b></td><td>${escapeHtml(args.project.code)} — ${escapeHtml(args.project.name)}</td></tr>
       <tr><td><b>Application No.</b></td><td>#${args.afp.app_number}</td></tr>
       <tr><td><b>Period ending</b></td><td>${args.afp.period_end}</td></tr>
       <tr><td><b>Total invoice</b></td><td>£${(args.afp.total_invoice ?? 0).toFixed(2)}</td></tr>
@@ -129,7 +164,7 @@ export async function emailAfpCounterparty(
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${env.RESEND_API_KEY}` },
     body: JSON.stringify({
-      from: "PowerGrid Projects <afp@notifications.powergridprojects.co.uk>",
+      from: resendFrom(env),
       to: [args.to],
       subject,
       html,
@@ -157,7 +192,7 @@ export async function emailAfpCertified(
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${env.RESEND_API_KEY}` },
     body: JSON.stringify({
-      from: "AfP App <afp@notifications.powergridprojects.co.uk>",
+      from: resendFrom(env),
       to: [args.to],
       subject,
       html,
@@ -199,8 +234,8 @@ export async function emailRequesterDecision(
   const html = `
     <p>Your purchase order has been <b>${verb}</b> by <b>${escapeHtml(args.actorEmail)}</b>.</p>
     <table style="border-collapse:collapse">
-      <tr><td><b>PO number</b></td><td>${args.po.po_number}</td></tr>
-      <tr><td><b>Project</b></td><td>${args.project.code} — ${args.project.name}</td></tr>
+      <tr><td><b>PO number</b></td><td>${escapeHtml(args.po.po_number)}</td></tr>
+      <tr><td><b>Project</b></td><td>${escapeHtml(args.project.code)} — ${escapeHtml(args.project.name)}</td></tr>
       <tr><td><b>Supplier</b></td><td>${escapeHtml(args.po.supplier)}</td></tr>
       <tr><td><b>Total value</b></td><td>£${args.po.total_value.toFixed(2)}</td></tr>
     </table>
@@ -215,7 +250,7 @@ export async function emailRequesterDecision(
       Authorization: `Bearer ${env.RESEND_API_KEY}`,
     },
     body: JSON.stringify({
-      from: "PO App <po@notifications.powergridprojects.co.uk>",
+      from: resendFrom(env),
       to: [args.requesterEmail],
       subject,
       html,

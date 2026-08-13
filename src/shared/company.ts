@@ -15,4 +15,11 @@ export const COMPANY = {
   company_number: "15079988",
   vat_number: "454508096",
   default_vat_rate: 0.20, // 20% — applied to every line by default
+  // Receiving account printed on outgoing applications (matches the Xero
+  // invoice template).
+  bank: {
+    account_name: "Power Grid Projects",
+    sort_code: "30-90-66",
+    account_number: "26061062",
+  },
 };

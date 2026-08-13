@@ -14,7 +14,16 @@ const Ctx = createContext<ThemeCtx | null>(null);
 
 const STORAGE_KEY = "pgp-theme";
 
+// The public cabin QITP page (opened by operatives via QR, no login) is a
+// light-first QA document — pin it to light regardless of the device's
+// prefers-color-scheme, and don't persist (so a logged-in user's saved theme
+// is never clobbered by opening a cabin link).
+function forceLight(): boolean {
+  return typeof location !== "undefined" && location.pathname.startsWith("/cabin/");
+}
+
 function readStored(): { theme: Theme; accent: Accent } {
+  if (forceLight()) return { theme: "light", accent: "orange" };
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
@@ -36,9 +45,10 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const [accent, setAccent] = useState<Accent>(initial.accent);
 
   useEffect(() => {
-    document.documentElement.setAttribute("data-theme", theme);
+    const pinned = forceLight();
+    document.documentElement.setAttribute("data-theme", pinned ? "light" : theme);
     document.documentElement.setAttribute("data-accent", accent);
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ theme, accent })); } catch {/* ignore */}
+    if (!pinned) { try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ theme, accent })); } catch {/* ignore */} }
   }, [theme, accent]);
 
   const value = useMemo(() => ({ theme, accent, setTheme, setAccent }), [theme, accent]);

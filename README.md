@@ -84,6 +84,30 @@ This deploys a Worker named `po-app`. After the first deploy, in the Cloudflare 
 2. **Zero Trust → Access → Applications → Add an application → Self-hosted** — protect
    that hostname. Add an Access policy that requires emails from your domain (or specific
    users). Access will inject `Cf-Access-Authenticated-User-Email` on every request.
+2a. **Public bypass paths (REQUIRED).** Some routes must be reachable with **no login** —
+   the operative-facing pages (token links), their public API, the static bundle they load,
+   and the Xero webhook. Add a **second** self-hosted application scoped to these paths with a
+   single policy of **Action: Bypass, Include: Everyone**. Access uses *most-specific-path
+   precedence*, so this path-scoped app overrides the broad protected app for these paths only
+   (no manual ordering needed). Add one `Application domain` row per path **per protected host**
+   (the custom domain and, if it's also fronted by Access, `po-app.tbarber.workers.dev`):
+
+   | Path | Why it must be public |
+   |------|------------------------|
+   | `/operative/*` | Operatives open their profile (induction, RAMS, cards) from a personal token link — no login. |
+   | `/site/*`      | Site sign-in page (QR-code token link). |
+   | `/cabin/*`     | Cabin QITP — operatives scan a cabin's QR to inspect & sign (token link, no login). |
+   | `/pub/*`       | The public API behind the pages above (profile data, sign-in, RAMS, quals, cabin QITP). |
+   | `/assets/*`    | The built JS/CSS bundle — without it the public pages can't load. |
+   | `/logo.png`    | Brand logo shown on the public pages. |
+   | `/webhooks/*`  | Xero paid-status webhook (unauthenticated; verified by HMAC signature instead). |
+
+   If operatives report being asked for an "access code" on a token link, this app is missing
+   the matching row — Access is challenging them with its own one-time PIN. Symptom → fix:
+   a **profile** link needs `/operative/*`; a **cabin QITP QR** needs `/cabin/*`; a **site
+   sign-in** QR needs `/site/*`. Print cabin QR labels only after `/cabin/*` is added, so the
+   encoded production URL works on the first scan.
+
 3. **D1 → po_app_db → Console** — insert real approvers (or use the Admin tab in the app):
 
 ```sql

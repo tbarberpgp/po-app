@@ -4,7 +4,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { api } from "../lib/api";
+import { api, fmtDate } from "../lib/api";
 import { Topbar } from "./Shell";
 import type { PortfolioCalendarItem } from "../../shared/types";
 
@@ -101,7 +101,7 @@ export function CalendarPage() {
                       style={{
                         minHeight: 110,
                         padding: 6,
-                        border: `1px solid ${isToday ? "var(--accent)" : "var(--line)"}`,
+                        border: "1px solid var(--line)",
                         borderRadius: "var(--radius-md)",
                         background: inMonth ? "var(--card)" : "var(--card-2)",
                         opacity: inMonth ? 1 : 0.55,
@@ -112,10 +112,11 @@ export function CalendarPage() {
                     >
                       <div style={{
                         display: "flex", alignItems: "center", justifyContent: "space-between",
-                        fontSize: 11, fontWeight: 600,
-                        color: isToday ? "var(--accent)" : "var(--ink-2)",
+                        fontSize: 11, fontWeight: 600, color: "var(--ink-2)",
                       }}>
-                        <span>{day.getDate()}</span>
+                        {isToday ? (
+                          <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", minWidth: 20, height: 20, padding: "0 2px", borderRadius: 999, border: "1.5px solid var(--accent)", color: "var(--accent)" }}>{day.getDate()}</span>
+                        ) : <span>{day.getDate()}</span>}
                         {evs.length > 0 && <span className="muted">{evs.length}</span>}
                       </div>
                       <div style={{ display: "flex", flexDirection: "column", gap: 2, overflow: "hidden" }}>
@@ -147,7 +148,7 @@ export function CalendarPage() {
               <tbody>
                 {[...items].sort((a, b) => a.date.localeCompare(b.date)).map((it, i) => (
                   <tr key={i}>
-                    <td>{new Date(it.date).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })}</td>
+                    <td>{fmtDate(it.date)}</td>
                     <td className="center">
                       <Link to={`/projects/${it.project_id}`}>{it.project_code}</Link>
                     </td>
@@ -230,7 +231,7 @@ function colorForKind(kind: string): string {
     case "scheduled-application":    return "#16a34a";   // green
     case "scheduled-due":            return "#d97706";   // amber
     case "scheduled-notice":         return "#ee5d2b";   // PGP orange
-    case "scheduled-final_payment":  return "#9333ea";   // purple
+    case "scheduled-final_payment":  return "var(--navy)";   // navy (theme-aware)
     case "afp-period-end":           return "#0f1130";   // PGP navy
     default: return "#6b7280";
   }

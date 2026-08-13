@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Applications — PGP</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Source+Serif+Pro:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  :root, [data-theme="light"] {
+    --paper:#fbfaf7; --card:#ffffff; --card-2:#f5f2eb;
+    --ink:#0f1130; --ink-2:#2a2d50; --muted:#6a6d8a;
+    --line:#e6e3da; --line-strong:#c9c4b4;
+    --accent:#ee5d2b; --accent-2:#c64b1f; --accent-soft:#fde5d7;
+    --navy:#0f1130; --navy-soft:#e3e5f4;
+    --success:#2f6f4f; --success-soft:#dff0e3;
+    --warn:#b06a0e; --warn-soft:#fbe8c4;
+    --danger:#b8331f; --danger-soft:#fadbd2;
+  }
+  [data-theme="dark"] {
+    --paper:#080a1c; --card:#11142b; --card-2:#181b35;
+    --ink:#f5f3ec; --ink-2:#c2bfb6; --muted:#7e7c92;
+    --line:#232545; --line-strong:#3a3d62;
+    --accent:#ff8a5a; --accent-2:#ffa37f; --accent-soft:rgba(255,138,90,0.14);
+    --navy:#8ea3ff; --navy-soft:rgba(142,163,255,0.16);
+    --success:#74d49f; --success-soft:rgba(116,212,159,0.14);
+    --warn:#f0b95a; --warn-soft:rgba(240,185,90,0.14);
+    --danger:#f4907a; --danger-soft:rgba(244,144,122,0.14);
+  }
+  * { box-sizing:border-box; }
+  html, body { margin:0; padding:0; }
+  body { font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:var(--paper); color:var(--ink); font-size:14px; line-height:1.45; -webkit-font-smoothing:antialiased; }
+  h1,h2,h3 { font-family:'Cambria','Source Serif Pro',Georgia,serif; font-weight:500; margin:0; letter-spacing:-0.01em; }
+  .num { font-variant-numeric:tabular-nums; }
+  .muted { color:var(--muted); }
+  .eyebrow { font-size:11px; letter-spacing:0.12em; text-transform:uppercase; font-weight:600; color:var(--muted); }
+  .row { display:flex; align-items:center; gap:10px; }
+  .grow { flex:1; min-width:0; }
+
+  .app { display:flex; min-height:100vh; }
+  .sb { width:240px; min-width:240px; background:var(--card); border-right:1px solid var(--line); padding:20px 14px; display:flex; flex-direction:column; gap:2px; position:sticky; top:0; height:100vh; }
+  .sb-logo { display:flex; align-items:center; padding:4px 8px 22px; }
+  .sb-logo img { height:22px; width:auto; }
+  .sb-grp { font-size:10px; letter-spacing:0.1em; text-transform:uppercase; color:var(--muted); padding:14px 10px 4px; }
+  .nav { display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:8px; cursor:pointer; color:var(--ink-2); font-size:13.5px; font-weight:500; }
+  .nav:hover { background:var(--line); }
+  .nav.active { background:var(--accent-soft); color:var(--accent-2); }
+  .sb-user { margin-top:auto; padding:12px; border:1px solid var(--line); border-radius:10px; display:flex; gap:10px; align-items:center; }
+  .avatar { width:32px; height:32px; border-radius:50%; background:var(--navy); color:#fff; display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:600; flex-shrink:0; }
+  [data-theme="dark"] .avatar { color:#0f1130; }
+
+  .main { flex:1; min-width:0; display:flex; flex-direction:column; }
+  .top { padding:22px 36px 18px; display:flex; justify-content:space-between; align-items:flex-start; gap:24px; }
+  .title { font-size:30px; line-height:1.1; }
+
+  .seg { display:inline-flex; background:var(--navy); border-radius:8px; padding:3px; gap:2px; }
+  [data-theme="dark"] .seg { background:var(--card-2); border:1px solid var(--line); }
+  .seg button { appearance:none; border:0; background:transparent; color:rgba(255,255,255,0.6); font:600 12px 'Inter',sans-serif; padding:5px 12px; border-radius:6px; cursor:pointer; }
+  [data-theme="dark"] .seg button { color:var(--muted); }
+  .seg button.on { background:#fff; color:var(--navy); }
+  [data-theme="dark"] .seg button.on { background:var(--navy); color:#0f1130; }
+
+  .content { padding:6px 36px 60px; }
+
+  .tabs { display:flex; gap:26px; border-bottom:1px solid var(--line); margin-bottom:22px; }
+  .tab { padding:10px 2px 14px; font-size:15px; font-weight:500; color:var(--muted); cursor:pointer; border-bottom:2px solid transparent; margin-bottom:-1px; display:flex; align-items:center; gap:8px; }
+  .tab:hover { color:var(--ink); }
+  .tab.active { color:var(--ink); border-bottom-color:var(--accent); }
+  .tab .b { font-size:10px; background:var(--line); color:var(--ink-2); border-radius:999px; padding:1px 7px; font-weight:700; }
+  .tab.active .b { background:var(--accent-soft); color:var(--accent-2); }
+
+  .stats { display:grid; grid-template-columns:repeat(5,1fr); gap:14px; margin-bottom:18px; }
+  .stat { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px 18px; display:flex; flex-direction:column; gap:4px; }
+  .stat .lbl { font-size:11px; letter-spacing:0.08em; text-transform:uppercase; font-weight:600; color:var(--muted); }
+  .stat .val { font-family:'Cambria',serif; font-size:26px; font-weight:500; }
+  .stat .val.attn { color:var(--warn); }
+  .stat .val.pos { color:var(--success); }
+
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; }
+  .card-hd { padding:16px 20px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:12px; }
+  .card-bd { padding:18px 20px; }
+
+  .select { width:100%; background:var(--card); border:1px solid var(--line-strong); border-radius:8px; padding:9px 12px; font:400 13px 'Inter',sans-serif; color:var(--ink); }
+  .check { display:inline-flex; align-items:center; gap:8px; font-size:13px; color:var(--ink-2); cursor:pointer; }
+  .check input { width:15px; height:15px; accent-color:var(--accent); }
+
+  .dt { width:100%; border-collapse:separate; border-spacing:0; font-size:13px; }
+  .dt th, .dt td { padding:14px 16px; border-bottom:1px solid var(--line); text-align:left; vertical-align:middle; }
+  .dt th { font-size:11px; letter-spacing:0.06em; text-transform:uppercase; color:var(--muted); font-weight:600; }
+  .dt td.num, .dt th.num { text-align:right; font-variant-numeric:tabular-nums; }
+  .dt tr:last-child td { border-bottom:0; }
+  .dt tbody tr:hover td { background:var(--accent-soft); }
+  .link { color:var(--accent); font-weight:600; text-decoration:none; }
+  .pill { display:inline-flex; align-items:center; gap:6px; padding:3px 10px; border-radius:999px; font-size:11.5px; font-weight:600; white-space:nowrap; }
+  .pill.success { background:var(--success-soft); color:var(--success); }
+  .pill.warn { background:var(--warn-soft); color:var(--warn); }
+  .pill.dot::before { content:''; width:6px; height:6px; border-radius:50%; background:currentColor; }
+
+  .fixnote { display:none; font-size:12.5px; color:var(--ink-2); background:var(--accent-soft); border:1px solid var(--accent); border-left-width:3px; border-radius:8px; padding:10px 14px; margin:0 0 18px; }
+  body.show-fixes .fixnote { display:block; }
+  .fixnote b { color:var(--accent-2); }
+  .fixtag { display:none; align-items:center; gap:5px; font-size:10px; font-weight:700; letter-spacing:0.04em; text-transform:uppercase; color:var(--accent-2); background:var(--accent-soft); border:1px solid var(--accent); border-radius:999px; padding:1px 8px; }
+  body.show-fixes .fixtag { display:inline-flex; }
+  .hidden { display:none !important; }
+  svg { display:block; }
+</style>
+</head>
+<body data-theme="light" class="show-fixes">
+<div class="app">
+  <aside class="sb">
+    <div class="sb-logo"><img src="assets/pgp-logo.png" alt="PGP" /></div>
+    <div class="sb-grp">Workspace</div>
+    <div class="nav">Dashboard</div>
+    <div class="nav">Projects</div>
+    <div class="nav">Calendar</div>
+    <div class="nav active">Applications</div>
+    <div class="nav">Purchase Orders</div>
+    <div class="nav">Operatives</div>
+    <div class="nav">Approvals</div>
+    <div class="sb-grp">Master Data</div>
+    <div class="nav">Admin</div>
+    <div class="nav">Product library</div>
+    <div class="nav">Approved suppliers</div>
+    <div class="sb-user">
+      <div class="avatar">TB</div>
+      <div class="grow"><div style="font-size:13px;font-weight:600;">Thomas Barber</div><div style="font-size:12px;" class="muted">Superadmin · Approver</div></div>
+    </div>
+  </aside>
+
+  <div class="main">
+    <header class="top">
+      <div>
+        <div class="eyebrow" style="margin-bottom:4px;">Workspace</div>
+        <h1 class="title">Applications</h1>
+      </div>
+      <div class="seg" id="themeSeg"><button class="on" data-theme-set="light">Light</button><button data-theme-set="dark">Dark</button></div>
+    </header>
+
+    <div class="content">
+      <div class="row" style="margin-bottom:18px;gap:10px;">
+        <span class="eyebrow">Demo</span>
+        <div class="seg" id="fixSeg" style="background:var(--card-2);border:1px solid var(--line);">
+          <button class="on" data-fix="on" style="color:var(--muted);">Show polish notes</button>
+          <button data-fix="off" style="color:var(--muted);">Hide</button>
+        </div>
+        <span class="muted" style="font-size:12px;">highlights what changed vs the current build</span>
+      </div>
+
+      <div class="tabs" id="appTabs">
+        <div class="tab active" data-panel="labour">Labour applications <span class="b">1</span></div>
+        <div class="tab" data-panel="client">Client applications <span class="b">4</span></div>
+      </div>
+
+      <div class="fixnote"><b>Polish · Applications.</b> KPI labels were all coloured (orange/green), making everything read as "attention". Labels are now <b>muted</b>; colour is reserved for the <b>value</b> only when it's semantic — the attention metrics (Needs a project, Unassigned subbie, Lines need review) turn <span style="color:var(--warn);font-weight:600;">amber</span> when above zero, and Certified / Paid stays <span style="color:var(--success);font-weight:600;">green</span>. At zero they're neutral ink, so a clean board looks calm.</div>
+
+      <div class="stats" data-pp="labour">
+        <div class="stat"><span class="lbl">Labour applications</span><span class="val num">1</span></div>
+        <div class="stat"><span class="lbl">Needs a project</span><span class="val num">0</span></div>
+        <div class="stat"><span class="lbl">Unassigned subbie</span><span class="val num">0</span></div>
+        <div class="stat"><span class="lbl">Lines need review</span><span class="val num">0</span></div>
+        <div class="stat"><span class="lbl">Certified / paid</span><span class="val num pos">1</span></div>
+      </div>
+
+      <section class="card" data-pp="labour">
+        <div class="card-hd"><h2 style="font-size:17px;">Labour applications</h2><span class="fixtag">✓ polish</span></div>
+        <div class="card-bd" style="display:flex;flex-direction:column;gap:14px;border-bottom:1px solid var(--line);">
+          <select class="select"><option>All statuses</option></select>
+          <label class="check"><input type="checkbox" /> Unassigned only</label>
+        </div>
+        <table class="dt">
+          <thead><tr><th>#</th><th>Project</th><th>Subcontractor</th><th>Period</th><th>Status</th><th class="num">Value</th><th>Created</th></tr></thead>
+          <tbody>
+            <tr>
+              <td style="color:var(--accent);font-weight:600;">#1</td>
+              <td><a class="link" href="#">26001</a><div class="muted" style="font-size:12px;">Dallas Rd Block B Roofing</div></td>
+              <td>Latbuild Construction Ltd</td>
+              <td>29 May 2026</td>
+              <td><span class="pill success dot">Certified</span></td>
+              <td class="num">£12,524.32</td>
+              <td class="muted" style="font-size:12.5px;">29 May 2026<div>via email · tbarber@pgp.group</div></td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <div class="stats hidden" data-pp="client" style="grid-template-columns:repeat(4,1fr);">
+        <div class="stat"><span class="lbl">Client applications</span><span class="val num">4</span></div>
+        <div class="stat"><span class="lbl">Needs a project</span><span class="val num">0</span></div>
+        <div class="stat"><span class="lbl">Lines need review</span><span class="val num">0</span></div>
+        <div class="stat"><span class="lbl">Certified / paid</span><span class="val num pos">2</span></div>
+      </div>
+
+      <section class="card hidden" data-pp="client">
+        <div class="card-hd"><h2 style="font-size:17px;">Client applications</h2><span class="fixtag">✓ polish</span></div>
+        <div class="card-bd" style="border-bottom:1px solid var(--line);">
+          <select class="select"><option>All statuses</option></select>
+        </div>
+        <table class="dt">
+          <thead><tr><th>#</th><th>Project</th><th>Client</th><th>Period</th><th>Status</th><th class="num">Value</th><th>Created</th></tr></thead>
+          <tbody>
+            <tr>
+              <td style="color:var(--accent);font-weight:600;">#4</td>
+              <td><a class="link" href="#">26001</a><div class="muted" style="font-size:12px;">Dallas Rd Block B Roofing</div></td>
+              <td>Client (per project)</td>
+              <td>01 Jun 2026</td>
+              <td><span class="pill warn dot">Submitted</span></td>
+              <td class="num">£0.00</td>
+              <td class="muted" style="font-size:12.5px;">01 Jun 2026<div>via email · tbarber@pgp.group</div></td>
+            </tr>
+            <tr>
+              <td style="color:var(--accent);font-weight:600;">#3</td>
+              <td><a class="link" href="#">26001</a><div class="muted" style="font-size:12px;">Dallas Rd Block B Roofing</div></td>
+              <td>Client (per project)</td>
+              <td>29 May 2026</td>
+              <td><span class="pill warn dot">Submitted</span></td>
+              <td class="num">£13,900.27</td>
+              <td class="muted" style="font-size:12.5px;">29 May 2026<div>via email · tbarber@pgp.group</div></td>
+            </tr>
+            <tr>
+              <td style="color:var(--accent);font-weight:600;">#2</td>
+              <td><a class="link" href="#">26001</a><div class="muted" style="font-size:12px;">Dallas Rd Block B Roofing</div></td>
+              <td>Client (per project)</td>
+              <td>29 May 2026</td>
+              <td><span class="pill success dot">Certified</span></td>
+              <td class="num">£22,169.04</td>
+              <td class="muted" style="font-size:12.5px;">29 May 2026<div>via email · tbarber@pgp.group</div></td>
+            </tr>
+            <tr>
+              <td style="color:var(--accent);font-weight:600;">#1</td>
+              <td><a class="link" href="#">26001</a><div class="muted" style="font-size:12px;">Dallas Rd Block B Roofing</div></td>
+              <td>Client (per project)</td>
+              <td>29 May 2026</td>
+              <td><span class="pill success dot">Paid</span></td>
+              <td class="num">£10,847.19</td>
+              <td class="muted" style="font-size:12.5px;">29 May 2026<div>via email · tbarber@pgp.group</div></td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+    </div>
+  </div>
+</div>
+
+<script>
+  document.getElementById('themeSeg').addEventListener('click', function(e){
+    var b = e.target.closest('[data-theme-set]'); if(!b) return;
+    document.body.setAttribute('data-theme', b.dataset.themeSet);
+    this.querySelectorAll('button').forEach(function(x){ x.classList.toggle('on', x===b); });
+  });
+  var fixSeg = document.getElementById('fixSeg');
+  fixSeg.addEventListener('click', function(e){
+    var b = e.target.closest('[data-fix]'); if(!b) return;
+    document.body.classList.toggle('show-fixes', b.dataset.fix==='on');
+    fixSeg.querySelectorAll('button').forEach(function(x){ x.classList.toggle('on', x===b); });
+  });
+  var appTabs = document.getElementById('appTabs');
+  appTabs.addEventListener('click', function(e){
+    var t = e.target.closest('.tab'); if(!t) return;
+    appTabs.querySelectorAll('.tab').forEach(function(x){ x.classList.remove('active'); });
+    t.classList.add('active');
+    document.querySelectorAll('[data-pp]').forEach(function(el){ el.classList.toggle('hidden', el.dataset.pp !== t.dataset.panel); });
+  });
+</script>
+</body>
+</html>

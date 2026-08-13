@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>PGP — Phone versions</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Source+Serif+Pro:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --paper:#fbfaf7; --card:#ffffff; --card-2:#f5f2eb;
+    --ink:#0f1130; --ink-2:#2a2d50; --muted:#6a6d8a;
+    --line:#e6e3da; --line-strong:#c9c4b4;
+    --accent:#ee5d2b; --accent-2:#c64b1f; --accent-soft:#fde5d7;
+    --navy:#0f1130; --navy-soft:#e3e5f4;
+    --blue:#3b5bdb;
+    --success:#2f6f4f; --success-soft:#dff0e3;
+    --warn:#b06a0e; --warn-soft:#fbe8c4;
+    --danger:#b8331f; --danger-soft:#fadbd2;
+  }
+  * { box-sizing:border-box; }
+  html,body { margin:0; padding:0; }
+  body { font-family:'Inter',-apple-system,sans-serif; background:#23252d; -webkit-font-smoothing:antialiased; padding:30px 20px 80px; }
+  .pagehead { text-align:center; color:#fff; margin-bottom:26px; }
+  .pagehead h1 { font-family:'Cambria',serif; font-weight:500; font-size:26px; margin:0; }
+  .pagehead p { color:rgba(255,255,255,.6); font-size:14px; margin:6px 0 0; }
+  .gallery { display:flex; flex-wrap:wrap; gap:30px 26px; justify-content:center; max-width:1500px; margin:0 auto; }
+  .frame { display:flex; flex-direction:column; align-items:center; gap:10px; }
+  .frame .lbl { color:rgba(255,255,255,.85); font-size:13px; font-weight:600; }
+  .frame .lbl span { color:rgba(255,255,255,.45); font-weight:400; }
+
+  .ph { width:300px; height:620px; background:#000; border-radius:40px; padding:8px; box-shadow:0 24px 50px -16px rgba(0,0,0,.55); }
+  .screen { width:100%; height:100%; background:var(--paper); border-radius:32px; overflow:hidden; display:flex; flex-direction:column; }
+  .sbar { height:30px; flex-shrink:0; display:flex; align-items:flex-end; justify-content:space-between; padding:0 18px 5px; font-size:11px; font-weight:600; color:var(--ink); }
+  .sbar.dk { color:#fff; }
+
+  .mhead { padding:8px 14px 10px; border-bottom:1px solid var(--line); flex-shrink:0; }
+  .mhead .eb { font-size:9px; letter-spacing:0.1em; text-transform:uppercase; font-weight:700; color:var(--muted); }
+  .mhead h2 { font-family:'Cambria',serif; font-weight:500; font-size:18px; margin:1px 0 0; }
+  .mhead .sub { font-size:11px; color:var(--muted); }
+  .mhead .crumb { font-size:11px; color:var(--accent); font-weight:600; }
+
+  .tabstrip { display:flex; gap:14px; overflow-x:auto; padding:8px 14px 0; border-bottom:1px solid var(--line); flex-shrink:0; }
+  .tabstrip span { font-size:12px; font-weight:500; color:var(--muted); padding-bottom:8px; white-space:nowrap; border-bottom:2px solid transparent; }
+  .tabstrip span.on { color:var(--ink); border-bottom-color:var(--accent); }
+
+  .mbody { flex:1; overflow-y:auto; padding:12px 14px; }
+  .mbody::-webkit-scrollbar { width:0; }
+
+  .tabbar { display:grid; grid-template-columns:repeat(5,1fr); border-top:1px solid var(--line); background:var(--card); flex-shrink:0; padding:7px 0 10px; }
+  .tabbar div { display:flex; flex-direction:column; align-items:center; gap:3px; font-size:9px; font-weight:600; color:var(--muted); }
+  .tabbar div.on { color:var(--accent); }
+  .tabbar svg { width:18px; height:18px; }
+
+  .eb { font-size:10px; letter-spacing:0.08em; text-transform:uppercase; font-weight:700; color:var(--muted); }
+  .muted { color:var(--muted); }
+  .pos { color:var(--success); }
+  .num { font-variant-numeric:tabular-nums; }
+  .kgrid { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+  .k { border:1px solid var(--line); border-radius:11px; padding:10px 11px; background:var(--card); }
+  .k .l { font-size:9.5px; letter-spacing:0.05em; text-transform:uppercase; font-weight:600; color:var(--muted); }
+  .k .v { font-family:'Cambria',serif; font-size:19px; margin-top:2px; }
+  .k .v.pos { color:var(--success); } .k .v.attn { color:var(--warn); }
+  .k .s { font-size:10px; color:var(--muted); }
+
+  .card { border:1px solid var(--line); border-radius:12px; background:var(--card); margin-top:10px; overflow:hidden; }
+  .card .ch { padding:10px 12px; border-bottom:1px solid var(--line); font-family:'Cambria',serif; font-size:14px; }
+  .lr { display:flex; align-items:center; gap:9px; padding:10px 12px; border-top:1px solid var(--line); }
+  .lr:first-child { border-top:0; }
+  .lr .t { font-weight:600; font-size:12.5px; }
+  .lr .s { font-size:11px; color:var(--muted); }
+  .lr .av { width:26px; height:26px; border-radius:50%; background:var(--navy); color:#fff; display:flex; align-items:center; justify-content:center; font-size:9px; font-weight:700; flex-shrink:0; }
+  .pill { display:inline-flex; align-items:center; gap:5px; padding:2px 8px; border-radius:999px; font-size:10px; font-weight:600; background:var(--line); color:var(--ink-2); white-space:nowrap; }
+  .pill.dot::before { content:''; width:5px; height:5px; border-radius:50%; background:currentColor; }
+  .pill.success { background:var(--success-soft); color:var(--success); }
+  .pill.warn { background:var(--warn-soft); color:var(--warn); }
+  .pill.navy { background:var(--navy-soft); color:var(--navy); }
+  .bar { height:6px; background:var(--line); border-radius:3px; overflow:hidden; }
+  .bar > i { display:block; height:100%; background:var(--navy); border-radius:3px; }
+  .bar.warn>i { background:var(--warn); } .bar.success>i { background:var(--success); }
+  .dl { font-size:10px; font-weight:700; } .dl.up { color:var(--success); } .dl.down { color:var(--danger); }
+  .btn { width:100%; padding:11px; border-radius:11px; border:0; background:var(--accent); color:#fff; font:600 13px 'Inter',sans-serif; display:flex; align-items:center; justify-content:center; gap:7px; margin-top:10px; }
+
+  /* mini map */
+  .mmap { height:120px; border-radius:11px; overflow:hidden; border:1px solid var(--line); position:relative; margin-top:10px; background:#eef1ea; }
+  .mpin { position:absolute; transform:translate(-50%,-100%); }
+  .mpin i { display:block; width:18px; height:18px; border-radius:50% 50% 50% 0; background:var(--accent); transform:rotate(-45deg); border:2px solid #fff; }
+  .mpin.out i { background:var(--muted); }
+
+  /* agenda */
+  .ag { display:flex; gap:10px; padding:9px 0; border-top:1px solid var(--line); }
+  .ag:first-child { border-top:0; }
+  .ag .d { font-family:'Cambria',serif; font-size:13px; min-width:42px; }
+  .ag .e { flex:1; font-size:12px; }
+</style>
+</head>
+<body>
+  <div class="pagehead">
+    <h1>PGP — phone versions</h1>
+    <p>Each screen adapted for mobile: sidebar → bottom tab bar, project tabs → scrollable strip, tables → stacked cards, KPIs in a 2-up grid.</p>
+  </div>
+
+  <div class="gallery" id="gallery"></div>
+
+<script>
+const tabbar = (active) => `<div class="tabbar">
+  ${[['Home','M3 10l7-6 7 6v8a1 1 0 0 1-1 1h-3v-5H7v5H4a1 1 0 0 1-1-1z','Home'],
+     ['Projects','M3 5h5l1.5 2H17v9H3z','Projects'],
+     ['Calendar','M4 5h12v11H4zM4 8h12M8 3v3M12 3v3','Calendar'],
+     ['Approvals','M4 4h9l3 3v9H4zM8 11l2 2 3-4','Approvals'],
+     ['More','M5 10h.01M10 10h.01M15 10h.01','More']]
+   .map(([l,d])=>`<div class="${active===l?'on':''}"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="${d}"/></svg>${l}</div>`).join('')}
+</div>`;
+
+const projTabs = (active) => `<div class="tabstrip">
+  ${['Overview','Commercials','Materials','Operations'].map(t=>`<span class="${t===active?'on':''}">${t}</span>`).join('')}
+</div>`;
+
+const sbar = (dk) => `<div class="sbar ${dk?'dk':''}"><span>9:41</span><span>●●● 4G ▮</span></div>`;
+
+const SCREENS = [
+  { label:'Dashboard', sub:'workspace', html:
+    sbar()+`<div class="mhead"><div class="eb">Reporting</div><h2>Dashboard</h2></div>
+    <div class="mbody">
+      <div class="kgrid">
+        <div class="k"><div class="l">Active projects</div><div class="v">4</div></div>
+        <div class="k"><div class="l">Forecast acct</div><div class="v">£1.16M</div></div>
+        <div class="k"><div class="l">Forecast GP%</div><div class="v pos">15.4%</div><div class="s">▲ +1.9 pts</div></div>
+        <div class="k"><div class="l">Committed</div><div class="v">31%</div></div>
+      </div>
+      <div class="card"><div class="ch">By project</div>
+        <div class="lr"><div style="flex:1"><div class="t">26001 · Block B</div><div class="bar warn" style="margin-top:5px;"><i style="width:62%"></i></div></div><div style="text-align:right"><div class="pos" style="font-size:12px;font-weight:600">16.6%</div><div class="muted" style="font-size:10px">62%</div></div></div>
+        <div class="lr"><div style="flex:1"><div class="t">25008 · Balconies</div><div class="bar" style="margin-top:5px;"><i style="width:41%"></i></div></div><div style="text-align:right"><div class="pos" style="font-size:12px;font-weight:600">12.8%</div><div class="muted" style="font-size:10px">41%</div></div></div>
+        <div class="lr"><div style="flex:1"><div class="t">26002 · Block C</div><div class="bar" style="margin-top:5px;"><i style="width:8%"></i></div></div><div style="text-align:right"><div style="font-size:12px;font-weight:600;color:var(--danger)">12.6%</div><div class="muted" style="font-size:10px">8%</div></div></div>
+      </div>
+      <div class="card"><div class="ch">Health &amp; safety</div>
+        <div class="lr"><span class="grow" style="flex:1;font-size:12.5px">RAMS signed</span><span class="pill success">78%</span></div>
+        <div class="lr"><span class="grow" style="flex:1;font-size:12.5px">Inducted</span><span class="pill warn">71%</span></div>
+        <div class="lr"><span class="grow" style="flex:1;font-size:12.5px">On site now</span><span class="pill success dot">7</span></div>
+      </div>
+    </div>`+tabbar('Home') },
+
+  { label:'Project overview', sub:'project', html:
+    sbar()+`<div class="mhead"><div class="crumb">‹ Projects</div><h2>Block B Roofing</h2><div class="sub">26001 · MCR</div></div>`+projTabs('Overview')+`
+    <div class="mbody">
+      <div class="kgrid">
+        <div class="k"><div class="l">Project value</div><div class="v">£367k</div></div>
+        <div class="k"><div class="l">Cost</div><div class="v">£319k</div></div>
+        <div class="k"><div class="l">Gross profit</div><div class="v pos">£48k</div></div>
+        <div class="k"><div class="l">GP margin</div><div class="v pos">13.1%</div></div>
+      </div>
+      <div class="card"><div class="ch">Forecast outturn <span class="pill success" style="float:right">▲ +27.5%</span></div>
+        <div style="padding:12px"><div class="bar" style="height:14px;display:flex"><i style="width:83%;border-radius:0"></i><i style="width:17%;background:var(--success)"></i></div>
+        <div style="display:flex;justify-content:space-between;margin-top:8px;font-size:11px;"><span class="muted">Cost £308k</span><span class="pos" style="font-weight:600">Profit £61k</span></div></div>
+      </div>
+      <div class="card"><div class="ch">Key dates</div>
+        <div class="ag"><span class="d">4 Jun</span><span class="e">Due date #1</span><span class="pill warn">Due</span></div>
+        <div class="ag"><span class="d">13 Jun</span><span class="e">Final payment</span><span class="pill navy">Final</span></div>
+      </div>
+    </div>` },
+
+  { label:'Commercials · Labour', sub:'project', html:
+    sbar()+`<div class="mhead"><div class="crumb">‹ Projects</div><h2>Block B Roofing</h2></div>`+projTabs('Commercials')+`
+    <div class="tabstrip" style="border-top:0"><span>Overview</span><span>Prelims</span><span>Schedule</span><span>Apps</span><span class="on">Labour</span><span>VOs</span></div>
+    <div class="mbody">
+      <div class="kgrid"><div class="k"><div class="l">Total labour</div><div class="v">£79.9k</div></div><div class="k"><div class="l">Savings</div><div class="v pos">£9.9k</div></div></div>
+      <div class="card"><div class="ch">By section</div>
+        <div class="lr"><div style="flex:1"><div class="t">Roof Cladding</div><div class="bar" style="margin-top:5px"><i style="width:8%"></i></div></div><div class="muted" style="font-size:11px">8%</div></div>
+        <div class="lr"><div style="flex:1"><div class="t">Roof</div><div class="bar" style="margin-top:5px"><i style="width:57%"></i></div></div><div class="muted" style="font-size:11px">57%</div></div>
+        <div class="lr"><div style="flex:1"><div class="t">Wall Cladding</div><div class="bar" style="margin-top:5px"><i style="width:0%"></i></div></div><div class="muted" style="font-size:11px">0%</div></div>
+      </div>
+      <div class="card"><div class="ch">Live value</div>
+        <div class="lr"><div style="flex:1"><div class="t">Felt roof + insulation</div><div class="s">contract £37.67/m²</div></div><div style="text-align:right"><div style="font-weight:600;font-size:12.5px">£30.87</div><div class="dl up">▼ £1,428</div></div></div>
+        <div class="lr"><div style="flex:1"><div class="t">Rooflight kerbs</div><div class="s">contract £145</div></div><div style="text-align:right"><div style="font-weight:600;font-size:12.5px">£162</div><div class="dl down">▲ £204</div></div></div>
+      </div>
+    </div>` },
+
+  { label:'Materials', sub:'project', html:
+    sbar()+`<div class="mhead"><div class="crumb">‹ Projects</div><h2>Block B Roofing</h2></div>`+projTabs('Materials')+`
+    <div class="tabstrip" style="border-top:0"><span class="on">Materials</span><span>Purchase orders</span><span>Help</span></div>
+    <div class="mbody">
+      <div class="kgrid"><div class="k"><div class="l">Budget</div><div class="v">£198k</div></div><div class="k"><div class="l">Committed</div><div class="v">£3.6k</div><div class="s">2%</div></div><div class="k"><div class="l">Remaining</div><div class="v">£194k</div></div><div class="k"><div class="l">Quote savings</div><div class="v pos">£3.1k</div></div></div>
+      <div class="card"><div class="ch">Materials · 41</div>
+        <div class="lr"><div style="flex:1"><div class="t">EuroRoof AVCL</div><div class="s">Alumasc · roll</div></div><div style="text-align:right"><div style="font-weight:600;font-size:12.5px">£131.54</div><div class="dl up">↓ £2.86</div></div></div>
+        <div class="lr"><div style="flex:1"><div class="t">Mineral cap sheet</div><div class="s">Alumasc · roll</div></div><div class="muted" style="font-size:12px">£73.43</div></div>
+        <div class="lr"><div style="flex:1"><div class="t">Rockwool slab</div><div class="s">Rockwool · m²</div></div><div style="text-align:right"><div style="font-weight:600;font-size:12.5px">£44.90</div><div class="dl down">↑ £2.80</div></div></div>
+      </div>
+    </div>` },
+
+  { label:'Operations · Attendance', sub:'project', html:
+    sbar()+`<div class="mhead"><div class="crumb">‹ Projects</div><h2>Block B Roofing</h2></div>`+projTabs('Operations')+`
+    <div class="tabstrip" style="border-top:0"><span class="on">Attendance</span><span>Operatives</span><span>Briefings</span><span>Deliveries</span><span>RAMS</span></div>
+    <div class="mbody">
+      <div class="kgrid"><div class="k"><div class="l">On site now</div><div class="v pos">7</div></div><div class="k"><div class="l">Briefing ack</div><div class="v">8/9</div></div></div>
+      <div class="mmap">
+        <svg width="100%" height="100%" viewBox="0 0 300 120" preserveAspectRatio="xMidYMid slice"><rect width="300" height="120" fill="#eef1ea"/><rect x="30" y="10" width="60" height="40" rx="3" fill="#d8e6cf"/><rect x="210" y="60" width="70" height="45" rx="3" fill="#d8e6cf"/><g stroke="#cfd3c8" stroke-width="6" fill="none"><path d="M-10 40 L310 50"/><path d="M150 -10 L165 130"/></g></svg>
+        <div class="mpin" style="left:48%;top:55%"><i></i></div><div class="mpin" style="left:54%;top:48%"><i></i></div><div class="mpin" style="left:43%;top:60%"><i></i></div><div class="mpin out" style="left:72%;top:40%"><i></i></div>
+      </div>
+      <div class="card">
+        <div class="lr"><div class="av">SO</div><div style="flex:1"><div class="t">Sam Okafor</div><div class="s">06:40 · Site office</div></div><span class="pill success dot">On site</span></div>
+        <div class="lr"><div class="av">DW</div><div style="flex:1"><div class="t">Daniel Whyte</div><div class="s">06:52 · Bay 2</div></div><span class="pill success dot">On site</span></div>
+        <div class="lr"><div class="av">PS</div><div style="flex:1"><div class="t">Priya Shah</div><div class="s">07:32 · Compound</div></div><span class="pill warn dot">Pending</span></div>
+      </div>
+    </div>` },
+
+  { label:'Calendar', sub:'workspace', html:
+    sbar()+`<div class="mhead"><div class="eb">Workspace</div><h2>Calendar</h2><div class="sub">June 2026</div></div>
+    <div class="mbody">
+      <div class="eb" style="margin-bottom:6px">Upcoming</div>
+      <div class="card" style="margin-top:0">
+        <div class="ag" style="padding:11px 12px"><span class="d">4 Jun</span><span class="e">Due date #1 · 26001</span><span class="pill warn">Due</span></div>
+        <div class="ag" style="padding:11px 12px"><span class="d">11 Jun</span><span class="e">Application #2 · 26001</span><span class="pill success">App</span></div>
+        <div class="ag" style="padding:11px 12px"><span class="d">13 Jun</span><span class="e">Final payment · 26001</span><span class="pill navy">Final</span></div>
+        <div class="ag" style="padding:11px 12px"><span class="d">18 Jun</span><span class="e">Due date #2 · 26001</span><span class="pill warn">Due</span></div>
+        <div class="ag" style="padding:11px 12px"><span class="d">23 Jun</span><span class="e">Notice #2 · 26001</span><span class="pill" style="background:var(--danger-soft);color:var(--danger)">Notice</span></div>
+      </div>
+    </div>`+tabbar('Calendar') },
+
+  { label:'Applications', sub:'workspace', html:
+    sbar()+`<div class="mhead"><div class="eb">Workspace</div><h2>Applications</h2></div>
+    <div class="tabstrip"><span class="on">Labour 1</span><span>Client 4</span></div>
+    <div class="mbody">
+      <div class="kgrid"><div class="k"><div class="l">Labour apps</div><div class="v">1</div></div><div class="k"><div class="l">Certified/paid</div><div class="v pos">1</div></div></div>
+      <div class="card">
+        <div class="lr"><div style="flex:1"><div class="t">#1 · Latbuild Construction</div><div class="s">26001 · 29 May · £12,524</div></div><span class="pill success dot">Certified</span></div>
+      </div>
+      <div class="eb" style="margin-top:14px;margin-bottom:4px">Client applications</div>
+      <div class="card" style="margin-top:0">
+        <div class="lr"><div style="flex:1"><div class="t">#4 · £0</div><div class="s">01 Jun</div></div><span class="pill warn dot">Submitted</span></div>
+        <div class="lr"><div style="flex:1"><div class="t">#2 · £22,169</div><div class="s">29 May</div></div><span class="pill success dot">Certified</span></div>
+        <div class="lr"><div style="flex:1"><div class="t">#1 · £10,847</div><div class="s">29 May</div></div><span class="pill success dot">Paid</span></div>
+      </div>
+    </div>`+tabbar('Approvals') },
+
+  { label:'Operatives', sub:'workspace', html:
+    sbar()+`<div class="mhead"><div class="eb">Operations</div><h2>Operatives</h2><div class="sub">6 on register</div></div>
+    <div class="mbody">
+      <div class="card" style="margin-top:0">
+        <div class="lr"><div class="av">DW</div><div style="flex:1"><div class="t">Daniel Whyte</div><div class="s">Apex · Roofer</div></div><span class="pill success dot">Ind</span></div>
+        <div class="lr"><div class="av">LC</div><div style="flex:1"><div class="t">Liam Carter</div><div class="s">Heightline · Scaff</div></div><span class="pill success dot">Ind</span></div>
+        <div class="lr"><div class="av">PS</div><div style="flex:1"><div class="t">Priya Shah</div><div class="s">SafeAccess · MEWP</div></div><span class="pill warn dot">Not ind</span></div>
+        <div class="lr"><div class="av">SO</div><div style="flex:1"><div class="t">Sam Okafor</div><div class="s">PGP · Supervisor</div></div><span class="pill success dot">Ind</span></div>
+      </div>
+      <div class="card"><div class="ch">Priya Shah</div>
+        <div style="padding:12px"><div class="eb">Company induction</div><div style="font-family:'Cambria',serif;font-size:16px;color:var(--warn)">Outstanding</div>
+        <div class="eb" style="margin-top:10px">Cards</div><span class="pill" style="background:var(--danger-soft);color:var(--danger);margin-top:5px">PASMA · expired</span></div>
+      </div>
+    </div>`+tabbar('More') },
+
+  { label:'Admin', sub:'workspace', html:
+    sbar()+`<div class="mhead"><div class="eb">Master data</div><h2>Admin</h2></div>
+    <div class="mbody">
+      <div class="card" style="margin-top:0"><div class="ch">Xero <span class="pill success dot" style="float:right">Connected</span></div>
+        <div style="padding:12px"><div class="eb">Organisation</div><div style="font-weight:600;font-size:13px">Power Grid Projects Ltd</div>
+        <div class="eb" style="margin-top:10px">Account codes</div><div class="muted" style="font-size:11.5px;margin-top:3px">200 Sales · 310 COGS · 321 CIS</div></div>
+      </div>
+      <div class="card"><div class="ch">Users</div>
+        <div class="lr"><div style="flex:1"><div class="t">Arsalan Barmand</div><div class="s">abarmand@pgp.group</div></div><span class="pill navy">Admin</span></div>
+        <div class="lr"><div style="flex:1"><div class="t">Thomas Barber</div><div class="s">you</div></div><span class="pill" style="background:var(--accent-soft);color:var(--accent-2)">Superadmin</span></div>
+      </div>
+      <div class="card"><div class="ch">Approval thresholds</div>
+        <div style="padding:10px 12px;font-size:12px"><div>Up to £2k → Line Manager</div><div>Up to £10k → Commercial</div><div>Above £10k → Director</div></div>
+      </div>
+    </div>`+tabbar('More') },
+
+  { label:'Deliveries · check-in', sub:'mobile flow', html:
+    sbar(true)+`<div style="flex:1;background:#1a1c22;position:relative;display:flex;align-items:center;justify-content:center;">
+      <div style="position:absolute;top:18px;left:0;right:0;text-align:center;color:#fff;font-size:12px;">Align the delivery ticket</div>
+      <div style="position:absolute;inset:46px 22px;border:2px dashed rgba(255,255,255,.5);border-radius:12px;"></div>
+      <div style="width:180px;transform:rotate(-2deg);border-radius:5px;background:#fbfbf7;box-shadow:0 8px 24px rgba(0,0,0,.4);padding:13px;">
+        <div style="font-family:'Cambria',serif;font-size:12px;font-weight:600">DELIVERY NOTE</div>
+        <div class="muted" style="font-size:9px">Alumasc Water Mgmt</div>
+        <div style="height:5px;background:#e6e3da;border-radius:3px;margin:6px 0;width:80%"></div>
+        <div style="height:5px;background:#e6e3da;border-radius:3px;margin:6px 0"></div>
+        <div style="height:5px;background:#e6e3da;border-radius:3px;margin:6px 0;width:60%"></div>
+        <div class="muted" style="font-size:9px;margin-top:6px">DN-88421 · 02/06/26</div>
+      </div>
+    </div>
+    <div style="background:#000;display:flex;align-items:center;justify-content:space-between;padding:16px 26px;"><span style="color:#fff;font-size:12px">Cancel</span><div style="width:56px;height:56px;border-radius:50%;background:#fff;border:5px solid rgba(255,255,255,.4)"></div><span style="color:#fff;font-size:12px">Gallery</span></div>` },
+];
+
+document.getElementById('gallery').innerHTML = SCREENS.map(s =>
+  `<div class="frame"><div class="lbl">${s.label} <span>· ${s.sub}</span></div><div class="ph"><div class="screen">${s.html}</div></div></div>`
+).join('');
+</script>
+</body>
+</html>

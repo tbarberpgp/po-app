@@ -668,8 +668,9 @@ quotes.patch("/:quoteId/supplier", async (c) => {
   return c.json({ ok: true, supplier_id: supplier.id, supplier_name: supplier.name });
 });
 
-/** List quotes for a supplier (newest first). */
-quotes.get("/:supplierId", async (c) => {
+/** List quotes for a supplier (newest first). The {[0-9]+} constraint keeps this
+ *  numeric-only route from shadowing static sibling routes like /_pending-prices. */
+quotes.get("/:supplierId{[0-9]+}", async (c) => {
   const supplierId = Number(c.req.param("supplierId"));
   if (!Number.isInteger(supplierId)) return c.json([]);
 

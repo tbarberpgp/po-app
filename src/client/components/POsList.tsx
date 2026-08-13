@@ -1,48 +1,83 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { api, fmtDate, fmtMoney } from "../lib/api";
 import { Topbar } from "./Shell";
 import { can } from "../../shared/permissions";
 import type { CurrentUser, PurchaseOrder } from "../../shared/types";
 
+type PickProject = { id: string; code: string; name: string; site_group_name?: string | null };
+
 type Row = PurchaseOrder & { project_code: string; project_name: string };
+
+/** Sortable columns. `get` returns a comparable — string (localeCompare) or
+ *  number/date-ms (numeric). */
+type SortKey = "po_number" | "project_code" | "supplier" | "total_value" | "status" | "created_at" | "created_by";
+const SORTS: Record<SortKey, (r: Row) => string | number> = {
+  po_number: (r) => r.po_number ?? "",
+  project_code: (r) => r.project_code ?? "",
+  supplier: (r) => (r.supplier ?? "").toLowerCase(),
+  total_value: (r) => r.total_value ?? 0,
+  status: (r) => r.status ?? "",
+  created_at: (r) => Date.parse(r.created_at ?? "") || 0,
+  created_by: (r) => (r.created_by ?? "").toLowerCase(),
+};
 
 export function POsList({ me }: { me: CurrentUser | null }) {
   const [rows, setRows] = useState<Row[]>([]);
   const [status, setStatus] = useState<string>("");
   const [err, setErr] = useState<string | null>(null);
-  const [pendingXero, setPendingXero] = useState<number | null>(null);
-  const [bulkBusy, setBulkBusy] = useState(false);
-  const [bulkResult, setBulkResult] = useState<Awaited<ReturnType<typeof api.xeroBulkPush>> | null>(null);
+  const canCreate = can(me?.role, "pos.create");
+  const nav = useNavigate();
+  const [projects, setProjects] = useState<PickProject[]>([]);
+  const [picking, setPicking] = useState(false);
+  const [pickId, setPickId] = useState("");
+  // Search + sort run over the loaded rows — no round-trip per keystroke.
+  const [q, setQ] = useState("");
+  const [sortKey, setSortKey] = useState<SortKey>("created_at");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+  function sortBy(k: SortKey) {
+    if (k === sortKey) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    // Text sorts read best A→Z; money and dates read best biggest/newest first.
+    else { setSortKey(k); setSortDir(k === "total_value" || k === "created_at" ? "desc" : "asc"); }
+  }
 
-  const canPushXero = can(me?.role, "pos.push_to_xero");
+  useEffect(() => {
+    if (canCreate) api.listProjects().then((r) => setProjects(r as unknown as PickProject[])).catch(() => setProjects([]));
+  }, [canCreate]);
 
   function refresh() {
     api.listPOs({ status: status || undefined })
       .then((rs) => setRows(rs as Row[]))
       .catch((e) => setErr(e.message));
-    if (canPushXero) {
-      api.xeroPendingCount().then((r) => setPendingXero(r.pending)).catch(() => setPendingXero(null));
-    }
   }
-  useEffect(refresh, [status, canPushXero]);
+  useEffect(refresh, [status]);
 
-  async function bulkPushToXero() {
-    if (!canPushXero) return;
-    if (!confirm(`Push ${pendingXero ?? 0} approved/issued PO(s) to Xero? This runs sequentially and may take a minute or two. Failures will be reported individually — successful ones won't be re-attempted.`)) return;
-    setBulkBusy(true);
-    setErr(null);
-    setBulkResult(null);
-    try {
-      const r = await api.xeroBulkPush();
-      setBulkResult(r);
-      refresh();
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : "bulk push failed");
-    } finally {
-      setBulkBusy(false);
-    }
-  }
+  // Match on everything you'd plausibly search a PO by: number, supplier,
+  // project code/name and who raised it. Every term must hit somewhere, so
+  // "toolstation 26001" narrows rather than widens.
+  const terms = q.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const filtered = terms.length === 0 ? rows : rows.filter((r) => {
+    const hay = `${r.po_number ?? ""} ${r.supplier ?? ""} ${r.project_code ?? ""} ${r.project_name ?? ""} ${r.created_by ?? ""}`.toLowerCase();
+    return terms.every((t) => hay.includes(t));
+  });
+  const shown = [...filtered].sort((a, b) => {
+    const av = SORTS[sortKey](a), bv = SORTS[sortKey](b);
+    const c = typeof av === "string" && typeof bv === "string" ? av.localeCompare(bv) : Number(av) - Number(bv);
+    return sortDir === "asc" ? c : -c;
+  });
+  const total = shown.reduce((s, r) => s + (r.total_value ?? 0), 0);
+
+  const SortTh = ({ k, label, className }: { k: SortKey; label: string; className?: string }) => (
+    <th className={className}
+      onClick={() => sortBy(k)}
+      style={{ cursor: "pointer", userSelect: "none", whiteSpace: "nowrap" }}
+      title={`Sort by ${label.toLowerCase()}`}>
+      {label}
+      <span className="muted" style={{ marginLeft: 4, opacity: sortKey === k ? 1 : 0.25, fontSize: 10 }}>
+        {sortKey === k ? (sortDir === "asc" ? "▲" : "▼") : "↕"}
+      </span>
+    </th>
+  );
 
   return (
     <>
@@ -50,48 +85,45 @@ export function POsList({ me }: { me: CurrentUser | null }) {
         crumbs="Workspace"
         title="Purchase orders"
         actions={
-          canPushXero ? (
-            pendingXero == null ? (
-              <span className="muted" style={{ fontSize: 12 }}>Xero: checking…</span>
-            ) : pendingXero === 0 ? (
-              <span className="pill approved" style={{ fontSize: 11 }} title="No approved or issued POs are missing from Xero">
-                ✓ Xero in sync
-              </span>
-            ) : (
-              <button className="accent" onClick={bulkPushToXero} disabled={bulkBusy}>
-                {bulkBusy ? "Pushing…" : `↑ Push ${pendingXero} to Xero`}
-              </button>
-            )
-          ) : null
+          <>
+            {canCreate && (
+              <button className="accent" onClick={() => setPicking((p) => !p)}>+ New PO</button>
+            )}
+          </>
         }
       />
       <main>
         {err && <div className="flash error">{err}</div>}
 
-        {bulkResult && (
-          <div className={`flash ${bulkResult.failed === 0 ? "success" : "info"}`}>
-            <b>Bulk push complete:</b> {bulkResult.pushed} succeeded, {bulkResult.failed} failed of {bulkResult.total} attempted.
-            {bulkResult.failed > 0 && (
-              <ul style={{ marginTop: 8, marginBottom: 0, paddingLeft: 20 }}>
-                {bulkResult.results.filter((r) => !r.ok).slice(0, 8).map((r) => (
-                  <li key={r.po_number} style={{ fontSize: 13 }}>
-                    <b>{r.po_number}</b> ({r.supplier}) — {r.error}
-                  </li>
-                ))}
-                {bulkResult.results.filter((r) => !r.ok).length > 8 && (
-                  <li style={{ fontSize: 13 }}>… and {bulkResult.results.filter((r) => !r.ok).length - 8} more</li>
-                )}
-              </ul>
-            )}
-            <div style={{ marginTop: 6, fontSize: 12 }}>
-              <button className="ghost tiny" onClick={() => setBulkResult(null)}>Dismiss</button>
+        {picking && canCreate && (
+          <div className="card" style={{ marginBottom: 16 }}>
+            <div className="card-hd"><h2 style={{ flex: 1 }}>Raise a purchase order</h2></div>
+            <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap", padding: 16 }}>
+              <label className="field" style={{ minWidth: 300, flex: "1 1 300px" }}><span>Which project / block?</span>
+                <select value={pickId} onChange={(e) => setPickId(e.target.value)} autoFocus>
+                  <option value="">Choose a project…</option>
+                  {projects.map((p) => (
+                    <option key={p.id} value={p.id}>{p.code} — {p.name}{p.site_group_name ? ` · ${p.site_group_name}` : ""}</option>
+                  ))}
+                </select>
+              </label>
+              <button className="btn accent" disabled={!pickId} onClick={() => pickId && nav(`/projects/${pickId}/new-po`)} style={{ minHeight: 37 }}>Continue →</button>
+              <button className="btn ghost" onClick={() => { setPicking(false); setPickId(""); }} style={{ minHeight: 37 }}>Cancel</button>
+              <span className="muted" style={{ fontSize: 12, maxWidth: 340 }}>A PO belongs to one contract (its own budget, certification &amp; Xero). For a grouped site, pick the specific block it's for.</span>
             </div>
           </div>
         )}
 
         <div className="card">
-          <div className="card-hd">
-            <h2 style={{ flex: 1 }}>All purchase orders</h2>
+          <div className="card-hd" style={{ flexWrap: "wrap", gap: 10 }}>
+            <h2>All purchase orders</h2>
+            <span className="pill neutral">{shown.length}{shown.length !== rows.length ? ` of ${rows.length}` : ""}</span>
+            {shown.length > 0 && <span className="muted" style={{ fontSize: 12.5 }}>{fmtMoney(total)}</span>}
+            <span style={{ flex: 1 }} />
+            <input className="input" value={q} onChange={(e) => setQ(e.target.value)}
+              placeholder="Search PO, supplier, project, raised by…"
+              style={{ width: 280, maxWidth: "45%" }} />
+            {q && <button className="ghost tiny" onClick={() => setQ("")}>Clear</button>}
             <select value={status} onChange={(e) => setStatus(e.target.value)}>
               <option value="">All statuses</option>
               <option value="pending_approval">Pending approval</option>
@@ -100,30 +132,40 @@ export function POsList({ me }: { me: CurrentUser | null }) {
               <option value="rejected">Rejected</option>
             </select>
           </div>
-          {rows.length === 0 ? (
-            <div style={{ padding: 32 }}><div className="empty">No POs match.</div></div>
+          {shown.length === 0 ? (
+            <div style={{ padding: 32 }}>
+              <div className="empty">{rows.length === 0 ? "No POs match." : `No POs match “${q}”.`}</div>
+            </div>
           ) : (
             <table>
               <thead>
                 <tr>
-                  <th>PO</th>
-                  <th className="center">Project</th>
-                  <th>Supplier</th>
-                  <th className="num">Value</th>
-                  <th className="center">Status</th>
+                  <SortTh k="po_number" label="PO" />
+                  <SortTh k="project_code" label="Project" className="center" />
+                  <SortTh k="supplier" label="Supplier" />
+                  <SortTh k="total_value" label="Value" className="num" />
+                  <SortTh k="status" label="Status" className="center" />
                   <th className="center">Xero</th>
-                  <th>Raised</th>
-                  <th>By</th>
+                  <SortTh k="created_at" label="Raised" />
+                  <SortTh k="created_by" label="By" />
                 </tr>
               </thead>
               <tbody>
-                {rows.map((r) => (
+                {shown.map((r) => (
                   <tr key={r.id}>
                     <td><Link to={`/pos/${r.id}`}>{r.po_number}</Link></td>
-                    <td className="center">{r.project_code}</td>
+                    <td className="center" title={r.project_name}>{r.project_code}</td>
                     <td>{r.supplier}</td>
                     <td className="num">{fmtMoney(r.total_value)}</td>
-                    <td className="center"><span className={`pill ${r.status}`}>{r.status.replace("_", " ")}</span></td>
+                    <td className="center">
+                      <span className={`pill ${r.status}`}>{r.status.replace("_", " ")}</span>
+                      {r.order_type === "framework" && <span className="pill info" style={{ fontSize: 10, marginLeft: 4 }}>framework</span>}
+                      {r.order_type === "call_off" && <span className="pill neutral" style={{ fontSize: 10, marginLeft: 4 }}>call-off</span>}
+                      {r.category === "prelims" && <span className="pill warn" style={{ fontSize: 10, marginLeft: 4 }}>prelim</span>}
+                      {r.paid_at && (
+                        <span className="pill approved" style={{ fontSize: 10, marginLeft: 4 }} title={`Settled in Xero on ${fmtDate(r.paid_at)}`}>paid</span>
+                      )}
+                    </td>
                     <td className="center">
                       {r.xero_sync_status === "synced" ? (
                         <span

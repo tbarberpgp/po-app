@@ -8,9 +8,13 @@ import {
   parseMaterialsSheet,
   parseSummaryCostSheet,
   parseContractItems,
+  parseLabourRates,
+  parseOperatives,
   type ParsedMaterial,
   type ParsedCommercialRow,
   type ParsedContractItem,
+  type LabourRateLine,
+  type OperativeImportRow,
 } from "../../shared/parse-xlsx";
 
 export type ParsedPricingWorkbook = {
@@ -27,4 +31,17 @@ export async function parsePricingWorkbookClient(file: File): Promise<ParsedPric
     commercials: parseSummaryCostSheet(wb),
     contract_items: parseContractItems(wb),
   };
+}
+
+/** Parse a subcontractor labour rate schedule in the browser (avoids the
+ *  Worker's 10ms CPU limit on multi-MB cost workbooks). */
+export async function parseLabourRatesClient(file: File): Promise<LabourRateLine[]> {
+  return parseLabourRates(await file.arrayBuffer());
+}
+
+/** Parse a flat operatives spreadsheet (first/last name, mobile, email, company,
+ *  trade, emergency contact) in the browser, so the Worker only ever sees rows
+ *  the user already previewed. */
+export async function parseOperativesClient(file: File): Promise<OperativeImportRow[]> {
+  return parseOperatives(await file.arrayBuffer());
 }

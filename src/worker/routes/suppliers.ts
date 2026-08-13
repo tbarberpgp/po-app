@@ -1,13 +1,16 @@
 import { Hono } from "hono";
 import type { Env, Variables } from "../env";
 import { requirePermission } from "../auth";
+import { ensureXeroContact } from "./xero";
 
 export const suppliers = new Hono<{ Bindings: Env; Variables: Variables }>();
 
-// Mutating endpoints require admin+; reads are open to everyone authenticated.
+// Managing the supplier register is gated by suppliers.manage (admin, superadmin
+// AND commercial) — not approvers.manage, which is a different concern (who signs
+// off POs). Reads stay open to every authenticated user.
 suppliers.use("/*", async (c, next) => {
   if (c.req.method === "GET") return next();
-  const denied = requirePermission(c, "approvers.manage");
+  const denied = requirePermission(c, "suppliers.manage");
   if (denied) return denied;
   await next();
 });
@@ -35,6 +38,8 @@ suppliers.get("/", async (c) => {
 
   const result = rows.results.map((r) => ({
     ...r,
+    // SQLite stores booleans as 0/1 — surface them as proper JS booleans
+    is_labour_supplier: Number(r.is_labour_supplier ?? 0) === 1,
     approved_elements: (scopeBySupplier.get(Number(r.id)) ?? []).sort(),
   }));
   return c.json(result);
@@ -43,13 +48,14 @@ suppliers.get("/", async (c) => {
 suppliers.get("/:id", async (c) => {
   const id = c.req.param("id");
   const supplier = await c.env.DB.prepare("SELECT * FROM suppliers WHERE id = ?")
-    .bind(id).first();
+    .bind(id).first<Record<string, unknown>>();
   if (!supplier) return c.json({ error: "not found" }, 404);
   const scopes = await c.env.DB.prepare(
     "SELECT element_code FROM supplier_scopes WHERE supplier_id = ? ORDER BY element_code",
   ).bind(id).all<{ element_code: string }>();
   return c.json({
     ...supplier,
+    is_labour_supplier: Number(supplier.is_labour_supplier ?? 0) === 1,
     approved_elements: scopes.results.map((s) => s.element_code),
   });
 });
@@ -65,8 +71,15 @@ suppliers.post("/", async (c) => {
     contact_phone?: string | null;
     address?: string | null;
     vat_number?: string | null;
+    utr?: string | null;
+    bank_account_name?: string | null;
+    bank_sort_code?: string | null;
+    bank_account_number?: string | null;
+    bank_name?: string | null;
     credit_limit_gbp?: number | null;
     notes?: string | null;
+    is_labour_supplier?: boolean;
+    cis_rate?: number | null;
     approved_elements?: string[];
   }>();
   if (!body.name?.trim()) return c.json({ error: "name required" }, 400);
@@ -75,9 +88,12 @@ suppliers.post("/", async (c) => {
     const res = await c.env.DB.prepare(
       `INSERT INTO suppliers
          (name, status, scope_notes, payment_terms, contact_name, contact_email,
-          contact_phone, address, vat_number, credit_limit_gbp, notes,
+          contact_phone, address, vat_number, utr,
+          bank_account_name, bank_sort_code, bank_account_number, bank_name,
+          credit_limit_gbp, notes,
+          is_labour_supplier, cis_rate,
           created_at, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        RETURNING id`,
     )
       .bind(
@@ -90,8 +106,15 @@ suppliers.post("/", async (c) => {
         body.contact_phone?.trim() || null,
         body.address?.trim() || null,
         body.vat_number?.trim() || null,
+        body.utr?.trim() || null,
+        body.bank_account_name?.trim() || null,
+        body.bank_sort_code?.trim() || null,
+        body.bank_account_number?.trim() || null,
+        body.bank_name?.trim() || null,
         body.credit_limit_gbp ?? null,
         body.notes?.trim() || null,
+        body.is_labour_supplier ? 1 : 0,
+        body.cis_rate ?? null,
         now,
         c.get("userEmail"),
       )
@@ -106,7 +129,12 @@ suppliers.post("/", async (c) => {
         ),
       );
     }
-    return c.json({ id });
+    // Push the new supplier to Xero straight away (create/link its contact) so
+    // suppliers made in-app land in Xero without a manual step. Best-effort: a
+    // Xero hiccup (or no connection) never fails the supplier create.
+    let xero_pushed = false;
+    try { xero_pushed = !!(await ensureXeroContact(c.env, body.name.trim())); } catch { /* best-effort */ }
+    return c.json({ id, xero_pushed });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     if (msg.includes("UNIQUE")) return c.json({ error: "A supplier with that name already exists" }, 409);
@@ -119,8 +147,9 @@ suppliers.put("/:id", async (c) => {
   const body = await c.req.json<Record<string, unknown>>();
   const allowed = [
     "name", "status", "scope_notes", "payment_terms", "contact_name",
-    "contact_email", "contact_phone", "address", "vat_number",
-    "credit_limit_gbp", "notes",
+    "contact_email", "contact_phone", "address", "vat_number", "utr",
+    "bank_account_name", "bank_sort_code", "bank_account_number", "bank_name",
+    "credit_limit_gbp", "notes", "is_labour_supplier", "cis_rate",
   ] as const;
   const sets: string[] = [];
   const binds: unknown[] = [];
@@ -129,6 +158,8 @@ suppliers.put("/:id", async (c) => {
       sets.push(`${k} = ?`);
       let v = body[k];
       if (typeof v === "string") v = v.trim() || null;
+      // Booleans become SQLite 0/1
+      if (k === "is_labour_supplier") v = v ? 1 : 0;
       binds.push(v ?? null);
     }
   }

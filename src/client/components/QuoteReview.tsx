@@ -5,7 +5,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { api, fmtDate, fmtMoney } from "../lib/api";
+import { api, fmtDate, fmtMoney, fmtQty } from "../lib/api";
 import { Topbar } from "./Shell";
 import { can } from "../../shared/permissions";
 import type { CurrentUser, SupplierQuote, SupplierQuoteLine } from "../../shared/types";
@@ -399,7 +399,7 @@ function QuoteLineRow({
         {line.raw_qty ?? <span className="muted">—</span>}
         {isProjectQuote && line.boq_qty != null && line.boq_qty !== line.raw_qty && (
           <div className="muted" style={{ fontSize: 10, marginTop: 2 }}>
-            BOQ: {line.boq_qty.toLocaleString()}
+            BOQ: {fmtQty(line.boq_qty)}
           </div>
         )}
       </td>
