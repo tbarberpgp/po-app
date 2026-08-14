@@ -23,6 +23,7 @@ export function GroupedCombobox({
   searchPlaceholder = "Type to filter…",
   allowCustom = false,
   ariaLabel,
+  disabled = false,
 }: {
   groups: ComboGroup[];
   value: string;
@@ -31,6 +32,7 @@ export function GroupedCombobox({
   searchPlaceholder?: string;
   allowCustom?: boolean;
   ariaLabel?: string;
+  disabled?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
@@ -130,8 +132,9 @@ export function GroupedCombobox({
     <div ref={rootRef} style={{ position: "relative" }}>
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
-        onKeyDown={(e) => { if (!open && (e.key === "ArrowDown" || e.key === "Enter")) { e.preventDefault(); setOpen(true); } }}
+        disabled={disabled}
+        onClick={() => { if (!disabled) setOpen((v) => !v); }}
+        onKeyDown={(e) => { if (!disabled && !open && (e.key === "ArrowDown" || e.key === "Enter")) { e.preventDefault(); setOpen(true); } }}
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-label={ariaLabel}
@@ -139,7 +142,7 @@ export function GroupedCombobox({
           width: "100%",
           minHeight: 36,
           padding: "8px 12px",
-          background: "var(--card)",
+          background: disabled ? "var(--card-2)" : "var(--card)",
           color: currentLabel ? "var(--ink)" : "var(--muted)",
           border: `1px solid ${open ? "var(--accent)" : "var(--line-strong)"}`,
           borderRadius: "var(--radius-md)",
@@ -149,7 +152,8 @@ export function GroupedCombobox({
           alignItems: "center",
           justifyContent: "space-between",
           gap: 8,
-          cursor: "pointer",
+          cursor: disabled ? "not-allowed" : "pointer",
+          opacity: disabled ? 0.6 : 1,
           fontFamily: "inherit",
           boxShadow: open ? "0 0 0 3px var(--accent-soft)" : "none",
           transition: "border-color 120ms, box-shadow 120ms",

@@ -1404,7 +1404,9 @@ export type InvoiceMatchLine = {
  *  per-line 3-way reconciliation (invoice ↔ PO line ↔ delivered qty). */
 export type InvoiceMatch = {
   matched_po: { id: string; po_number: string; supplier: string | null; project_id: string; project_code: string; total: number | null; is_stored: boolean } | null;
-  suggested: Array<{ id: string; po_number: string; supplier: string | null; project_code: string; hits: number }>;
+  /** Every live PO, best guesses first. `group` says which bucket each came from —
+   *  the heuristics order the list, they don't limit what the user can pick. */
+  suggested: Array<{ id: string; po_number: string; supplier: string | null; project_code: string; hits: number; group?: "quoted" | "likely" | "project" | "other" }>;
   lines: InvoiceMatchLine[];
   /** Delivery records logged against the chosen PO — the tickets behind the
    *  delivered quantities, so the invoice view can show what actually arrived. */

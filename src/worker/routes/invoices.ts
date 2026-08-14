@@ -690,7 +690,8 @@ async function computeInvoiceMatch(env: Env, inv: Record<string, unknown>) {
   const pos = (await env.DB.prepare(
     `SELECT po.id, po.po_number, po.supplier, po.project_id, po.order_type, po.total_value, p.code AS project_code
        FROM purchase_orders po JOIN projects p ON p.id = po.project_id
-      WHERE po.status != 'deleted' AND po.order_type != 'framework' AND p.deleted_at IS NULL`,
+      WHERE po.status != 'deleted' AND po.order_type != 'framework' AND p.deleted_at IS NULL
+      ORDER BY p.code, po.po_number`,
   ).all<{ id: string; po_number: string; supplier: string | null; project_id: string; order_type: string | null; total_value: number | null; project_code: string }>()).results;
   const poIds = pos.map((p) => p.id);
   const allLines = poIds.length ? (await env.DB.prepare(
@@ -726,18 +727,28 @@ async function computeInvoiceMatch(env: Env, inv: Record<string, unknown>) {
   const chosen = pos.find((p) => p.id === chosenId) || null;
   const rankedSug = ranked.slice(0, 5).map((r) => ({ id: r.po.id, po_number: r.po.po_number, supplier: r.po.supplier, project_code: r.po.project_code, hits: r.hits }));
   // Suggestions, in priority order: the direct PO-ref hit, then item-code /
-  // supplier ranked hits, then every live PO on the invoice's coded project — so
-  // the user can always pick the right PO even when nothing auto-matched (e.g. the
-  // quoted PO was deleted/superseded, or the supplier used their own line codes).
-  type Sug = { id: string; po_number: string; supplier: string | null; project_code: string; hits: number };
+  // supplier ranked hits, then every live PO on the invoice's coded project, then
+  // EVERY other live PO. The heuristics only decide the ORDER, never what's
+  // reachable — an invoice is routinely coded to one project while the right PO
+  // sits on a sibling job (a 26001 order billed on a 26003-coded invoice), and
+  // capping the list to the top guesses made that PO unpickable with no way back.
+  // `group` tells the UI which bucket each one came from so it can label them.
+  type Sug = { id: string; po_number: string; supplier: string | null; project_code: string; hits: number; group: "quoted" | "likely" | "project" | "other" };
   const seen = new Set<string>();
   const suggested: Sug[] = [];
-  const pushSug = (s: Sug) => { if (suggested.length >= 20 || seen.has(s.id)) return; seen.add(s.id); suggested.push(s); };
-  if (directPo) pushSug({ id: directPo.id, po_number: directPo.po_number, supplier: directPo.supplier, project_code: directPo.project_code, hits: 0 });
-  for (const s of rankedSug) pushSug(s);
+  const pushSug = (s: Sug) => { if (seen.has(s.id)) return; seen.add(s.id); suggested.push(s); };
+  // True item-hit count for every scored PO, so one surfacing outside the ranked
+  // bucket still reports the matches it genuinely has — this was hardcoded to 0
+  // there, hiding the strongest signal the user has for picking the right order.
+  const hitsById = new Map(ranked.map((r) => [r.po.id, r.hits]));
+  const asSug = (p: (typeof pos)[number], group: Sug["group"]): Sug =>
+    ({ id: p.id, po_number: p.po_number, supplier: p.supplier, project_code: p.project_code, hits: hitsById.get(p.id) ?? 0, group });
+  if (directPo) pushSug(asSug(directPo, "quoted"));
+  for (const s of rankedSug) pushSug({ ...s, group: "likely" });
   if (inv.project_id) {
-    for (const p of pos) if (p.project_id === inv.project_id) pushSug({ id: p.id, po_number: p.po_number, supplier: p.supplier, project_code: p.project_code, hits: 0 });
+    for (const p of pos) if (p.project_id === inv.project_id) pushSug(asSug(p, "project"));
   }
+  for (const p of pos) pushSug(asSug(p, "other"));
 
   if (!chosen) {
     return { matched_po: null, suggested, deliveries: [], lines: invLines.map((l) => ({ description: l.description ?? "", qty: l.qty ?? null, unit_price: l.unit_price ?? null, amount: l.amount ?? null, po_line_id: null, po_line_item: null, po_qty: null, po_unit_cost: null, delivered_qty: null, flags: ["no_po_line"] })), match_status: "no_po" as const, po_ref: poRefOut };

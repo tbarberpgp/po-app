@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { PdfHighlightViewer } from "./PdfHighlightViewer";
+import { GroupedCombobox, type ComboGroup, type ComboOption } from "./GroupedCombobox";
 import { api, fmtMoney } from "../lib/api";
 import { can } from "../../shared/permissions";
 import { Topbar } from "./Shell";
@@ -472,13 +473,39 @@ function MatchPanel({ inv, canEdit, onReload }: { inv: Invoice; canEdit: boolean
   const matchedCount = m ? m.lines.filter((l) => l.po_line_id).length : 0;
   const total = m ? m.lines.length : 0;
 
-  const poOptions = (() => {
-    const seen = new Set<string>(); const out: Array<{ id: string; label: string }> = [];
-    const add = (id: string, label: string) => { if (!seen.has(id)) { seen.add(id); out.push({ id, label }); } };
-    if (m?.matched_po) add(m.matched_po.id, `${m.matched_po.po_number}${m.matched_po.supplier ? ` · ${m.matched_po.supplier}` : ""}`);
-    for (const s of m?.suggested ?? []) add(s.id, `${s.po_number}${s.supplier ? ` · ${s.supplier}` : ""}${s.hits ? ` · ${s.hits} item${s.hits > 1 ? "s" : ""} match` : ""}`);
+  // Every live PO is pickable, bucketed best-guess-first (see computeInvoiceMatch).
+  // Grouped + type-to-filter rather than a flat select: the right PO is often on a
+  // sibling job to the one the invoice is coded to, so the list is long by design
+  // and has to be searchable by PO number, supplier or project code.
+  const poGroups = useMemo<ComboGroup[]>(() => {
+    if (!m) return [];
+    const sug = m.suggested ?? [];
+    const label = (po_number: string, supplier: string | null) => `${po_number}${supplier ? ` · ${supplier}` : ""}`;
+    const toOpt = (s: (typeof sug)[number]): ComboOption => ({
+      value: s.id,
+      label: label(s.po_number, s.supplier),
+      hint: [s.project_code, s.hits ? `${s.hits} item${s.hits > 1 ? "s" : ""} match` : ""].filter(Boolean).join(" · "),
+    });
+    const out: ComboGroup[] = [];
+    // Belt-and-braces: a stored match always stays visible even if it somehow
+    // falls outside the candidate pool (e.g. its project was since archived).
+    if (m.matched_po && !sug.some((s) => s.id === m.matched_po!.id)) {
+      out.push({ label: "Current match", options: [{ value: m.matched_po.id, label: label(m.matched_po.po_number, m.matched_po.supplier), hint: m.matched_po.project_code }] });
+    }
+    const buckets = [
+      ["quoted", "Quoted on the invoice"],
+      ["likely", "Likely matches"],
+      ["project", "On this invoice's project"],
+      ["other", "All other purchase orders"],
+    ] as const;
+    for (const [g, heading] of buckets) {
+      const options = sug.filter((s) => (s.group ?? "other") === g).map(toOpt);
+      if (options.length) out.push({ label: heading, options });
+    }
+    if (out.length) out.push({ label: "Clear", options: [{ value: "", label: "— No PO —" }] });
     return out;
-  })();
+  }, [m]);
+  const poCount = (m?.suggested ?? []).length;
 
   async function choosePo(poId: string) {
     setSaving(true); setErr(null);
@@ -579,9 +606,19 @@ function MatchPanel({ inv, canEdit, onReload }: { inv: Invoice; canEdit: boolean
 
           {/* matched PO */}
           <div style={{ display: "flex", gap: 10, alignItems: "center", margin: "14px 0 4px", flexWrap: "wrap" }}>
-            {poOptions.length > 0
-              ? <select className="a-sel" style={{ flex: 1, minWidth: 240 }} value={m.matched_po?.id ?? ""} disabled={locked || saving} onChange={(e) => choosePo(e.target.value)}>{poOptions.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}</select>
-              : <span className="muted" style={{ fontSize: 12 }}>No matching PO found</span>}
+            {poGroups.length > 0
+              ? <div style={{ flex: 1, minWidth: 240 }}>
+                  <GroupedCombobox
+                    groups={poGroups}
+                    value={m.matched_po?.id ?? ""}
+                    onChange={choosePo}
+                    disabled={locked || saving}
+                    ariaLabel="Purchase order for this invoice"
+                    placeholder="— select a purchase order —"
+                    searchPlaceholder={`Search ${poCount} PO${poCount === 1 ? "" : "s"} by number, supplier or project…`}
+                  />
+                </div>
+              : <span className="muted" style={{ fontSize: 12 }}>No purchase orders available</span>}
             {m.matched_po && (m.matched_po.is_stored
               ? <span className="pill approved" style={{ fontSize: 10.5 }}>Matched</span>
               : <span className="pill" style={{ fontSize: 10.5, background: "var(--navy-soft)", color: "var(--navy)" }}>Auto-matched</span>)}
