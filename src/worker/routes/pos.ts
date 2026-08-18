@@ -69,10 +69,42 @@ type EnrichResult = {
 };
 
 /**
+ * A framework line's actual remaining allowance, per item — UNFLOORED, so an
+ * already-overdrawn line comes back negative rather than clamped to 0. Used to
+ * gate new call-off draws; the display endpoint (calloff-lines) floors this at
+ * 0 separately for the picker UI, which is fine since that's just presentation.
+ * `excludePoId` drops one call-off (the one being edited) from the drawn tally
+ * so it doesn't count against itself.
+ */
+async function frameworkRemainingByItem(
+  db: D1Database,
+  parentPoId: string,
+  excludePoId: string | null,
+): Promise<Map<string, number>> {
+  const rows = await db.prepare(
+    `SELECT lower(pl.item) AS item_key, pl.qty AS framework_qty,
+            COALESCE((
+              SELECT SUM(cl.qty) FROM po_lines cl
+              JOIN purchase_orders cp ON cp.id = cl.po_id
+              WHERE cp.parent_po_id = ? AND cp.status IN ('approved','issued','pending_approval')
+                AND lower(cl.item) = lower(pl.item)${excludePoId ? " AND cp.id != ?" : ""}
+            ), 0) AS called_off_qty
+       FROM po_lines pl WHERE pl.po_id = ?`,
+  )
+    .bind(...(excludePoId ? [parentPoId, excludePoId, parentPoId] : [parentPoId, parentPoId]))
+    .all<{ item_key: string; framework_qty: number; called_off_qty: number }>();
+  const map = new Map<string, number>();
+  for (const r of rows.results) map.set(r.item_key, (r.framework_qty ?? 0) - (r.called_off_qty ?? 0));
+  return map;
+}
+
+/**
  * Compute per-line approval flags (unpriced / over-budget), the order total and
  * prelim-heading overspend for a set of PO lines. Shared by PO create and the
  * admin edit path. `excludePoId` omits a PO from the committed-spend tally so an
- * edited PO doesn't count its own existing lines against budget.
+ * edited PO doesn't count its own existing lines against budget. `parentPoId`
+ * is the framework a call-off draws against — its lines gate on the framework's
+ * actual remaining instead of the project BOQ allowance (see below).
  */
 async function enrichPOLines(
   db: D1Database,
@@ -82,11 +114,21 @@ async function enrichPOLines(
   category: string | null | undefined,
   excludePoId: string | null,
   isCallOff = false,
+  parentPoId: string | null = null,
 ): Promise<EnrichResult> {
   const enriched: POLine[] = [];
   let hasUnpriced = false;
   let hasOverBudget = false;
   let total = 0;
+
+  // A call-off's real ceiling is the framework line's remaining, not the BOQ
+  // allowance (see the skip below). Drawn per item as we walk the lines so two
+  // lines on the same item in one call-off can't each pass against the same
+  // pre-draw remaining and jointly overdraw it.
+  const frameworkRemaining = isCallOff && parentPoId
+    ? await frameworkRemainingByItem(db, parentPoId, excludePoId)
+    : null;
+  const drawnSoFar = new Map<string, number>();
 
   for (const ln of lines) {
     // Reject non-finite / negative money inputs before they reach round2 — a
@@ -153,6 +195,20 @@ async function enrichPOLines(
         // (validated against the parent on create), not the materials allowance.
         if (pricedQty == null || pricedQty === 0) isUnpriced = true;
         else if (!isCallOff && committedBefore + ln.qty > pricedQty + 1e-4) isOverBudget = true;
+      }
+    }
+
+    // The actual write-time gate for a call-off: draw against the framework
+    // line's real remaining (unfloored — an already-overdrawn line reads
+    // negative here, not 0), not a post-hoc display number. An item with no
+    // matching framework line is left alone — that's a different problem.
+    if (frameworkRemaining) {
+      const key = (ln.item ?? "").toLowerCase();
+      const remaining = frameworkRemaining.get(key);
+      if (remaining != null) {
+        const drawnBefore = drawnSoFar.get(key) ?? 0;
+        if (drawnBefore + ln.qty > remaining + 1e-4) isOverBudget = true;
+        drawnSoFar.set(key, drawnBefore + ln.qty);
       }
     }
 
@@ -417,7 +473,7 @@ pos.post("/", async (c) => {
   }
   let enrichRes: EnrichResult;
   try {
-    enrichRes = await enrichPOLines(c.env.DB, project, snap, body.lines, body.category, null, creatingCallOff);
+    enrichRes = await enrichPOLines(c.env.DB, project, snap, body.lines, body.category, null, creatingCallOff, body.parent_po_id ?? null);
   } catch (e) {
     if (e instanceof HttpError) return c.json({ error: e.message }, e.status);
     throw e;
@@ -625,6 +681,7 @@ pos.put("/:id", async (c) => {
   ).bind(id).first<{
     id: string; project_id: string; project_code: string; status: string;
     category: string | null; order_type: string | null; xero_po_id: string | null;
+    parent_po_id: string | null;
   }>();
   if (!existing) return c.json({ error: "not found" }, 404);
   if (existing.status === "deleted") return c.json({ error: "Can't edit a deleted PO" }, 409);
@@ -642,7 +699,7 @@ pos.put("/:id", async (c) => {
 
   let enrichRes: EnrichResult;
   try {
-    enrichRes = await enrichPOLines(c.env.DB, project, snap, body.lines, category, id, existing.order_type === "call_off");
+    enrichRes = await enrichPOLines(c.env.DB, project, snap, body.lines, category, id, existing.order_type === "call_off", existing.parent_po_id);
   } catch (e) {
     if (e instanceof HttpError) return c.json({ error: e.message }, e.status);
     throw e;
