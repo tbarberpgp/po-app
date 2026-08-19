@@ -370,7 +370,6 @@ export function POView({ me }: { me: CurrentUser | null }) {
                     const qtyOver = isFramework && co - ordered > 1e-4;
                     const valueOver = isFramework && spentValue - frameworkValue > 0.005;
                     const frameworkOver = qtyOver || valueOver;
-                    const overLabel = qtyOver && valueOver ? "overdrawn (qty & cost)" : valueOver ? "overdrawn (cost)" : "overdrawn (qty)";
                     return (
                     <tr key={l.id}>
                       <td>
@@ -394,7 +393,7 @@ export function POView({ me }: { me: CurrentUser | null }) {
                                   valueOver ? `£${(spentValue - frameworkValue).toFixed(2)} more has been spent than this framework line's budgeted value` : null,
                                 ].filter(Boolean).join(" — ")}
                               >
-                                {overLabel}
+                                overdrawn
                               </span>
                             )}
                           </div>
