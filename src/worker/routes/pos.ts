@@ -61,9 +61,12 @@ async function ensureApprovedSupplier(db: D1Database, name: string | null | unde
 }
 
 /** A call-off line that draws a framework line past its actual remaining —
- *  drives the immediate email alert and the dedup marker on the framework's
- *  own po_lines row (see frameworkOverdraw.ts). */
-type FrameworkOverdraw = { item: string; unit: string; frameworkQty: number; drawnQty: number };
+ *  on quantity, cost, or both — driving the immediate email alert. */
+type FrameworkOverdraw = {
+  item: string; unit: string;
+  frameworkQty: number; drawnQty: number; overQty: boolean;
+  frameworkValue: number; drawnValue: number; overValue: boolean;
+};
 
 type EnrichResult = {
   enriched: POLine[];
@@ -75,43 +78,54 @@ type EnrichResult = {
 };
 
 /**
- * A framework line's actual remaining allowance, per item — UNFLOORED, so an
- * already-overdrawn line comes back negative rather than clamped to 0. Used to
- * gate new call-off draws; the display endpoint (calloff-lines) floors this at
- * 0 separately for the picker UI, which is fine since that's just presentation.
- * `excludePoId` drops one call-off (the one being edited) from the drawn tally
- * so it doesn't count against itself.
+ * A framework line's actual remaining allowance, per item — on both qty and
+ * cost, UNFLOORED so an already-overdrawn line comes back negative rather
+ * than clamped to 0. Cost is tracked separately from qty because a call-off
+ * can stay within the agreed qty but still blow the budget if its unit cost
+ * is higher than the framework line's own (price rises, a different batch,
+ * etc.) — qty alone would miss that. Used to gate new call-off draws; the
+ * display endpoint (calloff-lines) floors qty at 0 separately for the picker
+ * UI, which is fine since that's just presentation. `excludePoId` drops one
+ * call-off (the one being edited) from the drawn tally so it doesn't count
+ * against itself.
  */
 async function frameworkRemainingByItem(
   db: D1Database,
   parentPoId: string,
   excludePoId: string | null,
-): Promise<Map<string, { frameworkQty: number; remaining: number }>> {
+): Promise<Map<string, { frameworkQty: number; remainingQty: number; frameworkValue: number; remainingValue: number }>> {
   const rows = await db.prepare(
-    `SELECT lower(pl.item) AS item_key, pl.qty AS framework_qty,
+    `SELECT lower(pl.item) AS item_key, pl.qty AS framework_qty, pl.line_total AS framework_value,
             COALESCE((
               SELECT SUM(cl.qty) FROM po_lines cl
               JOIN purchase_orders cp ON cp.id = cl.po_id
               WHERE cp.parent_po_id = ? AND cp.status IN ('approved','issued','pending_approval')
                 AND lower(cl.item) = lower(pl.item)${excludePoId ? " AND cp.id != ?" : ""}
-            ), 0) AS called_off_qty
+            ), 0) AS called_off_qty,
+            COALESCE((
+              SELECT SUM(cl.line_total) FROM po_lines cl
+              JOIN purchase_orders cp ON cp.id = cl.po_id
+              WHERE cp.parent_po_id = ? AND cp.status IN ('approved','issued','pending_approval')
+                AND lower(cl.item) = lower(pl.item)${excludePoId ? " AND cp.id != ?" : ""}
+            ), 0) AS called_off_value
        FROM po_lines pl WHERE pl.po_id = ?`,
   )
-    .bind(...(excludePoId ? [parentPoId, excludePoId, parentPoId] : [parentPoId, parentPoId]))
-    .all<{ item_key: string; framework_qty: number; called_off_qty: number }>();
-  const map = new Map<string, { frameworkQty: number; remaining: number }>();
+    .bind(...(excludePoId
+      ? [parentPoId, excludePoId, parentPoId, excludePoId, parentPoId]
+      : [parentPoId, parentPoId, parentPoId]))
+    .all<{ item_key: string; framework_qty: number; framework_value: number; called_off_qty: number; called_off_value: number }>();
+  const map = new Map<string, { frameworkQty: number; remainingQty: number; frameworkValue: number; remainingValue: number }>();
   for (const r of rows.results) {
-    map.set(r.item_key, { frameworkQty: r.framework_qty ?? 0, remaining: (r.framework_qty ?? 0) - (r.called_off_qty ?? 0) });
+    map.set(r.item_key, {
+      frameworkQty: r.framework_qty ?? 0, remainingQty: (r.framework_qty ?? 0) - (r.called_off_qty ?? 0),
+      frameworkValue: r.framework_value ?? 0, remainingValue: (r.framework_value ?? 0) - (r.called_off_value ?? 0),
+    });
   }
   return map;
 }
 
-/**
- * Real-time alert: a call-off just tipped one or more framework lines past
- * their agreed qty. Emails FRAMEWORK_OVERDRAW_RECIPIENTS and stamps the
- * framework's own po_lines rows with the qty at time of alert, so the daily
- * sweep (runFrameworkOverdrawAlerts) doesn't re-alert on the same shortfall.
- */
+/** Real-time alert: a call-off just tipped one or more framework lines past
+ *  their agreed qty and/or cost. Emails FRAMEWORK_OVERDRAW_RECIPIENTS. */
 async function alertFrameworkOverdraw(
   env: Env,
   project: { id: string; code: string; name: string },
@@ -131,13 +145,6 @@ async function alertFrameworkOverdraw(
     lines: overdraws,
     link: `${env.APP_BASE_URL ?? ""}/pos/${frameworkPoId}`,
   });
-  await env.DB.batch(
-    overdraws.map((od) =>
-      env.DB.prepare(
-        "UPDATE po_lines SET framework_overdraw_alerted_qty = ? WHERE po_id = ? AND lower(item) = lower(?)",
-      ).bind(od.drawnQty, frameworkPoId, od.item),
-    ),
-  );
 }
 
 /**
@@ -170,7 +177,7 @@ async function enrichPOLines(
   const frameworkRemaining = isCallOff && parentPoId
     ? await frameworkRemainingByItem(db, parentPoId, excludePoId)
     : null;
-  const drawnSoFar = new Map<string, number>();
+  const drawnSoFar = new Map<string, { qty: number; value: number }>();
   const frameworkOverdraws: FrameworkOverdraw[] = [];
 
   for (const ln of lines) {
@@ -180,6 +187,7 @@ async function enrichPOLines(
     if (!Number.isFinite(ln.qty) || !Number.isFinite(ln.unit_cost) || ln.qty < 0 || ln.unit_cost < 0) {
       throw new HttpError(400, `Invalid quantity or unit cost on line "${ln.item ?? ""}".`);
     }
+    const lineTotal = round2(ln.qty * ln.unit_cost);
     let isUnpriced = ln.material_id == null;
     let isOverBudget = false;
     let pricedQty: number | null = null;
@@ -242,30 +250,38 @@ async function enrichPOLines(
     }
 
     // The actual write-time gate for a call-off: draw against the framework
-    // line's real remaining (unfloored — an already-overdrawn line reads
-    // negative here, not 0), not a post-hoc display number. An item with no
-    // matching framework line is left alone — that's a different problem.
+    // line's real remaining qty AND value (unfloored — an already-overdrawn
+    // line reads negative here, not 0), not a post-hoc display number. Value
+    // is checked separately from qty because a call-off can stay within the
+    // agreed qty but still blow the budget on a higher unit cost. An item
+    // with no matching framework line is left alone — different problem.
     if (frameworkRemaining) {
       const key = (ln.item ?? "").toLowerCase();
       const fw = frameworkRemaining.get(key);
       if (fw != null) {
-        const drawnBefore = drawnSoFar.get(key) ?? 0;
-        const drawnTotal = drawnBefore + ln.qty;
-        if (drawnTotal > fw.remaining + 1e-4) {
+        const drawnBefore = drawnSoFar.get(key) ?? { qty: 0, value: 0 };
+        const drawnQtyTotal = drawnBefore.qty + ln.qty;
+        const drawnValueTotal = drawnBefore.value + lineTotal;
+        const overQty = drawnQtyTotal > fw.remainingQty + 1e-4;
+        const overValue = drawnValueTotal > fw.remainingValue + 0.005;
+        if (overQty || overValue) {
           isOverBudget = true;
           // Total now drawn against this framework line = what other
           // call-offs already hold (frameworkQty - remaining) plus this
           // call-off's own running total against the same item.
-          frameworkOverdraws.push({ item: ln.item, unit: ln.unit, frameworkQty: fw.frameworkQty, drawnQty: fw.frameworkQty - fw.remaining + drawnTotal });
+          frameworkOverdraws.push({
+            item: ln.item, unit: ln.unit,
+            frameworkQty: fw.frameworkQty, drawnQty: fw.frameworkQty - fw.remainingQty + drawnQtyTotal, overQty,
+            frameworkValue: fw.frameworkValue, drawnValue: fw.frameworkValue - fw.remainingValue + drawnValueTotal, overValue,
+          });
         }
-        drawnSoFar.set(key, drawnTotal);
+        drawnSoFar.set(key, { qty: drawnQtyTotal, value: drawnValueTotal });
       }
     }
 
     if (isUnpriced) hasUnpriced = true;
     if (isOverBudget) hasOverBudget = true;
 
-    const lineTotal = round2(ln.qty * ln.unit_cost);
     total += lineTotal;
     enriched.push({
       material_id: resolvedMaterialId, item: ln.item, type, manufacturer,
@@ -400,16 +416,18 @@ pos.get("/:id", async (c) => {
 
   // For a framework order, show how much of each line has already been drawn
   // down by its live call-offs — matched by item description, the same rule the
-  // call-off draw-down form uses (see /:id/calloff-lines).
-  let drawByItem: Map<string, number> | null = null;
+  // call-off draw-down form uses (see /:id/calloff-lines). Value is tracked
+  // alongside qty since a call-off can stay within the agreed qty but still
+  // blow the budget on a higher unit cost.
+  let drawByItem: Map<string, { qty: number; value: number }> | null = null;
   if (po.order_type === "framework") {
     const draw = await c.env.DB.prepare(
-      `SELECT lower(cl.item) AS item_key, SUM(cl.qty) AS called_off_qty
+      `SELECT lower(cl.item) AS item_key, SUM(cl.qty) AS called_off_qty, SUM(cl.line_total) AS called_off_value
          FROM po_lines cl JOIN purchase_orders cp ON cp.id = cl.po_id
         WHERE cp.parent_po_id = ? AND cp.status IN ('approved','issued','pending_approval')
         GROUP BY lower(cl.item)`,
-    ).bind(id).all<{ item_key: string; called_off_qty: number }>();
-    drawByItem = new Map(draw.results.map((r) => [r.item_key, r.called_off_qty ?? 0]));
+    ).bind(id).all<{ item_key: string; called_off_qty: number; called_off_value: number }>();
+    drawByItem = new Map(draw.results.map((r) => [r.item_key, { qty: r.called_off_qty ?? 0, value: r.called_off_value ?? 0 }]));
   }
 
   const enriched = lines.results.map((l) => {
@@ -421,13 +439,18 @@ pos.get("/:id", async (c) => {
     // render a stray "0" via `{flag && …}`.
     const base = { ...l, cost_code, is_unpriced: !!l.is_unpriced, is_over_budget: !!l.is_over_budget };
     if (drawByItem) {
-      const called_off_qty = drawByItem.get(String(l.item ?? "").toLowerCase()) ?? 0;
+      const drawn = drawByItem.get(String(l.item ?? "").toLowerCase()) ?? { qty: 0, value: 0 };
       const qty = Number(l.qty ?? 0);
+      const value = Number(l.line_total ?? 0);
       // Unfloored — an overdrawn line shows the true (negative) shortfall
       // instead of a "0 remaining" that reads identically to fully-drawn.
       // The call-off draw-down picker (calloff-lines) floors its own copy at
       // 0 separately, since that one caps what a new call-off can enter.
-      return { ...base, called_off_qty, available_qty: qty - called_off_qty };
+      return {
+        ...base,
+        called_off_qty: drawn.qty, available_qty: qty - drawn.qty,
+        called_off_value: drawn.value, available_value: value - drawn.value,
+      };
     }
     return base;
   });

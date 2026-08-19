@@ -223,20 +223,30 @@ reports.get("/dashboard", async (c) => {
              WHERE p.deleted_at IS NULL AND p.id <> 'sandbox' AND a.direction = 'outgoing' AND a.status = 'submitted') AS afp_awaiting,
           (SELECT COUNT(*) FROM applications_for_payment a JOIN projects p ON p.id = a.project_id
              WHERE p.deleted_at IS NULL AND p.id <> 'sandbox' AND a.xero_invoice_id IS NOT NULL) AS invoices,
-          -- Framework lines where live call-off draws exceed the agreed qty —
-          -- computed fresh each time, not from a stored flag, so it also
-          -- catches lines that went over before this check existed.
+          -- Framework lines where live call-off draws exceed the agreed qty
+          -- OR the line's budgeted value — computed fresh each time, not from
+          -- a stored flag, so it also catches lines that went over before
+          -- this check existed. Value is checked separately from qty since a
+          -- call-off can stay within qty but still overspend on unit cost.
           (SELECT COUNT(*) FROM po_lines pl
              JOIN purchase_orders po ON po.id = pl.po_id
              JOIN projects p ON p.id = po.project_id
             WHERE po.order_type = 'framework' AND po.status != 'deleted'
               AND p.deleted_at IS NULL AND p.id <> 'sandbox'
-              AND pl.qty < (
-                SELECT COALESCE(SUM(cl.qty), 0) FROM po_lines cl
-                  JOIN purchase_orders cp ON cp.id = cl.po_id
-                 WHERE cp.parent_po_id = po.id AND cp.status IN ('approved','issued','pending_approval')
-                   AND lower(cl.item) = lower(pl.item)
-              ) - 0.0001) AS framework_overdrawn`,
+              AND (
+                pl.qty < (
+                  SELECT COALESCE(SUM(cl.qty), 0) FROM po_lines cl
+                    JOIN purchase_orders cp ON cp.id = cl.po_id
+                   WHERE cp.parent_po_id = po.id AND cp.status IN ('approved','issued','pending_approval')
+                     AND lower(cl.item) = lower(pl.item)
+                ) - 0.0001
+                OR pl.line_total < (
+                  SELECT COALESCE(SUM(cl.line_total), 0) FROM po_lines cl
+                    JOIN purchase_orders cp ON cp.id = cl.po_id
+                   WHERE cp.parent_po_id = po.id AND cp.status IN ('approved','issued','pending_approval')
+                     AND lower(cl.item) = lower(pl.item)
+                ) - 0.005
+              )) AS framework_overdrawn`,
     ).first<{ var_pending: number; afp_awaiting: number; invoices: number; framework_overdrawn: number }>()
       .catch(() => ({ var_pending: 0, afp_awaiting: 0, invoices: 0, framework_overdrawn: 0 })),
     // ── The single most-pressing qualification card (soonest expiry) ────────────

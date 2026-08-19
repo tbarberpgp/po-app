@@ -207,9 +207,13 @@ export type POLine = {
   // Derived at query time: PRJ.ELE.RES if the material links to a master product.
   cost_code?: string | null;
   // Framework orders only: how much of this line its live call-offs have drawn
-  // down, and what's left. Set by GET /api/pos/:id when order_type='framework'.
+  // down, and what's left — on qty and on cost (a call-off can stay within
+  // qty but still overspend on a higher unit cost). Set by GET /api/pos/:id
+  // when order_type='framework'.
   called_off_qty?: number;
   available_qty?: number;
+  called_off_value?: number;
+  available_value?: number;
 };
 
 export type OrderType = "standard" | "framework" | "call_off";

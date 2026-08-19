@@ -386,7 +386,7 @@ function DashboardBody({ d, onPickProject, scopeLabel }: { d: Report; onPickProj
   const flags: Array<{ tone: "warn" | "danger"; text: string; to: string; action: string }> = [];
   if (d.signals.variations_pending > 0) flags.push({ tone: "warn", text: `${d.signals.variations_pending} variation${d.signals.variations_pending === 1 ? "" : "s"} pending director approval`, to: "/", action: "Review" });
   if (d.signals.afp_awaiting_cert > 0) flags.push({ tone: "warn", text: `${d.signals.afp_awaiting_cert} application${d.signals.afp_awaiting_cert === 1 ? "" : "s"} submitted, awaiting certification`, to: "/applications", action: "View" });
-  if (d.signals.framework_overdrawn > 0) flags.push({ tone: "danger", text: `${d.signals.framework_overdrawn} framework line${d.signals.framework_overdrawn === 1 ? "" : "s"} overdrawn — call-offs exceed the agreed quantity`, to: "/pos", action: "View" });
+  if (d.signals.framework_overdrawn > 0) flags.push({ tone: "danger", text: `${d.signals.framework_overdrawn} framework line${d.signals.framework_overdrawn === 1 ? "" : "s"} overdrawn — call-offs exceed the agreed qty or cost`, to: "/pos", action: "View" });
   if (d.pos.pending_approval > 0) flags.push({ tone: "warn", text: `${d.pos.pending_approval} purchase order${d.pos.pending_approval === 1 ? "" : "s"} awaiting approval`, to: "/approvals", action: "Review" });
   if (d.compliance.cards.expired > 0) flags.push({ tone: "danger", text: `${d.compliance.cards.expired} qualification card${d.compliance.cards.expired === 1 ? "" : "s"} expired`, to: "/operatives", action: "View" });
   if (d.compliance.rams.awaiting > 0) flags.push({ tone: "warn", text: `${d.compliance.rams.awaiting} RAMS awaiting signature`, to: "/operatives", action: "View" });

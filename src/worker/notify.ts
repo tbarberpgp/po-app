@@ -105,10 +105,13 @@ export const FRAMEWORK_OVERDRAW_RECIPIENTS = [
   "hgardner@powergridprojects.net",
 ];
 
-/** A framework PO where one or more lines have been called off past their
- *  agreed quantity. Sent both in real time (the call-off that tipped it over)
- *  and from the daily sweep (runFrameworkOverdrawAlerts) for anything still
- *  unresolved or newly discovered. */
+/** A framework PO with one or more lines over their agreed quantity and/or
+ *  cost. Sent both in real time — the call-off that tips a line over, the
+ *  moment it happens (alertFrameworkOverdraw in pos.ts) — and from the weekly
+ *  Monday digest (runFrameworkOverdrawDigest in cron.ts) for anything still
+ *  unresolved. Qty and value are reported separately because a call-off can
+ *  stay within the agreed qty but still blow the budget on a higher unit
+ *  cost, or vice versa. */
 export async function emailFrameworkOverdraw(
   env: Env,
   to: string[],
@@ -118,7 +121,11 @@ export async function emailFrameworkOverdraw(
     frameworkPoNumber: string;
     supplier: string;
     triggeredByPoNumber: string | null;
-    lines: Array<{ item: string; unit: string; frameworkQty: number; drawnQty: number }>;
+    lines: Array<{
+      item: string; unit: string;
+      frameworkQty: number; drawnQty: number; overQty: boolean;
+      frameworkValue: number; drawnValue: number; overValue: boolean;
+    }>;
     link: string;
   },
 ) {
@@ -126,19 +133,31 @@ export async function emailFrameworkOverdraw(
   const recipients = [...new Set(to.filter((e) => e && e.includes("@")))];
   if (recipients.length === 0) return;
   const plural = info.lines.length === 1 ? "line has" : "lines have";
-  const subject = `[Overdrawn] ${info.frameworkPoNumber} — ${info.projectCode} ${info.lines.length} framework ${plural} exceeded its agreed qty`;
+  const kind = info.lines.every((l) => l.overValue && !l.overQty) ? "cost"
+    : info.lines.every((l) => l.overQty && !l.overValue) ? "qty"
+    : "qty/cost";
+  const subject = `[Overdrawn] ${info.frameworkPoNumber} — ${info.projectCode} ${info.lines.length} framework ${plural} exceeded its agreed ${kind}`;
   const rows = info.lines
-    .map((l) => `<tr><td>${escapeHtml(l.item)}</td><td>${l.frameworkQty} ${escapeHtml(l.unit)}</td><td>${l.drawnQty} ${escapeHtml(l.unit)}</td><td style="color:#b91c1c"><b>${(l.drawnQty - l.frameworkQty).toFixed(2)} over</b></td></tr>`)
+    .map((l) => {
+      const qtyCell = l.overQty
+        ? `<td style="color:#b91c1c">${l.frameworkQty} ${escapeHtml(l.unit)} → <b>${l.drawnQty} ${escapeHtml(l.unit)}</b></td>`
+        : `<td>${l.frameworkQty} ${escapeHtml(l.unit)} → ${l.drawnQty} ${escapeHtml(l.unit)}</td>`;
+      const valueCell = l.overValue
+        ? `<td style="color:#b91c1c">£${l.frameworkValue.toFixed(2)} → <b>£${l.drawnValue.toFixed(2)}</b></td>`
+        : `<td>£${l.frameworkValue.toFixed(2)} → £${l.drawnValue.toFixed(2)}</td>`;
+      return `<tr><td>${escapeHtml(l.item)}</td>${qtyCell}${valueCell}</tr>`;
+    })
     .join("");
   const html = `
     <p>${info.lines.length} line${info.lines.length === 1 ? "" : "s"} on framework <b>${escapeHtml(info.frameworkPoNumber)}</b>
        (${escapeHtml(info.projectCode)} — ${escapeHtml(info.projectName)}, supplier ${escapeHtml(info.supplier)})
-       ${info.lines.length === 1 ? "has" : "have"} been called off past the agreed quantity.</p>
+       ${info.lines.length === 1 ? "has" : "have"} been called off past the agreed allowance.</p>
     ${info.triggeredByPoNumber ? `<p>Triggered by call-off <b>${escapeHtml(info.triggeredByPoNumber)}</b>.</p>` : ""}
     <table style="border-collapse:collapse" border="1" cellpadding="4">
-      <tr><th>Item</th><th>Agreed qty</th><th>Called off</th><th>Overdrawn by</th></tr>
+      <tr><th>Item</th><th>Qty: agreed → called off</th><th>Value: agreed → spent</th></tr>
       ${rows}
     </table>
+    <p style="color:#666;font-size:13px">Red highlights the dimension(s) actually over — an item can be within qty but over on cost (a higher unit price than the framework line), or vice versa.</p>
     <p><a href="${info.link}">Open the framework →</a></p>
   `;
   await fetch("https://api.resend.com/emails", {

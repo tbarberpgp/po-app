@@ -64,43 +64,47 @@ export async function runOffHireReminders(env: Env): Promise<void> {
   }
 }
 
-/** Daily sweep for framework lines a call-off has drawn past its agreed qty.
- *  Real-time alerts (in pos.ts) catch the call-off that tips a line over the
- *  moment it happens; this catches anything from before that check existed,
- *  or that somehow still slips through. Dedup mirrors off-hire reminders —
- *  po_lines.framework_overdraw_alerted_qty records the drawn qty at the last
- *  alert, so a line already reported at (say) 47-of-36 doesn't re-alert every
- *  day it stays at 47; it only re-alerts if the draw gets worse. */
-export async function runFrameworkOverdrawAlerts(env: Env): Promise<void> {
-  if (!env.RESEND_API_KEY) { console.warn("framework overdraw sweep: no RESEND_API_KEY"); return; }
+/** Weekly digest (Mondays, alongside the weekly reports) of framework lines
+ *  still overdrawn on qty and/or cost. Real-time alerts (pos.ts) catch the
+ *  call-off that tips a line over the moment it happens; this is just a plain
+ *  weekly re-check of the same live condition — if a line is still overdrawn,
+ *  it resends; if it's been resolved since, it goes quiet on its own. No
+ *  dedup/marker needed: a week is spaced out enough that resending the same
+ *  unresolved overdraw isn't the "every single day" spam this replaced. */
+export async function runFrameworkOverdrawDigest(env: Env): Promise<void> {
+  if (!env.RESEND_API_KEY) { console.warn("framework overdraw digest: no RESEND_API_KEY"); return; }
   const rows = await env.DB.prepare(
     `SELECT * FROM (
-       SELECT pl.id AS line_id, pl.item, pl.unit, pl.qty AS framework_qty,
-              pl.framework_overdraw_alerted_qty AS alerted_qty,
+       SELECT pl.item, pl.unit, pl.qty AS framework_qty, pl.line_total AS framework_value,
               po.id AS po_id, po.po_number, po.supplier,
               p.id AS project_id, p.code AS project_code, p.name AS project_name,
               COALESCE((
                 SELECT SUM(cl.qty) FROM po_lines cl JOIN purchase_orders cp ON cp.id = cl.po_id
                  WHERE cp.parent_po_id = po.id AND cp.status IN ('approved','issued','pending_approval')
                    AND lower(cl.item) = lower(pl.item)
-              ), 0) AS drawn_qty
+              ), 0) AS drawn_qty,
+              COALESCE((
+                SELECT SUM(cl.line_total) FROM po_lines cl JOIN purchase_orders cp ON cp.id = cl.po_id
+                 WHERE cp.parent_po_id = po.id AND cp.status IN ('approved','issued','pending_approval')
+                   AND lower(cl.item) = lower(pl.item)
+              ), 0) AS drawn_value
          FROM po_lines pl
          JOIN purchase_orders po ON po.id = pl.po_id
          JOIN projects p ON p.id = po.project_id
         WHERE po.order_type = 'framework' AND po.status != 'deleted'
           AND p.deleted_at IS NULL
-     ) WHERE drawn_qty > framework_qty + 0.0001`,
+     ) WHERE drawn_qty > framework_qty + 0.0001 OR drawn_value > framework_value + 0.005`,
   ).all<{
-    line_id: number; item: string; unit: string; framework_qty: number; alerted_qty: number | null;
+    item: string; unit: string; framework_qty: number; framework_value: number;
     po_id: string; po_number: string; supplier: string;
-    project_id: string; project_code: string; project_name: string; drawn_qty: number;
+    project_id: string; project_code: string; project_name: string;
+    drawn_qty: number; drawn_value: number;
   }>();
 
   const base = env.APP_BASE_URL ?? "";
   const byFramework = new Map<string, typeof rows.results>();
   for (const r of rows.results) {
     if (isSandboxId(r.project_id)) continue;
-    if (r.alerted_qty != null && r.drawn_qty <= r.alerted_qty + 0.0001) continue; // unchanged since last alert
     byFramework.set(r.po_id, [...(byFramework.get(r.po_id) ?? []), r]);
   }
 
@@ -110,11 +114,12 @@ export async function runFrameworkOverdrawAlerts(env: Env): Promise<void> {
       projectCode: first.project_code, projectName: first.project_name,
       frameworkPoNumber: first.po_number, supplier: first.supplier,
       triggeredByPoNumber: null,
-      lines: lines.map((l) => ({ item: l.item, unit: l.unit, frameworkQty: l.framework_qty, drawnQty: l.drawn_qty })),
+      lines: lines.map((l) => ({
+        item: l.item, unit: l.unit,
+        frameworkQty: l.framework_qty, drawnQty: l.drawn_qty, overQty: l.drawn_qty > l.framework_qty + 0.0001,
+        frameworkValue: l.framework_value, drawnValue: l.drawn_value, overValue: l.drawn_value > l.framework_value + 0.005,
+      })),
       link: `${base}/pos/${poId}`,
     });
-    await env.DB.batch(
-      lines.map((l) => env.DB.prepare("UPDATE po_lines SET framework_overdraw_alerted_qty = ? WHERE id = ?").bind(l.drawn_qty, l.line_id)),
-    );
   }
 }

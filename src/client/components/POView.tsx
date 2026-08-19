@@ -351,7 +351,8 @@ export function POView({ me }: { me: CurrentUser | null }) {
                     <th>Manufacturer</th>
                     <th className="num">{isFramework ? "Ordered" : "Qty"}</th>
                     {isFramework && <th className="num">Called off</th>}
-                    {isFramework && <th className="num">Remaining</th>}
+                    {isFramework && <th className="num">Qty left</th>}
+                    {isFramework && <th className="num">Budget left</th>}
                     <th className="center">Unit</th>
                     <th className="num">Unit cost</th>
                     <th className="num">Line total</th>
@@ -363,7 +364,13 @@ export function POView({ me }: { me: CurrentUser | null }) {
                     const co = l.called_off_qty ?? 0;
                     const remaining = l.available_qty ?? ordered - co;
                     const pct = ordered > 0 ? Math.min(100, (co / ordered) * 100) : 0;
-                    const frameworkOver = isFramework && co - ordered > 1e-4;
+                    const frameworkValue = Number(l.line_total) || 0;
+                    const spentValue = l.called_off_value ?? 0;
+                    const remainingValue = l.available_value ?? frameworkValue - spentValue;
+                    const qtyOver = isFramework && co - ordered > 1e-4;
+                    const valueOver = isFramework && spentValue - frameworkValue > 0.005;
+                    const frameworkOver = qtyOver || valueOver;
+                    const overLabel = qtyOver && valueOver ? "overdrawn (qty & cost)" : valueOver ? "overdrawn (cost)" : "overdrawn (qty)";
                     return (
                     <tr key={l.id}>
                       <td>
@@ -380,8 +387,14 @@ export function POView({ me }: { me: CurrentUser | null }) {
                               : <span className="badge unpriced">unpriced</span>)}
                             {l.is_over_budget && <span className="badge over">over</span>}
                             {frameworkOver && (
-                              <span className="badge over" title={`${fmtQty(co - ordered)} ${l.unit} more has been called off than this framework line allows`}>
-                                overdrawn
+                              <span
+                                className="badge over"
+                                title={[
+                                  qtyOver ? `${fmtQty(co - ordered)} ${l.unit} more has been called off than this framework line allows` : null,
+                                  valueOver ? `£${(spentValue - frameworkValue).toFixed(2)} more has been spent than this framework line's budgeted value` : null,
+                                ].filter(Boolean).join(" — ")}
+                              >
+                                {overLabel}
                               </span>
                             )}
                           </div>
@@ -396,14 +409,17 @@ export function POView({ me }: { me: CurrentUser | null }) {
                       <td className="num">{fmtQty(l.qty)}</td>
                       {isFramework && (
                         <>
-                          <td className="num" style={frameworkOver ? { color: "var(--danger)" } : undefined}>
+                          <td className="num" style={qtyOver ? { color: "var(--danger)" } : undefined}>
                             {fmtQty(co)}
                             <div className="bar layered" style={{ height: 4, marginTop: 4 }} title={`${fmtQty(co)} of ${fmtQty(ordered)} ${l.unit} called off`}>
                               <div className="u-reserved" style={{ width: "100%" }} />
-                              <div className={frameworkOver ? "danger" : "accent"} style={{ width: `${pct}%` }} />
+                              <div className={qtyOver ? "danger" : "accent"} style={{ width: `${pct}%` }} />
                             </div>
                           </td>
-                          <td className="num" style={frameworkOver ? { color: "var(--danger)", fontWeight: 600 } : undefined}>{fmtQty(remaining)}</td>
+                          <td className="num" style={qtyOver ? { color: "var(--danger)", fontWeight: 600 } : undefined}>{fmtQty(remaining)}</td>
+                          <td className="num" style={valueOver ? { color: "var(--danger)", fontWeight: 600 } : undefined} title={`£${spentValue.toFixed(2)} of £${frameworkValue.toFixed(2)} budgeted spent`}>
+                            {fmtMoney(remainingValue)}
+                          </td>
                         </>
                       )}
                       <td className="center">{l.unit}</td>
