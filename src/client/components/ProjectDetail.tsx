@@ -499,7 +499,7 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
             )}
             {tab === "overview" && commercials.length > 0 && canViewCommercial && <ForecastDashboard f={forecast} sections={["forecast"]} />}
             {tab === "overview" && commercials.length > 0 && canViewCommercial && (
-              <OverviewAtAGlance projectId={id ?? ""} forecast={forecast} commercials={commercials} afps={afps} variations={variations} projectPOs={projectPOs} canViewCommercial={canViewCommercial} onJump={setTab} />
+              <OverviewAtAGlance projectId={id ?? ""} forecast={forecast} commercials={commercials} afps={afps} variations={variations} projectPOs={projectPOs} canViewCommercial={canViewCommercial} overdrawnFrameworkCount={poSummary?.overdrawn_framework_lines?.length ?? 0} onJump={setTab} />
             )}
 
             {/* Delivery roles (PM/site) don't see commercials — they get an operational overview. */}
@@ -1562,7 +1562,7 @@ function OperationalOverview({ projectId, projectPOs, onJump }: { projectId: str
   );
 }
 
-function OverviewAtAGlance({ projectId, forecast: f, commercials, afps, variations, projectPOs, canViewCommercial, onJump }: {
+function OverviewAtAGlance({ projectId, forecast: f, commercials, afps, variations, projectPOs, canViewCommercial, overdrawnFrameworkCount, onJump }: {
   projectId: string;
   forecast: Forecast;
   commercials: ProjectCommercial[];
@@ -1570,6 +1570,7 @@ function OverviewAtAGlance({ projectId, forecast: f, commercials, afps, variatio
   variations: import("../../shared/types").Variation[];
   projectPOs: ProjectPORow[];
   canViewCommercial: boolean;
+  overdrawnFrameworkCount: number;
   onJump: (t: Tab) => void;
 }) {
   const today = new Date().toISOString().slice(0, 10);
@@ -1626,6 +1627,12 @@ function OverviewAtAGlance({ projectId, forecast: f, commercials, afps, variatio
     }
     const openVars = variations.filter((v) => v.status === "open").length;
     if (openVars > 0) flags.push({ text: `${openVars} open variation${openVars === 1 ? "" : "s"}`, tab: "commercials", tone: "var(--warn)" });
+  }
+  if (overdrawnFrameworkCount > 0) {
+    flags.push({
+      text: `${overdrawnFrameworkCount} framework line${overdrawnFrameworkCount === 1 ? "" : "s"} overdrawn — call-offs exceed the agreed qty or cost`,
+      tab: "pos", tone: "var(--danger)",
+    });
   }
 
   // ── Recent activity (synthesised from loaded data) ────────────────────

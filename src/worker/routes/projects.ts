@@ -386,11 +386,40 @@ projects.get("/:id/summary", async (c) => {
     .bind(id)
     .all<{ status: string; n: number; v: number }>();
 
+  // Framework lines on THIS project where live call-off draws exceed the
+  // agreed qty or the line's budgeted value — same live check as the
+  // portfolio dashboard signal, scoped to one project for the project page's
+  // own "Needs attention" card.
+  const overdrawnRows = await c.env.DB.prepare(
+    `SELECT * FROM (
+       SELECT po.id AS po_id, pl.id AS line_id, po.po_number AS po_number, po.supplier AS supplier,
+              pl.item AS item, pl.unit AS unit, pl.qty AS framework_qty, pl.line_total AS framework_value,
+              COALESCE((
+                SELECT SUM(cl.qty) FROM po_lines cl JOIN purchase_orders cp ON cp.id = cl.po_id
+                 WHERE cp.parent_po_id = po.id AND cp.status IN ('approved','issued','pending_approval')
+                   AND lower(cl.item) = lower(pl.item)
+              ), 0) AS drawn_qty,
+              COALESCE((
+                SELECT SUM(cl.line_total) FROM po_lines cl JOIN purchase_orders cp ON cp.id = cl.po_id
+                 WHERE cp.parent_po_id = po.id AND cp.status IN ('approved','issued','pending_approval')
+                   AND lower(cl.item) = lower(pl.item)
+              ), 0) AS drawn_value
+         FROM po_lines pl JOIN purchase_orders po ON po.id = pl.po_id
+        WHERE po.project_id = ? AND po.order_type = 'framework' AND po.status != 'deleted'
+     ) WHERE drawn_qty > framework_qty + 0.0001 OR drawn_value > framework_value + 0.005`,
+  )
+    .bind(id)
+    .all<{
+      po_id: string; line_id: number; po_number: string; supplier: string | null; item: string; unit: string;
+      framework_qty: number; framework_value: number; drawn_qty: number; drawn_value: number;
+    }>();
+
   const unpriced_spend = unpricedLines.results.reduce((s, r) => s + (r.line_total ?? 0), 0);
   return c.json({
     unpriced_spend,
     unpriced_lines: unpricedLines.results,
     by_status: counts.results,
+    overdrawn_framework_lines: overdrawnRows.results,
   });
 });
 
