@@ -352,9 +352,8 @@ pos.get("/", async (c) => {
   where.push("p.deleted_at IS NULL");
   const sql = `WITH overdrawn_items AS (
       -- Every (framework_po_id, item) currently drawn past its agreed qty or
-      -- cost — computed once, then matched against both the framework row
-      -- itself AND each call-off that drew on that exact item, so a call-off
-      -- shows the same flag as its parent rather than only the framework.
+      -- cost — computed once, then used below to find the ONE call-off per
+      -- item worth flagging.
       SELECT pl.po_id AS framework_po_id, lower(pl.item) AS item_key
         FROM po_lines pl
         JOIN purchase_orders fpo ON fpo.id = pl.po_id
@@ -373,19 +372,28 @@ pos.get("/", async (c) => {
                 AND lower(cl.item) = lower(pl.item)
            ) - 0.005
          )
+    ),
+    -- The single most recent call-off drawing on each overdrawn item — the
+    -- one flagged on the PO list (not every call-off that ever touched that
+    -- item, which would include ones that were fine on their own before a
+    -- later call-off pushed the total over).
+    latest_overdrawn_calloff AS (
+      SELECT oi.framework_po_id, oi.item_key, (
+        SELECT cp.id FROM po_lines cl
+          JOIN purchase_orders cp ON cp.id = cl.po_id
+         WHERE cp.parent_po_id = oi.framework_po_id AND cp.status IN ('approved','issued','pending_approval')
+           AND lower(cl.item) = oi.item_key
+         ORDER BY cp.created_at DESC LIMIT 1
+      ) AS call_off_id
+      FROM overdrawn_items oi
     )
     SELECT po.*, p.code AS project_code, p.name AS project_name,
       CASE
         WHEN po.order_type = 'framework' AND EXISTS (
           SELECT 1 FROM overdrawn_items oi WHERE oi.framework_po_id = po.id
         ) THEN 1
-        WHEN po.order_type = 'call_off' AND po.parent_po_id IS NOT NULL AND EXISTS (
-          SELECT 1 FROM po_lines mine
-           WHERE mine.po_id = po.id
-             AND EXISTS (
-               SELECT 1 FROM overdrawn_items oi
-                WHERE oi.framework_po_id = po.parent_po_id AND oi.item_key = lower(mine.item)
-             )
+        WHEN po.order_type = 'call_off' AND EXISTS (
+          SELECT 1 FROM latest_overdrawn_calloff loc WHERE loc.call_off_id = po.id
         ) THEN 1
         ELSE 0
       END AS is_overdrawn
