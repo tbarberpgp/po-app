@@ -95,14 +95,15 @@ export async function emailPlantOffHire(
   }).catch((err) => console.error("Resend error", err));
 }
 
-/** Fixed recipients for framework-overdraw alerts. Neither adouty nor
- *  hgardner sit in the approvers table or as a project manager email, so
- *  there's no table lookup to drive this off — it's a deliberate, requested
- *  hardcode rather than the usual per-project manager resolution. */
+/** Fixed recipients for framework-overdraw alerts. None of these sit in the
+ *  approvers table or as a project manager email, so there's no table lookup
+ *  to drive this off — it's a deliberate, requested hardcode rather than the
+ *  usual per-project manager resolution. */
 export const FRAMEWORK_OVERDRAW_RECIPIENTS = [
   "tbarber@powergridprojects.net",
   "adouty@powergridprojects.net",
   "hgardner@powergridprojects.net",
+  "nsantosa@powergridprojects.net",
 ];
 
 /** A framework PO with one or more lines over their agreed quantity and/or
