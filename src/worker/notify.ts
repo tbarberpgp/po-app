@@ -95,6 +95,59 @@ export async function emailPlantOffHire(
   }).catch((err) => console.error("Resend error", err));
 }
 
+/** Fixed recipients for framework-overdraw alerts. Neither adouty nor
+ *  hgardner sit in the approvers table or as a project manager email, so
+ *  there's no table lookup to drive this off — it's a deliberate, requested
+ *  hardcode rather than the usual per-project manager resolution. */
+export const FRAMEWORK_OVERDRAW_RECIPIENTS = [
+  "tbarber@powergridprojects.net",
+  "adouty@powergridprojects.net",
+  "hgardner@powergridprojects.net",
+];
+
+/** A framework PO where one or more lines have been called off past their
+ *  agreed quantity. Sent both in real time (the call-off that tipped it over)
+ *  and from the daily sweep (runFrameworkOverdrawAlerts) for anything still
+ *  unresolved or newly discovered. */
+export async function emailFrameworkOverdraw(
+  env: Env,
+  to: string[],
+  info: {
+    projectCode: string;
+    projectName: string;
+    frameworkPoNumber: string;
+    supplier: string;
+    triggeredByPoNumber: string | null;
+    lines: Array<{ item: string; unit: string; frameworkQty: number; drawnQty: number }>;
+    link: string;
+  },
+) {
+  if (!env.RESEND_API_KEY) { console.warn("RESEND_API_KEY not set — skipping framework overdraw email"); return; }
+  const recipients = [...new Set(to.filter((e) => e && e.includes("@")))];
+  if (recipients.length === 0) return;
+  const plural = info.lines.length === 1 ? "line has" : "lines have";
+  const subject = `[Overdrawn] ${info.frameworkPoNumber} — ${info.projectCode} ${info.lines.length} framework ${plural} exceeded its agreed qty`;
+  const rows = info.lines
+    .map((l) => `<tr><td>${escapeHtml(l.item)}</td><td>${l.frameworkQty} ${escapeHtml(l.unit)}</td><td>${l.drawnQty} ${escapeHtml(l.unit)}</td><td style="color:#b91c1c"><b>${(l.drawnQty - l.frameworkQty).toFixed(2)} over</b></td></tr>`)
+    .join("");
+  const html = `
+    <p>${info.lines.length} line${info.lines.length === 1 ? "" : "s"} on framework <b>${escapeHtml(info.frameworkPoNumber)}</b>
+       (${escapeHtml(info.projectCode)} — ${escapeHtml(info.projectName)}, supplier ${escapeHtml(info.supplier)})
+       ${info.lines.length === 1 ? "has" : "have"} been called off past the agreed quantity.</p>
+    ${info.triggeredByPoNumber ? `<p>Triggered by call-off <b>${escapeHtml(info.triggeredByPoNumber)}</b>.</p>` : ""}
+    <table style="border-collapse:collapse" border="1" cellpadding="4">
+      <tr><th>Item</th><th>Agreed qty</th><th>Called off</th><th>Overdrawn by</th></tr>
+      ${rows}
+    </table>
+    <p><a href="${info.link}">Open the framework →</a></p>
+  `;
+  await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${env.RESEND_API_KEY}` },
+    body: JSON.stringify({ from: resendFrom(env), to: recipients, subject, html }),
+  }).catch((err) => console.error("Resend error (framework overdraw)", err));
+}
+
 // ── AfP email notifications ─────────────────────────────────────────────
 
 /** Email director approver(s) when an AfP enters pending_approval. */

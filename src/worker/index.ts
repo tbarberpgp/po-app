@@ -30,7 +30,7 @@ import { siteReports, runDailyReports, runWeeklyReports, runDueDistributions, lo
 import { publicOps } from "./routes/publicOps";
 import { xeroWebhook } from "./routes/xeroWebhook";
 import { loadSettings } from "./approval";
-import { runOffHireReminders } from "./cron";
+import { runOffHireReminders, runFrameworkOverdrawAlerts } from "./cron";
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -155,8 +155,9 @@ export default {
   // Hourly cron (see wrangler.toml [triggers]), evaluated in UK local time so the
   // hours below mean what the clock says (BST/GMT aware). 02:00 generates the day's
   // reports silently (distribution to managers/clients is driven by the rules);
-  // 07:00 runs the plant off-hire reminder; every hour fires any auto-distribute
-  // rules whose chosen send time is that hour. Best-effort.
+  // 07:00 runs the plant off-hire reminder and the framework-overdraw sweep;
+  // every hour fires any auto-distribute rules whose chosen send time is that
+  // hour. Best-effort.
   scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext) {
     const now = new Date();
     const hour = londonHour(now);
@@ -168,6 +169,8 @@ export default {
       })());
     }
     if (hour === 7) ctx.waitUntil(runOffHireReminders(env));
+    // Daily sweep for framework lines overdrawn by their call-offs (see cron.ts).
+    if (hour === 7) ctx.waitUntil(runFrameworkOverdrawAlerts(env).catch((e) => console.error("framework overdraw sweep failed:", e)));
     ctx.waitUntil(runDueDistributions(env, hour));
     // Close forgotten sign-ins at 19:00 UK time (each run re-checks; only rows
     // whose cutoff has passed are stamped, so this is idempotent).

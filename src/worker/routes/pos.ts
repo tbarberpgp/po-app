@@ -3,7 +3,7 @@ import type { Env, Variables } from "../env";
 import type { CreatePOInput, POLine } from "../../shared/types";
 import { loadSettings, tierForApproval } from "../approval";
 import { learnAliases } from "../matchMemory";
-import { emailApprovers, emailRequesterDecision } from "../notify";
+import { emailApprovers, emailRequesterDecision, emailFrameworkOverdraw, FRAMEWORK_OVERDRAW_RECIPIENTS } from "../notify";
 import { requirePermission } from "../auth";
 import { buildCostCode, derivedProjectNumber } from "../../shared/types";
 import { pushPOToXero } from "./xero";
@@ -60,12 +60,18 @@ async function ensureApprovedSupplier(db: D1Database, name: string | null | unde
   } catch { /* never block PO creation on register upkeep */ }
 }
 
+/** A call-off line that draws a framework line past its actual remaining —
+ *  drives the immediate email alert and the dedup marker on the framework's
+ *  own po_lines row (see frameworkOverdraw.ts). */
+type FrameworkOverdraw = { item: string; unit: string; frameworkQty: number; drawnQty: number };
+
 type EnrichResult = {
   enriched: POLine[];
   total: number;
   hasUnpriced: boolean;
   hasOverBudget: boolean;
   prelimNeedsApproval: boolean;
+  frameworkOverdraws: FrameworkOverdraw[];
 };
 
 /**
@@ -80,7 +86,7 @@ async function frameworkRemainingByItem(
   db: D1Database,
   parentPoId: string,
   excludePoId: string | null,
-): Promise<Map<string, number>> {
+): Promise<Map<string, { frameworkQty: number; remaining: number }>> {
   const rows = await db.prepare(
     `SELECT lower(pl.item) AS item_key, pl.qty AS framework_qty,
             COALESCE((
@@ -93,9 +99,45 @@ async function frameworkRemainingByItem(
   )
     .bind(...(excludePoId ? [parentPoId, excludePoId, parentPoId] : [parentPoId, parentPoId]))
     .all<{ item_key: string; framework_qty: number; called_off_qty: number }>();
-  const map = new Map<string, number>();
-  for (const r of rows.results) map.set(r.item_key, (r.framework_qty ?? 0) - (r.called_off_qty ?? 0));
+  const map = new Map<string, { frameworkQty: number; remaining: number }>();
+  for (const r of rows.results) {
+    map.set(r.item_key, { frameworkQty: r.framework_qty ?? 0, remaining: (r.framework_qty ?? 0) - (r.called_off_qty ?? 0) });
+  }
   return map;
+}
+
+/**
+ * Real-time alert: a call-off just tipped one or more framework lines past
+ * their agreed qty. Emails FRAMEWORK_OVERDRAW_RECIPIENTS and stamps the
+ * framework's own po_lines rows with the qty at time of alert, so the daily
+ * sweep (runFrameworkOverdrawAlerts) doesn't re-alert on the same shortfall.
+ */
+async function alertFrameworkOverdraw(
+  env: Env,
+  project: { id: string; code: string; name: string },
+  frameworkPoId: string,
+  triggeredByPoNumber: string,
+  overdraws: FrameworkOverdraw[],
+): Promise<void> {
+  const fw = await env.DB.prepare("SELECT po_number, supplier FROM purchase_orders WHERE id = ?")
+    .bind(frameworkPoId).first<{ po_number: string; supplier: string }>();
+  if (!fw) return;
+  await emailFrameworkOverdraw(env, FRAMEWORK_OVERDRAW_RECIPIENTS, {
+    projectCode: project.code,
+    projectName: project.name,
+    frameworkPoNumber: fw.po_number,
+    supplier: fw.supplier,
+    triggeredByPoNumber,
+    lines: overdraws,
+    link: `${env.APP_BASE_URL ?? ""}/pos/${frameworkPoId}`,
+  });
+  await env.DB.batch(
+    overdraws.map((od) =>
+      env.DB.prepare(
+        "UPDATE po_lines SET framework_overdraw_alerted_qty = ? WHERE po_id = ? AND lower(item) = lower(?)",
+      ).bind(od.drawnQty, frameworkPoId, od.item),
+    ),
+  );
 }
 
 /**
@@ -129,6 +171,7 @@ async function enrichPOLines(
     ? await frameworkRemainingByItem(db, parentPoId, excludePoId)
     : null;
   const drawnSoFar = new Map<string, number>();
+  const frameworkOverdraws: FrameworkOverdraw[] = [];
 
   for (const ln of lines) {
     // Reject non-finite / negative money inputs before they reach round2 — a
@@ -204,11 +247,18 @@ async function enrichPOLines(
     // matching framework line is left alone — that's a different problem.
     if (frameworkRemaining) {
       const key = (ln.item ?? "").toLowerCase();
-      const remaining = frameworkRemaining.get(key);
-      if (remaining != null) {
+      const fw = frameworkRemaining.get(key);
+      if (fw != null) {
         const drawnBefore = drawnSoFar.get(key) ?? 0;
-        if (drawnBefore + ln.qty > remaining + 1e-4) isOverBudget = true;
-        drawnSoFar.set(key, drawnBefore + ln.qty);
+        const drawnTotal = drawnBefore + ln.qty;
+        if (drawnTotal > fw.remaining + 1e-4) {
+          isOverBudget = true;
+          // Total now drawn against this framework line = what other
+          // call-offs already hold (frameworkQty - remaining) plus this
+          // call-off's own running total against the same item.
+          frameworkOverdraws.push({ item: ln.item, unit: ln.unit, frameworkQty: fw.frameworkQty, drawnQty: fw.frameworkQty - fw.remaining + drawnTotal });
+        }
+        drawnSoFar.set(key, drawnTotal);
       }
     }
 
@@ -262,7 +312,7 @@ async function enrichPOLines(
     }
   }
 
-  return { enriched, total, hasUnpriced, hasOverBudget, prelimNeedsApproval };
+  return { enriched, total, hasUnpriced, hasOverBudget, prelimNeedsApproval, frameworkOverdraws };
 }
 
 pos.get("/", async (c) => {
@@ -373,7 +423,11 @@ pos.get("/:id", async (c) => {
     if (drawByItem) {
       const called_off_qty = drawByItem.get(String(l.item ?? "").toLowerCase()) ?? 0;
       const qty = Number(l.qty ?? 0);
-      return { ...base, called_off_qty, available_qty: Math.max(0, qty - called_off_qty) };
+      // Unfloored — an overdrawn line shows the true (negative) shortfall
+      // instead of a "0 remaining" that reads identically to fully-drawn.
+      // The call-off draw-down picker (calloff-lines) floors its own copy at
+      // 0 separately, since that one caps what a new call-off can enter.
+      return { ...base, called_off_qty, available_qty: qty - called_off_qty };
     }
     return base;
   });
@@ -445,10 +499,10 @@ pos.post("/", async (c) => {
   }
 
   const project = await c.env.DB.prepare(
-    "SELECT id, code FROM projects WHERE id = ?",
+    "SELECT id, code, name FROM projects WHERE id = ?",
   )
     .bind(body.project_id)
-    .first<{ id: string; code: string }>();
+    .first<{ id: string; code: string; name: string }>();
   if (!project) return c.json({ error: "project not found" }, 404);
 
   const snap = await c.env.DB.prepare(
@@ -478,7 +532,7 @@ pos.post("/", async (c) => {
     if (e instanceof HttpError) return c.json({ error: e.message }, e.status);
     throw e;
   }
-  const { enriched, total, hasUnpriced, hasOverBudget, prelimNeedsApproval } = enrichRes;
+  const { enriched, total, hasUnpriced, hasOverBudget, prelimNeedsApproval, frameworkOverdraws } = enrichRes;
 
   // A variation carries NEW budget that must be signed off before it can be
   // expended. Block linking a PO to a variation that isn't approved yet.
@@ -595,6 +649,13 @@ pos.post("/", async (c) => {
     .bind(id, actor, JSON.stringify({ po_number: poNumber, status, total }), now)
     .run();
 
+  if (frameworkOverdraws.length && body.parent_po_id && !isSandboxId(project.id)) {
+    c.executionCtx.waitUntil(
+      alertFrameworkOverdraw(c.env, project, body.parent_po_id, poNumber, frameworkOverdraws)
+        .catch((e) => console.warn("framework overdraw alert failed", e instanceof Error ? e.message : e)),
+    );
+  }
+
   if (requiresApproval && tier && !isSandboxId(project.id)) {
     const approvers = await c.env.DB.prepare(
       `SELECT email, name FROM approvers
@@ -675,18 +736,18 @@ pos.put("/:id", async (c) => {
   }
 
   const existing = await c.env.DB.prepare(
-    `SELECT po.*, p.code AS project_code
+    `SELECT po.*, p.code AS project_code, p.name AS project_name
        FROM purchase_orders po JOIN projects p ON p.id = po.project_id
       WHERE po.id = ? AND p.deleted_at IS NULL`,
   ).bind(id).first<{
-    id: string; project_id: string; project_code: string; status: string;
+    id: string; project_id: string; project_code: string; project_name: string; status: string;
     category: string | null; order_type: string | null; xero_po_id: string | null;
-    parent_po_id: string | null;
+    parent_po_id: string | null; po_number: string;
   }>();
   if (!existing) return c.json({ error: "not found" }, 404);
   if (existing.status === "deleted") return c.json({ error: "Can't edit a deleted PO" }, 409);
 
-  const project = { id: existing.project_id, code: existing.project_code };
+  const project = { id: existing.project_id, code: existing.project_code, name: existing.project_name };
   const snap = await c.env.DB.prepare(
     "SELECT id FROM material_snapshots WHERE project_id = ? AND is_active = 1",
   ).bind(project.id).first<{ id: number }>();
@@ -704,7 +765,7 @@ pos.put("/:id", async (c) => {
     if (e instanceof HttpError) return c.json({ error: e.message }, e.status);
     throw e;
   }
-  const { enriched, total, hasUnpriced, hasOverBudget, prelimNeedsApproval } = enrichRes;
+  const { enriched, total, hasUnpriced, hasOverBudget, prelimNeedsApproval, frameworkOverdraws } = enrichRes;
 
   const isPrelim = category === "prelims";
   const requiresApproval = isPrelim ? prelimNeedsApproval : (hasUnpriced || hasOverBudget);
@@ -751,6 +812,13 @@ pos.put("/:id", async (c) => {
     `INSERT INTO audit_log (entity_type, entity_id, action, actor, details, created_at)
      VALUES ('po', ?, 'edited', ?, ?, ?)`,
   ).bind(id, actor, JSON.stringify({ total, lines: enriched.length }), now).run();
+
+  if (frameworkOverdraws.length && existing.parent_po_id && !isSandboxId(project.id)) {
+    c.executionCtx.waitUntil(
+      alertFrameworkOverdraw(c.env, project, existing.parent_po_id, existing.po_number, frameworkOverdraws)
+        .catch((e) => console.warn("framework overdraw alert failed", e instanceof Error ? e.message : e)),
+    );
+  }
 
   // Keep the linked Xero PO in step — updates in place (no duplicate). Inline so
   // the editor sees whether the re-sync succeeded.

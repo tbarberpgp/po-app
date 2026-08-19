@@ -1392,7 +1392,7 @@ export const api = {
       operations: { on_site_now: number; signins_today: number; plant_on_site: number; daily: Array<{ date: string; signins: number }> };
       compliance: { operatives: number; inducted: number; cards: { valid: number; expiring: number; expired: number; pending: number; worst_label: string | null }; rams: { signed: number; awaiting: number }; plant_tests: { valid: number; expiring: number; expired: number } };
       xero: { connected: boolean; tenant: string | null; pos_synced: number; pos_unsynced: number; pos_failed: number; invoices_raised: number };
-      signals: { variations_pending: number; afp_awaiting_cert: number };
+      signals: { variations_pending: number; afp_awaiting_cert: number; framework_overdrawn: number };
       by_project: Array<{
         id: string; code: string; name: string; completed_at: string | null; client_retention_pct: number;
         committed: number; paid: number; pending: number; applied: number; certified: number; on_site: number;

@@ -222,9 +222,23 @@ reports.get("/dashboard", async (c) => {
           (SELECT COUNT(*) FROM applications_for_payment a JOIN projects p ON p.id = a.project_id
              WHERE p.deleted_at IS NULL AND p.id <> 'sandbox' AND a.direction = 'outgoing' AND a.status = 'submitted') AS afp_awaiting,
           (SELECT COUNT(*) FROM applications_for_payment a JOIN projects p ON p.id = a.project_id
-             WHERE p.deleted_at IS NULL AND p.id <> 'sandbox' AND a.xero_invoice_id IS NOT NULL) AS invoices`,
-    ).first<{ var_pending: number; afp_awaiting: number; invoices: number }>()
-      .catch(() => ({ var_pending: 0, afp_awaiting: 0, invoices: 0 })),
+             WHERE p.deleted_at IS NULL AND p.id <> 'sandbox' AND a.xero_invoice_id IS NOT NULL) AS invoices,
+          -- Framework lines where live call-off draws exceed the agreed qty —
+          -- computed fresh each time, not from a stored flag, so it also
+          -- catches lines that went over before this check existed.
+          (SELECT COUNT(*) FROM po_lines pl
+             JOIN purchase_orders po ON po.id = pl.po_id
+             JOIN projects p ON p.id = po.project_id
+            WHERE po.order_type = 'framework' AND po.status != 'deleted'
+              AND p.deleted_at IS NULL AND p.id <> 'sandbox'
+              AND pl.qty < (
+                SELECT COALESCE(SUM(cl.qty), 0) FROM po_lines cl
+                  JOIN purchase_orders cp ON cp.id = cl.po_id
+                 WHERE cp.parent_po_id = po.id AND cp.status IN ('approved','issued','pending_approval')
+                   AND lower(cl.item) = lower(pl.item)
+              ) - 0.0001) AS framework_overdrawn`,
+    ).first<{ var_pending: number; afp_awaiting: number; invoices: number; framework_overdrawn: number }>()
+      .catch(() => ({ var_pending: 0, afp_awaiting: 0, invoices: 0, framework_overdrawn: 0 })),
     // ── The single most-pressing qualification card (soonest expiry) ────────────
     db.prepare(
       `SELECT q.qual_type AS qual_type, o.name AS name, q.expiry_date AS expiry_date
@@ -606,6 +620,7 @@ reports.get("/dashboard", async (c) => {
     signals: {
       variations_pending: signals?.var_pending ?? 0,
       afp_awaiting_cert: signals?.afp_awaiting ?? 0,
+      framework_overdrawn: signals?.framework_overdrawn ?? 0,
     },
     by_project: byProjectEnriched,
     key_dates: keyDates.results,

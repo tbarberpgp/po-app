@@ -358,7 +358,13 @@ export function POView({ me }: { me: CurrentUser | null }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {po.lines.map((l) => (
+                  {po.lines.map((l) => {
+                    const ordered = Number(l.qty) || 0;
+                    const co = l.called_off_qty ?? 0;
+                    const remaining = l.available_qty ?? ordered - co;
+                    const pct = ordered > 0 ? Math.min(100, (co / ordered) * 100) : 0;
+                    const frameworkOver = isFramework && co - ordered > 1e-4;
+                    return (
                     <tr key={l.id}>
                       <td>
                         {l.item}
@@ -367,12 +373,17 @@ export function POView({ me }: { me: CurrentUser | null }) {
                             {l.cost_code}
                           </div>
                         )}
-                        {(l.is_unpriced || l.is_over_budget) && (
+                        {(l.is_unpriced || l.is_over_budget || frameworkOver) && (
                           <div style={{ marginTop: 4, display: "flex", gap: 6 }}>
                             {l.is_unpriced && (l.material_id != null
                               ? <span className="badge" title="Off-BOQ wording, but coded to a budget line — it counts against that budget">coded ✓</span>
                               : <span className="badge unpriced">unpriced</span>)}
                             {l.is_over_budget && <span className="badge over">over</span>}
+                            {frameworkOver && (
+                              <span className="badge over" title={`${fmtQty(co - ordered)} ${l.unit} more has been called off than this framework line allows`}>
+                                overdrawn
+                              </span>
+                            )}
                           </div>
                         )}
                         {canEditPO && !isDeleted && l.id != null && (
@@ -383,30 +394,24 @@ export function POView({ me }: { me: CurrentUser | null }) {
                       </td>
                       <td className="muted">{l.manufacturer ?? ""}</td>
                       <td className="num">{fmtQty(l.qty)}</td>
-                      {isFramework && (() => {
-                        const ordered = Number(l.qty) || 0;
-                        const co = l.called_off_qty ?? 0;
-                        const remaining = l.available_qty ?? Math.max(0, ordered - co);
-                        const pct = ordered > 0 ? Math.min(100, (co / ordered) * 100) : 0;
-                        const over = co - ordered > 1e-4;
-                        return (
-                          <>
-                            <td className="num" style={over ? { color: "var(--danger)" } : undefined}>
-                              {fmtQty(co)}
-                              <div className="bar layered" style={{ height: 4, marginTop: 4 }} title={`${fmtQty(co)} of ${fmtQty(ordered)} ${l.unit} called off`}>
-                                <div className="u-reserved" style={{ width: "100%" }} />
-                                <div className={over ? "danger" : "accent"} style={{ width: `${pct}%` }} />
-                              </div>
-                            </td>
-                            <td className="num">{fmtQty(remaining)}</td>
-                          </>
-                        );
-                      })()}
+                      {isFramework && (
+                        <>
+                          <td className="num" style={frameworkOver ? { color: "var(--danger)" } : undefined}>
+                            {fmtQty(co)}
+                            <div className="bar layered" style={{ height: 4, marginTop: 4 }} title={`${fmtQty(co)} of ${fmtQty(ordered)} ${l.unit} called off`}>
+                              <div className="u-reserved" style={{ width: "100%" }} />
+                              <div className={frameworkOver ? "danger" : "accent"} style={{ width: `${pct}%` }} />
+                            </div>
+                          </td>
+                          <td className="num" style={frameworkOver ? { color: "var(--danger)", fontWeight: 600 } : undefined}>{fmtQty(remaining)}</td>
+                        </>
+                      )}
                       <td className="center">{l.unit}</td>
                       <td className="num">{fmtMoney(l.unit_cost)}</td>
                       <td className="num">{fmtMoney(l.line_total)}</td>
                     </tr>
-                  ))}
+                    );
+                  })}
                   <tr style={{ background: "var(--card-2)" }}>
                     <td colSpan={isFramework ? 7 : 5} style={{ fontWeight: 600, textAlign: "right" }}>Subtotal</td>
                     <td className="num" style={{ fontWeight: 600 }}>{fmtMoney(po.total_value)}</td>
