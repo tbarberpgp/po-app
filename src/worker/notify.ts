@@ -98,11 +98,11 @@ export async function emailPlantOffHire(
 /** Fixed recipients for framework-overdraw alerts. None of these sit in the
  *  approvers table or as a project manager email, so there's no table lookup
  *  to drive this off — it's a deliberate, requested hardcode rather than the
- *  usual per-project manager resolution. */
+ *  usual per-project manager resolution.
+ *  TEMP: narrowed to nsantosa only for a one-off real-send test — revert to
+ *  the full four-person list right after (see git history for the exact
+ *  restore) so tbarber/adouty/hgardner still get Monday's real digest. */
 export const FRAMEWORK_OVERDRAW_RECIPIENTS = [
-  "tbarber@powergridprojects.net",
-  "adouty@powergridprojects.net",
-  "hgardner@powergridprojects.net",
   "nsantosa@powergridprojects.net",
 ];
 
