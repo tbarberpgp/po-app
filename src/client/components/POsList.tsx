@@ -66,6 +66,10 @@ export function POsList({ me }: { me: CurrentUser | null }) {
     return sortDir === "asc" ? c : -c;
   });
   const total = shown.reduce((s, r) => s + (r.total_value ?? 0), 0);
+  // Independent of the search box / status filter — "Needs attention" always
+  // reflects the true current state, not whatever the user happens to be
+  // looking at right now.
+  const overdrawn = rows.filter((r) => r.is_overdrawn);
 
   const SortTh = ({ k, label, className }: { k: SortKey; label: string; className?: string }) => (
     <th className={className}
@@ -94,6 +98,25 @@ export function POsList({ me }: { me: CurrentUser | null }) {
       />
       <main>
         {err && <div className="flash error">{err}</div>}
+
+        {overdrawn.length > 0 && (
+          <div className="card card-padded" style={{ marginBottom: 16, borderColor: "var(--danger)" }}>
+            <div className="card-hd" style={{ padding: 0, marginBottom: 8, alignItems: "center" }}>
+              <h3 style={{ margin: 0, fontSize: 14 }}>Needs attention</h3>
+              <span className="pill warn" style={{ marginLeft: "auto" }}>{overdrawn.length}</span>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {overdrawn.map((r) => (
+                <div key={r.id} className="row" style={{ alignItems: "center", gap: 10 }}>
+                  <span style={{ width: 8, height: 8, borderRadius: 999, background: "var(--danger)", flex: "0 0 auto" }} />
+                  <span style={{ flex: 1, fontSize: 13 }}>
+                    <Link to={`/pos/${r.id}`}>{r.po_number}</Link> — {r.project_code}, {r.supplier}: call-offs exceed the agreed qty or cost
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {picking && canCreate && (
           <div className="card" style={{ marginBottom: 16 }}>
@@ -153,7 +176,14 @@ export function POsList({ me }: { me: CurrentUser | null }) {
               <tbody>
                 {shown.map((r) => (
                   <tr key={r.id}>
-                    <td><Link to={`/pos/${r.id}`}>{r.po_number}</Link></td>
+                    <td>
+                      <Link to={`/pos/${r.id}`}>{r.po_number}</Link>
+                      {r.is_overdrawn && (
+                        <span className="badge over" style={{ marginLeft: 6 }} title="One or more lines have been called off past the agreed qty or cost">
+                          overdrawn
+                        </span>
+                      )}
+                    </td>
                     <td className="center" title={r.project_name}>{r.project_code}</td>
                     <td>{r.supplier}</td>
                     <td className="num">{fmtMoney(r.total_value)}</td>

@@ -260,6 +260,11 @@ export type PurchaseOrder = {
   deleted_at?: string | null;
   deleted_by?: string | null;
   deletion_reason?: string | null;
+  // Framework orders only: true when a live call-off has drawn past the
+  // agreed qty or cost on one or more of this framework's lines. Set by
+  // GET /api/pos (the PO list) so it can flag the row without a per-PO
+  // round trip; not present on the single-PO GET (that shows it per-line).
+  is_overdrawn?: boolean;
   lines: POLine[];
 };
 

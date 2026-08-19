@@ -350,7 +350,28 @@ pos.get("/", async (c) => {
   if (!includeDeleted) where.push("po.status != 'deleted'");
   // POs of deleted projects also vanish from every list.
   where.push("p.deleted_at IS NULL");
-  const sql = `SELECT po.*, p.code AS project_code, p.name AS project_name
+  const sql = `SELECT po.*, p.code AS project_code, p.name AS project_name,
+      -- Framework rows only: any of its own lines currently overdrawn on qty
+      -- or cost by its live call-offs — flags the PO row itself in the list
+      -- (POsList badges it next to the PO number), not just the line detail.
+      CASE WHEN po.order_type = 'framework' AND EXISTS (
+        SELECT 1 FROM po_lines pl
+         WHERE pl.po_id = po.id
+           AND (
+             pl.qty < (
+               SELECT COALESCE(SUM(cl.qty), 0) FROM po_lines cl
+                 JOIN purchase_orders cp ON cp.id = cl.po_id
+                WHERE cp.parent_po_id = po.id AND cp.status IN ('approved','issued','pending_approval')
+                  AND lower(cl.item) = lower(pl.item)
+             ) - 0.0001
+             OR pl.line_total < (
+               SELECT COALESCE(SUM(cl.line_total), 0) FROM po_lines cl
+                 JOIN purchase_orders cp ON cp.id = cl.po_id
+                WHERE cp.parent_po_id = po.id AND cp.status IN ('approved','issued','pending_approval')
+                  AND lower(cl.item) = lower(pl.item)
+             ) - 0.005
+           )
+      ) THEN 1 ELSE 0 END AS is_overdrawn
      FROM purchase_orders po
      JOIN projects p ON p.id = po.project_id
      ${where.length ? "WHERE " + where.join(" AND ") : ""}
