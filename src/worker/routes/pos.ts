@@ -378,8 +378,12 @@ pos.get("/", async (c) => {
      ORDER BY po.created_at DESC`;
   const rows = await c.env.DB.prepare(sql)
     .bind(...binds)
-    .all();
-  return c.json(rows.results);
+    .all<Record<string, unknown> & { is_overdrawn: number }>();
+  // SQLite returns 0/1 — surface a real boolean so `{r.is_overdrawn && …}` in
+  // JSX doesn't render a literal "0" on every non-overdrawn row (0 is falsy
+  // but not `false`, so React prints it instead of skipping it).
+  const withBooleans = rows.results.map((r) => ({ ...r, is_overdrawn: !!r.is_overdrawn }));
+  return c.json(withBooleans);
 });
 
 pos.get("/:id", async (c) => {
