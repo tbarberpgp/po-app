@@ -176,14 +176,7 @@ export function POsList({ me }: { me: CurrentUser | null }) {
               <tbody>
                 {shown.map((r) => (
                   <tr key={r.id}>
-                    <td>
-                      <Link to={`/pos/${r.id}`}>{r.po_number}</Link>
-                      {r.is_overdrawn && (
-                        <span className="badge over" style={{ marginLeft: 6 }} title="One or more lines have been called off past the agreed qty or cost">
-                          overdrawn
-                        </span>
-                      )}
-                    </td>
+                    <td><Link to={`/pos/${r.id}`}>{r.po_number}</Link></td>
                     <td className="center" title={r.project_name}>{r.project_code}</td>
                     <td>{r.supplier}</td>
                     <td className="num">{fmtMoney(r.total_value)}</td>
@@ -194,6 +187,11 @@ export function POsList({ me }: { me: CurrentUser | null }) {
                       {r.category === "prelims" && <span className="pill warn" style={{ fontSize: 10, marginLeft: 4 }}>prelim</span>}
                       {r.paid_at && (
                         <span className="pill approved" style={{ fontSize: 10, marginLeft: 4 }} title={`Settled in Xero on ${fmtDate(r.paid_at)}`}>paid</span>
+                      )}
+                      {r.is_overdrawn && (
+                        <span className="badge over" style={{ marginLeft: 4 }} title="One or more lines have been called off past the agreed qty or cost">
+                          overdrawn
+                        </span>
                       )}
                     </td>
                     <td className="center">
