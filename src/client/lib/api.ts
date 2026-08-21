@@ -731,9 +731,10 @@ export const api = {
     jfetch<{ ok: true; approved_at: string; pushed?: boolean; xero_bill_number?: string | null; xero_error?: string; attach_warning?: string }>(`/api/invoices/${id}/approve`, { method: "POST", body: JSON.stringify({ note: note ?? "" }) }),
   unapproveInvoice: (id: number) =>
     jfetch<{ ok: true }>(`/api/invoices/${id}/approve`, { method: "POST", body: JSON.stringify({ unapprove: true }) }),
-  /** Raise a PO retrospectively from an invoice that arrived without one. */
-  createPoFromInvoice: (id: number) =>
-    jfetch<{ ok: true; po_id: string; po_number: string; status: string }>(`/api/invoices/${id}/create-po`, { method: "POST", body: JSON.stringify({}) }),
+  /** Raise a PO retrospectively from an invoice that arrived without one.
+   *  `replace` re-points an invoice that's already matched to the wrong PO. */
+  createPoFromInvoice: (id: number, opts?: { replace?: boolean }) =>
+    jfetch<{ ok: true; po_id: string; po_number: string; status: string }>(`/api/invoices/${id}/create-po`, { method: "POST", body: JSON.stringify({ replace: opts?.replace === true }) }),
   xeroPendingCount: () =>
     jfetch<{ pending: number }>("/api/xero/pending-count"),
   xeroBulkPush: () =>

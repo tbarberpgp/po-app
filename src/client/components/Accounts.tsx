@@ -626,14 +626,23 @@ function MatchPanel({ inv, canEdit, onReload }: { inv: Invoice; canEdit: boolean
             {m.matched_po && (m.matched_po.is_stored
               ? <span className="pill approved" style={{ fontSize: 10.5 }}>Matched</span>
               : <span className="pill" style={{ fontSize: 10.5, background: "var(--navy-soft)", color: "var(--navy)" }}>Auto-matched</span>)}
-            {!m.matched_po?.is_stored && canEdit && !locked && (
-              <button className="ghost tiny" disabled={saving} title="Raise a PO retrospectively from this invoice's lines (goes through the normal PO approval) so the 3-way match can complete"
+            {/* Available even when a PO is already matched: the match is often to
+                the wrong order (a sibling job's PO, or the one the supplier
+                quoted) and the covering PO was never raised. Replacing needs a
+                confirm — it unlinks the current PO from this invoice. */}
+            {canEdit && !locked && (
+              <button className="ghost tiny" disabled={saving}
+                title={m.matched_po
+                  ? `Raise a new PO from this invoice's lines and match it here instead of ${m.matched_po.po_number}`
+                  : "Raise a PO retrospectively from this invoice's lines (goes through the normal PO approval) so the 3-way match can complete"}
                 onClick={async () => {
+                  const replace = !!m.matched_po;
+                  if (replace && !window.confirm(`Raise a new PO from this invoice's lines?\n\n${m.matched_po!.po_number} will be unlinked from this invoice (the order itself is left as it is).`)) return;
                   setSaving(true); setErr(null);
-                  try { const r = await api.createPoFromInvoice(inv.id); setErr(null); await onReload(); alert(`Raised ${r.po_number} (pending approval) and matched it to this invoice.`); }
+                  try { const r = await api.createPoFromInvoice(inv.id, { replace }); setErr(null); await onReload(); alert(`Raised ${r.po_number} (pending approval) and matched it to this invoice.`); }
                   catch (e) { setErr(e instanceof Error ? e.message : "couldn't create the PO"); }
                   finally { setSaving(false); }
-                }}>+ Create PO from this invoice</button>
+                }}>{m.matched_po ? "+ Create PO from this invoice instead" : "+ Create PO from this invoice"}</button>
             )}
           </div>
           {m.matched_po && !m.matched_po.is_stored && (

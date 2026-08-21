@@ -969,11 +969,17 @@ invoices.post("/:id/create-po", async (c) => {
   if (denied) return denied;
   const inv = await c.env.DB.prepare("SELECT * FROM invoices WHERE id = ?").bind(c.req.param("id")).first<Record<string, unknown>>();
   if (!inv) return c.json({ error: "not found" }, 404);
-  if (inv.matched_po_id) return c.json({ error: "This invoice is already matched to a PO." }, 400);
+  let body: { project_id?: string; replace?: boolean } = {};
+  try { body = await c.req.json(); } catch { /* none */ }
+  // Already matched? Only proceed when the caller explicitly asked to replace
+  // that match — the invoice was matched to the wrong order and the right one
+  // was never raised. The old PO is left alone, just unlinked.
+  if (inv.matched_po_id && !body.replace) return c.json({ error: "This invoice is already matched to a PO." }, 400);
+  const replaced = inv.matched_po_id
+    ? await c.env.DB.prepare("SELECT po_number FROM purchase_orders WHERE id = ?").bind(inv.matched_po_id).first<{ po_number: string }>()
+    : null;
   const supplier = (inv.supplier_name as string | null)?.trim();
   if (!supplier) return c.json({ error: "Set the supplier before raising a PO for this invoice." }, 400);
-  let body: { project_id?: string } = {};
-  try { body = await c.req.json(); } catch { /* none */ }
   const projectId = (inv.project_id as string | null) || body.project_id || null;
   if (!projectId) return c.json({ error: "Code the invoice to a project first — the PO needs a project." }, 400);
   const project = await c.env.DB.prepare("SELECT id, code FROM projects WHERE id = ? AND deleted_at IS NULL").bind(projectId).first<{ id: string; code: string }>();
@@ -1007,7 +1013,8 @@ invoices.post("/:id/create-po", async (c) => {
     tier,
     "retrospective",
     total,
-    `Raised retrospectively to cover invoice ${inv.invoice_number ?? `#${inv.id}`} (${supplier}).`,
+    `Raised retrospectively to cover invoice ${inv.invoice_number ?? `#${inv.id}`} (${supplier}).`
+      + (replaced ? ` Replaces the earlier match to ${replaced.po_number}.` : ""),
     now, c.get("userEmail"),
   ).run();
   await c.env.DB.batch(lineRows.map((l) =>
