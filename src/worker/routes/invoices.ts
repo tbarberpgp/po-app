@@ -666,6 +666,12 @@ function nameTokenSet(s: string): Set<string> {
   return new Set((s || "").toLowerCase().replace(/[^a-z0-9 ]/g, " ").split(/\s+/).filter((t) => t.length > 2 && !["ltd", "limited", "the", "and"].includes(t)));
 }
 
+/** Sentinel po_line_id meaning "explicitly a service/misc charge, not a
+ *  product line" — a human picked this deliberately, so it counts as matched
+ *  (no "no_po_line" flag) but is excluded from qty/value variance checks: a
+ *  £0 service line has nothing to deliver and nothing to compare a total against. */
+export const SERVICE_CHARGE_LINE_ID = -1;
+
 type InvLine = { description?: string; qty?: number | null; quantity?: number | null; unit_price?: number | null; amount?: number | null; account_code?: string | null; po_line_id?: number | null };
 
 /** 3-way match: reconcile an invoice against its PO and the deliveries logged
@@ -788,6 +794,13 @@ async function computeInvoiceMatch(env: Env, inv: Record<string, unknown>) {
   // several invoice lines against one priced line legitimately.
   const takenByCode = new Set<number>();
   const lines = invLines.map((il) => {
+    if (il.po_line_id === SERVICE_CHARGE_LINE_ID) {
+      const invQty = typeof il.qty === "number" ? il.qty : null;
+      return { description: il.description ?? "", qty: invQty, unit_price: il.unit_price ?? null, amount: il.amount ?? null,
+        po_line_id: SERVICE_CHARGE_LINE_ID, po_line_item: "Service charge", po_qty: null, po_unit: null, po_unit_cost: null,
+        po_line_total: null, invoice_line_total: typeof il.amount === "number" ? il.amount : null,
+        delivered_qty: null, flags: [] as string[] };
+    }
     const code = invMaterialCode(il.description ?? "");
     let pl = il.po_line_id ? poLines.find((p) => p.id === il.po_line_id) : null;
     if (!pl) {

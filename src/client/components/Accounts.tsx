@@ -425,6 +425,10 @@ function InvoiceDetail({ inv, projects, accounts, isAdmin, canEdit, busy, onPatc
   );
 }
 
+/** Sentinel po_line_id for "explicitly a service/misc charge, not a product
+ *  line" — mirrors SERVICE_CHARGE_LINE_ID in worker/routes/invoices.ts. */
+const SERVICE_CHARGE_LINE_ID = -1;
+
 /** Flag metadata: friendly label + tone for the 3-way match variances. */
 const MATCH_FLAG: Record<string, { label: string; danger?: boolean }> = {
   no_po_line:     { label: "No PO line" },
@@ -664,6 +668,7 @@ function MatchPanel({ inv, canEdit, onReload }: { inv: Invoice; canEdit: boolean
                       <div className="lsel">
                         <select value={l.po_line_id ?? ""} disabled={saving} onChange={(e) => setLinePo(i, e.target.value ? Number(e.target.value) : null)} title="Which PO line this invoice line is billing against">
                           <option value="">— not matched —</option>
+                          <option value={SERVICE_CHARGE_LINE_ID}>Service charge (no PO line)</option>
                           {m.po_lines.map((pl) => (
                             <option key={pl.id} value={pl.id}>{pl.item.length > 44 ? pl.item.slice(0, 44) + "…" : pl.item}{pl.qty != null ? ` (${qtyFmt(pl.qty)}${pl.unit ? ` ${pl.unit}` : ""})` : ""}</option>
                           ))}
@@ -703,7 +708,7 @@ function MatchPanel({ inv, canEdit, onReload }: { inv: Invoice; canEdit: boolean
                     })()}
                   </div>
                   <div className="r">
-                    {l.po_line_id
+                    {l.po_line_id && l.po_line_id !== SERVICE_CHARGE_LINE_ID
                       ? <span className="lval" style={shortDeliver ? { color: "var(--danger)", cursor: "help" } : { color: "var(--success)", cursor: "help" }}
                           title={(m.deliveries ?? []).filter((dd) => dd.po_line_id === l.po_line_id)
                             .map((dd) => `${dd.received_qty ?? "?"}${dd.received_unit ? ` ${dd.received_unit}` : ""} received ${(dd.delivered_at ?? "").slice(0, 10)}`)
