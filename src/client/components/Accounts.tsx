@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { PdfHighlightViewer } from "./PdfHighlightViewer";
 import { GroupedCombobox, type ComboGroup, type ComboOption } from "./GroupedCombobox";
+import { AttentionPanel } from "./AttentionPanel";
 import { api, fmtMoney } from "../lib/api";
 import { can } from "../../shared/permissions";
 import { Topbar } from "./Shell";
@@ -16,7 +17,7 @@ const curSymbol = (cur: string | null | undefined) => CUR_SYMBOL[(cur || "GBP").
 const qtyFmt = (n: number | null | undefined) =>
   (n == null ? "—" : Number(n).toLocaleString(undefined, { maximumFractionDigits: 2 }));
 
-type Tab = "inbox" | "overheads" | "pushed" | "dismissed";
+type Tab = "inbox" | "attention" | "overheads" | "pushed" | "dismissed";
 
 /** Row status for the inbox dot/chip: approved-or-pushed → matched (green);
  *  coded but not yet approved → review (amber); uncoded → new (red). */
@@ -104,7 +105,10 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
   const visible = useMemo(() => {
     const q = search.trim().toLowerCase();
     return rows.filter((r) => {
-      if (tab === "overheads") { if (!(r.kind === "overhead" && r.status !== "dismissed")) return false; }
+      // Attention spans the workflow: an unmatched invoice matters whether it's
+      // still in the inbox or already pushed to Xero.
+      if (tab === "attention") { if (!(r.match && r.match.state !== "matched" && r.status !== "dismissed")) return false; }
+      else if (tab === "overheads") { if (!(r.kind === "overhead" && r.status !== "dismissed")) return false; }
       else if (tab === "pushed") { if (r.status !== "pushed") return false; }
       else if (tab === "dismissed") { if (r.status !== "dismissed") return false; }
       else if (!(r.status === "inbox" || r.status === "ready")) return false; // inbox
@@ -118,6 +122,7 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
 
   const sel = rows.find((r) => r.id === selId) ?? null;
   const inboxCount = rows.filter((r) => r.status === "inbox" || r.status === "ready").length;
+  const attentionCount = rows.filter((r) => r.match && r.match.state !== "matched" && r.status !== "dismissed").length;
 
   async function upload(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0];
@@ -165,6 +170,7 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
 
   const TABS: Array<[Tab, string, number | null]> = [
     ["inbox", "Inbox", inboxCount],
+    ["attention", "Needs attention", attentionCount || null],
     ...(isAdmin ? [["overheads", "Overheads", null] as [Tab, string, null]] : []),
     ["pushed", "Pushed", null],
     ["dismissed", "Dismissed", null],
@@ -238,7 +244,9 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
             {/* ── detail ── */}
             <section className="detail">
               {!sel
-                ? <div className="a-card a-pad"><div className="muted" style={{ fontSize: 13 }}>Select an invoice to review, code and push to Xero.</div></div>
+                ? tab === "attention"
+                  ? <AttentionPanel rows={rows} onSelect={setSelId} />
+                  : <div className="a-card a-pad"><div className="muted" style={{ fontSize: 13 }}>Select an invoice to review, code and push to Xero.</div></div>
                 : <InvoiceDetail key={sel.id} inv={sel} projects={projects} accounts={accounts} isAdmin={isAdmin} canEdit={canEdit} busy={busy}
                     onPatch={(b) => patch(sel.id, b)} onPush={() => push(sel.id)} onReload={() => reloadOne(sel.id)} onReread={() => reread(sel.id)}
                     onDismiss={async () => { await api.dismissInvoice(sel.id); load(); setSelId(null); }} />}
