@@ -42,9 +42,14 @@ function qtyDiffers(l: InvoiceMatchLine): boolean {
  *  task, so the badge names the biggest problem and the tooltip lists the rest. */
 function matchLabel(m: MatchSummary, cur?: string | null): string {
   if (m.state === "no_po") return "No PO matched";
+  // Worst first: a link to the wrong order makes the price and quantity detail
+  // beneath it meaningless, so it has to be the thing the row says.
+  const wrong = m.issues.find((i) => i.kind === "wrong_po");
+  if (wrong?.kind === "wrong_po") return `Wrong PO \u00b7 invoice quotes ${wrong.quoted}`;
+  const xp = m.issues.find((i) => i.kind === "cross_project");
+  if (xp?.kind === "cross_project") return `Wrong job \u00b7 PO is on ${xp.po_project}`;
   if (m.excess > 0) return `Unmatched \u00b7 ${fmtMoney(m.excess, cur || "GBP")} over order`;
-  const rate = m.issues.find((i) => i.kind === "rate");
-  if (rate) return "Unmatched \u00b7 rate differs from PO";
+  if (m.issues.some((i) => i.kind === "rate")) return "Unmatched \u00b7 rate differs from PO";
   const n = m.issues.filter((i) => i.kind === "unlinked").length;
   if (n) return `Unmatched \u00b7 ${n} line${n > 1 ? "s" : ""} not on the PO`;
   return "Unmatched";
@@ -56,6 +61,8 @@ function matchTitle(m: MatchSummary, cur?: string | null): string {
   if (m.state === "no_po") return "No purchase order is matched to this invoice.";
   const money = (n: number) => fmtMoney(n, cur || "GBP");
   return m.issues.map((i) => {
+    if (i.kind === "wrong_po") return `The invoice quotes ${i.quoted}, but it's linked to ${i.linked}. Check which order this really bills against \u2014 the price and quantity checks below mean nothing until that's right.`;
+    if (i.kind === "cross_project") return `Coded to job ${i.invoice_project}, but ${i.linked} belongs to job ${i.po_project}.`;
     if (i.kind === "unlinked") return `"${i.item}" isn't linked to any line on the PO \u2014 mark it as a service charge if that's what it is.`;
     if (i.kind === "rate") return `${i.item}: billed at ${money(i.billed)}, ordered at ${money(i.ordered)}.`;
     const head = `${i.item}: billed ${money(i.billed)} against ${money(i.ordered)} ordered, ${money(i.excess)} over`;

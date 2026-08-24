@@ -16,6 +16,20 @@ export function invMaterialCode(s: string): string {
   return first.toUpperCase().replace(/[^A-Z0-9]/g, "");
 }
 
+/** Our PO numbers are PO-<5-digit project>-<4-digit sequence>, optionally a
+ *  call-off suffix (-C1, -C2). Returns "<project>-<sequence>", or null when the
+ *  text isn't one of ours.
+ *
+ *  The null case is the point. Suppliers print whatever they like in their "your
+ *  ref" field — a contact name ("TOM BARBER"), a site ("DALLAS ROAD"), their own
+ *  quote number ("Q164563/AD28/07"), a date ("AD 23/06"). On the current book 70
+ *  of 99 refs are text like that, and comparing them to a PO number says nothing.
+ *  Only a ref that parses as one of ours is worth comparing. */
+export function poRefCore(s: string | null | undefined): string | null {
+  const m = /(?<!\d)(\d{5})\D{1,3}(\d{4})(?!\d)/.exec(String(s ?? ""));
+  return m ? `${m[1]}-${m[2]}` : null;
+}
+
 /** Sentinel po_line_id meaning "explicitly a service/misc charge, not a product
  *  line" — a human picked this deliberately, so it counts as matched but is
  *  excluded from qty/value variance checks. */
@@ -53,6 +67,11 @@ export function lineQty(l: InvLine): number | null {
 
 /** Why one invoice line doesn't reconcile with the order line it bills against.
  *
+ *  `wrong_po`      — the invoice prints one of our PO numbers and it isn't the one
+ *                    linked. The most serious kind: if the wrong order is linked,
+ *                    every price and quantity comparison beneath it is meaningless.
+ *  `cross_project` — the linked order belongs to a different job than the invoice
+ *                    is coded to. Either the coding or the link is wrong.
  *  `unlinked` — the line couldn't be tied to any line on the order. Usually a
  *  service, carriage or misc charge that nobody marked as a service charge.
  *  `rate`     — linked, but billed at a rate we didn't agree.
@@ -67,6 +86,8 @@ export function lineQty(l: InvLine): number | null {
  *  book, treating any quantity difference as a mismatch marks 38% of invoices;
  *  this definition marks 35%, and the 9 it drops are all genuine part-invoices. */
 export type MatchIssue =
+  | { kind: "wrong_po"; quoted: string; linked: string }
+  | { kind: "cross_project"; invoice_project: string; po_project: string; linked: string }
   | { kind: "unlinked"; item: string }
   | { kind: "rate"; item: string; billed: number; ordered: number }
   | { kind: "over"; item: string; billed: number; ordered: number; excess: number; why: "qty" | "rate" | "value" };
@@ -98,9 +119,32 @@ export type MatchSummary = { state: "matched" | "unmatched" | "no_po"; issues: M
  * so a false positive is expensive; erring toward "say something" on an unlinked
  * line is deliberate, since marking it as a service charge clears it in one click.
  */
-export function scanLineMatch(invLines: InvLine[], poLines: PoLineRow[]): MatchSummary {
+export type PoContext = {
+  po_number?: string | null;
+  po_project?: string | null;
+  invoice_project?: string | null;
+  quoted_ref?: string | null;
+};
+
+export function scanLineMatch(invLines: InvLine[], poLines: PoLineRow[], po?: PoContext): MatchSummary {
   const taken = new Set<number>();
   const issues: MatchIssue[] = [];
+
+  // PO-level checks first — they come before the line detail because they can
+  // invalidate all of it. A price agreeing with the wrong order proves nothing.
+  if (po) {
+    const quoted = poRefCore(po.quoted_ref);
+    const linked = poRefCore(po.po_number);
+    if (quoted && linked && quoted !== linked) {
+      issues.push({ kind: "wrong_po", quoted: String(po.quoted_ref), linked: String(po.po_number) });
+    }
+    if (po.invoice_project && po.po_project && po.invoice_project !== po.po_project) {
+      issues.push({
+        kind: "cross_project", invoice_project: po.invoice_project,
+        po_project: po.po_project, linked: String(po.po_number),
+      });
+    }
+  }
   for (const il of invLines) {
     if (il.po_line_id === SERVICE_CHARGE_LINE_ID) continue;
     let pl = il.po_line_id ? poLines.find((p) => p.id === il.po_line_id) : null;

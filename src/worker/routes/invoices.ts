@@ -680,16 +680,26 @@ async function withMatchState(env: Env, rows: Record<string, unknown>[]): Promis
   const poIds = [...new Set(rows.map((r) => r.matched_po_id as string | null).filter((x): x is string => !!x))];
   if (!poIds.length) return rows;
   const byPo = new Map<string, PoLineRow[]>();
+  // The order's own identity too: its number and project, so a link to the wrong
+  // order or the wrong job can be reported without a full match pass.
+  const poMeta = new Map<string, { po_number: string; project_code: string | null }>();
   for (let i = 0; i < poIds.length; i += 90) {
     const chunk = poIds.slice(i, i + 90);
+    const marks = chunk.map(() => "?").join(",");
     const res = await env.DB.prepare(
-      `SELECT id, po_id, item, qty, unit, unit_cost FROM po_lines WHERE po_id IN (${chunk.map(() => "?").join(",")})`,
+      `SELECT id, po_id, item, qty, unit, unit_cost FROM po_lines WHERE po_id IN (${marks})`,
     ).bind(...chunk).all<PoLineRow & { po_id: string }>();
     for (const l of res.results) {
       const arr = byPo.get(l.po_id) ?? [];
       arr.push(l);
       byPo.set(l.po_id, arr);
     }
+    const metas = await env.DB.prepare(
+      `SELECT po.id, po.po_number, p.code AS project_code
+         FROM purchase_orders po LEFT JOIN projects p ON p.id = po.project_id
+        WHERE po.id IN (${marks})`,
+    ).bind(...chunk).all<{ id: string; po_number: string; project_code: string | null }>();
+    for (const m of metas.results) poMeta.set(m.id, { po_number: m.po_number, project_code: m.project_code });
   }
   return rows.map((r) => {
     // Only project invoices reconcile against an order; overheads are coded to a
@@ -701,7 +711,13 @@ async function withMatchState(env: Env, rows: Record<string, unknown>[]): Promis
     if (!r.lines_json) return r;
     let invLines: InvLine[] = [];
     try { invLines = JSON.parse(String(r.lines_json)) as InvLine[]; } catch { return r; }
-    return { ...r, match: scanLineMatch(invLines, poLines) };
+    const meta = poId ? poMeta.get(poId) : undefined;
+    return { ...r, match: scanLineMatch(invLines, poLines, {
+      po_number: meta?.po_number ?? null,
+      po_project: meta?.project_code ?? null,
+      invoice_project: (r.project_code as string | null) ?? null,
+      quoted_ref: (r.extracted_po_ref as string | null) ?? null,
+    }) };
   });
 }
 

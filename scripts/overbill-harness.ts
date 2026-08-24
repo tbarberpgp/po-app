@@ -23,6 +23,7 @@ type InvRow = {
   id: number; invoice_number: string | null; supplier_name: string | null; approved_at: string | null;
   proj: string | null; gross_amount: number | null; currency: string | null;
   matched_po_id: string; po_number: string | null; lines_json: string | null;
+  extracted_po_ref?: string | null; po_proj?: string | null;
 };
 
 const [invPath, polPath] = process.argv.slice(2);
@@ -48,13 +49,16 @@ for (const inv of invoices) {
   if (!pol?.length || !inv.lines_json) continue;
   let lines: InvLine[] = [];
   try { lines = JSON.parse(inv.lines_json) as InvLine[]; } catch { continue }
-  const summary = scanLineMatch(lines, pol);
+  const summary = scanLineMatch(lines, pol, {
+    po_number: inv.po_number, po_project: inv.po_proj ?? null,
+    invoice_project: inv.proj, quoted_ref: inv.extracted_po_ref ?? null,
+  });
   if (summary.state === "unmatched") hits.push({ inv, summary }); else matched++;
 }
 
 hits.sort((a, b) => b.summary.excess - a.summary.excess);
 console.log(`scanned ${invoices.length} invoices with a matched PO — ${matched} matched, ${hits.length} unmatched\n`);
-const kinds = { unlinked: 0, rate: 0, over: 0 } as Record<string, number>;
+const kinds = { wrong_po: 0, cross_project: 0, unlinked: 0, rate: 0, over: 0 } as Record<string, number>;
 for (const { inv, summary } of hits) {
   for (const k of new Set(summary.issues.map((i) => i.kind))) kinds[k]++;
   console.log(
@@ -63,7 +67,9 @@ for (const { inv, summary } of hits) {
     `  ${(inv.po_number ?? "").padEnd(18)} [${[...new Set(summary.issues.map((i) => i.kind))].join("+")}] ${inv.approved_at ? "approved" : "NOT approved"}`,
   );
   for (const i of summary.issues) {
-    if (i.kind === "unlinked") console.log(`       unlinked  ${i.item.slice(0, 52)}`);
+    if (i.kind === "wrong_po") console.log(`       WRONG PO  invoice quotes ${i.quoted} · linked ${i.linked}`);
+    else if (i.kind === "cross_project") console.log(`       WRONG JOB invoice on ${i.invoice_project} · ${i.linked} is on ${i.po_project}`);
+    else if (i.kind === "unlinked") console.log(`       unlinked  ${i.item.slice(0, 52)}`);
     else if (i.kind === "rate") console.log(`       rate      ${i.item.slice(0, 40).padEnd(40)} ${gbp(i.billed)} vs ${gbp(i.ordered)} ordered`);
     else console.log(`       over/${i.why.padEnd(5)} ${i.item.slice(0, 40).padEnd(40)} ${gbp(i.billed)} vs ${gbp(i.ordered)}  +${gbp(i.excess)}`);
   }
