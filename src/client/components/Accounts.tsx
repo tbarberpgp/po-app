@@ -4,7 +4,7 @@ import { GroupedCombobox, type ComboGroup, type ComboOption } from "./GroupedCom
 import { api, fmtMoney } from "../lib/api";
 import { can } from "../../shared/permissions";
 import { Topbar } from "./Shell";
-import type { CurrentUser, Invoice, InvoiceMatch, Project } from "../../shared/types";
+import type { CurrentUser, Invoice, InvoiceMatch, Overbill, Project } from "../../shared/types";
 
 // Amounts render in the invoice's OWN currency — a $ or € invoice shown with a
 // £ sign misreports what we owe. Falls back to sterling when unknown.
@@ -26,6 +26,23 @@ function rowStatus(inv: Invoice): "matched" | "review" | "none" {
   return "none";
 }
 const ST_LABEL: Record<"matched" | "review" | "none", string> = { matched: "Approved", review: "Review", none: "New" };
+
+/** Per-line detail behind the inbox row's over-billed marker. Spells out which
+ *  figure moved, because "the total differs" on its own reads as a pricing
+ *  query and gets waved through as one. */
+function overbillTitle(o: Overbill, cur?: string | null): string {
+  const m = (n: number) => fmtMoney(n, cur || "GBP");
+  return o.lines.map((l) => {
+    const head = `${l.item}: billed ${m(l.billed_total)} against ${m(l.po_total)} ordered`;
+    if (l.reason === "qty" && l.billed_qty != null && l.po_qty != null) {
+      return `${head} — ${qtyFmt(l.billed_qty)} billed vs ${qtyFmt(l.po_qty)} ordered, same rate`;
+    }
+    if (l.reason === "rate" && l.billed_rate != null && l.po_rate != null) {
+      return `${head} — same quantity, rate ${m(l.billed_rate)} vs ${m(l.po_rate)} ordered`;
+    }
+    return `${head} — the invoice and the order use a different unit basis, so the values can't be compared per unit`;
+  }).join("\n");
+}
 
 /**
  * Accounts workpiece — a Dext-style two-pane inbox. Supplier invoices arrive via
@@ -172,6 +189,13 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
                             {r.source === "email" && <span title="received by email">✉</span>}
                             {r.extract_error && <span title="couldn't auto-read">⚠</span>}
                             {r.terms_mismatch && <span style={{ color: "var(--warn)" }} title={`Invoice due ${r.due_date ?? "?"} but the account is ${r.supplier_payment_terms ?? "on other terms"} ⇒ ${r.expected_due_date ?? "?"}`}>⚠ terms</span>}
+                            {/* Stays on the row after approval — a cleared over-billing
+                                still needs chasing with the supplier. */}
+                            {r.overbill && (
+                              <span style={{ color: "var(--danger)", fontWeight: 600 }} title={overbillTitle(r.overbill, r.currency)}>
+                                ⚠ over-billed {money(r.overbill.excess, r.currency)}
+                              </span>
+                            )}
                           </div>
                           <span className={`istatus ${st}`}>{r.status === "pushed" ? "Pushed" : ST_LABEL[st]}</span>
                         </div>
@@ -661,7 +685,7 @@ function MatchPanel({ inv, canEdit, onReload }: { inv: Invoice; canEdit: boolean
 
           {/* line table */}
           <div className="ltable">
-            <div className="lrow-hd"><div>Invoice line</div><div className="r">Qty</div><div className="r">Rate · billed / PO</div><div className="r">Value · billed / PO</div><div className="r">Difference</div><div className="r">Del.</div><div className="r">Status</div></div>
+            <div className="lrow-hd"><div>Invoice line</div><div className="r">Qty · billed / PO</div><div className="r">Rate · billed / PO</div><div className="r">Value · billed / PO</div><div className="r">Difference</div><div className="r">Del.</div><div className="r">Status</div></div>
             {m.lines.map((l, i) => {
               const shortDeliver = l.qty != null && (l.delivered_qty ?? 0) + 0.001 < l.qty;
               const rowCls = l.po_line_id ? (l.flags.length ? "warn" : "ok") : "none";
@@ -685,9 +709,14 @@ function MatchPanel({ inv, canEdit, onReload }: { inv: Invoice; canEdit: boolean
                       </div>
                     ) : l.po_line_item ? <div className="muted" style={{ fontSize: 11, marginTop: 3 }}>→ {l.po_line_item}</div> : null}
                   </div>
+                  {/* Both quantities, always — including once the invoice locks.
+                      Showing money alone is what made an over-billing unreadable:
+                      a matching rate, a value out by 20%, and no quantity either side. */}
                   <div className="r">
                     <span className="lval">{l.qty != null ? qtyFmt(l.qty) : "—"}</span>
-                    {l.qty != null && l.po_unit && <span className="lval sm">{l.po_unit}</span>}
+                    <span className="lval sm" style={l.flags.includes("over_qty") ? { color: "var(--danger)" } : undefined}>
+                      {l.po_qty != null ? `PO ${qtyFmt(l.po_qty)}${l.po_unit ? ` ${l.po_unit}` : ""}` : "no PO"}
+                    </span>
                   </div>
                   <div className="r">
                     <span className="lval">{l.unit_price != null ? money(l.unit_price) : "—"}</span>

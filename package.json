@@ -8,6 +8,7 @@
     "dev:worker": "wrangler dev",
     "build": "vite build",
     "preview": "vite build && wrangler dev",
+    "predeploy": "node scripts/predeploy-guard.mjs",
     "deploy": "vite build && wrangler deploy",
     "db:migrate:local": "wrangler d1 migrations apply po_app_db --local",
     "db:migrate:remote": "wrangler d1 migrations apply po_app_db --remote",
