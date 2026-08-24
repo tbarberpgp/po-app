@@ -2379,7 +2379,9 @@ function MultiLineCheckIn({ projectId, cand, projects, onCancel, onDone }: {
       </label>
       {poId && (
         <div style={{ display: "grid", gap: 4 }}>
-          <div className="eyebrow" style={{ fontSize: 11 }}>Ticket items → PO lines <span className="muted" style={{ fontWeight: 400, textTransform: "none", letterSpacing: 0 }}>· {matchedCount}/{rows.length} matched</span></div>
+          {/* "matched" read as "agrees". It only ever meant the item found a PO line —
+              the ordered-vs-received figures under each row are what actually agree. */}
+          <div className="eyebrow" style={{ fontSize: 11 }}>Ticket items → PO lines <span className="muted" style={{ fontWeight: 400, textTransform: "none", letterSpacing: 0 }}>· {matchedCount} of {rows.length} linked to a PO line</span></div>
           <div className="row" style={{ gap: 6, alignItems: "center", flexWrap: "wrap" }}>
             <span className="muted" style={{ fontSize: 12, whiteSpace: "nowrap" }}>Whole note is one line?</span>
             <div style={{ flex: 1, minWidth: 220 }}>
@@ -2440,7 +2442,12 @@ function MultiLineCheckIn({ projectId, cand, projects, onCancel, onDone }: {
                   <div style={{ flexBasis: "100%", display: "flex", gap: 14, flexWrap: "wrap", fontSize: 11.5, marginTop: 3, marginLeft: 26 }}>
                     <span className="muted">Ordered <b style={{ color: "var(--ink)" }}>{st.ordered}{st.unit ? ` ${st.unit}` : ""}</b></span>
                     <span className="muted">Recv'd to date <b style={{ color: "var(--ink)" }}>{st.received}</b></span>
-                    <span style={{ color: remaining > 0.0001 ? "var(--warn)" : "var(--success)", fontWeight: 600 }}>{remaining > 0.0001 ? `${remaining}${st.unit ? ` ${st.unit}` : ""} left after this` : "completes this line ✓"}</span>
+                    {/* remaining < 0 means this drop takes the line PAST what was
+                        ordered. That was rendering as a green "completes this line",
+                        so checking in 2,500 against an order for 25 looked correct. */}
+                    {remaining < -0.0001
+                      ? <span style={{ color: "var(--danger)", fontWeight: 600 }}>{Math.abs(remaining)}{st.unit ? ` ${st.unit}` : ""} MORE than ordered</span>
+                      : <span style={{ color: remaining > 0.0001 ? "var(--warn)" : "var(--success)", fontWeight: 600 }}>{remaining > 0.0001 ? `${remaining}${st.unit ? ` ${st.unit}` : ""} left after this` : "completes this line ✓"}</span>}
                   </div>
                 );
               })()}
@@ -2768,7 +2775,16 @@ function DeliveriesPanel({ projectId, canEdit, autoOpen, onAutoOpenConsumed }: {
                         <div style={{ fontWeight: 700, fontSize: 14 }}>{poNumber || "Linked PO"}</div>
                         {supplier && <div className="muted" style={{ fontSize: 12 }}>{supplier}</div>}
                       </div>
-                      {matchPct != null && <span className="matchbar-pct">{matchPct}%</span>}
+                      {/* This is confidence in the PO IDENTITY — read off the PO
+                          number or supplier name on the ticket. It says nothing
+                          about whether the items or quantities agree, which is
+                          what the rows below are for. Unlabelled, a bare 99%
+                          beside a green tick reads as "all checked". */}
+                      {matchPct != null && (
+                        <span className="matchbar-pct" title="How sure we are this is the right PO, from the PO number or supplier name on the ticket. It does not mean the items or quantities agree — check those below.">
+                          {matchPct}% PO
+                        </span>
+                      )}
                     </div>
                   ) : (
                     <label className="field"><span>Match to a purchase order{scanMsg ? <span className="muted" style={{ textTransform: "none", letterSpacing: 0, fontWeight: 400 }}> · {scanMsg}</span> : null}</span>
@@ -3306,7 +3322,11 @@ export function GlobalDeliveryCheckIn({ onClose, onDone }: { onClose: () => void
                     <div style={{ fontWeight: 700, fontSize: 14 }}>{projectLabel || "Site"}</div>
                     {(poNumber || supplier) && <div className="muted" style={{ fontSize: 12 }}>{[poNumber, supplier].filter(Boolean).join(" · ")}</div>}
                   </div>
-                  {matchPct != null && <span className="matchbar-pct">{matchPct}%</span>}
+                  {matchPct != null && (
+                    <span className="matchbar-pct" title="How sure we are this is the right site and PO, from what was read off the ticket. It does not mean the items or quantities agree — check those below.">
+                      {matchPct}% PO
+                    </span>
+                  )}
                   <button type="button" className="cam-link" style={{ marginLeft: 8, color: "var(--accent)" }} onClick={clearSite}>Change</button>
                 </div>
               ) : (
