@@ -4,7 +4,7 @@ import { GroupedCombobox, type ComboGroup, type ComboOption } from "./GroupedCom
 import { api, fmtMoney } from "../lib/api";
 import { can } from "../../shared/permissions";
 import { Topbar } from "./Shell";
-import type { CurrentUser, Invoice, InvoiceMatch, Overbill, Project } from "../../shared/types";
+import type { CurrentUser, Invoice, InvoiceMatch, InvoiceMatchLine, Overbill, Project } from "../../shared/types";
 
 // Amounts render in the invoice's OWN currency — a $ or € invoice shown with a
 // £ sign misreports what we owe. Falls back to sterling when unknown.
@@ -26,6 +26,16 @@ function rowStatus(inv: Invoice): "matched" | "review" | "none" {
   return "none";
 }
 const ST_LABEL: Record<"matched" | "review" | "none", string> = { matched: "Approved", review: "Review", none: "New" };
+
+/** Red when the billed quantity and the ordered quantity disagree at all, in
+ *  either direction — grey (the default for this sub-label) when they match or
+ *  when one side has no figure to compare. Note this fires on unit-basis
+ *  differences too: a supplier billing 3,000 fasteners against an order for 40
+ *  boxes reads as a mismatch here even though the money agrees. The value
+ *  columns are where the money is judged; this one just says the counts differ. */
+function qtyDiffers(l: InvoiceMatchLine): boolean {
+  return l.qty != null && l.po_qty != null && Math.abs(l.qty - l.po_qty) > 0.001;
+}
 
 /** Per-line detail behind the inbox row's over-billed marker. Spells out which
  *  figure moved, because "the total differs" on its own reads as a pricing
@@ -714,7 +724,8 @@ function MatchPanel({ inv, canEdit, onReload }: { inv: Invoice; canEdit: boolean
                       a matching rate, a value out by 20%, and no quantity either side. */}
                   <div className="r">
                     <span className="lval">{l.qty != null ? qtyFmt(l.qty) : "—"}</span>
-                    <span className="lval sm" style={l.flags.includes("over_qty") ? { color: "var(--danger)" } : undefined}>
+                    <span className="lval sm" style={qtyDiffers(l) ? { color: "var(--danger)" } : undefined}
+                          title={qtyDiffers(l) ? `Billed ${qtyFmt(l.qty)} against ${qtyFmt(l.po_qty)} ordered` : undefined}>
                       {l.po_qty != null ? `PO ${qtyFmt(l.po_qty)}${l.po_unit ? ` ${l.po_unit}` : ""}` : "no PO"}
                     </span>
                   </div>
