@@ -686,8 +686,8 @@ function MatchPanel({ inv, canEdit, onReload }: { inv: Invoice; canEdit: boolean
             </div>
           ) : i.kind === "cross_project" ? (
             <div key={n} className="flash error" style={{ fontSize: 12, margin: "14px 0 0", lineHeight: 1.5 }}>
-              This invoice is on job <b>{i.invoice_project}</b>, but <b>{i.linked}</b> is an order on job{" "}
-              <b>{i.po_project}</b>. Pick the right order from the list below — it's ordered with this job's first.
+              Coded to job <b>{i.invoice_project}</b>, but <b>{i.linked}</b> belongs to job <b>{i.po_project}</b>.
+              Check the PO link — orders on this job are listed first.
             </div>
           ) : null)}
 
