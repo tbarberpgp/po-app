@@ -636,10 +636,26 @@ function MatchPanel({ inv, canEdit, onReload }: { inv: Invoice; canEdit: boolean
   const deliveredVal = m ? m.lines.reduce((s, l) => s + (l.po_line_id ? (l.delivered_qty ?? 0) * (l.po_unit_cost ?? 0) : 0), 0) : 0;
   const notReceived = Math.max(0, orderedVal - deliveredVal);
   const billedTotal = m ? (m.lines.reduce((s, l) => s + (l.amount ?? 0), 0) || invNet) : 0;
-  const linkedTotal = m ? m.lines.reduce((s, l) => s + (l.po_line_id ? (l.amount ?? 0) : 0), 0) : 0;
-  const conf = billedTotal > 0 ? Math.round((100 * linkedTotal) / billedTotal) : 0;
-  const okFrac = total ? Math.round((100 * matchedCount) / total) : 0;
-  const anyFlag = m ? m.lines.some((l) => l.flags.length) : false;
+  // Confidence used to measure only whether each line found SOME PO line, so an
+  // invoice pointed at the wrong order with rate and quantity flags all over it
+  // read 100%. Linkage is the weakest of the three things that have to be true.
+  //
+  // It now counts a line only when it links AND agrees on price and quantity.
+  // Delivery flags are excluded deliberately: the Delivered (GRN) cell reports
+  // that leg on its own, and with most orders carrying no site receipt at all,
+  // folding it in would peg every invoice near zero and say nothing.
+  const PRICE_QTY_FLAGS = ["no_po_line", "price_variance", "total_variance", "over_qty"];
+  const lineReconciles = (l: InvoiceMatchLine) => !!l.po_line_id && !l.flags.some((f) => PRICE_QTY_FLAGS.includes(f));
+  const reconcilingCount = m ? m.lines.filter(lineReconciles).length : 0;
+  const flaggedCount = matchedCount - reconcilingCount;
+  const reconcilingTotal = m ? m.lines.reduce((s, l) => s + (lineReconciles(l) ? (l.amount ?? 0) : 0), 0) : 0;
+
+  // A link to the wrong order is not a percentage — every figure underneath is
+  // measured against the wrong document, so there is no partial credit to give.
+  const conf = poIdentityIssues.length ? 0
+    : billedTotal > 0 ? Math.round((100 * reconcilingTotal) / billedTotal)
+    : 0;
+  const okFrac = poIdentityIssues.length ? 0 : total ? Math.round((100 * reconcilingCount) / total) : 0;
 
   return (
     <div className="a-card a-pad">
@@ -680,8 +696,15 @@ function MatchPanel({ inv, canEdit, onReload }: { inv: Invoice; canEdit: boolean
             <div className="rcell"><div className="rl">Delivered (GRN)</div><div className="rv">{money(deliveredVal)}</div>
               <div className="rs" style={notReceived > 0.5 ? { color: "var(--warn)", fontWeight: 600 } : undefined}>{notReceived > 0.5 ? `${money(notReceived)} not yet received` : "all received"}</div></div>
             <div className="rcell match"><div className="rl">Match confidence</div>
-              <div className="conf"><div className="confbar"><i style={{ width: `${conf}%`, background: conf >= 80 ? "var(--success)" : conf >= 50 ? "var(--warn)" : "var(--danger)" }} /></div><span className="pct">{conf}%</span></div>
-              <div className="rs">{matchedCount} of {total} lines linked{anyFlag ? " · flags" : ""}</div></div>
+              <div className="conf">
+                <div className="confbar"><i style={{ width: `${conf}%`, background: conf >= 80 ? "var(--success)" : conf >= 50 ? "var(--warn)" : "var(--danger)" }} /></div>
+                <span className="pct" style={poIdentityIssues.length ? { color: "var(--danger)" } : undefined}>{conf}%</span>
+              </div>
+              <div className="rs" style={poIdentityIssues.length ? { color: "var(--danger)", fontWeight: 600 } : undefined}>
+                {poIdentityIssues.length
+                  ? "measured against the wrong order"
+                  : <>{reconcilingCount} of {total} lines reconcile{flaggedCount > 0 ? ` · ${flaggedCount} flagged` : ""}</>}
+              </div></div>
           </div>
 
           {/* The invoice list flags a wrong-PO link, but this is the screen with the
@@ -762,7 +785,13 @@ function MatchPanel({ inv, canEdit, onReload }: { inv: Invoice; canEdit: boolean
           {/* progress */}
           <div className="lineprog">
             <div className="track"><i className="ok" style={{ width: `${okFrac}%` }} /><i className="bad" style={{ width: `${100 - okFrac}%` }} /></div>
-            <span className="lab">{matchedCount} of {total} lines matched</span>
+            {/* "matched" meant "found a PO line", which read as agreement. Say what
+                actually holds: how many reconcile on price and quantity. */}
+            <span className="lab">
+              {poIdentityIssues.length
+                ? `${total} line${total === 1 ? "" : "s"} — check the order first`
+                : `${reconcilingCount} of ${total} lines reconcile`}
+            </span>
           </div>
 
           {/* line table */}
@@ -846,7 +875,10 @@ function MatchPanel({ inv, canEdit, onReload }: { inv: Invoice; canEdit: boolean
             })}
           </div>
           <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap", marginTop: 6 }}>
-            <span className="muted" style={{ fontSize: 11 }}>{matchedCount} of {total} line{total === 1 ? "" : "s"} matched to a PO line.</span>
+            <span className="muted" style={{ fontSize: 11 }}>
+              {matchedCount} of {total} line{total === 1 ? "" : "s"} linked to a PO line
+              {flaggedCount > 0 ? `, ${flaggedCount} with price or quantity flags` : ""}.
+            </span>
             {canEdit && !locked && m.matched_po && m.lines.some((l) => l.flags.includes("not_delivered")) && (
               <button className="ghost tiny" disabled={saving}
                 title="No delivery ticket exists because the goods were collected from the supplier — logs a receipt against the PO's outstanding lines so the match can complete"
