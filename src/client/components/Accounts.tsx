@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { PdfHighlightViewer } from "./PdfHighlightViewer";
 import { GroupedCombobox, type ComboGroup, type ComboOption } from "./GroupedCombobox";
+import { AttentionPanel } from "./AttentionPanel";
 import { api, fmtMoney } from "../lib/api";
 import { can } from "../../shared/permissions";
 import { Topbar } from "./Shell";
@@ -16,7 +17,7 @@ const curSymbol = (cur: string | null | undefined) => CUR_SYMBOL[(cur || "GBP").
 const qtyFmt = (n: number | null | undefined) =>
   (n == null ? "—" : Number(n).toLocaleString(undefined, { maximumFractionDigits: 2 }));
 
-type Tab = "inbox" | "overheads" | "pushed" | "dismissed";
+type Tab = "inbox" | "attention" | "overheads" | "pushed" | "dismissed";
 
 /** Row status for the inbox dot/chip: approved-or-pushed → matched (green);
  *  coded but not yet approved → review (amber); uncoded → new (red). */
@@ -104,7 +105,10 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
   const visible = useMemo(() => {
     const q = search.trim().toLowerCase();
     return rows.filter((r) => {
-      if (tab === "overheads") { if (!(r.kind === "overhead" && r.status !== "dismissed")) return false; }
+      // Attention spans the workflow: an unmatched invoice matters whether it's
+      // still in the inbox or already pushed to Xero.
+      if (tab === "attention") { if (!(r.match && r.match.state !== "matched" && r.status !== "dismissed")) return false; }
+      else if (tab === "overheads") { if (!(r.kind === "overhead" && r.status !== "dismissed")) return false; }
       else if (tab === "pushed") { if (r.status !== "pushed") return false; }
       else if (tab === "dismissed") { if (r.status !== "dismissed") return false; }
       else if (!(r.status === "inbox" || r.status === "ready")) return false; // inbox
@@ -118,6 +122,7 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
 
   const sel = rows.find((r) => r.id === selId) ?? null;
   const inboxCount = rows.filter((r) => r.status === "inbox" || r.status === "ready").length;
+  const attentionCount = rows.filter((r) => r.match && r.match.state !== "matched" && r.status !== "dismissed").length;
 
   async function upload(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0];
@@ -165,6 +170,7 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
 
   const TABS: Array<[Tab, string, number | null]> = [
     ["inbox", "Inbox", inboxCount],
+    ["attention", "Needs attention", attentionCount || null],
     ...(isAdmin ? [["overheads", "Overheads", null] as [Tab, string, null]] : []),
     ["pushed", "Pushed", null],
     ["dismissed", "Dismissed", null],
@@ -238,7 +244,9 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
             {/* ── detail ── */}
             <section className="detail">
               {!sel
-                ? <div className="a-card a-pad"><div className="muted" style={{ fontSize: 13 }}>Select an invoice to review, code and push to Xero.</div></div>
+                ? tab === "attention"
+                  ? <AttentionPanel rows={rows} onSelect={setSelId} />
+                  : <div className="a-card a-pad"><div className="muted" style={{ fontSize: 13 }}>Select an invoice to review, code and push to Xero.</div></div>
                 : <InvoiceDetail key={sel.id} inv={sel} projects={projects} accounts={accounts} isAdmin={isAdmin} canEdit={canEdit} busy={busy}
                     onPatch={(b) => patch(sel.id, b)} onPush={() => push(sel.id)} onReload={() => reloadOne(sel.id)} onReread={() => reread(sel.id)}
                     onDismiss={async () => { await api.dismissInvoice(sel.id); load(); setSelId(null); }} />}
@@ -628,10 +636,26 @@ function MatchPanel({ inv, canEdit, onReload }: { inv: Invoice; canEdit: boolean
   const deliveredVal = m ? m.lines.reduce((s, l) => s + (l.po_line_id ? (l.delivered_qty ?? 0) * (l.po_unit_cost ?? 0) : 0), 0) : 0;
   const notReceived = Math.max(0, orderedVal - deliveredVal);
   const billedTotal = m ? (m.lines.reduce((s, l) => s + (l.amount ?? 0), 0) || invNet) : 0;
-  const linkedTotal = m ? m.lines.reduce((s, l) => s + (l.po_line_id ? (l.amount ?? 0) : 0), 0) : 0;
-  const conf = billedTotal > 0 ? Math.round((100 * linkedTotal) / billedTotal) : 0;
-  const okFrac = total ? Math.round((100 * matchedCount) / total) : 0;
-  const anyFlag = m ? m.lines.some((l) => l.flags.length) : false;
+  // Confidence used to measure only whether each line found SOME PO line, so an
+  // invoice pointed at the wrong order with rate and quantity flags all over it
+  // read 100%. Linkage is the weakest of the three things that have to be true.
+  //
+  // It now counts a line only when it links AND agrees on price and quantity.
+  // Delivery flags are excluded deliberately: the Delivered (GRN) cell reports
+  // that leg on its own, and with most orders carrying no site receipt at all,
+  // folding it in would peg every invoice near zero and say nothing.
+  const PRICE_QTY_FLAGS = ["no_po_line", "price_variance", "total_variance", "over_qty"];
+  const lineReconciles = (l: InvoiceMatchLine) => !!l.po_line_id && !l.flags.some((f) => PRICE_QTY_FLAGS.includes(f));
+  const reconcilingCount = m ? m.lines.filter(lineReconciles).length : 0;
+  const flaggedCount = matchedCount - reconcilingCount;
+  const reconcilingTotal = m ? m.lines.reduce((s, l) => s + (lineReconciles(l) ? (l.amount ?? 0) : 0), 0) : 0;
+
+  // A link to the wrong order is not a percentage — every figure underneath is
+  // measured against the wrong document, so there is no partial credit to give.
+  const conf = poIdentityIssues.length ? 0
+    : billedTotal > 0 ? Math.round((100 * reconcilingTotal) / billedTotal)
+    : 0;
+  const okFrac = poIdentityIssues.length ? 0 : total ? Math.round((100 * reconcilingCount) / total) : 0;
 
   return (
     <div className="a-card a-pad">
@@ -672,8 +696,15 @@ function MatchPanel({ inv, canEdit, onReload }: { inv: Invoice; canEdit: boolean
             <div className="rcell"><div className="rl">Delivered (GRN)</div><div className="rv">{money(deliveredVal)}</div>
               <div className="rs" style={notReceived > 0.5 ? { color: "var(--warn)", fontWeight: 600 } : undefined}>{notReceived > 0.5 ? `${money(notReceived)} not yet received` : "all received"}</div></div>
             <div className="rcell match"><div className="rl">Match confidence</div>
-              <div className="conf"><div className="confbar"><i style={{ width: `${conf}%`, background: conf >= 80 ? "var(--success)" : conf >= 50 ? "var(--warn)" : "var(--danger)" }} /></div><span className="pct">{conf}%</span></div>
-              <div className="rs">{matchedCount} of {total} lines linked{anyFlag ? " · flags" : ""}</div></div>
+              <div className="conf">
+                <div className="confbar"><i style={{ width: `${conf}%`, background: conf >= 80 ? "var(--success)" : conf >= 50 ? "var(--warn)" : "var(--danger)" }} /></div>
+                <span className="pct" style={poIdentityIssues.length ? { color: "var(--danger)" } : undefined}>{conf}%</span>
+              </div>
+              <div className="rs" style={poIdentityIssues.length ? { color: "var(--danger)", fontWeight: 600 } : undefined}>
+                {poIdentityIssues.length
+                  ? "measured against the wrong order"
+                  : <>{reconcilingCount} of {total} lines reconcile{flaggedCount > 0 ? ` · ${flaggedCount} flagged` : ""}</>}
+              </div></div>
           </div>
 
           {/* The invoice list flags a wrong-PO link, but this is the screen with the
@@ -754,7 +785,13 @@ function MatchPanel({ inv, canEdit, onReload }: { inv: Invoice; canEdit: boolean
           {/* progress */}
           <div className="lineprog">
             <div className="track"><i className="ok" style={{ width: `${okFrac}%` }} /><i className="bad" style={{ width: `${100 - okFrac}%` }} /></div>
-            <span className="lab">{matchedCount} of {total} lines matched</span>
+            {/* "matched" meant "found a PO line", which read as agreement. Say what
+                actually holds: how many reconcile on price and quantity. */}
+            <span className="lab">
+              {poIdentityIssues.length
+                ? `${total} line${total === 1 ? "" : "s"} — check the order first`
+                : `${reconcilingCount} of ${total} lines reconcile`}
+            </span>
           </div>
 
           {/* line table */}
@@ -838,7 +875,10 @@ function MatchPanel({ inv, canEdit, onReload }: { inv: Invoice; canEdit: boolean
             })}
           </div>
           <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap", marginTop: 6 }}>
-            <span className="muted" style={{ fontSize: 11 }}>{matchedCount} of {total} line{total === 1 ? "" : "s"} matched to a PO line.</span>
+            <span className="muted" style={{ fontSize: 11 }}>
+              {matchedCount} of {total} line{total === 1 ? "" : "s"} linked to a PO line
+              {flaggedCount > 0 ? `, ${flaggedCount} with price or quantity flags` : ""}.
+            </span>
             {canEdit && !locked && m.matched_po && m.lines.some((l) => l.flags.includes("not_delivered")) && (
               <button className="ghost tiny" disabled={saving}
                 title="No delivery ticket exists because the goods were collected from the supplier — logs a receipt against the PO's outstanding lines so the match can complete"
