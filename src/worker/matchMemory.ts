@@ -4,12 +4,14 @@
 // mapping never has to be made by hand twice. Deliveries, invoices and
 // applications each learn in their own `kind` bucket, keyed per supplier.
 
-export type AliasKind = "delivery_item" | "invoice_line" | "afp_line" | "budget_item";
+// `normText` (lowercased alphanumerics — the comparable core of a line
+// description) lives in shared/line-match alongside the invoice/PO line matcher.
+// One definition only: two copies would drift and quietly stop agreeing about
+// what counts as the same line.
+import { normText } from "../shared/line-match";
+export { normText };
 
-/** Lowercased alphanumerics — the comparable core of a line description. */
-export function normText(s: string | null | undefined): string {
-  return (s ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
-}
+export type AliasKind = "delivery_item" | "invoice_line" | "afp_line" | "budget_item";
 
 /** Record human-made mappings (best-effort: learning must never break the save). */
 export async function learnAliases(

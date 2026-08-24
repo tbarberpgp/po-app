@@ -7,6 +7,10 @@ import Anthropic from "@anthropic-ai/sdk";
 import type { Env, Variables } from "../env";
 import { requirePermission } from "../auth";
 import { can } from "../../shared/permissions";
+import {
+  invMaterialCode, lineQty, scanOverbill, SERVICE_CHARGE_LINE_ID,
+  type InvLine, type PoLineRow,
+} from "../../shared/line-match";
 import { ensureXeroContact } from "./xero";
 import { createSalesInvoice, getInvoice, uploadAttachment } from "../xero/client";
 import { nextPONumber } from "./pos";
@@ -453,7 +457,8 @@ invoices.get("/", async (c) => {
        ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
        ORDER BY i.received_at DESC, i.id DESC`,
   ).bind(...binds).all();
-  return c.json(rows.results.map((r) => withTermsCheck(r as Record<string, unknown>)));
+  const scanned = await withOverbill(c.env, rows.results as Record<string, unknown>[]);
+  return c.json(scanned.map((r) => withTermsCheck(r)));
 });
 
 invoices.get("/:id", async (c) => {
@@ -467,7 +472,8 @@ invoices.get("/:id", async (c) => {
   ).bind(c.req.param("id")).first<Record<string, unknown>>();
   if (!inv) return c.json({ error: "not found" }, 404);
   if (inv.kind === "overhead" && !isAdmin(c)) return c.json({ error: "Forbidden: overheads are admin-only" }, 403);
-  return c.json(withTermsCheck(inv));
+  const [scanned] = await withOverbill(c.env, [inv]);
+  return c.json(withTermsCheck(scanned));
 });
 
 /** Serve the original invoice file from R2. Inline by default (so the preview /
@@ -656,12 +662,6 @@ invoices.post("/:id/create-supplier", async (c) => {
   }
 });
 
-/** Leading product-code token of a line, normalised for matching
- *  ("SAVBRF - Euroroof…" → "SAVBRF"). Mirrors the operations/client matcher. */
-function invMaterialCode(s: string): string {
-  const first = (s || "").trim().split(/\s+/)[0] || "";
-  return first.toUpperCase().replace(/[^A-Z0-9]/g, "");
-}
 function nameTokenSet(s: string): Set<string> {
   return new Set((s || "").toLowerCase().replace(/[^a-z0-9 ]/g, " ").split(/\s+/).filter((t) => t.length > 2 && !["ltd", "limited", "the", "and"].includes(t)));
 }
@@ -670,9 +670,37 @@ function nameTokenSet(s: string): Set<string> {
  *  product line" — a human picked this deliberately, so it counts as matched
  *  (no "no_po_line" flag) but is excluded from qty/value variance checks: a
  *  £0 service line has nothing to deliver and nothing to compare a total against. */
-export const SERVICE_CHARGE_LINE_ID = -1;
+export { SERVICE_CHARGE_LINE_ID } from "../../shared/line-match";
 
-type InvLine = { description?: string; qty?: number | null; quantity?: number | null; unit_price?: number | null; amount?: number | null; account_code?: string | null; po_line_id?: number | null };
+/** Attach the over-billing scan to invoice rows — one extra query for the whole
+ *  list (the PO lines of every order these invoices are matched to), rather than
+ *  a full 3-way match per row. Rows with nothing to report are returned as-is. */
+async function withOverbill(env: Env, rows: Record<string, unknown>[]): Promise<Record<string, unknown>[]> {
+  const poIds = [...new Set(rows.map((r) => r.matched_po_id as string | null).filter((x): x is string => !!x))];
+  if (!poIds.length) return rows;
+  const byPo = new Map<string, PoLineRow[]>();
+  for (let i = 0; i < poIds.length; i += 90) {
+    const chunk = poIds.slice(i, i + 90);
+    const res = await env.DB.prepare(
+      `SELECT id, po_id, item, qty, unit, unit_cost FROM po_lines WHERE po_id IN (${chunk.map(() => "?").join(",")})`,
+    ).bind(...chunk).all<PoLineRow & { po_id: string }>();
+    for (const l of res.results) {
+      const arr = byPo.get(l.po_id) ?? [];
+      arr.push(l);
+      byPo.set(l.po_id, arr);
+    }
+  }
+  return rows.map((r) => {
+    const poId = r.matched_po_id as string | null;
+    const poLines = poId ? byPo.get(poId) : null;
+    if (!poLines?.length || !r.lines_json) return r;
+    let invLines: InvLine[] = [];
+    try { invLines = JSON.parse(String(r.lines_json)) as InvLine[]; } catch { return r; }
+    const lines = scanOverbill(invLines, poLines);
+    if (!lines.length) return r;
+    return { ...r, overbill: { lines, excess: lines.reduce((s, l) => s + l.excess, 0) } };
+  });
+}
 
 /** 3-way match: reconcile an invoice against its PO and the deliveries logged
  *  against that PO. Finds the PO (stored match, else suggested from item codes +
@@ -795,7 +823,7 @@ async function computeInvoiceMatch(env: Env, inv: Record<string, unknown>) {
   const takenByCode = new Set<number>();
   const lines = invLines.map((il) => {
     if (il.po_line_id === SERVICE_CHARGE_LINE_ID) {
-      const invQty = typeof il.qty === "number" ? il.qty : null;
+      const invQty = lineQty(il);
       return { description: il.description ?? "", qty: invQty, unit_price: il.unit_price ?? null, amount: il.amount ?? null,
         po_line_id: SERVICE_CHARGE_LINE_ID, po_line_item: "Service charge", po_qty: null, po_unit: null, po_unit_cost: null,
         po_line_total: null, invoice_line_total: typeof il.amount === "number" ? il.amount : null,
@@ -810,7 +838,7 @@ async function computeInvoiceMatch(env: Env, inv: Record<string, unknown>) {
     if (!pl) pl = poLines.find((p) => normText(p.item) === normText(il.description)) || null;
     if (!pl && code.length >= 3) pl = poLines.find((p) => invMaterialCode(p.item) === code && !takenByCode.has(p.id)) || null;
     if (pl) takenByCode.add(pl.id);
-    const invQty = typeof il.qty === "number" ? il.qty : null;
+    const invQty = lineQty(il);
     const dq = pl
       ? (wholePoDelivered ? Math.max(dqByLine.get(pl.id) ?? 0, pl.qty ?? invQty ?? 0) : (dqByLine.get(pl.id) ?? 0))
       : null;

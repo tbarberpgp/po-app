@@ -1385,10 +1385,32 @@ export type Invoice = {
   approved_at: string | null;     // approved-for-payment gate (project invoices)
   approved_by: string | null;
   approval_note: string | null;   // required when approved despite match flags
+  /** Lines billed above the value ordered on the matched PO. Computed on read,
+   *  so it stays visible after approval — an over-billing that's been cleared
+   *  still needs chasing with the supplier. Absent when there's nothing to say. */
+  overbill?: Overbill | null;
   received_at: string | null;
   created_at: string;
   created_by: string | null;
 };
+
+/** One invoice line billed above what the PO ordered for it. `reason` says which
+ *  figure moved: `qty` (more units at the same rate), `rate` (same units, dearer)
+ *  or `value` (the line total is higher but the unit basis differs between the
+ *  two documents, so neither figure alone explains it). */
+export type OverbillLine = {
+  item: string;
+  billed_qty: number | null;
+  po_qty: number | null;
+  billed_rate: number | null;
+  po_rate: number | null;
+  billed_total: number;
+  po_total: number;
+  excess: number;
+  reason: "qty" | "rate" | "value";
+};
+
+export type Overbill = { lines: OverbillLine[]; excess: number };
 
 /** One invoice line reconciled against a PO line and its logged deliveries. */
 export type InvoiceMatchLine = {
