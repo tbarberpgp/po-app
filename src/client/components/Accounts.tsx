@@ -701,9 +701,18 @@ function MatchPanel({ inv, canEdit, onReload }: { inv: Invoice; canEdit: boolean
                   />
                 </div>
               : <span className="muted" style={{ fontSize: 12 }}>No purchase orders available</span>}
-            {m.matched_po && (m.matched_po.is_stored
-              ? <span className="pill approved" style={{ fontSize: 10.5 }}>Matched</span>
-              : <span className="pill" style={{ fontSize: 10.5, background: "var(--navy-soft)", color: "var(--navy)" }}>Auto-matched</span>)}
+            {/* Provenance, not a verdict. This pill used to read "Matched" in green
+                whenever a human had saved the link — which says nothing about
+                whether the link is RIGHT, and sat green on invoices pointed at an
+                order they don't even quote. Both neutral states now say only how
+                the link was made; a suspect order gets its own red state. */}
+            {m.matched_po && (poIdentityIssues.length
+              ? <span className="pill" style={{ fontSize: 10.5, background: "transparent", border: "1px solid var(--danger)", color: "var(--danger)" }}
+                      title="The linked order isn't the one this invoice quotes, or belongs to another job">Check this order</span>
+              : <span className="pill" style={{ fontSize: 10.5, background: "var(--navy-soft)", color: "var(--navy)" }}
+                      title={m.matched_po.is_stored ? "Someone chose this order — not a statement that it reconciles" : "The app guessed this order from the invoice; nobody has confirmed it"}>
+                  {m.matched_po.is_stored ? "Linked by hand" : "Auto-linked"}
+                </span>)}
             {/* Available even when a PO is already matched: the match is often to
                 the wrong order (a sibling job's PO, or the one the supplier
                 quoted) and the covering PO was never raised. Replacing needs a
@@ -725,9 +734,15 @@ function MatchPanel({ inv, canEdit, onReload }: { inv: Invoice; canEdit: boolean
           </div>
           {m.matched_po && !m.matched_po.is_stored && (
             <p className="muted" style={{ margin: "4px 0 0", fontSize: 11.5 }}>
-              {inv.extracted_po_ref
+              {/* Only claim the order ref produced this link when it actually
+                  resolved to it. Printing "ref X → PO Y" for a ref that resolved
+                  to nothing states a derivation that never happened, and reads as
+                  corroboration precisely where there is none. */}
+              {inv.extracted_po_ref && m.po_ref?.matched
                 ? <>Matched on our order ref <b>{inv.extracted_po_ref}</b> → {m.matched_po.po_number}. Approve to lock in.</>
-                : "Auto-matched — approve to lock in."}
+                : inv.extracted_po_ref
+                ? <>Guessed from the supplier and item codes — <b>not</b> from the ref <b>{inv.extracted_po_ref}</b> printed on the invoice. Check it before approving.</>
+                : "Guessed from the supplier and item codes — nobody has confirmed it. Check it before approving."}
             </p>
           )}
 
