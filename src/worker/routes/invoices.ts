@@ -746,35 +746,92 @@ async function computeInvoiceMatch(env: Env, inv: Record<string, unknown>) {
       WHERE po.status != 'deleted' AND po.order_type != 'framework' AND p.deleted_at IS NULL
       ORDER BY p.code, po.po_number`,
   ).all<{ id: string; po_number: string; supplier: string | null; project_id: string; order_type: string | null; total_value: number | null; project_code: string }>()).results;
+
+  // Frameworks are excluded above because you bill against a call-off or a real
+  // order, never the framework itself. But suppliers DO print the framework
+  // number on their invoices, and treating that as "no ref" threw away the one
+  // reliable thing it tells us: which job the order lives on. Kept separately so
+  // a quoted framework can pin the project without becoming the match.
+  const frameworks = (await env.DB.prepare(
+    `SELECT po.id, po.po_number, po.project_id, p.code AS project_code
+       FROM purchase_orders po JOIN projects p ON p.id = po.project_id
+      WHERE po.status != 'deleted' AND po.order_type = 'framework' AND p.deleted_at IS NULL`,
+  ).all<{ id: string; po_number: string; project_id: string; project_code: string }>()).results;
   const poIds = pos.map((p) => p.id);
   const allLines = poIds.length ? (await env.DB.prepare(
     `SELECT id, po_id, item, qty, unit, unit_cost FROM po_lines WHERE po_id IN (${poIds.map(() => "?").join(",")})`,
   ).bind(...poIds).all<{ id: number; po_id: string; item: string; qty: number; unit: string; unit_cost: number }>()).results : [];
 
-  // Rank POs: item-code hits + supplier-name overlap.
+  // Which job the order should be on. The invoice's own coding first — a human
+  // set or confirmed it — else the job of a framework the invoice quotes.
+  const normPoNum = (x: string | null | undefined) => String(x ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "").replace(/^PO/, "");
+  const quotedRef = normPoNum(inv.extracted_po_ref as string | null);
+  const quotedFramework = quotedRef.length >= 4
+    ? frameworks.find((f) => normPoNum(f.po_number) === quotedRef) ?? null
+    : null;
+  const preferProject = (inv.project_id as string | null) || quotedFramework?.project_id || null;
+
+  // Rank POs: same job first, then quantity fit, then item-code hits, then supplier.
+  //
+  // Job agreement leads because item codes alone are not discriminating — the same
+  // same material sits on ten orders across four jobs, and ranking on codes alone put
+  // invoices on a sibling job's order repeatedly. Quantity fit breaks the ties that
+  // remain: two orders on the right job can carry the same two items, and only one
+  // of them has the quantities being billed (260 bars and 950 brackets fit
+  // PO-26001-0030 exactly and overshoot PO-26001-0014 by 2x).
+  //
+  // These only decide the ORDER of the picker. Every live PO stays reachable, so a
+  // genuine cross-job bill is still one click away.
   const invCodes = new Set(invLines.map((l) => invMaterialCode(l.description ?? "")).filter((x) => x.length >= 3));
   const invSup = nameTokenSet(String(inv.supplier_name ?? ""));
   const ranked = pos.map((po) => {
-    const codes = new Set(allLines.filter((l) => l.po_id === po.id).map((l) => invMaterialCode(l.item)));
+    const poLinesFor = allLines.filter((l) => l.po_id === po.id);
+    const codes = new Set(poLinesFor.map((l) => invMaterialCode(l.item)));
     let hits = 0; for (const cd of invCodes) if (codes.has(cd)) hits++;
     const ct = nameTokenSet(po.supplier ?? "");
     let sup = 0; for (const t of invSup) if (ct.has(t)) sup++;
-    return { po, hits, supMatch: invSup.size ? sup / invSup.size : 0 };
-  }).filter((r) => r.hits > 0 || r.supMatch >= 0.5).sort((a, b) => (b.hits - a.hits) || (b.supMatch - a.supMatch));
+    // Lines whose billed value the order could actually cover, within the same 1%
+    // tolerance used elsewhere. An order the invoice overshoots is the weaker
+    // candidate — usually it's a different call-off of the same materials.
+    let fit = 0;
+    for (const il of invLines) {
+      const code = invMaterialCode(il.description ?? "");
+      const pl = code.length >= 3 ? poLinesFor.find((l) => invMaterialCode(l.item) === code) : undefined;
+      if (!pl || pl.qty == null || pl.unit_cost == null) continue;
+      const q = lineQty(il);
+      const billed = typeof il.amount === "number" ? il.amount : (q != null && typeof il.unit_price === "number" ? q * il.unit_price : null);
+      if (billed == null) continue;
+      if (billed <= pl.qty * pl.unit_cost * 1.01 + 1) fit++;
+    }
+    return { po, hits, fit, sameProject: !!preferProject && po.project_id === preferProject, supMatch: invSup.size ? sup / invSup.size : 0 };
+  }).filter((r) => r.hits > 0 || r.supMatch >= 0.5)
+    .sort((a, b) =>
+      (Number(b.sameProject) - Number(a.sameProject))
+      || (b.fit - a.fit)
+      || (b.hits - a.hits)
+      || (b.supMatch - a.supMatch));
 
   // Direct hit: if the invoice quotes OUR PO number, that's the definitive match
   // — far more reliable than the item-code / supplier-name heuristics. Exact
   // normalized compare first, then the fuzzy resolver (supplier typos/suffixes).
-  const normPo = (s: string | null | undefined) => String(s ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "").replace(/^PO/, "");
-  const poRef = normPo(inv.extracted_po_ref as string | null);
-  let directPo = poRef.length >= 4 ? pos.find((p) => normPo(p.po_number) === poRef) ?? null : null;
+  const poRef = quotedRef;
+  let directPo = poRef.length >= 4 ? pos.find((p) => normPoNum(p.po_number) === poRef) ?? null : null;
   if (!directPo && poRef.length >= 4) {
     const fuzzy = await resolvePoRef(env, inv.extracted_po_ref as string | null);
     if (fuzzy) directPo = pos.find((p) => p.id === fuzzy.id) ?? null;
   }
   // Surface the quoted PO ref + whether it resolved to a live order, so the UI can
   // explain "invoice quotes PO-X but that's not a live order" (deleted / not raised).
-  const poRefOut = inv.extracted_po_ref ? { quoted: String(inv.extracted_po_ref), matched: !!directPo } : null;
+  // A quoted framework is not "not a live order" — it's a live order you don't
+  // bill against. Saying so lets the UI point at the call-off or job order
+  // instead of implying the supplier printed something meaningless.
+  const poRefOut = inv.extracted_po_ref
+    ? {
+      quoted: String(inv.extracted_po_ref),
+      matched: !!directPo,
+      ...(quotedFramework ? { framework: true, framework_project: quotedFramework.project_code } : {}),
+    }
+    : null;
 
   const chosenId = (inv.matched_po_id as string | null) || directPo?.id || ranked[0]?.po.id || null;
   const chosen = pos.find((p) => p.id === chosenId) || null;

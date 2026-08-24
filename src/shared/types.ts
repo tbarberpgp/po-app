@@ -1446,7 +1446,11 @@ export type InvoiceMatch = {
   // Net £ already billed to the chosen PO by OTHER invoices (over-billing check).
   po_billed_other?: number;
   match_status: "no_po" | "partial" | "unmatched" | "flagged" | "ok";
-  po_ref: { quoted: string; matched: boolean } | null;   // PO number on the invoice + whether it resolved to a live order
+  /** The PO number printed on the invoice, and whether it resolved to an order we
+   *  can bill against. `framework` marks the case where it resolved to a framework
+   *  — a live order, but one you bill via a call-off or a job order rather than
+   *  directly, so it pins the job without being the match itself. */
+  po_ref: { quoted: string; matched: boolean; framework?: boolean; framework_project?: string } | null;   // PO number on the invoice + whether it resolved to a live order
 };
 
 // ── Contract register (Commercials → Contract) ──────────────────────────────
