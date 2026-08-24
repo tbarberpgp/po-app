@@ -77,7 +77,10 @@ export function lineQty(l: InvLine): number | null {
  *                    the coding was right and the guessed order was wrong.
  *  `unlinked` — the line couldn't be tied to any line on the order. Usually a
  *  service, carriage or misc charge that nobody marked as a service charge.
- *  `rate`     — linked, but billed at a rate we didn't agree.
+ *  `rate`     — linked, billed at a rate we didn't agree, AND the money disagrees
+ *                too. A rate difference on its own is usually a unit conversion
+ *                (per piece against a per-box order), which the detail panel has
+ *                always treated as fine — reporting it here contradicted that.
  *  `over`     — linked, but the line bills more value than was ordered. `why`
  *               says which figure moved: more units at the agreed rate (`qty`),
  *               the same units at a dearer rate (`rate`), or a higher total on a
@@ -167,15 +170,32 @@ export function scanLineMatch(invLines: InvLine[], poLines: PoLineRow[], po?: Po
     const billed = typeof il.amount === "number" ? il.amount : (qty != null && rate != null ? qty * rate : null);
     const ordered = pl.qty != null && pl.unit_cost != null ? pl.qty * pl.unit_cost : null;
 
-    // A rate we didn't agree is worth saying whatever the totals do — it's the
-    // one figure both sides signed up to. Skipped where either side has no rate.
-    if (rate != null && pl.unit_cost != null && pl.unit_cost > 0 && Math.abs(rate - pl.unit_cost) > 0.01) {
+    // VALUE FIRST, matching computeInvoiceMatch. A rate difference only means
+    // something once the money disagrees: suppliers bill a different unit basis
+    // to the order all the time (1,500 fasteners at £0.26 against 15 boxes at
+    // £26.11 — £391.65 either way), and reporting the rate there contradicts the
+    // detail panel, which correctly calls that line ok.
+    //
+    // The reciprocal test catches the same thing from the other side: many more
+    // units at a proportionally smaller rate is a unit conversion, not a price
+    // change. Needed as well as the value test because a part-shipment on a
+    // different basis has BOTH a lower value and a wildly different rate.
+    const valuesKnown = billed != null && ordered != null && ordered > 0;
+    const valuesAgree = valuesKnown && Math.abs(billed! - ordered!) <= Math.max(1, ordered! * 0.01);
+    const qtyRatio = qty != null && pl.qty != null && pl.qty > 0 ? qty / pl.qty : null;
+    const rateRatio = rate != null && pl.unit_cost != null && pl.unit_cost > 0 ? rate / pl.unit_cost : null;
+    const unitBasisDiffers = qtyRatio != null && rateRatio != null
+      && ((qtyRatio > 2 && rateRatio < 0.5) || (qtyRatio < 0.5 && rateRatio > 2));
+
+    if (rate != null && pl.unit_cost != null && pl.unit_cost > 0
+      && Math.abs(rate - pl.unit_cost) > 0.01
+      && !valuesAgree && !unitBasisDiffers) {
       issues.push({ kind: "rate", item: pl.item, billed: rate, ordered: pl.unit_cost });
     }
 
-    if (billed == null || ordered == null || ordered <= 0) continue;
-    const excess = billed - ordered;
-    if (excess <= Math.max(1, ordered * 0.01)) continue;
+    if (!valuesKnown) continue;
+    const excess = billed! - ordered!;
+    if (excess <= Math.max(1, ordered! * 0.01)) continue;
     const sameRate = rate != null && pl.unit_cost != null && Math.abs(rate - pl.unit_cost) <= 0.01;
     const overQty = qty != null && pl.qty != null && qty > pl.qty + 0.001;
     const sameQty = qty != null && pl.qty != null && Math.abs(qty - pl.qty) <= 0.001;
