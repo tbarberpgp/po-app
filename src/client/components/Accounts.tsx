@@ -603,9 +603,19 @@ function MatchPanel({ inv, canEdit, onReload }: { inv: Invoice; canEdit: boolean
     finally { setSaving(false); }
   }
 
+  // Identity problems with the linked order itself: it isn't the one the invoice
+  // prints, or it belongs to another job. Held separately because they outrank
+  // the line detail — lines reconciling against the wrong order proves nothing,
+  // so this must not be allowed to read "Matched ✓".
+  const poIdentityIssues = (inv.match?.issues ?? []).filter(
+    (i) => i.kind === "wrong_po" || i.kind === "cross_project",
+  );
+
   // "No PO match" strictly means NO purchase order could be associated; once a
   // PO is in play but lines/flags need attention, it's a review state.
-  const statusPill = status === "ok"
+  const statusPill = poIdentityIssues.length
+    ? <span className="pill" style={{ background: "transparent", border: "1px solid var(--danger)", color: "var(--danger)" }}>Wrong PO?</span>
+    : status === "ok"
     ? <span className="pill approved">Matched ✓</span>
     : <span className="pill" style={{ background: "transparent", border: "1px solid var(--warn)", color: "var(--warn)" }}>
         {status === "no_po" || status === "unmatched" ? "No PO match" : status === "partial" ? "Needs review — lines unlinked" : "Needs review"}
@@ -660,6 +670,21 @@ function MatchPanel({ inv, canEdit, onReload }: { inv: Invoice; canEdit: boolean
               <div className="conf"><div className="confbar"><i style={{ width: `${conf}%`, background: conf >= 80 ? "var(--success)" : conf >= 50 ? "var(--warn)" : "var(--danger)" }} /></div><span className="pct">{conf}%</span></div>
               <div className="rs">{matchedCount} of {total} lines linked{anyFlag ? " · flags" : ""}</div></div>
           </div>
+
+          {/* The invoice list flags a wrong-PO link, but this is the screen with the
+              picker that fixes it — a warning shown only where you can't act on it
+              is half a warning. Sits directly above the selector. */}
+          {inv.match?.issues.map((i, n) => i.kind === "wrong_po" ? (
+            <div key={n} className="flash error" style={{ fontSize: 12, margin: "14px 0 0", lineHeight: 1.5 }}>
+              This invoice prints <b>{i.quoted}</b>, but it's linked to <b>{i.linked}</b>. Check which order it
+              really bills against — the line checks below mean nothing until that's right.
+            </div>
+          ) : i.kind === "cross_project" ? (
+            <div key={n} className="flash error" style={{ fontSize: 12, margin: "14px 0 0", lineHeight: 1.5 }}>
+              Coded to job <b>{i.invoice_project}</b>, but <b>{i.linked}</b> belongs to job <b>{i.po_project}</b>.
+              Either the coding or the PO link is wrong.
+            </div>
+          ) : null)}
 
           {/* matched PO */}
           <div style={{ display: "flex", gap: 10, alignItems: "center", margin: "14px 0 4px", flexWrap: "wrap" }}>
