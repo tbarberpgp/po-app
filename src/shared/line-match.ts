@@ -71,7 +71,10 @@ export function lineQty(l: InvLine): number | null {
  *                    linked. The most serious kind: if the wrong order is linked,
  *                    every price and quantity comparison beneath it is meaningless.
  *  `cross_project` — the linked order belongs to a different job than the invoice
- *                    is coded to. Either the coding or the link is wrong.
+ *                    is coded to. Reported against the LINK, not the coding: the
+ *                    coding is set or confirmed by a person, while the link is
+ *                    routinely a machine guess, and on every case examined so far
+ *                    the coding was right and the guessed order was wrong.
  *  `unlinked` — the line couldn't be tied to any line on the order. Usually a
  *  service, carriage or misc charge that nobody marked as a service charge.
  *  `rate`     — linked, but billed at a rate we didn't agree.

@@ -47,7 +47,7 @@ function matchLabel(m: MatchSummary, cur?: string | null): string {
   const wrong = m.issues.find((i) => i.kind === "wrong_po");
   if (wrong?.kind === "wrong_po") return `Wrong PO \u00b7 invoice quotes ${wrong.quoted}`;
   const xp = m.issues.find((i) => i.kind === "cross_project");
-  if (xp?.kind === "cross_project") return `Wrong job \u00b7 PO is on ${xp.po_project}`;
+  if (xp?.kind === "cross_project") return `Wrong PO \u00b7 that order is on job ${xp.po_project}`;
   if (m.excess > 0) return `Unmatched \u00b7 ${fmtMoney(m.excess, cur || "GBP")} over order`;
   if (m.issues.some((i) => i.kind === "rate")) return "Unmatched \u00b7 rate differs from PO";
   const n = m.issues.filter((i) => i.kind === "unlinked").length;
@@ -640,6 +640,11 @@ function MatchPanel({ inv, canEdit, onReload }: { inv: Invoice; canEdit: boolean
         {!loading && statusPill}
         {m?.po_ref && (m.po_ref.matched
           ? <span className="pill approved" style={{ fontSize: 10 }} title="Associated via the PO number printed on the invoice">via PO {m.po_ref.quoted}</span>
+          : m.po_ref.framework
+          // A framework IS live — you just bill against a call-off or a job order,
+          // never the framework itself. Calling it "not a live order" sent people
+          // looking for a deleted PO that was never missing.
+          ? <span className="pill" style={{ fontSize: 10, background: "var(--navy-soft)", color: "var(--navy)" }} title={`${m.po_ref.quoted} is a framework agreement on job ${m.po_ref.framework_project ?? "?"} — invoices bill against a call-off or an order on that job, not the framework. Orders on that job are listed first below.`}>quotes framework {m.po_ref.quoted}</span>
           : <span className="pill" style={{ fontSize: 10, background: "transparent", border: "1px solid var(--warn)", color: "var(--warn)" }} title="This PO number is printed on the invoice but isn't a live order — it may have been deleted or never raised.">quotes {m.po_ref.quoted} · not a live order</span>)}
       </div>
 
@@ -681,8 +686,8 @@ function MatchPanel({ inv, canEdit, onReload }: { inv: Invoice; canEdit: boolean
             </div>
           ) : i.kind === "cross_project" ? (
             <div key={n} className="flash error" style={{ fontSize: 12, margin: "14px 0 0", lineHeight: 1.5 }}>
-              Coded to job <b>{i.invoice_project}</b>, but <b>{i.linked}</b> belongs to job <b>{i.po_project}</b>.
-              Either the coding or the PO link is wrong.
+              This invoice is on job <b>{i.invoice_project}</b>, but <b>{i.linked}</b> is an order on job{" "}
+              <b>{i.po_project}</b>. Pick the right order from the list below — it's ordered with this job's first.
             </div>
           ) : null)}
 
