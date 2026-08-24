@@ -4,7 +4,7 @@ import { GroupedCombobox, type ComboGroup, type ComboOption } from "./GroupedCom
 import { api, fmtMoney } from "../lib/api";
 import { can } from "../../shared/permissions";
 import { Topbar } from "./Shell";
-import type { CurrentUser, Invoice, InvoiceMatch, Overbill, Project } from "../../shared/types";
+import type { CurrentUser, Invoice, InvoiceMatch, InvoiceMatchLine, MatchSummary, Project } from "../../shared/types";
 
 // Amounts render in the invoice's OWN currency — a $ or € invoice shown with a
 // £ sign misreports what we owe. Falls back to sterling when unknown.
@@ -27,22 +27,51 @@ function rowStatus(inv: Invoice): "matched" | "review" | "none" {
 }
 const ST_LABEL: Record<"matched" | "review" | "none", string> = { matched: "Approved", review: "Review", none: "New" };
 
-/** Per-line detail behind the inbox row's over-billed marker. Spells out which
- *  figure moved, because "the total differs" on its own reads as a pricing
- *  query and gets waved through as one. */
-function overbillTitle(o: Overbill, cur?: string | null): string {
-  const m = (n: number) => fmtMoney(n, cur || "GBP");
-  return o.lines.map((l) => {
-    const head = `${l.item}: billed ${m(l.billed_total)} against ${m(l.po_total)} ordered`;
-    if (l.reason === "qty" && l.billed_qty != null && l.po_qty != null) {
-      return `${head} — ${qtyFmt(l.billed_qty)} billed vs ${qtyFmt(l.po_qty)} ordered, same rate`;
-    }
-    if (l.reason === "rate" && l.billed_rate != null && l.po_rate != null) {
-      return `${head} — same quantity, rate ${m(l.billed_rate)} vs ${m(l.po_rate)} ordered`;
-    }
-    return `${head} — the invoice and the order use a different unit basis, so the values can't be compared per unit`;
+/** Red when the billed quantity and the ordered quantity disagree at all, in
+ *  either direction — grey (the default for this sub-label) when they match or
+ *  when one side has no figure to compare. Note this fires on unit-basis
+ *  differences too: a supplier billing 3,000 fasteners against an order for 40
+ *  boxes reads as a mismatch here even though the money agrees. The value
+ *  columns are where the money is judged; this one just says the counts differ. */
+function qtyDiffers(l: InvoiceMatchLine): boolean {
+  return l.qty != null && l.po_qty != null && Math.abs(l.qty - l.po_qty) > 0.001;
+}
+
+/** The one thing wrong with an unmatched invoice, short enough for a row.
+ *  A bare "Unmatched" on a third of the book is a label; a stated reason is a
+ *  task, so the badge names the biggest problem and the tooltip lists the rest. */
+function matchLabel(m: MatchSummary, cur?: string | null): string {
+  if (m.state === "no_po") return "No PO matched";
+  // Worst first: a link to the wrong order makes the price and quantity detail
+  // beneath it meaningless, so it has to be the thing the row says.
+  const wrong = m.issues.find((i) => i.kind === "wrong_po");
+  if (wrong?.kind === "wrong_po") return `Wrong PO \u00b7 invoice quotes ${wrong.quoted}`;
+  const xp = m.issues.find((i) => i.kind === "cross_project");
+  if (xp?.kind === "cross_project") return `Wrong job \u00b7 PO is on ${xp.po_project}`;
+  if (m.excess > 0) return `Unmatched \u00b7 ${fmtMoney(m.excess, cur || "GBP")} over order`;
+  if (m.issues.some((i) => i.kind === "rate")) return "Unmatched \u00b7 rate differs from PO";
+  const n = m.issues.filter((i) => i.kind === "unlinked").length;
+  if (n) return `Unmatched \u00b7 ${n} line${n > 1 ? "s" : ""} not on the PO`;
+  return "Unmatched";
+}
+
+/** Every reason, spelled out. "The total differs" on its own reads as a pricing
+ *  query and gets waved through as one, so each line says which figure moved. */
+function matchTitle(m: MatchSummary, cur?: string | null): string {
+  if (m.state === "no_po") return "No purchase order is matched to this invoice.";
+  const money = (n: number) => fmtMoney(n, cur || "GBP");
+  return m.issues.map((i) => {
+    if (i.kind === "wrong_po") return `The invoice quotes ${i.quoted}, but it's linked to ${i.linked}. Check which order this really bills against \u2014 the price and quantity checks below mean nothing until that's right.`;
+    if (i.kind === "cross_project") return `Coded to job ${i.invoice_project}, but ${i.linked} belongs to job ${i.po_project}.`;
+    if (i.kind === "unlinked") return `"${i.item}" isn't linked to any line on the PO \u2014 mark it as a service charge if that's what it is.`;
+    if (i.kind === "rate") return `${i.item}: billed at ${money(i.billed)}, ordered at ${money(i.ordered)}.`;
+    const head = `${i.item}: billed ${money(i.billed)} against ${money(i.ordered)} ordered, ${money(i.excess)} over`;
+    if (i.why === "qty") return `${head} \u2014 more units at the agreed rate.`;
+    if (i.why === "rate") return `${head} \u2014 same units, dearer rate.`;
+    return `${head} \u2014 the invoice and the order use a different unit basis.`;
   }).join("\n");
 }
+
 
 /**
  * Accounts workpiece — a Dext-style two-pane inbox. Supplier invoices arrive via
@@ -189,11 +218,11 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
                             {r.source === "email" && <span title="received by email">✉</span>}
                             {r.extract_error && <span title="couldn't auto-read">⚠</span>}
                             {r.terms_mismatch && <span style={{ color: "var(--warn)" }} title={`Invoice due ${r.due_date ?? "?"} but the account is ${r.supplier_payment_terms ?? "on other terms"} ⇒ ${r.expected_due_date ?? "?"}`}>⚠ terms</span>}
-                            {/* Stays on the row after approval — a cleared over-billing
-                                still needs chasing with the supplier. */}
-                            {r.overbill && (
-                              <span style={{ color: "var(--danger)", fontWeight: 600 }} title={overbillTitle(r.overbill, r.currency)}>
-                                ⚠ over-billed {money(r.overbill.excess, r.currency)}
+                            {/* Stays on the row after approval — a mismatch that was
+                                approved anyway still needs chasing with the supplier. */}
+                            {r.match && r.match.state !== "matched" && (
+                              <span style={{ color: "var(--danger)", fontWeight: 600 }} title={matchTitle(r.match, r.currency)}>
+                                ⚠ {matchLabel(r.match, r.currency)}
                               </span>
                             )}
                           </div>
@@ -574,9 +603,19 @@ function MatchPanel({ inv, canEdit, onReload }: { inv: Invoice; canEdit: boolean
     finally { setSaving(false); }
   }
 
+  // Identity problems with the linked order itself: it isn't the one the invoice
+  // prints, or it belongs to another job. Held separately because they outrank
+  // the line detail — lines reconciling against the wrong order proves nothing,
+  // so this must not be allowed to read "Matched ✓".
+  const poIdentityIssues = (inv.match?.issues ?? []).filter(
+    (i) => i.kind === "wrong_po" || i.kind === "cross_project",
+  );
+
   // "No PO match" strictly means NO purchase order could be associated; once a
   // PO is in play but lines/flags need attention, it's a review state.
-  const statusPill = status === "ok"
+  const statusPill = poIdentityIssues.length
+    ? <span className="pill" style={{ background: "transparent", border: "1px solid var(--danger)", color: "var(--danger)" }}>Wrong PO?</span>
+    : status === "ok"
     ? <span className="pill approved">Matched ✓</span>
     : <span className="pill" style={{ background: "transparent", border: "1px solid var(--warn)", color: "var(--warn)" }}>
         {status === "no_po" || status === "unmatched" ? "No PO match" : status === "partial" ? "Needs review — lines unlinked" : "Needs review"}
@@ -631,6 +670,21 @@ function MatchPanel({ inv, canEdit, onReload }: { inv: Invoice; canEdit: boolean
               <div className="conf"><div className="confbar"><i style={{ width: `${conf}%`, background: conf >= 80 ? "var(--success)" : conf >= 50 ? "var(--warn)" : "var(--danger)" }} /></div><span className="pct">{conf}%</span></div>
               <div className="rs">{matchedCount} of {total} lines linked{anyFlag ? " · flags" : ""}</div></div>
           </div>
+
+          {/* The invoice list flags a wrong-PO link, but this is the screen with the
+              picker that fixes it — a warning shown only where you can't act on it
+              is half a warning. Sits directly above the selector. */}
+          {inv.match?.issues.map((i, n) => i.kind === "wrong_po" ? (
+            <div key={n} className="flash error" style={{ fontSize: 12, margin: "14px 0 0", lineHeight: 1.5 }}>
+              This invoice prints <b>{i.quoted}</b>, but it's linked to <b>{i.linked}</b>. Check which order it
+              really bills against — the line checks below mean nothing until that's right.
+            </div>
+          ) : i.kind === "cross_project" ? (
+            <div key={n} className="flash error" style={{ fontSize: 12, margin: "14px 0 0", lineHeight: 1.5 }}>
+              Coded to job <b>{i.invoice_project}</b>, but <b>{i.linked}</b> belongs to job <b>{i.po_project}</b>.
+              Either the coding or the PO link is wrong.
+            </div>
+          ) : null)}
 
           {/* matched PO */}
           <div style={{ display: "flex", gap: 10, alignItems: "center", margin: "14px 0 4px", flexWrap: "wrap" }}>
@@ -714,7 +768,8 @@ function MatchPanel({ inv, canEdit, onReload }: { inv: Invoice; canEdit: boolean
                       a matching rate, a value out by 20%, and no quantity either side. */}
                   <div className="r">
                     <span className="lval">{l.qty != null ? qtyFmt(l.qty) : "—"}</span>
-                    <span className="lval sm" style={l.flags.includes("over_qty") ? { color: "var(--danger)" } : undefined}>
+                    <span className="lval sm" style={qtyDiffers(l) ? { color: "var(--danger)" } : undefined}
+                          title={qtyDiffers(l) ? `Billed ${qtyFmt(l.qty)} against ${qtyFmt(l.po_qty)} ordered` : undefined}>
                       {l.po_qty != null ? `PO ${qtyFmt(l.po_qty)}${l.po_unit ? ` ${l.po_unit}` : ""}` : "no PO"}
                     </span>
                   </div>
