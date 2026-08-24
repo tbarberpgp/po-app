@@ -4,7 +4,7 @@ import { GroupedCombobox, type ComboGroup, type ComboOption } from "./GroupedCom
 import { api, fmtMoney } from "../lib/api";
 import { can } from "../../shared/permissions";
 import { Topbar } from "./Shell";
-import type { CurrentUser, Invoice, InvoiceMatch, InvoiceMatchLine, Overbill, Project } from "../../shared/types";
+import type { CurrentUser, Invoice, InvoiceMatch, InvoiceMatchLine, MatchSummary, Project } from "../../shared/types";
 
 // Amounts render in the invoice's OWN currency — a $ or € invoice shown with a
 // £ sign misreports what we owe. Falls back to sterling when unknown.
@@ -37,22 +37,34 @@ function qtyDiffers(l: InvoiceMatchLine): boolean {
   return l.qty != null && l.po_qty != null && Math.abs(l.qty - l.po_qty) > 0.001;
 }
 
-/** Per-line detail behind the inbox row's over-billed marker. Spells out which
- *  figure moved, because "the total differs" on its own reads as a pricing
- *  query and gets waved through as one. */
-function overbillTitle(o: Overbill, cur?: string | null): string {
-  const m = (n: number) => fmtMoney(n, cur || "GBP");
-  return o.lines.map((l) => {
-    const head = `${l.item}: billed ${m(l.billed_total)} against ${m(l.po_total)} ordered`;
-    if (l.reason === "qty" && l.billed_qty != null && l.po_qty != null) {
-      return `${head} — ${qtyFmt(l.billed_qty)} billed vs ${qtyFmt(l.po_qty)} ordered, same rate`;
-    }
-    if (l.reason === "rate" && l.billed_rate != null && l.po_rate != null) {
-      return `${head} — same quantity, rate ${m(l.billed_rate)} vs ${m(l.po_rate)} ordered`;
-    }
-    return `${head} — the invoice and the order use a different unit basis, so the values can't be compared per unit`;
+/** The one thing wrong with an unmatched invoice, short enough for a row.
+ *  A bare "Unmatched" on a third of the book is a label; a stated reason is a
+ *  task, so the badge names the biggest problem and the tooltip lists the rest. */
+function matchLabel(m: MatchSummary, cur?: string | null): string {
+  if (m.state === "no_po") return "No PO matched";
+  if (m.excess > 0) return `Unmatched \u00b7 ${fmtMoney(m.excess, cur || "GBP")} over order`;
+  const rate = m.issues.find((i) => i.kind === "rate");
+  if (rate) return "Unmatched \u00b7 rate differs from PO";
+  const n = m.issues.filter((i) => i.kind === "unlinked").length;
+  if (n) return `Unmatched \u00b7 ${n} line${n > 1 ? "s" : ""} not on the PO`;
+  return "Unmatched";
+}
+
+/** Every reason, spelled out. "The total differs" on its own reads as a pricing
+ *  query and gets waved through as one, so each line says which figure moved. */
+function matchTitle(m: MatchSummary, cur?: string | null): string {
+  if (m.state === "no_po") return "No purchase order is matched to this invoice.";
+  const money = (n: number) => fmtMoney(n, cur || "GBP");
+  return m.issues.map((i) => {
+    if (i.kind === "unlinked") return `"${i.item}" isn't linked to any line on the PO \u2014 mark it as a service charge if that's what it is.`;
+    if (i.kind === "rate") return `${i.item}: billed at ${money(i.billed)}, ordered at ${money(i.ordered)}.`;
+    const head = `${i.item}: billed ${money(i.billed)} against ${money(i.ordered)} ordered, ${money(i.excess)} over`;
+    if (i.why === "qty") return `${head} \u2014 more units at the agreed rate.`;
+    if (i.why === "rate") return `${head} \u2014 same units, dearer rate.`;
+    return `${head} \u2014 the invoice and the order use a different unit basis.`;
   }).join("\n");
 }
+
 
 /**
  * Accounts workpiece — a Dext-style two-pane inbox. Supplier invoices arrive via
@@ -199,11 +211,11 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
                             {r.source === "email" && <span title="received by email">✉</span>}
                             {r.extract_error && <span title="couldn't auto-read">⚠</span>}
                             {r.terms_mismatch && <span style={{ color: "var(--warn)" }} title={`Invoice due ${r.due_date ?? "?"} but the account is ${r.supplier_payment_terms ?? "on other terms"} ⇒ ${r.expected_due_date ?? "?"}`}>⚠ terms</span>}
-                            {/* Stays on the row after approval — a cleared over-billing
-                                still needs chasing with the supplier. */}
-                            {r.overbill && (
-                              <span style={{ color: "var(--danger)", fontWeight: 600 }} title={overbillTitle(r.overbill, r.currency)}>
-                                ⚠ over-billed {money(r.overbill.excess, r.currency)}
+                            {/* Stays on the row after approval — a mismatch that was
+                                approved anyway still needs chasing with the supplier. */}
+                            {r.match && r.match.state !== "matched" && (
+                              <span style={{ color: "var(--danger)", fontWeight: 600 }} title={matchTitle(r.match, r.currency)}>
+                                ⚠ {matchLabel(r.match, r.currency)}
                               </span>
                             )}
                           </div>

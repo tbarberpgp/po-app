@@ -8,7 +8,7 @@ import type { Env, Variables } from "../env";
 import { requirePermission } from "../auth";
 import { can } from "../../shared/permissions";
 import {
-  invMaterialCode, lineQty, scanOverbill, SERVICE_CHARGE_LINE_ID,
+  invMaterialCode, lineQty, scanLineMatch, SERVICE_CHARGE_LINE_ID,
   type InvLine, type PoLineRow,
 } from "../../shared/line-match";
 import { ensureXeroContact } from "./xero";
@@ -457,7 +457,7 @@ invoices.get("/", async (c) => {
        ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
        ORDER BY i.received_at DESC, i.id DESC`,
   ).bind(...binds).all();
-  const scanned = await withOverbill(c.env, rows.results as Record<string, unknown>[]);
+  const scanned = await withMatchState(c.env, rows.results as Record<string, unknown>[]);
   return c.json(scanned.map((r) => withTermsCheck(r)));
 });
 
@@ -472,7 +472,7 @@ invoices.get("/:id", async (c) => {
   ).bind(c.req.param("id")).first<Record<string, unknown>>();
   if (!inv) return c.json({ error: "not found" }, 404);
   if (inv.kind === "overhead" && !isAdmin(c)) return c.json({ error: "Forbidden: overheads are admin-only" }, 403);
-  const [scanned] = await withOverbill(c.env, [inv]);
+  const [scanned] = await withMatchState(c.env, [inv]);
   return c.json(withTermsCheck(scanned));
 });
 
@@ -672,10 +672,11 @@ function nameTokenSet(s: string): Set<string> {
  *  £0 service line has nothing to deliver and nothing to compare a total against. */
 export { SERVICE_CHARGE_LINE_ID } from "../../shared/line-match";
 
-/** Attach the over-billing scan to invoice rows — one extra query for the whole
- *  list (the PO lines of every order these invoices are matched to), rather than
- *  a full 3-way match per row. Rows with nothing to report are returned as-is. */
-async function withOverbill(env: Env, rows: Record<string, unknown>[]): Promise<Record<string, unknown>[]> {
+/** Attach the price/quantity reconciliation to invoice rows — one extra query for
+ *  the whole list (the PO lines of every order these invoices are matched to),
+ *  rather than a full 3-way match per row. An invoice with no PO linked gets
+ *  state "no_po"; one whose lines all reconcile gets "matched". */
+async function withMatchState(env: Env, rows: Record<string, unknown>[]): Promise<Record<string, unknown>[]> {
   const poIds = [...new Set(rows.map((r) => r.matched_po_id as string | null).filter((x): x is string => !!x))];
   if (!poIds.length) return rows;
   const byPo = new Map<string, PoLineRow[]>();
@@ -691,14 +692,16 @@ async function withOverbill(env: Env, rows: Record<string, unknown>[]): Promise<
     }
   }
   return rows.map((r) => {
+    // Only project invoices reconcile against an order; overheads are coded to a
+    // nominal and have nothing to compare.
+    if (r.kind !== "project") return r;
     const poId = r.matched_po_id as string | null;
     const poLines = poId ? byPo.get(poId) : null;
-    if (!poLines?.length || !r.lines_json) return r;
+    if (!poLines?.length) return { ...r, match: { state: "no_po", issues: [], excess: 0 } };
+    if (!r.lines_json) return r;
     let invLines: InvLine[] = [];
     try { invLines = JSON.parse(String(r.lines_json)) as InvLine[]; } catch { return r; }
-    const lines = scanOverbill(invLines, poLines);
-    if (!lines.length) return r;
-    return { ...r, overbill: { lines, excess: lines.reduce((s, l) => s + l.excess, 0) } };
+    return { ...r, match: scanLineMatch(invLines, poLines) };
   });
 }
 
