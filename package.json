@@ -14,7 +14,8 @@
     "db:migrate:remote": "wrangler d1 migrations apply po_app_db --remote",
     "db:seed:local": "wrangler d1 execute po_app_db --local --file=./migrations/0002_seed.sql",
     "db:console:local": "wrangler d1 execute po_app_db --local --command",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test \"src/**/*.test.ts\""
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.98.0",

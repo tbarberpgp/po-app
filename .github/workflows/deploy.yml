@@ -18,6 +18,12 @@ jobs:
 
       - run: npm ci
 
+      # Gate the deploy. Nothing checked anything before a production push: a
+      # type error or a broken match rule went straight to the live worker.
+      - run: npm run typecheck
+
+      - run: npm test
+
       - run: npm run deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
