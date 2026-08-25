@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
-import { api, fmtMoney } from "../lib/api";
+import { api, fmtDate, fmtMoney } from "../lib/api";
 import { generateGroupMaterialsXlsx } from "../lib/group-materials-xlsx";
 import { SubstituteAction } from "./MaterialSubstitute";
 import { Topbar } from "./Shell";
@@ -14,12 +14,12 @@ import {
   summariseMaterials, computeForecast, sumForecasts, contractTotals, effectiveSpendRate, matSupplier, netUnits, quoteSavingsOf,
   pricedBudgetDrill, committedDrill, materialSavingsDrill, labourSavingsDrill,
   variationProfitDrill, unpricedDrill, unexpectedSpendDrill, applicationsDrill, combineDrill,
-  type Forecast, type UnpricedLine, type DrillBody,
+  offBoqRow, type Forecast, type UnpricedLine, type DrillBody, type MatRow,
 } from "../lib/commercials";
 import { can } from "../../shared/permissions";
 import { combineSiteCodes } from "../../shared/site-code";
 import type {
-  CurrentUser, Project, MaterialWithCommitment, ProjectCommercial, ContractItem, Variation, ApplicationForPayment, OpsSite,
+  CurrentUser, Project, MaterialWithCommitment, OffBoqMaterial, ProjectCommercial, ContractItem, Variation, ApplicationForPayment, OpsSite,
 } from "../../shared/types";
 
 type Member = { id: string; code: string; name: string; client?: string | null; payment_terms?: string | null; site_group_id?: string | null; site_group_name?: string | null; site_group_base?: string | null };
@@ -29,6 +29,10 @@ type BlockData = {
   contractItems: ContractItem[];
   afps: ApplicationForPayment[];
   mats: MaterialWithCommitment[];
+  /** Materials ordered on this block's POs that aren't in its BOQ. Held apart
+   *  from `mats` so only the materials TABLE picks them up — the forecast and
+   *  the KPI rollups already count them once, as unpriced spend. */
+  offBoq: OffBoqMaterial[];
   contingency: number;
   unpricedLines: UnpricedLine[];
   unpricedSpend: number;
@@ -130,8 +134,9 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
           api.listMaterials(m.id).catch(() => [] as MaterialWithCommitment[]),
           api.getContingency(m.id).then((r) => r.contingency).catch(() => 0),
           api.getProjectSummary(m.id).then((s) => ({ lines: s.unpriced_lines ?? [], spend: s.unpriced_spend ?? 0 })).catch(() => ({ lines: [] as UnpricedLine[], spend: 0 })),
-        ]).then(([commercials, variations, contractItems, afps, mats, contingency, summary]) => {
-          setData((p) => ({ ...p, [m.id]: { commercials, variations, contractItems, afps, mats, contingency, unpricedLines: summary.lines, unpricedSpend: summary.spend } }));
+          api.listOffBoqMaterials(m.id).catch(() => [] as OffBoqMaterial[]),
+        ]).then(([commercials, variations, contractItems, afps, mats, contingency, summary, offBoq]) => {
+          setData((p) => ({ ...p, [m.id]: { commercials, variations, contractItems, afps, mats, contingency, unpricedLines: summary.lines, unpricedSpend: summary.spend, offBoq } }));
         }).catch(() => {});
       });
     }).catch((e) => setErr(e.message));
@@ -214,14 +219,19 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
   // gets a single procurement status (to order → on order → called off →
   // part-delivered → delivered) plus "unpriced".
   const combinedMaterials = useMemo(() => {
-    type Blk = { code: string; boqQty: number; committedQty: number; calledOffQty: number; deliveredQty: number; budget: number; committed: number; calledOff: number; effVal: number; mats: MaterialWithCommitment[] };
+    type Blk = { code: string; boqQty: number; committedQty: number; calledOffQty: number; deliveredQty: number; budget: number; committed: number; calledOff: number; effVal: number; mats: MatRow[] };
     type Row = {
       /** The merge key (product id or normalised name) — unique by construction,
        *  so it's the React key and expansion identity; display names may collide. */
       key: string;
       item: string; type: string; unit: string | null; supplier: Set<string>;
       boqQty: number; committedQty: number; calledOffQty: number; deliveredQty: number;
-      budget: number; committed: number; calledOff: number; effVal: number; priced: boolean; blocks: Map<string, Blk>; mats: MaterialWithCommitment[];
+      budget: number; committed: number; calledOff: number; effVal: number; priced: boolean; blocks: Map<string, Blk>; mats: MatRow[];
+      /** True when some block only knows this item from a PO, not its BOQ. */
+      offBoq: boolean;
+      /** Newest off-BOQ order date across the blocks — this row totals several
+       *  orders, so it has to say when it was last bought. */
+      lastOrdered: string | null;
       /** Every status this item holds on SOME block — a call-off still live on
        *  one block mustn't be hidden because another block took a delivery. */
       statuses: Set<MatStatus>;
@@ -249,12 +259,16 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
     const by = new Map<string, Row>();
     for (const m of scopeMembers) {
       const d = data[m.id]; if (!d) continue;
-      for (const row of d.mats) {
+      // The block's BOQ plus what its POs bought outside it. An item added when
+      // raising a PO is on this site just as much as a priced one, and merging
+      // it here means a material bought off-BOQ on one block sits on the same
+      // row as the same material priced on another.
+      for (const row of [...d.mats, ...d.offBoq.map((o, i) => offBoqRow(o, i))] as MatRow[]) {
         if (row.omitted) continue; // omitted from the job — not procurement
         const norm = normName(row.sub_item || row.item || "");
         const key = row.product_id != null ? `p:${row.product_id}` : (productByName.get(norm) ?? (norm ? `n:${norm}` : ""));
         if (!key || key === "p:") continue;
-        const cur: Row = by.get(key) ?? { key, item: row.sub_item || row.item, type: row.type ?? "", unit: row.total_units_unit ?? row.sub_unit ?? row.cost_unit ?? null, supplier: new Set<string>(), boqQty: 0, committedQty: 0, calledOffQty: 0, deliveredQty: 0, budget: 0, committed: 0, calledOff: 0, effVal: 0, priced: false, blocks: new Map<string, Blk>(), mats: [], statuses: new Set<MatStatus>(), names: new Map<string, number>() };
+        const cur: Row = by.get(key) ?? { key, item: row.sub_item || row.item, type: row.type ?? "", unit: row.total_units_unit ?? row.sub_unit ?? row.cost_unit ?? null, supplier: new Set<string>(), boqQty: 0, committedQty: 0, calledOffQty: 0, deliveredQty: 0, budget: 0, committed: 0, calledOff: 0, effVal: 0, priced: false, offBoq: false, lastOrdered: null, blocks: new Map<string, Blk>(), mats: [], statuses: new Set<MatStatus>(), names: new Map<string, number>() };
         const effName = (row.sub_item || row.item || "").trim();
         if (effName) cur.names.set(effName, (cur.names.get(effName) ?? 0) + 1);
         const boq = netUnits(row); // budget qty net of any partial omission
@@ -266,10 +280,16 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
         // first) — same basis as the per-block Materials tab.
         const comm = committedQ * effectiveSpendRate(row);
         const co = calledOffQ * effectiveSpendRate(row);
-        const rowPriced = (row.cost ?? 0) > 0 || (row.sub_cost ?? 0) > 0 || (row.live_unit_price ?? 0) > 0;
+        const rowPriced = !row.off_boq
+          && ((row.cost ?? 0) > 0 || (row.sub_cost ?? 0) > 0 || (row.live_unit_price ?? 0) > 0);
         cur.boqQty += boq; cur.committedQty += committedQ; cur.calledOffQty += calledOffQ; cur.deliveredQty += delivered;
         cur.budget += bud; cur.committed += comm; cur.calledOff += co; cur.effVal += boq * effectiveSpendRate(row); cur.mats.push(row);
         if (rowPriced) cur.priced = true;
+        if (row.off_boq) {
+          cur.offBoq = true;
+          const at = row.off_boq.last_ordered_at;
+          if (at && (cur.lastOrdered == null || at > cur.lastOrdered)) cur.lastOrdered = at;
+        }
         cur.statuses.add(statusOfMat({ priced: rowPriced, committedQty: committedQ, calledOffQty: calledOffQ, deliveredQty: delivered }));
         const sup = matSupplier(row); if (sup) cur.supplier.add(sup);
         const b = cur.blocks.get(m.code) ?? { code: m.code, boqQty: 0, committedQty: 0, calledOffQty: 0, deliveredQty: 0, budget: 0, committed: 0, calledOff: 0, effVal: 0, mats: [] };
@@ -611,9 +631,12 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
             )}
             <div className="kpis">
               <DrillKpi label="Priced material budget" value={fmtMoney(matSummary.priced)} onOpen={() => openMatDrill("Priced material budget", matSummary.priced, (d) => pricedBudgetDrill(d.mats))} />
-              <DrillKpi label="Committed" value={fmtMoney(matSummary.committed)} tone={matSummary.committed > matSummary.priced ? "danger" : "default"} onOpen={() => openMatDrill("Committed cost", matSummary.committed, (d) => committedDrill(d.mats))} />
+              <DrillKpi label="Committed" value={fmtMoney(matSummary.committed)}
+                sub={matSummary.unpriced > 0.005 ? `${fmtMoney(matSummary.committed + matSummary.unpriced)} incl. off-BOQ` : undefined}
+                tone={matSummary.committed > matSummary.priced ? "danger" : "default"} onOpen={() => openMatDrill("Committed cost", matSummary.committed, (d) => committedDrill(d.mats))} />
               <DrillKpi label="Remaining" value={fmtMoney(matSummary.remaining)} tone={matSummary.remaining < 0 ? "danger" : "default"} />
-              <DrillKpi label="Unpriced spend" value={fmtMoney(matSummary.unpriced)} tone={matSummary.unpriced > 0.005 ? "danger" : "default"} onOpen={() => openMatDrill("Unpriced spend", matSummary.unpriced, (d) => unpricedDrill(d.unpricedLines))} />
+              <DrillKpi label="Unpriced spend" value={fmtMoney(matSummary.unpriced)}
+                tone={matSummary.unpriced > 0.005 ? "danger" : "default"} onOpen={() => openMatDrill("Unpriced spend", matSummary.unpriced, (d) => unpricedDrill(d.unpricedLines))} />
               <DrillKpi label="Quote savings" value={fmtMoney(matSummary.savings)} tone={matSummary.savings > 0.005 ? "success" : matSummary.savings < -0.005 ? "danger" : "default"} onOpen={() => openMatDrill("Quote savings", matSummary.savings, (d) => materialSavingsDrill(d.mats))} />
             </div>
 
@@ -675,7 +698,12 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
                           const meta = STATUS_META[m.status];
                           const allBlocks = members.length > 1 && m.blocks.size === members.length;
                           const budgetRate = m.boqQty > 0.005 ? m.budget / m.boqQty : null;
-                          const buyRate = m.boqQty > 0.005 ? m.effVal / m.boqQty : null;
+                          const buyRate = m.boqQty > 0.005 ? m.effVal / m.boqQty
+                            : m.committedQty > 0.005 ? m.committed / m.committedQty
+                            : m.calledOffQty > 0.005 ? m.calledOff / m.calledOffQty
+                            : null;
+                          // Only the rows with a BOQ line behind them can be substituted.
+                          const subMats = m.mats.filter((x) => !x.off_boq);
                           const rateDiffers = budgetRate != null && buyRate != null && Math.abs(buyRate - budgetRate) > Math.max(0.005, budgetRate * 0.005);
                           return (
                             <Fragment key={m.key}>
@@ -684,8 +712,19 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
                                   <div className="row" style={{ gap: 8, alignItems: "flex-start", flexWrap: "nowrap" }}>
                                     <span className="rep-group-chev" style={{ marginTop: 2, flexShrink: 0 }}>{open ? "▾" : "▸"}</span>
                                     <div style={{ minWidth: 0 }}>
-                                      <div style={{ fontWeight: 600 }}>{m.item}</div>
-                                      <div className="muted" style={{ fontSize: 11 }}>{m.supplier.size === 1 ? [...m.supplier][0] : m.supplier.size > 1 ? "Mixed suppliers" : "Supplier TBC"}</div>
+                                      <div style={{ fontWeight: 600 }}>
+                                        {m.item}
+                                        {m.offBoq && (
+                                          <span className="pill warn" style={{ fontSize: 10, marginLeft: 6, verticalAlign: "middle" }}
+                                            title={`Added on a purchase order, not in the priced BOQ — there's no budget line behind it until the PO line is assigned to one${m.lastOrdered ? `. Last ordered ${fmtDate(m.lastOrdered)}` : ""}`}>
+                                            off-BOQ
+                                          </span>
+                                        )}
+                                      </div>
+                                      <div className="muted" style={{ fontSize: 11 }}>
+                                        {m.supplier.size === 1 ? [...m.supplier][0] : m.supplier.size > 1 ? "Mixed suppliers" : "Supplier TBC"}
+                                        {m.lastOrdered && ` · last ordered ${fmtDate(m.lastOrdered)}`}
+                                      </div>
                                     </div>
                                   </div>
                                 </td>
@@ -718,8 +757,10 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
                                 </td>
                                 {canUploadMaterials && (
                                   <td className="center" onClick={(e) => e.stopPropagation()}>
-                                    {m.mats.length === 1
-                                      ? <SubstituteAction material={m.mats[0]} onChanged={load} />
+                                    {subMats.length === 0
+                                      ? null
+                                      : subMats.length === 1
+                                      ? <SubstituteAction material={subMats[0]} onChanged={load} />
                                       : <button className="ghost tiny" onClick={() => setExpandedMat(open ? null : m.key)} title="Expand to substitute in a specific block">Substitute…</button>}
                                   </td>
                                 )}
@@ -731,13 +772,49 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
                                 const bSpend = matValueMode === "calledoff" ? b.calledOff : b.committed;
                                 const bDelta = bSpend - b.budget;
                                 const bBudgetRate = b.boqQty > 0.005 ? b.budget / b.boqQty : null;
-                                const bBuyRate = b.boqQty > 0.005 ? b.effVal / b.boqQty : null;
+                                const bBuyRate = b.boqQty > 0.005 ? b.effVal / b.boqQty
+                                  : b.committedQty > 0.005 ? b.committed / b.committedQty
+                                  : b.calledOffQty > 0.005 ? b.calledOff / b.calledOffQty
+                                  : null;
                                 const bDiff = bBudgetRate != null && bBuyRate != null && Math.abs(bBuyRate - bBudgetRate) > Math.max(0.005, bBudgetRate * 0.005);
+                                const bSubMats = b.mats.filter((mat) => !mat.off_boq);
+                                // This block's own off-BOQ orders. The merged row above totals
+                                // every block and shows only the newest date, so without this a
+                                // block's earlier purchase has no date and no PO anywhere on the
+                                // page — you'd have to open that block's own project page.
+                                const bOrders = b.mats
+                                  .flatMap((mat) => mat.off_boq?.orders ?? [])
+                                  .sort((x, y) => String(y.ordered_at ?? "").localeCompare(String(x.ordered_at ?? "")));
+                                // Wording this block actually used, when it isn't the wording the
+                                // merged row is titled with — the check on whether a row has
+                                // pooled two different things.
+                                const bAliases = [...new Set(b.mats.map((mat) => (mat.sub_item || mat.item || "").trim()))]
+                                  .filter((n) => n && n !== m.item);
                                 return (
                                   <tr key={`${m.key}-${b.code}`} style={{ background: "var(--accent-soft)", fontSize: 12.5 }}>
                                     <td colSpan={2} style={{ paddingLeft: 42 }}>
                                       <b style={{ color: "var(--accent)" }}>{b.code}</b>{" "}
                                       <span className="muted">{members.find((x) => x.code === b.code)?.name ?? ""}</span>
+                                      {bAliases.length > 0 && (
+                                        <div className="muted" style={{ fontSize: 11, marginTop: 2 }}
+                                          title="This block ordered it under different wording — merged onto this row by matching words">
+                                          as “{bAliases.join("”, “")}”
+                                        </div>
+                                      )}
+                                      {bOrders.slice(0, 3).map((o) => (
+                                        <div key={o.line_id} style={{ fontSize: 11, marginTop: 2 }}>
+                                          <Link to={`/pos/${o.po_id}`}>{o.po_number}</Link>
+                                          <span className="muted">
+                                            {o.ordered_at ? ` · ${fmtDate(o.ordered_at)}` : ""} · {qty(o.qty)} {m.unit ?? ""}
+                                          </span>
+                                        </div>
+                                      ))}
+                                      {bOrders.length > 3 && (
+                                        <div className="muted" style={{ fontSize: 11, marginTop: 2 }}
+                                          title={bOrders.slice(3).map((o) => `${o.po_number} · ${fmtDate(o.ordered_at)} · ${qty(o.qty)} ${m.unit ?? ""}`).join("\n")}>
+                                          +{bOrders.length - 3} earlier order{bOrders.length - 3 === 1 ? "" : "s"}
+                                        </div>
+                                      )}
                                     </td>
                                     <td className="num">{bQty > 0.005 ? qty(bQty) : "—"}{b.boqQty > 0.005 && <span className="muted"> / {qty(b.boqQty)}</span>}</td>
                                     <td className="num">
@@ -755,9 +832,9 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
                                     <td></td>
                                     {canUploadMaterials && (
                                       <td className="num" style={{ whiteSpace: "nowrap" }}>
-                                        {b.mats.map((mat) => (
-                                          <div key={mat.id} className="row" style={{ gap: 6, justifyContent: "flex-end", flexWrap: "nowrap", marginTop: b.mats.length > 1 ? 2 : 0 }}>
-                                            {b.mats.length > 1 && <span className="muted" style={{ fontSize: 10, overflow: "hidden", textOverflow: "ellipsis", maxWidth: 140 }}>{mat.sub_item || mat.item}</span>}
+                                        {bSubMats.map((mat) => (
+                                          <div key={mat.id} className="row" style={{ gap: 6, justifyContent: "flex-end", flexWrap: "nowrap", marginTop: bSubMats.length > 1 ? 2 : 0 }}>
+                                            {bSubMats.length > 1 && <span className="muted" style={{ fontSize: 10, overflow: "hidden", textOverflow: "ellipsis", maxWidth: 140 }}>{mat.sub_item || mat.item}</span>}
                                             <SubstituteAction material={mat} onChanged={load} />
                                           </div>
                                         ))}

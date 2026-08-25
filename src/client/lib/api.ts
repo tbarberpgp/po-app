@@ -9,6 +9,7 @@ import type {
   Element,
   LabourByCostCode,
   MaterialWithCommitment,
+  OffBoqMaterial,
   OpsSite,
   OwnedPlant,
   PlantLog,
@@ -151,7 +152,7 @@ export const api = {
   getProjectSummary: (id: string) =>
     jfetch<{
       unpriced_spend: number;
-      unpriced_lines: Array<{ po_id: string; line_id: number; po_number: string; supplier: string | null; item: string; qty: number | null; unit: string | null; line_total: number; status: string }>;
+      unpriced_lines: Array<{ po_id: string; line_id: number; po_number: string; supplier: string | null; item: string; qty: number | null; unit: string | null; line_total: number; status: string; category?: string }>;
       by_status: Array<{ status: string; n: number; v: number }>;
       overdrawn_framework_lines: Array<{
         po_id: string; line_id: number; po_number: string; supplier: string | null; item: string; unit: string;
@@ -165,6 +166,11 @@ export const api = {
 
   listMaterials: (projectId: string) =>
     jfetch<MaterialWithCommitment[]>(`/api/materials/${projectId}`),
+  /** Materials ordered on this project's POs that aren't in the priced BOQ.
+   *  Kept separate from listMaterials so the budget rollups (which read that
+   *  array) can't accidentally count spend already reported as unpriced. */
+  listOffBoqMaterials: (projectId: string) =>
+    jfetch<OffBoqMaterial[]>(`/api/materials/${projectId}/off-boq`),
   listProjectCommercials: (projectId: string) =>
     jfetch<ProjectCommercial[]>(`/api/materials/${projectId}/commercials`),
   getContingency: (projectId: string) =>

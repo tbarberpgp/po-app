@@ -366,7 +366,12 @@ projects.get("/:id/summary", async (c) => {
   const unpricedLines = await c.env.DB.prepare(
     `SELECT po.id AS po_id, pl.id AS line_id, po.po_number AS po_number, po.supplier AS supplier,
             pl.item AS item, pl.qty AS qty, pl.unit AS unit,
-            COALESCE(pl.line_total, 0) AS line_total, po.status AS status
+            COALESCE(pl.line_total, 0) AS line_total, po.status AS status,
+            -- Prelim orders (welfare, plant, scaffold) carry their own
+            -- Preliminaries budget, so which category a line came from decides
+            -- whether this money is genuinely unbudgeted. Surfaced on the drill
+            -- rather than left for a database query to answer.
+            COALESCE(po.category, 'materials') AS category
      FROM po_lines pl
      JOIN purchase_orders po ON po.id = pl.po_id
      WHERE po.project_id = ?
@@ -377,7 +382,7 @@ projects.get("/:id/summary", async (c) => {
      ORDER BY pl.line_total DESC`,
   )
     .bind(id)
-    .all<{ po_id: string; line_id: number; po_number: string; supplier: string | null; item: string; qty: number | null; unit: string | null; line_total: number; status: string }>();
+    .all<{ po_id: string; line_id: number; po_number: string; supplier: string | null; item: string; qty: number | null; unit: string | null; line_total: number; status: string; category: string }>();
 
   const counts = await c.env.DB.prepare(
     `SELECT status, COUNT(*) AS n, COALESCE(SUM(total_value), 0) AS v

@@ -12,12 +12,12 @@ import { ProjectProgramme } from "./Programme";
 import { ProjectReports } from "./ProjectReports";
 import { QitpDashboard } from "./QitpDashboard";
 import { SubBadge, SubstituteAction } from "./MaterialSubstitute";
-import type { ApplicationForPayment, CurrentUser, LabourByCostCode, MaterialWithCommitment, Project, ProjectCommercial, PurchaseOrder } from "../../shared/types";
+import type { ApplicationForPayment, CurrentUser, LabourByCostCode, MaterialWithCommitment, OffBoqMaterial, Project, ProjectCommercial, PurchaseOrder } from "../../shared/types";
 import {
   summariseMaterials, computeForecast, matSupplier, contractTotals, effectiveSpendRate, quoteSavingsOf,
   pricedBudgetDrill, committedDrill, materialSavingsDrill,
   labourSavingsDrill, variationProfitDrill, unpricedDrill, unexpectedSpendDrill, applicationsDrill,
-  type Forecast,
+  offBoqRow, type Forecast, type MatRow,
 } from "../lib/commercials";
 import { DrillPanel, DrillKpi, type DrillData } from "./DrillPanel";
 import { AssignBudgetCell } from "./AssignBudgetCell";
@@ -48,6 +48,10 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
   const [info, setInfo] = useState<Awaited<ReturnType<typeof api.getProject>> | null>(null);
   const [poSummary, setPoSummary] = useState<Awaited<ReturnType<typeof api.getProjectSummary>> | null>(null);
   const [mats, setMats] = useState<MaterialWithCommitment[]>([]);
+  // Materials that only exist on this project's POs. Deliberately NOT merged
+  // into `mats`: their £ is already reported as unpriced spend, so folding them
+  // into the budget rollups would bill the job for them twice.
+  const [offBoq, setOffBoq] = useState<OffBoqMaterial[]>([]);
   const [commercials, setCommercials] = useState<ProjectCommercial[]>([]);
   const [contingency, setContingency] = useState(0);
   const [pendingUpload, setPendingUpload] = useState<Awaited<ReturnType<typeof api.getPendingUpload>>>(null);
@@ -89,6 +93,7 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
     if (!id) return;
     api.getProject(id).then(setInfo).catch((e) => setErr(e.message));
     api.listMaterials(id).then(setMats).catch((e) => setErr(e.message));
+    api.listOffBoqMaterials(id).then(setOffBoq).catch(() => setOffBoq([]));
     api.listProjectCommercials(id).then(setCommercials).catch(() => setCommercials([]));
     api.getContingency(id).then((r) => setContingency(r.contingency)).catch(() => setContingency(0));
     api.getPendingUpload(id).then(setPendingUpload).catch(() => setPendingUpload(null));
@@ -157,8 +162,15 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
   // Omitted materials hide from every view except the explicit "Omitted"
   // filter (where they can be restored).
   const omittedCount = mats.filter((m) => m.omitted).length;
-  const baseList = (showAll ? mats : mats.filter((m) => (m.total_units ?? 0) > 0))
-    .filter((m) => (orderFilter === "omitted" ? !!m.omitted : !m.omitted));
+  // Off-BOQ rows always list, regardless of "Show full library": they aren't
+  // part of the priced library, and they're being bought on this job whether or
+  // not the workbook knows about them. They carry no `omitted` flag, so the
+  // filter below drops them from the Omitted view on its own.
+  const offBoqRows = useMemo(() => offBoq.map((o, i) => offBoqRow(o, i)), [offBoq]);
+  const baseList: MatRow[] = [
+    ...(showAll ? mats : mats.filter((m) => (m.total_units ?? 0) > 0)),
+    ...offBoqRows,
+  ].filter((m) => (orderFilter === "omitted" ? !!m.omitted : !m.omitted));
   const types = [...new Set(baseList.map((m) => m.type))].sort();
   const suppliers = [...new Set(baseList.map((m) => matSupplier(m) || "—"))].sort();
   const visible = baseList
@@ -170,7 +182,7 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
     .filter((m) => !filter || (m.item + (m.sub_item ?? "") + matSupplier(m)).toLowerCase().includes(filter.toLowerCase()));
   // Click-to-sort: value per material for the active sort column. Called-off mode
   // sorts the qty column by called-off; otherwise by committed.
-  const sortValue = (m: MaterialWithCommitment, k: NonNullable<typeof sortKey>): string | number => {
+  const sortValue = (m: MatRow, k: NonNullable<typeof sortKey>): string | number => {
     switch (k) {
       case "type": return (m.type ?? "").toLowerCase();
       case "item": return ((m.sub_item ?? m.item) ?? "").toLowerCase();
@@ -492,7 +504,7 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
           <MaterialsSubnav active="list" onChange={setMatSubtab}
             right={matActions} />
         )}
-        {mats.length > 0 && (
+        {(mats.length > 0 || (tab === "materials" && offBoqRows.length > 0)) && (
           <>
             {tab === "overview" && commercials.length > 0 && canViewCommercial && (
               <CommercialsHeadlineKpis rows={commercials} />
@@ -521,10 +533,14 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
             <div className="kpis">
               <DrillKpi label="Priced material budget" value={fmtMoney(summary.priced_total)}
                 onOpen={() => setDrill({ title: "Priced material budget", value: fmtMoney(summary.priced_total), ...pricedBudgetDrill(mats) })} />
-              <DrillKpi label="Committed" value={fmtMoney(summary.committed_total)} sub={`${summary.committed_pct.toFixed(0)}% of budget`} tone={summary.committed_total > summary.priced_total ? "danger" : "default"}
+              <DrillKpi label="Committed" value={fmtMoney(summary.committed_total)}
+                sub={`${summary.committed_pct.toFixed(0)}% of budget${summary.unpriced_spend > 0.005 ? ` · ${fmtMoney(summary.committed_total + summary.unpriced_spend)} incl. off-BOQ` : ""}`}
+                tone={summary.committed_total > summary.priced_total ? "danger" : "default"}
                 onOpen={() => setDrill({ title: "Committed cost", value: fmtMoney(summary.committed_total), ...committedDrill(mats) })} />
               <Kpi label="Remaining" value={fmtMoney(summary.remaining_total)} sub={summary.remaining_total < 0 ? `Over by ${fmtMoney(Math.abs(summary.remaining_total))}` : undefined} tone={summary.remaining_total < 0 ? "danger" : summary.remaining_total === 0 ? "success" : "default"} />
-              <DrillKpi label="Unpriced spend" value={fmtMoney(summary.unpriced_spend)} sub={summary.unpriced_spend > 0 ? "Outside the BOQ" : "None"} tone={summary.unpriced_spend > 0 ? "danger" : "default"}
+              <DrillKpi label="Unpriced spend" value={fmtMoney(summary.unpriced_spend)}
+                sub={summary.unpriced_spend > 0 ? "Outside the BOQ" : "None"}
+                tone={summary.unpriced_spend > 0 ? "danger" : "default"}
                 onOpen={() => {
                   const body = unpricedDrill(poSummary?.unpriced_lines ?? []);
                   // Same in-place "assign to a budget item" as the unexpected-spend drill.
@@ -551,7 +567,7 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
             </div>
             )}
 
-            {tab === "materials" && matSubtab === "list" && (
+            {tab === "materials" && matSubtab === "list" && summary.by_supplier.length > 0 && (
             <div className="card">
               <div className="card-hd"><h2>By supplier</h2></div>
               <table>
@@ -596,6 +612,7 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
                     Materials
                     <span className="muted" style={{ fontWeight: 400, marginLeft: 10, fontSize: 13, fontFamily: "var(--font-sans)" }}>
                       {showAll ? `${mats.length} in library` : `${pricedCount} priced for this job`}
+                      {offBoqRows.length > 0 && ` · ${offBoqRows.length} added on POs`}
                     </span>
                   </h2>
                   <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--muted)", marginBottom: 0, textTransform: "none", letterSpacing: 0 }}>
@@ -679,7 +696,34 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
                         <tr key={m.id}>
                           <td className="center">{m.type}</td>
                           <td>
-                            {isSubbed ? (
+                            {m.off_boq ? (
+                              <>
+                                <div>{m.item}</div>
+                                <div style={{ marginTop: 3 }}>
+                                  <span className="pill warn" style={{ fontSize: 10 }}
+                                    title="Added on a purchase order, not in the priced BOQ. Its cost sits under Unpriced spend until someone assigns the PO line to a budget item.">
+                                    off-BOQ
+                                  </span>
+                                  {/* The row totals the quantity, so each order stays listed
+                                      underneath with its date and its own qty — otherwise a
+                                      repeat buy reads as one big order nobody can place. */}
+                                  {m.off_boq.orders.slice(0, 3).map((o) => (
+                                    <div key={o.line_id} style={{ fontSize: 11, marginTop: 2 }}>
+                                      <Link to={`/pos/${o.po_id}`}>{o.po_number}</Link>
+                                      <span className="muted" style={{ fontSize: 11 }}>
+                                        {o.ordered_at ? ` · ${fmtDate(o.ordered_at)}` : ""} · {fmtQty(o.qty)} {m.total_units_unit ?? ""}
+                                      </span>
+                                    </div>
+                                  ))}
+                                  {m.off_boq.orders.length > 3 && (
+                                    <div className="muted" style={{ fontSize: 11, marginTop: 2 }}
+                                      title={m.off_boq.orders.slice(3).map((o) => `${o.po_number} · ${fmtDate(o.ordered_at)} · ${fmtQty(o.qty)} ${m.total_units_unit ?? ""}`).join("\n")}>
+                                      +{m.off_boq.orders.length - 3} earlier order{m.off_boq.orders.length - 3 === 1 ? "" : "s"}
+                                    </div>
+                                  )}
+                                </div>
+                              </>
+                            ) : isSubbed ? (
                               <>
                                 <div style={{ fontWeight: 600 }}>{m.sub_item}</div>
                                 <div className="muted" style={{ fontSize: 11, textDecoration: isPartSub ? "none" : "line-through", marginTop: 2 }}>
@@ -733,7 +777,10 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
                           </td>
                           <td className="center">{isSubbed ? (m.sub_unit ?? unit) : unit}</td>
                           <td className="num">
-                            {priced ? fmtQty(priced) : <span className="muted">not priced</span>}
+                            {priced ? fmtQty(priced)
+                              : <span className="muted" title={m.off_boq ? "Bought outside the priced BOQ — there's no budgeted quantity to draw against" : undefined}>
+                                  {m.off_boq ? "no budget" : "not priced"}
+                                </span>}
                             {omittedQty > 0 && !m.omitted && (
                               <div className="muted" style={{ fontSize: 10 }} title={`BOQ ${fmtQty(m.total_units ?? 0)} less ${fmtQty(omittedQty)} omitted`}>
                                 {fmtQty(omittedQty)} omitted
@@ -754,6 +801,12 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
                                   : fwReserved > 0.0001 && <div className="muted" style={{ fontSize: 10 }}>{fmtQty(fwReserved)} reserved</div>}
                               </>
                             )}
+                            {m.off_boq && (
+                              <div style={{ fontSize: 10, color: "var(--danger)" }}
+                                title="Ordered on POs outside the priced BOQ. This money is already counted in the project's Unpriced spend and forecast final cost.">
+                                {fmtMoney(qtyMode === "calledoff" ? m.off_boq.called_off_value : m.off_boq.committed_value)} spent
+                              </div>
+                            )}
                           </td>
                           <td className="num">
                             {qtyMode === "calledoff"
@@ -771,7 +824,13 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
                           </td>
                           {canUploadMaterials && (
                             <td className="center" style={{ whiteSpace: "nowrap" }}>
-                              {m.omitted ? (
+                              {m.off_boq ? (
+                                // Nothing to substitute or omit — there's no BOQ
+                                // line behind this row. It's resolved by coding
+                                // its PO line to a budget item, which is done on
+                                // the PO (linked from the item above).
+                                null
+                              ) : m.omitted ? (
                                 <button className="ghost tiny" title="Bring this material back into the job"
                                   onClick={async () => { if (id) { await api.restoreOmittedMaterial(id, m.item); load(); } }}>
                                   ↺ Restore
