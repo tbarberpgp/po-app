@@ -11,7 +11,7 @@
 //     "SELECT id, po_id, item, qty, unit, unit_cost FROM po_lines" > /tmp/polines.json
 //   npx tsx scripts/overbill-harness.ts /tmp/inv.json /tmp/polines.json
 import { readFileSync } from "node:fs";
-import { scanLineMatch, type InvLine, type PoLineRow } from "../src/shared/line-match";
+import { poRefCore, scanLineMatch, type InvLine, type PoLineRow } from "../src/shared/line-match";
 
 /** wrangler --json prints an array of statement results; tolerate leading noise. */
 function load<T>(path: string): T[] {
@@ -26,8 +26,8 @@ type InvRow = {
   extracted_po_ref?: string | null; po_proj?: string | null;
 };
 
-const [invPath, polPath] = process.argv.slice(2);
-if (!invPath || !polPath) { console.error("usage: overbill-harness.ts <invoices.json> <polines.json>"); process.exit(1); }
+const [invPath, polPath, posPath] = process.argv.slice(2);
+if (!invPath || !polPath) { console.error("usage: overbill-harness.ts <invoices.json> <polines.json> [all-pos.json]"); process.exit(1); }
 
 const invoices = load<InvRow>(invPath);
 const poLines = load<PoLineRow & { po_id: string }>(polPath);
@@ -37,6 +37,18 @@ for (const l of poLines) {
   const arr = byPo.get(l.po_id) ?? [];
   arr.push(l);
   byPo.set(l.po_id, arr);
+}
+
+// Quoted refs resolved to what they actually are, so a framework quote can be
+// told apart from a mislink — same map the worker builds.
+const byRefCore = new Map<string, { order_type: string | null; project_code: string | null }>();
+if (posPath) {
+  for (const p of load<{ po_number: string; order_type: string | null; project_code: string | null }>(posPath)) {
+    const c = poRefCore(p.po_number);
+    if (!c) continue;
+    const prev = byRefCore.get(c);
+    if (!prev || p.order_type === "framework") byRefCore.set(c, { order_type: p.order_type, project_code: p.project_code });
+  }
 }
 
 const gbp = (n: number) => `£${n.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -49,9 +61,12 @@ for (const inv of invoices) {
   if (!pol?.length || !inv.lines_json) continue;
   let lines: InvLine[] = [];
   try { lines = JSON.parse(inv.lines_json) as InvLine[]; } catch { continue }
+  const qc = poRefCore(inv.extracted_po_ref ?? null);
+  const q = qc ? byRefCore.get(qc) : undefined;
   const summary = scanLineMatch(lines, pol, {
     po_number: inv.po_number, po_project: inv.po_proj ?? null,
     invoice_project: inv.proj, quoted_ref: inv.extracted_po_ref ?? null,
+    quoted_type: q?.order_type ?? null, quoted_project: q?.project_code ?? null,
   });
   if (summary.state === "unmatched") hits.push({ inv, summary }); else matched++;
 }
