@@ -778,11 +778,43 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
                                   : null;
                                 const bDiff = bBudgetRate != null && bBuyRate != null && Math.abs(bBuyRate - bBudgetRate) > Math.max(0.005, bBudgetRate * 0.005);
                                 const bSubMats = b.mats.filter((mat) => !mat.off_boq);
+                                // This block's own off-BOQ orders. The merged row above totals
+                                // every block and shows only the newest date, so without this a
+                                // block's earlier purchase has no date and no PO anywhere on the
+                                // page — you'd have to open that block's own project page.
+                                const bOrders = b.mats
+                                  .flatMap((mat) => mat.off_boq?.orders ?? [])
+                                  .sort((x, y) => String(y.ordered_at ?? "").localeCompare(String(x.ordered_at ?? "")));
+                                // Wording this block actually used, when it isn't the wording the
+                                // merged row is titled with — the check on whether a row has
+                                // pooled two different things.
+                                const bAliases = [...new Set(b.mats.map((mat) => (mat.sub_item || mat.item || "").trim()))]
+                                  .filter((n) => n && n !== m.item);
                                 return (
                                   <tr key={`${m.key}-${b.code}`} style={{ background: "var(--accent-soft)", fontSize: 12.5 }}>
                                     <td colSpan={2} style={{ paddingLeft: 42 }}>
                                       <b style={{ color: "var(--accent)" }}>{b.code}</b>{" "}
                                       <span className="muted">{members.find((x) => x.code === b.code)?.name ?? ""}</span>
+                                      {bAliases.length > 0 && (
+                                        <div className="muted" style={{ fontSize: 11, marginTop: 2 }}
+                                          title="This block ordered it under different wording — merged onto this row by matching words">
+                                          as “{bAliases.join("”, “")}”
+                                        </div>
+                                      )}
+                                      {bOrders.slice(0, 3).map((o) => (
+                                        <div key={o.line_id} style={{ fontSize: 11, marginTop: 2 }}>
+                                          <Link to={`/pos/${o.po_id}`}>{o.po_number}</Link>
+                                          <span className="muted">
+                                            {o.ordered_at ? ` · ${fmtDate(o.ordered_at)}` : ""} · {qty(o.qty)} {m.unit ?? ""}
+                                          </span>
+                                        </div>
+                                      ))}
+                                      {bOrders.length > 3 && (
+                                        <div className="muted" style={{ fontSize: 11, marginTop: 2 }}
+                                          title={bOrders.slice(3).map((o) => `${o.po_number} · ${fmtDate(o.ordered_at)} · ${qty(o.qty)} ${m.unit ?? ""}`).join("\n")}>
+                                          +{bOrders.length - 3} earlier order{bOrders.length - 3 === 1 ? "" : "s"}
+                                        </div>
+                                      )}
                                     </td>
                                     <td className="num">{bQty > 0.005 ? qty(bQty) : "—"}{b.boqQty > 0.005 && <span className="muted"> / {qty(b.boqQty)}</span>}</td>
                                     <td className="num">
