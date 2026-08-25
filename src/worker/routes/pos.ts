@@ -3,6 +3,7 @@ import type { Env, Variables } from "../env";
 import type { CreatePOInput, POLine } from "../../shared/types";
 import { loadSettings, tierForApproval } from "../approval";
 import { learnAliases } from "../matchMemory";
+import { normText } from "../../shared/line-match";
 import { emailApprovers, emailRequesterDecision, emailFrameworkOverdraw, FRAMEWORK_OVERDRAW_RECIPIENTS } from "../notify";
 import { requirePermission } from "../auth";
 import { buildCostCode, derivedProjectNumber } from "../../shared/types";
@@ -864,11 +865,71 @@ pos.put("/:id", async (c) => {
   // A changed/custom supplier joins the approved-suppliers register.
   await ensureApprovedSupplier(c.env.DB, body.supplier, c.get("userEmail"));
 
-  // Replace the lines wholesale.
-  await c.env.DB.prepare("DELETE FROM po_lines WHERE po_id = ?").bind(id).run();
-  await c.env.DB.batch(
-    enriched.map((ln) =>
-      c.env.DB.prepare(
+  // Lines are reconciled, NOT replaced.
+  //
+  // This used to DELETE every line and re-insert, so each one came back with a
+  // new id. Site receipts (site_deliveries.po_line_id) and invoice line links
+  // (invoices.lines_json[].po_line_id) point at those ids, so every amendment cut
+  // them loose without a word. 19 receipts across two orders are orphaned that
+  // way today, and invoices worth tens of thousands report "goods not received"
+  // against material that was signed for on site.
+  //
+  // So: pair each incoming line with the existing line it IS, update that row in
+  // place, and only insert or delete what genuinely changed. A quantity or price
+  // amendment — the common case — now touches no ids at all.
+  const existingLines = (await c.env.DB.prepare(
+    "SELECT id, material_id, item FROM po_lines WHERE po_id = ? ORDER BY id",
+  ).bind(id).all<{ id: number; material_id: number | null; item: string }>()).results;
+
+  // material_id first: it survives a reworded description, which wording can't.
+  // Duplicates of the same item on one order (two MG4BLK lines at different
+  // rates) pair up in id order, which keeps the older receipts on the older row.
+  const unclaimed = [...existingLines];
+  const claim = (ln: (typeof enriched)[number]) => {
+    let ix = ln.material_id != null ? unclaimed.findIndex((e) => e.material_id === ln.material_id) : -1;
+    if (ix < 0) ix = unclaimed.findIndex((e) => normText(e.item) === normText(ln.item));
+    return ix < 0 ? null : unclaimed.splice(ix, 1)[0];
+  };
+  const plan = enriched.map((ln) => ({ ln, keep: claim(ln) }));
+
+  // What a genuine removal costs. Reported rather than blocked — removing a line
+  // is a legitimate amendment — but silence here is how the orphans accumulated.
+  const removedIds = unclaimed.map((e) => e.id);
+  let orphaned: { receipts: number; invoice_lines: number } | undefined;
+  if (removedIds.length) {
+    const marks = removedIds.map(() => "?").join(",");
+    const rec = await c.env.DB.prepare(
+      `SELECT COUNT(*) AS n FROM site_deliveries WHERE po_line_id IN (${marks})`,
+    ).bind(...removedIds).first<{ n: number }>();
+    const linked = (await c.env.DB.prepare(
+      "SELECT lines_json FROM invoices WHERE matched_po_id = ? AND lines_json IS NOT NULL",
+    ).bind(id).all<{ lines_json: string }>()).results;
+    let invLines = 0;
+    for (const row of linked) {
+      try {
+        for (const l of JSON.parse(row.lines_json) as Array<{ po_line_id?: number | null }>) {
+          if (l.po_line_id != null && removedIds.includes(l.po_line_id)) invLines++;
+        }
+      } catch { /* unparseable lines_json can't be counted */ }
+    }
+    orphaned = { receipts: rec?.n ?? 0, invoice_lines: invLines };
+  }
+
+  const stmts: D1PreparedStatement[] = [];
+  for (const { ln, keep } of plan) {
+    if (keep) {
+      stmts.push(c.env.DB.prepare(
+        `UPDATE po_lines
+            SET material_id = ?, item = ?, type = ?, manufacturer = ?, qty = ?, unit = ?, unit_cost = ?,
+                line_total = ?, is_unpriced = ?, is_over_budget = ?, priced_qty_at_order = ?, committed_before = ?
+          WHERE id = ?`,
+      ).bind(
+        ln.material_id, ln.item, ln.type, ln.manufacturer, ln.qty, ln.unit, ln.unit_cost,
+        ln.line_total, ln.is_unpriced ? 1 : 0, ln.is_over_budget ? 1 : 0,
+        ln.priced_qty_at_order, ln.committed_before, keep.id,
+      ));
+    } else {
+      stmts.push(c.env.DB.prepare(
         `INSERT INTO po_lines
            (po_id, material_id, item, type, manufacturer, qty, unit, unit_cost,
             line_total, is_unpriced, is_over_budget, priced_qty_at_order, committed_before)
@@ -877,14 +938,26 @@ pos.put("/:id", async (c) => {
         id, ln.material_id, ln.item, ln.type, ln.manufacturer, ln.qty, ln.unit,
         ln.unit_cost, ln.line_total, ln.is_unpriced ? 1 : 0, ln.is_over_budget ? 1 : 0,
         ln.priced_qty_at_order, ln.committed_before,
-      ),
-    ),
-  );
+      ));
+    }
+  }
+  if (removedIds.length) {
+    stmts.push(c.env.DB.prepare(
+      `DELETE FROM po_lines WHERE id IN (${removedIds.map(() => "?").join(",")})`,
+    ).bind(...removedIds));
+  }
+  await c.env.DB.batch(stmts);
 
   await c.env.DB.prepare(
     `INSERT INTO audit_log (entity_type, entity_id, action, actor, details, created_at)
      VALUES ('po', ?, 'edited', ?, ?, ?)`,
-  ).bind(id, actor, JSON.stringify({ total, lines: enriched.length }), now).run();
+  ).bind(id, actor, JSON.stringify({
+    total, lines: enriched.length,
+    kept: plan.filter((p) => p.keep).length,
+    added: plan.filter((p) => !p.keep).length,
+    removed: removedIds.length,
+    ...(orphaned && (orphaned.receipts || orphaned.invoice_lines) ? { orphaned } : {}),
+  }), now).run();
 
   if (frameworkOverdraws.length && existing.parent_po_id && !isSandboxId(project.id)) {
     c.executionCtx.waitUntil(
@@ -901,7 +974,7 @@ pos.put("/:id", async (c) => {
     catch (e) { xero = { ok: false, error: e instanceof Error ? e.message : String(e) }; }
   }
 
-  return c.json({ id, total, requires_approval: requiresApproval, xero });
+  return c.json({ id, total, requires_approval: requiresApproval, xero, ...(orphaned && (orphaned.receipts || orphaned.invoice_lines) ? { orphaned } : {}) });
 });
 
 /** Mark a standard PO as a framework/blanket order that call-offs draw against. */
