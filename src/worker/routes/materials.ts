@@ -1086,13 +1086,24 @@ materials.get("/:projectId/off-boq", async (c) => {
       unit: string | null; unit_cost: number | null; line_total: number;
     }>();
 
-  // Aggregate per item. Rows arrive newest-first, so the first line seen for an
-  // item supplies the wording, unit and supplier shown — the latest order wins,
+  // Aggregate per item AND supplier. Rows arrive newest-first, so the first line
+  // seen for a group supplies the wording and unit shown — the latest order wins,
   // the same way a re-uploaded snapshot's wording wins on a BOQ row.
+  //
+  // The supplier belongs in the key because an item name is not an identity.
+  // Carriage, delivery, pallet charge — every supplier bills them under the same
+  // word, and they are entirely different money. Keyed on name alone, Fixfast's
+  // carriage and Alumasc's carriage collapse into one row wearing whichever
+  // supplier ordered most recently, and the other one looks like it never
+  // reached the job at all.
   const byItem = new Map<string, OffBoqMaterial>();
   for (const r of rows.results) {
-    const key = (r.item ?? "").trim().toLowerCase();
-    if (!key) continue;
+    const name = (r.item ?? "").trim().toLowerCase();
+    if (!name) continue;
+    const supplier = (r.manufacturer?.trim() || r.supplier?.trim() || "").toLowerCase();
+    // \u0000 can't occur in either half, so the two can't run together and
+    // collide (e.g. "a b" + "c" vs "a" + "b c").
+    const key = `${name}\u0000${supplier}`;
     let row = byItem.get(key);
     if (!row) {
       row = {

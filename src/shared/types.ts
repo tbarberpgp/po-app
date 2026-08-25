@@ -167,7 +167,9 @@ export type MaterialWithCommitment = Material & {
  *  there is no budget line behind it, and its £ is already reported once as
  *  the project's unpriced spend. */
 export type OffBoqMaterial = {
-  /** Lowercased item wording — what the rows are grouped by, and a stable key. */
+  /** Lowercased item wording + supplier, NUL-separated — what the rows are
+   *  grouped by, and a stable key. The supplier is part of it because an item
+   *  name alone is not an identity: every supplier bills "Carriage". */
   item_key: string;
   /** Wording from the most recent order. */
   item: string;
