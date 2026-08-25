@@ -604,6 +604,20 @@ function MatchPanel({ inv, canEdit, onReload }: { inv: Invoice; canEdit: boolean
     finally { setSaving(false); }
   }
 
+  /** Point an orphaned receipt at a line that exists, or leave it be. No suggested
+   *  target: a receipt reading "19 packs of Kingspan Therma TT44" and a line called
+   *  "CTF/SCHEME/1 Tapered Insulation Scheme" may or may not be the same material,
+   *  and only whoever took the delivery knows. The app shows the evidence. */
+  async function repointReceipt(deliveryId: number, poLineId: string) {
+    setSaving(true); setErr(null);
+    try {
+      await api.opsReassignDelivery(deliveryId, { po_line_id: poLineId });
+      setM(await api.invoiceMatch(inv.id));
+      await onReload();
+    } catch (e) { setErr(e instanceof Error ? e.message : "couldn't re-point the receipt"); }
+    finally { setSaving(false); }
+  }
+
   async function unapprove() {
     setSaving(true); setErr(null);
     try { await api.unapproveInvoice(inv.id); await onReload(); }
@@ -913,6 +927,56 @@ function MatchPanel({ inv, canEdit, onReload }: { inv: Invoice; canEdit: boolean
               </div>
             </div>
           )}
+          {/* Receipts naming a line that no longer exists. They count toward nothing,
+              which is how an invoice reads "not delivered" with signed tickets
+              listed right below it. Shown with everything a person needs to decide
+              — description, quantity, date, ticket — and nothing they don't. */}
+          {(() => {
+            const orphans = (m.deliveries ?? []).filter((d) => d.orphaned);
+            if (!orphans.length) return null;
+            const totalQty = orphans.reduce((t, d) => t + (d.received_qty ?? 0), 0);
+            return (
+              <div style={{ marginTop: 12, border: "1px solid var(--danger)", borderRadius: 10, padding: "10px 14px", background: "var(--card)" }}>
+                <div className="eyebrow" style={{ marginBottom: 4, fontSize: 10.5, color: "var(--danger)" }}>
+                  {orphans.length} receipt{orphans.length === 1 ? "" : "s"} not attached to a line on this order
+                </div>
+                <p className="muted" style={{ margin: "0 0 8px", fontSize: 11.5, lineHeight: 1.5 }}>
+                  These were checked in on site — {totalQty ? `${qtyFmt(totalQty)} units in total, ` : ""}tickets and all — but the order line
+                  each one named has since been replaced, so nothing counts them as delivered. Say which
+                  current line each belongs to, if any. Leave it alone if the same goods were logged again later.
+                </p>
+                <div style={{ display: "grid", gap: 7 }}>
+                  {orphans.map((d) => (
+                    <div key={d.id} style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", fontSize: 12.5 }}>
+                      <span className="muted" style={{ whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}>{(d.delivered_at ?? "").slice(0, 10)}</span>
+                      <span style={{ flex: 1, minWidth: 170 }}>{d.description || "Delivery"}</span>
+                      <span style={{ fontWeight: 600, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
+                        {d.received_qty != null ? `${qtyFmt(d.received_qty)}${d.received_unit ? ` ${d.received_unit}` : ""}` : "no qty recorded"}
+                      </span>
+                      {d.ticket_url && (
+                        <button className="muted" style={{ fontSize: 12, whiteSpace: "nowrap", background: "none", border: "none", padding: 0, cursor: "pointer" }}
+                          onClick={() => { setTicketLb(d.ticket_url); setTicketLbZoom(false); }} title="View the delivery ticket">📎 Ticket</button>
+                      )}
+                      {canEdit && !locked && (m.po_lines?.length ?? 0) > 0 && (
+                        <select className="input" style={{ fontSize: 11.5, padding: "5px 8px", maxWidth: 260 }}
+                          defaultValue="" disabled={saving}
+                          onChange={(e) => { if (e.target.value) void repointReceipt(d.id, e.target.value); }}>
+                          <option value="">— attach to a line… —</option>
+                          {m.po_lines!.map((pl) => (
+                            <option key={pl.id} value={String(pl.id)}>
+                              {pl.item.length > 44 ? pl.item.slice(0, 44) + "…" : pl.item}
+                              {pl.qty != null ? ` (${qtyFmt(pl.qty)}${pl.unit ? ` ${pl.unit}` : ""} ordered)` : ""}
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
+
           {(m.deliveries ?? []).length > 0 && (
             <div style={{ marginTop: 12, border: "1px solid var(--line)", borderRadius: 10, padding: "10px 14px" }}>
               <div className="eyebrow" style={{ marginBottom: 6, fontSize: 10.5 }}>Deliveries on {m.matched_po?.po_number ?? "this order"}</div>
