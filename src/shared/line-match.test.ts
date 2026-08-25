@@ -88,6 +88,26 @@ describe("line linking", () => {
     assert.deepEqual(issues.map((i) => i.kind), ["unlinked"]);
   });
 
+  test("a learned alias links a line that wording alone would miss", () => {
+    // The 73 invoice_line aliases are corrections people already made. The detail
+    // panel has always consulted them; this scan didn't, so the badge could say
+    // "line not on the PO" for a line the panel linked happily.
+    const po = [poLine({ id: 1, item: "MS-B36 - METShield MS-B36 Bars @ 3.6m Long" })];
+    const aliases = new Map([[normText("VIEO 38-525-1050 rail"), normText("MS-B36 - METShield MS-B36 Bars @ 3.6m Long")]]);
+    assert.deepEqual(kinds([{ description: "VIEO 38-525-1050 rail" }], po), ["unlinked"], "without the alias it can't link");
+    assert.deepEqual(
+      scanLineMatch([{ description: "VIEO 38-525-1050 rail" }], po, undefined, aliases).issues,
+      [], "with the alias it links, same as the detail panel",
+    );
+  });
+
+  test("a stored link still beats a learned alias", () => {
+    const po = [poLine({ id: 1, item: "A" }), poLine({ id: 2, item: "B" })];
+    const aliases = new Map([[normText("thing"), normText("A")]]);
+    const m = scanLineMatch([{ description: "thing", po_line_id: 2 }], po, undefined, aliases);
+    assert.deepEqual(m.issues, []);
+  });
+
   test("a line that links to nothing is reported", () => {
     // Alumasc carriage lines — "CARR-RF1 Carriage Out - Roofing Surcharge".
     const po = [poLine({ id: 1, item: "PUBGT-30 Alumasc BGT 30mm" })];
