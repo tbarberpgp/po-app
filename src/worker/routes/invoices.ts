@@ -14,10 +14,34 @@ import {
 import { ensureXeroContact } from "./xero";
 import { createSalesInvoice, getInvoice, uploadAttachment } from "../xero/client";
 import { nextPONumber } from "./pos";
-import { aliasMap, learnAliases, normText } from "../matchMemory";
+import { aliasMap, aliasMapsBySupplier, learnAliases, normText } from "../matchMemory";
 import { fuzzyFindPo } from "../poRef";
 import { pickProjectByAddress, type AddrProject } from "../addrMatch";
 import { siteScope } from "./operations";
+
+/**
+ * Record an invoice event. Invoices had no audit trail at all: audit_log covered
+ * POs, projects, snapshots, programmes, AFPs and products, but nothing on the
+ * workflow that ends in a draft bill in Xero. There was no record of who linked
+ * an invoice to an order or what it was linked to before, so a mislink couldn't
+ * be told apart from someone correcting one — the previous value was simply gone.
+ *
+ * Best-effort: an audit write must never fail the action it is describing.
+ */
+async function logInvoice(env: Env, id: string | number, action: string, actor: string | null, details?: Record<string, unknown>) {
+  try {
+    await env.DB.prepare(
+      `INSERT INTO audit_log (entity_type, entity_id, action, actor, details, created_at)
+       VALUES ('invoice', ?, ?, ?, ?, ?)`,
+    ).bind(
+      String(id), action, actor ?? "system",
+      details ? JSON.stringify(details) : null, new Date().toISOString(),
+    ).run();
+  } catch (e) {
+    console.warn("invoice audit write failed", action, e instanceof Error ? e.message : e);
+  }
+}
+
 import { loadSettings, tierForApproval } from "../approval";
 
 export const invoices = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -537,7 +561,9 @@ invoices.patch("/:id", async (c) => {
   const denied = requirePermission(c, "commercial.edit");
   if (denied) return denied;
   const id = c.req.param("id");
-  const cur = await c.env.DB.prepare("SELECT kind FROM invoices WHERE id = ?").bind(id).first<{ kind: string | null }>();
+  const cur = await c.env.DB.prepare(
+    "SELECT kind, project_id, nominal_code, supplier_name, gross_amount FROM invoices WHERE id = ?",
+  ).bind(id).first<{ kind: string | null; project_id: string | null; nominal_code: string | null; supplier_name: string | null; gross_amount: number | null }>();
   if (!cur) return c.json({ error: "not found" }, 404);
   const body = await c.req.json<Record<string, unknown>>();
   // Routing an invoice to (or leaving it on) overheads is admin-only.
@@ -562,6 +588,15 @@ invoices.patch("/:id", async (c) => {
   if (sets.length === 0) return c.json({ ok: true });
   binds.push(id);
   await c.env.DB.prepare(`UPDATE invoices SET ${sets.join(", ")} WHERE id = ?`).bind(...binds).run();
+  // Only the fields that actually moved, with their previous values — the point
+  // of the trail is being able to see what a change replaced.
+  const changed: Record<string, unknown> = {};
+  for (const k of allowed) {
+    if (k in body && k in cur && (cur as Record<string, unknown>)[k] !== body[k]) {
+      changed[k] = { from: (cur as Record<string, unknown>)[k] ?? null, to: body[k] ?? null };
+    }
+  }
+  await logInvoice(c.env, id, "coded", c.get("userEmail"), Object.keys(changed).length ? changed : { fields: Object.keys(body) });
   return c.json({ ok: true });
 });
 
@@ -569,6 +604,7 @@ invoices.post("/:id/dismiss", async (c) => {
   const denied = requirePermission(c, "commercial.edit");
   if (denied) return denied;
   await c.env.DB.prepare("UPDATE invoices SET status = 'dismissed' WHERE id = ?").bind(c.req.param("id")).run();
+  await logInvoice(c.env, c.req.param("id"), "dismissed", c.get("userEmail"));
   return c.json({ ok: true });
 });
 
@@ -687,6 +723,15 @@ async function withMatchState(env: Env, rows: Record<string, unknown>[]): Promis
   // can be resolved to what it actually IS. A quoted framework is the normal
   // workflow, not a mislink, and that can't be told apart from the number alone.
   // ~110 orders, so one unfiltered read beats building an IN list per request.
+  // The wording corrections people have already made, all suppliers in one read,
+  // so this scan links exactly what the detail panel links.
+  const aliasesBySupplier = await aliasMapsBySupplier(env.DB, "invoice_line");
+  const aliasesFor = (supplier: string | null) => {
+    const merged = new Map(aliasesBySupplier.get("") ?? []);
+    for (const [k, v] of aliasesBySupplier.get(normText(supplier)) ?? []) merged.set(k, v);
+    return merged;
+  };
+
   const byRefCore = new Map<string, { order_type: string | null; project_code: string | null }>();
   {
     const all = await env.DB.prepare(
@@ -742,7 +787,7 @@ async function withMatchState(env: Env, rows: Record<string, unknown>[]): Promis
       quoted_ref: (r.extracted_po_ref as string | null) ?? null,
       quoted_type: quoted?.order_type ?? null,
       quoted_project: quoted?.project_code ?? null,
-    }) };
+    }, aliasesFor((r.supplier_name as string | null) ?? null)) };
   });
 }
 
@@ -1022,7 +1067,9 @@ invoices.post("/:id/match", async (c) => {
   if (denied) return denied;
   let body: { po_id?: string | null; line_po_ids?: Array<number | null> } = {};
   try { body = await c.req.json(); } catch { /* none */ }
-  const inv = await c.env.DB.prepare("SELECT lines_json, supplier_name FROM invoices WHERE id = ?").bind(c.req.param("id")).first<{ lines_json: string | null; supplier_name: string | null }>();
+  const inv = await c.env.DB.prepare(
+    "SELECT lines_json, supplier_name, matched_po_id FROM invoices WHERE id = ?",
+  ).bind(c.req.param("id")).first<{ lines_json: string | null; supplier_name: string | null; matched_po_id: string | null }>();
   if (!inv) return c.json({ error: "not found" }, 404);
   let lines: InvLine[] = [];
   try { lines = inv.lines_json ? JSON.parse(inv.lines_json) : []; } catch { /* none */ }
@@ -1043,6 +1090,20 @@ invoices.post("/:id/match", async (c) => {
       lines.filter((l) => l.po_line_id != null).map((l) => ({ alias: l.description, target: byId.get(l.po_line_id!) })),
       c.get("userEmail"));
   }
+  // PO numbers, not ids — an id in a log is unreadable a month later.
+  const nextPoId = (body.po_id || "").trim() || null;
+  const nums = await c.env.DB.prepare(
+    `SELECT id, po_number FROM purchase_orders WHERE id IN (?, ?)`,
+  ).bind(inv.matched_po_id ?? "", nextPoId ?? "").all<{ id: string; po_number: string }>();
+  const numById = new Map(nums.results.map((r) => [r.id, r.po_number]));
+  await logInvoice(c.env, c.req.param("id"), "matched", c.get("userEmail"), {
+    po: {
+      from: inv.matched_po_id ? numById.get(inv.matched_po_id) ?? inv.matched_po_id : null,
+      to: nextPoId ? numById.get(nextPoId) ?? nextPoId : null,
+    },
+    lines_linked: mappedIds.length,
+    lines_total: lines.length,
+  });
   return c.json({ ok: true });
 });
 
@@ -1057,6 +1118,7 @@ invoices.post("/:id/approve", async (c) => {
   try { body = await c.req.json(); } catch { /* none */ }
   if (body.unapprove) {
     await c.env.DB.prepare("UPDATE invoices SET approved_at = NULL, approved_by = NULL WHERE id = ?").bind(c.req.param("id")).run();
+    await logInvoice(c.env, c.req.param("id"), "unapproved", c.get("userEmail"));
     return c.json({ ok: true });
   }
   const inv = await c.env.DB.prepare("SELECT * FROM invoices WHERE id = ?").bind(c.req.param("id")).first<Record<string, unknown>>();
@@ -1079,6 +1141,28 @@ invoices.post("/:id/approve", async (c) => {
   await c.env.DB.prepare("UPDATE invoices SET approved_at = ?, approved_by = ?, approval_note = ?, status = CASE WHEN status = 'inbox' THEN 'ready' ELSE status END WHERE id = ?")
     .bind(now, c.get("userEmail"), note || null, c.req.param("id")).run();
 
+  // The reason box records WHY someone approved; nothing recorded WHAT they were
+  // approving over. 82 invoices were cleared this way and the failure had to be
+  // reconstructed months later from delivery counts. Store it with the approval.
+  let overrode: string[] | undefined;
+  if (note) {
+    try {
+      const poLines = inv.matched_po_id
+        ? (await c.env.DB.prepare("SELECT id, item, qty, unit_cost FROM po_lines WHERE po_id = ?")
+            .bind(inv.matched_po_id).all<PoLineRow>()).results
+        : [];
+      let invLines: InvLine[] = [];
+      try { invLines = inv.lines_json ? JSON.parse(String(inv.lines_json)) : []; } catch { /* none */ }
+      if (poLines.length) {
+        overrode = [...new Set(scanLineMatch(invLines, poLines).issues.map((i) => i.kind))];
+      }
+    } catch { /* never block an approval to write its own audit line */ }
+  }
+  await logInvoice(c.env, c.req.param("id"), "approved", c.get("userEmail"), {
+    gross: inv.gross_amount ?? null,
+    ...(note ? { reason: note, overrode: overrode ?? [] } : { clean_match: true }),
+  });
+
   // Approval IS the release: push straight to Xero as a draft bill, same as PO
   // approval auto-pushes. Best-effort — a failure never rolls back the
   // approval; it's stored on the row and the manual Push button retries.
@@ -1089,6 +1173,8 @@ invoices.post("/:id/approve", async (c) => {
     && !!(inv.supplier_name as string | null)?.trim() && inv.project_id !== "sandbox";
   if (canPush) {
     const r = await pushInvoiceBillToXero(c.env, { ...inv, approved_at: now }, c.req.param("id"));
+    await logInvoice(c.env, c.req.param("id"), r.ok ? "pushed" : "push_failed", c.get("userEmail"),
+      r.ok ? { via: "approval", bill: r.xero_bill_number ?? null } : { via: "approval", error: r.error ?? null });
     return c.json({ ok: true, approved_at: now, ...(r.ok
       ? { pushed: true, xero_bill_number: r.xero_bill_number, ...(r.attach_warning ? { attach_warning: r.attach_warning } : {}) }
       : { pushed: false, xero_error: r.error }) });
@@ -1385,6 +1471,8 @@ invoices.post("/:id/push-xero", async (c) => {
     return c.json({ error: "Approve this invoice for payment (match it to its PO) before pushing to Xero." }, 400);
   }
   const r = await pushInvoiceBillToXero(c.env, inv, c.req.param("id"));
+  await logInvoice(c.env, c.req.param("id"), r.ok ? "pushed" : "push_failed", c.get("userEmail"),
+    r.ok ? { via: "manual", bill: r.xero_bill_number ?? null } : { via: "manual", error: r.error ?? null });
   if (!r.ok) return c.json({ error: r.error }, 502);
   return c.json({ ok: true, xero_bill_id: r.xero_bill_id, xero_bill_number: r.xero_bill_number, ...(r.attach_warning ? { attach_warning: r.attach_warning } : {}) });
 });
