@@ -1123,6 +1123,40 @@ invoices.post("/:id/approve", async (c) => {
   }
   const inv = await c.env.DB.prepare("SELECT * FROM invoices WHERE id = ?").bind(c.req.param("id")).first<Record<string, unknown>>();
   if (!inv) return c.json({ error: "not found" }, 404);
+
+  // The one hard gate, and the only thing a typed reason cannot clear.
+  //
+  // Approval creates the draft bill in Xero, coded to the invoice's project. If
+  // the order it reconciles against is on a DIFFERENT job then one of the two is
+  // wrong, and either way the cost lands on the wrong job's books — where it is
+  // far harder to unpick than it is to fix here. Workwear INV2502383 put £119.45
+  // of Blyth's spend onto 26001's order that way, and 15 invoices carry the same
+  // condition. Nothing about a variance is being judged here: two fields that
+  // must name the same job don't.
+  //
+  // Grouped sites share deliveries but not commercials — the costing is per
+  // contract — so a sibling contract in the same site group is still the wrong
+  // job for this purpose and is not exempted.
+  const crossJob = await (async () => {
+    if (inv.kind !== "project" || !inv.matched_po_id || !inv.project_id) return null;
+    const po = await c.env.DB.prepare(
+      `SELECT po.po_number, p.code AS po_job FROM purchase_orders po
+         LEFT JOIN projects p ON p.id = po.project_id WHERE po.id = ?`,
+    ).bind(inv.matched_po_id).first<{ po_number: string; po_job: string | null }>();
+    const invJob = await c.env.DB.prepare("SELECT code FROM projects WHERE id = ?")
+      .bind(inv.project_id).first<{ code: string }>();
+    if (!po?.po_job || !invJob?.code || po.po_job === invJob.code) return null;
+    return { po: po.po_number, poJob: po.po_job, invJob: invJob.code };
+  })();
+  if (crossJob) {
+    return c.json({
+      error: `This invoice is coded to job ${crossJob.invJob}, but ${crossJob.po} is an order on job ${crossJob.poJob}. `
+        + `Approving would post the cost to the wrong job in Xero. Attach an order on ${crossJob.invJob}, or re-code the `
+        + `invoice to ${crossJob.poJob} if that's where it belongs. A typed reason can't clear this one.`,
+      cross_job: crossJob,
+    }, 400);
+  }
+
   const note = (body.note || "").trim();
   if (inv.kind === "project" && !note) {
     const m = await computeInvoiceMatch(c.env, inv);
@@ -1469,6 +1503,22 @@ invoices.post("/:id/push-xero", async (c) => {
   // — i.e. reconciled against its PO/deliveries — before it goes to Xero.
   if (inv.kind === "project" && !inv.approved_at) {
     return c.json({ error: "Approve this invoice for payment (match it to its PO) before pushing to Xero." }, 400);
+  }
+  // Same gate as approval. Needed here too: an invoice approved BEFORE that gate
+  // existed still has approved_at set, and this button would push it.
+  if (inv.kind === "project" && inv.matched_po_id && inv.project_id) {
+    const po = await c.env.DB.prepare(
+      `SELECT po.po_number, p.code AS po_job FROM purchase_orders po
+         LEFT JOIN projects p ON p.id = po.project_id WHERE po.id = ?`,
+    ).bind(inv.matched_po_id).first<{ po_number: string; po_job: string | null }>();
+    const invJob = await c.env.DB.prepare("SELECT code FROM projects WHERE id = ?")
+      .bind(inv.project_id).first<{ code: string }>();
+    if (po?.po_job && invJob?.code && po.po_job !== invJob.code) {
+      return c.json({
+        error: `This invoice is coded to job ${invJob.code}, but ${po.po_number} is an order on job ${po.po_job}. `
+          + `Fix the order link (or the coding) before pushing — otherwise the cost lands on the wrong job in Xero.`,
+      }, 400);
+    }
   }
   const r = await pushInvoiceBillToXero(c.env, inv, c.req.param("id"));
   await logInvoice(c.env, c.req.param("id"), r.ok ? "pushed" : "push_failed", c.get("userEmail"),
