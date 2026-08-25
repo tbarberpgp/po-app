@@ -102,7 +102,7 @@ qitp.post("/unsign/:token/:sectionId", async (c) => {
   const sectionId = Number(c.req.param("sectionId"));
   await c.env.DB.prepare("DELETE FROM qitp_signoffs WHERE cabin_id = ? AND section_id = ?").bind(cab.id, sectionId).run();
   await c.env.DB.prepare(
-    "UPDATE qitp_records SET status = 'not_started', checks = NULL, updated_at = ? WHERE cabin_id = ? AND section_id = ?",
+    "UPDATE qitp_records SET status = 'not_started', checks = NULL, entries = NULL, updated_at = ? WHERE cabin_id = ? AND section_id = ?",
   ).bind(new Date().toISOString(), cab.id, sectionId).run();
   return c.json({ ok: true });
 });

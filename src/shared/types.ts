@@ -1318,7 +1318,10 @@ export type CabinState = "not_started" | "in_progress" | "held" | "failed" | "co
 export type QitpSectionStatus = "not_started" | "pass" | "in_progress" | "fail" | "na";
 
 export type QitpPhotoMode = "none" | "optional" | "required";
-export type QitpItem = { text: string; hold: boolean; photo: QitpPhotoMode };
+/** Whether an item takes a typed reading (paint QA: temperatures, humidity,
+ *  dew point, dry film thickness) alongside its tick. Same tri-state as photo. */
+export type QitpEntryMode = "none" | "optional" | "required";
+export type QitpItem = { text: string; hold: boolean; photo: QitpPhotoMode; entry?: QitpEntryMode };
 
 export type QitpSection = {
   id: number;
@@ -1355,6 +1358,7 @@ export type QitpRecord = {
   section_id: number;
   status: QitpSectionStatus;
   checks: boolean[];             // one per section item
+  entries: string[];             // typed reading per item (blank where not applicable)
   inspector: string | null;
   company: string | null;
   notes: string | null;

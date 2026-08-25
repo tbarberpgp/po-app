@@ -1903,6 +1903,9 @@ body.rd-printing .rd-linedel, body.rd-printing .rd-addline, body.rd-printing .rd
 .cq-sec.is-released { border-color: var(--success); }
 .cq-checklist .cq-item-main { flex: 1; display: flex; flex-direction: column; gap: 6px; }
 .cq-req { color: var(--danger); font-style: normal; font-weight: 700; font-size: 12px; }
+.cq-item-entry { width: 100%; max-width: 190px; box-sizing: border-box; border: 1px solid var(--line-strong); border-radius: var(--radius-md); padding: 8px 11px; font: inherit; font-size: 15px; background: var(--card); color: var(--ink); }
+.cq-item-entry:focus { outline: none; border-color: var(--accent); }
+.cq-checklist li.done .cq-item-entry { color: var(--ink); }
 .cq-istrip { margin-top: 2px; }
 .cq-thumb.sm { width: 56px; height: 56px; }
 .cq-istrip .cq-photo-btns { gap: 6px; }

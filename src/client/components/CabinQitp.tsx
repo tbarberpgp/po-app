@@ -7,10 +7,17 @@ import type { QitpCabinDetail, QitpItem, QitpRecord, QitpSection, QitpSectionSta
 
 type Rec = QitpRecord;
 type Photo = { id: number; section_id: number; item_index: number | null };
-const blank = (sectionId: number): Rec => ({ section_id: sectionId, status: "not_started", checks: [], inspector: null, company: null, notes: null, photo_ref: null });
+const blank = (sectionId: number): Rec => ({ section_id: sectionId, status: "not_started", checks: [], entries: [], inspector: null, company: null, notes: null, photo_ref: null });
 function normChecks(stored: boolean[] | null | undefined, len: number): boolean[] {
   const out = new Array(len).fill(false);
   if (Array.isArray(stored)) for (let i = 0; i < len; i++) out[i] = !!stored[i];
+  return out;
+}
+/** Typed readings, one slot per item — same shape as normChecks so a section
+ *  whose template grew still lines up with what was recorded earlier. */
+function normEntries(stored: string[] | null | undefined, len: number): string[] {
+  const out = new Array(len).fill("");
+  if (Array.isArray(stored)) for (let i = 0; i < len; i++) out[i] = stored[i] == null ? "" : String(stored[i]);
   return out;
 }
 /** A section is released once every responsible party has signed. */
@@ -121,6 +128,7 @@ function SectionCard({
   const [inspector, setInspector] = useState(rec.inspector ?? "");
   const [company, setCompany] = useState(rec.company ?? "");
   const [checks, setChecks] = useState<boolean[]>(() => normChecks(rec.checks, items.length));
+  const [entries, setEntries] = useState<string[]>(() => normEntries(rec.entries, items.length));
   const [signParty, setSignParty] = useState<string | null>(null);
   const [signName, setSignName] = useState("");
   const [sig, setSig] = useState<string | null>(null);
@@ -130,7 +138,8 @@ function SectionCard({
   useEffect(() => {
     setNotes(rec.notes ?? ""); setInspector(rec.inspector ?? ""); setCompany(rec.company ?? "");
     setChecks(normChecks(rec.checks, items.length));
-  }, [rec.notes, rec.inspector, rec.company, rec.checks, items.length]);
+    setEntries(normEntries(rec.entries, items.length));
+  }, [rec.notes, rec.inspector, rec.company, rec.checks, rec.entries, items.length]);
 
   const locked = !!lockedBy;
   const signedParties = new Set(signoffs.map((s) => s.party));
@@ -139,15 +148,23 @@ function SectionCard({
   const sectionPhotos = photos.filter((p) => p.item_index == null);
 
   function save(p: Partial<Rec>) {
+    const sent = p.entries ?? entries;
     api.pubCabinSetSection(token, section.id, {
       status: p.status ?? rec.status, notes: p.notes ?? notes, inspector: p.inspector ?? inspector,
-      company: p.company ?? company, checks: p.checks ?? checks,
+      company: p.company ?? company, checks: p.checks ?? checks, entries: sent,
     }).catch(() => {});
+    // EVERY save carries the readings, so mirror them onto the record too —
+    // otherwise a save triggered by something else (ticking an item, setting
+    // Pass) leaves rec.entries stale and the reset effect below blanks a
+    // reading that was typed but not yet blurred.
+    if (p.entries === undefined) onPatch({ entries: sent });
   }
   function setStatus(status: QitpSectionStatus) {
     if (status === "pass") {
       const missing = items.findIndex((it, i) => it.photo === "required" && itemPhotos(i).length === 0);
       if (missing >= 0) { setErr(`A photo is required on item ${missing + 1} before this section can pass.`); return; }
+      const noReading = items.findIndex((it, i) => it.entry === "required" && !(entries[i] ?? "").trim());
+      if (noReading >= 0) { setErr(`A reading is required on item ${noReading + 1} before this section can pass.`); return; }
     }
     setErr(null);
     const next: QitpSectionStatus = rec.status === status ? "not_started" : status;  // tap again to clear
@@ -157,6 +174,17 @@ function SectionCard({
     const next = checks.slice(); next[i] = on; setChecks(next);
     const status: QitpSectionStatus = on && rec.status === "not_started" ? "in_progress" : rec.status;
     onPatch({ checks: next, status }); save({ checks: next, status });
+  }
+  /** Commit a typed reading (on blur, like notes) — recording one also moves an
+   *  untouched section to in-progress, same as ticking an item.
+   *  Compare against the PERSISTED value, not `entries`: onChange has already
+   *  written the keystroke into that state, so comparing to it would match
+   *  every time and never save. */
+  function commitEntry(i: number, value: string) {
+    if ((normEntries(rec.entries, items.length)[i] ?? "") === value) return;
+    const next = entries.slice(); next[i] = value; setEntries(next);
+    const status: QitpSectionStatus = value.trim() && rec.status === "not_started" ? "in_progress" : rec.status;
+    onPatch({ entries: next, status }); save({ entries: next, status });
   }
   async function doSign() {
     if (!signParty || !signName.trim() || !sig) return;
@@ -198,7 +226,22 @@ function SectionCard({
                 <li key={i} className={checks[i] ? "done" : ""}>
                   <input type="checkbox" checked={!!checks[i]} onChange={(e) => toggleCheck(i, e.target.checked)} />
                   <div className="cq-item-main">
-                    <span>{it.text}{it.hold && <b className="cq-flag"> ⚑ HOLD</b>}{it.photo === "required" && <em className="cq-req"> · photo required</em>}</span>
+                    <span>{it.text}{it.hold && <b className="cq-flag"> ⚑ HOLD</b>}{it.photo === "required" && <em className="cq-req"> · photo required</em>}{it.entry === "required" && <em className="cq-req"> · reading required</em>}</span>
+                    {/* Typed reading for items that record a value rather than a
+                        state — paint QA temperatures, humidity, dew point, DFT. */}
+                    {it.entry && it.entry !== "none" && (
+                      <input
+                        className="cq-item-entry"
+                        type="text"
+                        inputMode="text"
+                        value={entries[i] ?? ""}
+                        placeholder="Reading"
+                        aria-label={`${it.text} — reading`}
+                        maxLength={120}
+                        onChange={(e) => { const next = entries.slice(); next[i] = e.target.value; setEntries(next); }}
+                        onBlur={(e) => commitEntry(i, e.target.value)}
+                      />
+                    )}
                     {it.photo !== "none" && (
                       <PhotoStrip token={token} sectionId={section.id} itemIndex={i} photos={itemPhotos(i)} onAdd={onPhotoAdd} onRemove={onPhotoRemove} compact />
                     )}

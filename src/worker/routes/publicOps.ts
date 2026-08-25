@@ -849,9 +849,13 @@ publicOps.get("/cabin/:token", async (c) => {
   ).bind(cab.project_id).all<{ id: number; seq: number; title: string; point_type: string | null; responsible: string | null; items: string | null }>()).results;
   const sections = secRows.map((s) => ({ id: s.id, seq: s.seq, title: s.title, point_type: s.point_type, responsible: parseJsonArr(s.responsible) as string[], items: parseJsonArr(s.items) }));
   const recRows = (await c.env.DB.prepare(
-    "SELECT section_id, status, checks, inspector, company, notes, photo_ref FROM qitp_records WHERE cabin_id = ?",
-  ).bind(cab.id).all<{ section_id: number; status: string; checks: string | null; inspector: string | null; company: string | null; notes: string | null; photo_ref: string | null }>()).results;
-  const records = recRows.map((r) => ({ ...r, checks: parseJsonArr(r.checks) as boolean[] }));
+    "SELECT section_id, status, checks, entries, inspector, company, notes, photo_ref FROM qitp_records WHERE cabin_id = ?",
+  ).bind(cab.id).all<{ section_id: number; status: string; checks: string | null; entries: string | null; inspector: string | null; company: string | null; notes: string | null; photo_ref: string | null }>()).results;
+  const records = recRows.map((r) => ({
+    ...r,
+    checks: parseJsonArr(r.checks) as boolean[],
+    entries: (parseJsonArr(r.entries) as unknown[]).map((v) => (v == null ? "" : String(v))),
+  }));
   const signoffs = (await c.env.DB.prepare(
     "SELECT section_id, party, signed_name, signed_at FROM qitp_signoffs WHERE cabin_id = ?",
   ).bind(cab.id).all<{ section_id: number; party: string; signed_name: string; signed_at: string }>()).results;
@@ -869,15 +873,26 @@ publicOps.post("/cabin/:token/section/:sectionId", async (c) => {
   const sectionId = Number(c.req.param("sectionId"));
   const sec = await c.env.DB.prepare("SELECT id FROM qitp_sections WHERE id = ? AND project_id = ?").bind(sectionId, cab.project_id).first();
   if (!sec) return c.json({ error: "section not found" }, 404);
-  const body = await c.req.json<{ status?: string; notes?: string; photo_ref?: string; inspector?: string; company?: string; checks?: boolean[] }>();
+  const body = await c.req.json<{ status?: string; notes?: string; photo_ref?: string; inspector?: string; company?: string; checks?: boolean[]; entries?: string[] }>();
   const status = body.status && QITP_STATUSES.has(body.status) ? body.status : "not_started";
   const checks = Array.isArray(body.checks) ? JSON.stringify(body.checks.map(Boolean)) : null;
+  // Typed per-item readings (paint QA). Capped per value so a stray paste can't
+  // bloat the row; absent entries stay NULL, which is every pre-paint record.
+  const entries = Array.isArray(body.entries)
+    ? JSON.stringify(body.entries.map((v) => (v == null ? "" : String(v).slice(0, 120))))
+    : null;
   const now = new Date().toISOString();
   await c.env.DB.prepare(
-    `INSERT INTO qitp_records (cabin_id, section_id, status, checks, inspector, company, notes, photo_ref, updated_at)
-     VALUES (?,?,?,?,?,?,?,?,?)
-     ON CONFLICT(cabin_id, section_id) DO UPDATE SET status=excluded.status, checks=excluded.checks, inspector=excluded.inspector, company=excluded.company, notes=excluded.notes, photo_ref=excluded.photo_ref, updated_at=excluded.updated_at`,
-  ).bind(cab.id, sectionId, status, checks, body.inspector ?? null, body.company ?? null, body.notes ?? null, body.photo_ref ?? null, now).run();
+    `INSERT INTO qitp_records (cabin_id, section_id, status, checks, entries, inspector, company, notes, photo_ref, updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?)
+     ON CONFLICT(cabin_id, section_id) DO UPDATE SET status=excluded.status, checks=excluded.checks,
+       -- COALESCE, not overwrite: a save that omits the entries field (an older
+       -- cached client bundle mid-deploy, or any caller that doesn't know about
+       -- readings) must not wipe recorded readings. Clearing one sends "" in
+       -- the array, never a null column.
+       entries=COALESCE(excluded.entries, qitp_records.entries),
+       inspector=excluded.inspector, company=excluded.company, notes=excluded.notes, photo_ref=excluded.photo_ref, updated_at=excluded.updated_at`,
+  ).bind(cab.id, sectionId, status, checks, entries, body.inspector ?? null, body.company ?? null, body.notes ?? null, body.photo_ref ?? null, now).run();
   return c.json({ ok: true });
 });
 

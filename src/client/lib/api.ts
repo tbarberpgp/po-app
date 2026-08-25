@@ -1503,7 +1503,7 @@ export const api = {
     jfetch<import("../../shared/types").QitpDashboard>(`/api/qitp/${projectId}/dashboard`),
   pubCabin: (token: string) =>
     jfetch<import("../../shared/types").QitpCabinDetail>(`/pub/cabin/${token}`),
-  pubCabinSetSection: (token: string, sectionId: number, input: { status?: string; notes?: string; photo_ref?: string; inspector?: string; company?: string; checks?: boolean[] }) =>
+  pubCabinSetSection: (token: string, sectionId: number, input: { status?: string; notes?: string; photo_ref?: string; inspector?: string; company?: string; checks?: boolean[]; entries?: string[] }) =>
     jfetch<{ ok: true }>(`/pub/cabin/${token}/section/${sectionId}`, { method: "POST", body: JSON.stringify(input) }),
   pubCabinSign: (token: string, sectionId: number, input: { party: string; name: string; signature: string }) =>
     jfetch<{ ok: true; signed_at: string }>(`/pub/cabin/${token}/section/${sectionId}/sign`, { method: "POST", body: JSON.stringify(input) }),
