@@ -123,11 +123,9 @@ export type MatchSummary = { state: "matched" | "unmatched" | "no_po"; issues: M
  * receipt at all, so including the delivery leg would mark almost everything and
  * the state would carry no information.
  *
- * Conservative on linking: stored link, then exact wording, then leading product
- * code — no learned aliases, so a line the running app would match via a learned
- * alias may report as unlinked here. The state stays visible on approved invoices,
- * so a false positive is expensive; erring toward "say something" on an unlinked
- * line is deliberate, since marking it as a service charge clears it in one click.
+ * Linking follows the same precedence as computeInvoiceMatch — stored link,
+ * learned alias, exact wording, leading product code — so the list badge and the
+ * detail panel cannot disagree about whether a line found its order line.
  */
 export type PoContext = {
   po_number?: string | null;
@@ -140,7 +138,19 @@ export type PoContext = {
   quoted_project?: string | null;
 };
 
-export function scanLineMatch(invLines: InvLine[], poLines: PoLineRow[], po?: PoContext): MatchSummary {
+/**
+ * @param aliases alias_norm → target_norm, the wording corrections people have
+ *   already made for this supplier. computeInvoiceMatch has consulted these all
+ *   along; this scan didn't, so the list could report "line not on the PO" for a
+ *   line the detail panel linked happily off a correction someone had already
+ *   made. Same divergence class as the rate contradiction on Fixfast 1610590.
+ */
+export function scanLineMatch(
+  invLines: InvLine[],
+  poLines: PoLineRow[],
+  po?: PoContext,
+  aliases?: Map<string, string>,
+): MatchSummary {
   const taken = new Set<number>();
   const issues: MatchIssue[] = [];
 
@@ -171,7 +181,13 @@ export function scanLineMatch(invLines: InvLine[], poLines: PoLineRow[], po?: Po
   }
   for (const il of invLines) {
     if (il.po_line_id === SERVICE_CHARGE_LINE_ID) continue;
+    // Same precedence as computeInvoiceMatch: stored link, then a learned alias,
+    // then exact wording, then the leading product code.
     let pl = il.po_line_id ? poLines.find((p) => p.id === il.po_line_id) : null;
+    if (!pl && aliases) {
+      const learned = aliases.get(normText(il.description));
+      if (learned) pl = poLines.find((p) => normText(p.item) === learned) || null;
+    }
     if (!pl) pl = poLines.find((p) => normText(p.item) === normText(il.description)) || null;
     if (!pl) {
       const code = invMaterialCode(il.description ?? "");
