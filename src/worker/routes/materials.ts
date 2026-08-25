@@ -5,6 +5,7 @@ import {
   readPricingWorkbook, reconcileCommercials,
 } from "../../shared/parse-xlsx";
 import type { ParsedMaterial, ParsedCommercialRow, ParsedContractItem, LabourRateLine } from "../../shared/parse-xlsx";
+import type { OffBoqMaterial } from "../../shared/types";
 import { requirePermission } from "../auth";
 import { loadSettings, tierForApproval } from "../approval";
 import { autoTagFromBill, baseProject } from "./programme";
@@ -1014,6 +1015,130 @@ materials.get("/:projectId", async (c) => {
           : 0),
     };
   });
+  return c.json(result);
+});
+
+// ── Materials that live only on purchase orders ────────────────────────────
+
+/**
+ * The materials ordered against this project that aren't in the priced BOQ.
+ *
+ * The main list above is the active pricing snapshot and nothing else, so an
+ * item added as an extra line when raising a PO ("outside the priced BOQ")
+ * never reaches the project's Materials tab — it can only be found on the PO.
+ * This is that missing half: the same items, aggregated per item so repeat
+ * orders read as one material rather than one row per PO line.
+ *
+ * A line is off-BOQ when NEITHER its printed wording NOR the budget line it's
+ * coded to matches an active-snapshot item (or that item's active
+ * substitution's replacement wording) — precisely the lines the committed /
+ * coded subqueries above cannot fold into a budget row, so nothing is counted
+ * in both places. With no workbook uploaded the BOQ is empty and every ordered
+ * item lands here, which is what makes the tab useful before pricing arrives.
+ *
+ * Prelim POs are left out: they spend the Preliminaries budget, which has its
+ * own tab. Quantities mirror the BOQ rows — committed excludes call-offs (a
+ * framework reserves and its call-offs draw within that reservation), which
+ * are reported separately as called_off_qty.
+ */
+materials.get("/:projectId/off-boq", async (c) => {
+  const projectId = c.req.param("projectId");
+  const snap = await c.env.DB.prepare(
+    "SELECT id FROM material_snapshots WHERE project_id = ? AND is_active = 1",
+  )
+    .bind(projectId)
+    .first<{ id: number }>();
+  // No active snapshot → no BOQ names to match against, so every ordered item
+  // is off-BOQ. -1 can't be a real snapshot id, so the CTE comes back empty.
+  const snapshotId = snap?.id ?? -1;
+
+  const rows = await c.env.DB.prepare(
+    `WITH boq(name) AS (
+       SELECT lower(m.item) FROM materials m WHERE m.snapshot_id = ?1
+       UNION
+       SELECT lower(s.replacement_item)
+         FROM material_substitutions s
+         JOIN materials m ON m.id = s.material_id
+        WHERE m.snapshot_id = ?1 AND s.active = 1 AND s.replacement_item IS NOT NULL
+     )
+     SELECT po.id AS po_id, po.po_number AS po_number, po.status AS status,
+            po.supplier AS supplier, po.created_at AS created_at,
+            COALESCE(po.order_type, 'standard') AS order_type,
+            pl.id AS line_id, pl.item AS item, pl.type AS type,
+            pl.manufacturer AS manufacturer, pl.qty AS qty, pl.unit AS unit,
+            pl.unit_cost AS unit_cost, COALESCE(pl.line_total, 0) AS line_total
+       FROM po_lines pl
+       JOIN purchase_orders po ON po.id = pl.po_id
+      WHERE po.project_id = ?2
+        AND po.status IN ('approved', 'issued', 'pending_approval')
+        AND COALESCE(po.category, 'materials') != 'prelims'
+        AND lower(pl.item) NOT IN (SELECT name FROM boq)
+        AND NOT EXISTS (
+              SELECT 1 FROM materials am
+               WHERE am.id = pl.material_id AND lower(am.item) IN (SELECT name FROM boq))
+      ORDER BY po.created_at DESC, pl.id DESC`,
+  )
+    .bind(snapshotId, projectId)
+    .all<{
+      po_id: string; po_number: string; status: string; supplier: string | null;
+      created_at: string; order_type: string; line_id: number; item: string;
+      type: string | null; manufacturer: string | null; qty: number | null;
+      unit: string | null; unit_cost: number | null; line_total: number;
+    }>();
+
+  // Aggregate per item. Rows arrive newest-first, so the first line seen for an
+  // item supplies the wording, unit and supplier shown — the latest order wins,
+  // the same way a re-uploaded snapshot's wording wins on a BOQ row.
+  const byItem = new Map<string, OffBoqMaterial>();
+  for (const r of rows.results) {
+    const key = (r.item ?? "").trim().toLowerCase();
+    if (!key) continue;
+    let row = byItem.get(key);
+    if (!row) {
+      row = {
+        item_key: key,
+        item: (r.item ?? "").trim(),
+        type: r.type,
+        manufacturer: r.manufacturer?.trim() || r.supplier?.trim() || null,
+        unit: r.unit,
+        unit_cost: 0,
+        committed_qty: 0,
+        called_off_qty: 0,
+        framework_reserved_qty: 0,
+        committed_value: 0,
+        called_off_value: 0,
+        last_ordered_at: r.created_at ?? null,
+        orders: [],
+      };
+      byItem.set(key, row);
+    }
+    const qty = r.qty ?? 0;
+    if (r.order_type === "call_off") {
+      row.called_off_qty += qty;
+      row.called_off_value += r.line_total;
+    } else {
+      row.committed_qty += qty;
+      row.committed_value += r.line_total;
+      if (r.order_type === "framework") row.framework_reserved_qty += qty;
+    }
+    row.orders.push({
+      po_id: r.po_id, po_number: r.po_number, status: r.status,
+      order_type: r.order_type, line_id: r.line_id,
+      qty, line_total: r.line_total, ordered_at: r.created_at ?? null,
+    });
+  }
+
+  // The rate actually paid, weighted across the orders. Call-offs count towards
+  // it only when there's nothing else to average — a framework's own lines are
+  // the better price signal.
+  const result = [...byItem.values()].map((row) => {
+    const rate = row.committed_qty > 0 ? row.committed_value / row.committed_qty
+      : row.called_off_qty > 0 ? row.called_off_value / row.called_off_qty
+      : 0;
+    return { ...row, unit_cost: Math.round(rate * 1000) / 1000 };
+  });
+  result.sort((a, b) =>
+    (b.committed_value + b.called_off_value) - (a.committed_value + a.called_off_value));
   return c.json(result);
 });
 

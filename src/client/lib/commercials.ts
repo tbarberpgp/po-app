@@ -6,7 +6,7 @@
 // verbatim from ProjectDetail's old inline `summarise`/`forecast`.
 
 import type {
-  MaterialWithCommitment, ProjectCommercial, Variation, ContractItem, ApplicationForPayment,
+  MaterialWithCommitment, OffBoqMaterial, ProjectCommercial, Variation, ContractItem, ApplicationForPayment,
 } from "../../shared/types";
 import { fmtMoney } from "./api";
 import type { DrillColumn } from "../components/DrillPanel";
@@ -41,7 +41,42 @@ export type Forecast = {
 export type UnpricedLine = {
   po_id: string; line_id: number; po_number: string; supplier: string | null;
   item: string; qty: number | null; unit: string | null; line_total: number; status: string;
+  /** The PO's cost category — 'materials' or 'prelims'. Prelim spend carries its
+   *  own Preliminaries budget, so it reads differently from a genuinely
+   *  unbudgeted material buy. */
+  category?: string;
 };
+
+/** A row in the Materials table. `off_boq` is set on the rows that came from a
+ *  purchase order rather than the pricing workbook. */
+export type MatRow = MaterialWithCommitment & { off_boq?: OffBoqMaterial };
+
+/** Dress an off-BOQ PO item as a materials row so it sits in the same table —
+ *  and the same filter, sort and Excel export — as the priced BOQ lines. It has
+ *  no budget, so priced/remaining stay null and the usage bar reads as spend
+ *  with nothing behind it. The id is negative because there is no material
+ *  record to act on: every row action keys off `off_boq` instead. */
+export function offBoqRow(o: OffBoqMaterial, idx: number): MatRow {
+  return {
+    id: -(idx + 1), snapshot_id: 0,
+    item: o.item, type: o.type?.trim() || "Additional", element_code: null,
+    manufacturer: o.manufacturer,
+    pack_qty: null, pack_unit: o.unit, cost: null, cost_unit: null,
+    coverage_qty: null, coverage_unit: null, waste_pct: null,
+    unit_rate: null, rate_unit: null,
+    total_qty: null, total_qty_unit: null,
+    total_units: null, total_units_unit: o.unit,
+    material_total_cost: null, labour_unit_cost: null, labour_total_cost: null,
+    committed_qty: o.committed_qty,
+    called_off_qty: o.called_off_qty,
+    framework_reserved_qty: o.framework_reserved_qty,
+    remaining_qty: null,
+    // The rate paid — there's no BOQ rate to compare it against, so it reads in
+    // the Live column and prices the row's committed £ in the Excel export.
+    live_unit_price: o.unit_cost || null,
+    off_boq: o,
+  };
+}
 
 /** Supplier a material is bought from — the substitution's supplier/manufacturer
  *  once one is active, else the original BOQ manufacturer. */
@@ -251,6 +286,20 @@ export type DrillBody = {
 const money = (v: unknown) => fmtMoney(Number(v) || 0);
 const qtyFmt = (v: unknown) => (v == null || v === "" ? "—" : Number(v).toLocaleString("en-GB", { maximumFractionDigits: 2 }));
 const sum = (rows: Array<Record<string, unknown>>, key: string) => rows.reduce((s, r) => s + (Number(r[key]) || 0), 0);
+const categoryFmt = (v: unknown) => (v === "prelims" ? "Prelim" : "Material");
+/** How much of a set of off-BOQ lines sits on PRELIM orders. Prelims are
+ *  budgeted separately (Commercials → Prelims), so this slice of the figure is
+ *  not unbudgeted material spend in the way the rest of it is. */
+const prelimTotal = (lines: UnpricedLine[]) =>
+  lines.reduce((s, l) => s + (l.category === "prelims" ? (l.line_total ?? 0) : 0), 0);
+const prelimSuffix = (lines: UnpricedLine[]) => {
+  const p = prelimTotal(lines);
+  return p > 0.005
+    ? ` Of this, ${fmtMoney(p)} is on prelim orders (welfare, plant, scaffold), which carry their own Preliminaries budget.`
+    : "";
+};
+const unpricedNote = (lines: UnpricedLine[]) =>
+  `Purchase-order lines raised outside the priced BOQ (call-offs excluded).${prelimSuffix(lines)}`;
 
 /** Priced material budget = Σ BOQ qty × BOQ cost over priced lines. */
 export function pricedBudgetDrill(mats: MaterialWithCommitment[]): DrillBody {
@@ -389,18 +438,19 @@ export function unpricedDrill(lines: UnpricedLine[]): DrillBody {
   // Rows carry hidden PO/line refs so the drawer can offer "assign to a
   // budget item" in place (same affordance as the unexpected-spend drill).
   const rows = lines
-    .map((l) => ({ po: l.po_number, supplier: l.supplier || "—", item: l.item, qty: l.qty, line_total: l.line_total, status: l.status, __po_id: l.po_id, __line_id: l.line_id }))
+    .map((l) => ({ po: l.po_number, supplier: l.supplier || "—", item: l.item, qty: l.qty, line_total: l.line_total, status: l.status, category: l.category ?? "materials", __po_id: l.po_id, __line_id: l.line_id }))
     .sort((a, b) => b.line_total - a.line_total);
   return {
     columns: [
       { key: "po", label: "PO", align: "left" },
       { key: "supplier", label: "Supplier", align: "center" },
       { key: "item", label: "Item" },
+      { key: "category", label: "Cost", align: "center", fmt: categoryFmt },
       { key: "qty", label: "Qty", align: "right", fmt: qtyFmt },
       { key: "line_total", label: "Value", align: "right", fmt: money },
     ],
     rows, total: money(sum(rows, "line_total")),
-    note: "Purchase-order lines raised outside the priced BOQ (call-offs excluded).",
+    note: unpricedNote(lines),
   };
 }
 
@@ -409,7 +459,8 @@ export function unpricedDrill(lines: UnpricedLine[]): DrillBody {
  *  drawer can offer "assign to a budget item" in place. */
 export function unexpectedSpendDrill(lines: UnpricedLine[], mats: MaterialWithCommitment[]): DrillBody {
   const offBoq = lines.map((l) => ({
-    kind: "Off-BOQ", detail: `${l.po_number} · ${l.item}`, amount: l.line_total,
+    kind: l.category === "prelims" ? "Off-BOQ · prelim" : "Off-BOQ",
+    detail: `${l.po_number} · ${l.item}`, amount: l.line_total,
     __po_id: l.po_id, __line_id: l.line_id,
   }));
   const over = mats
@@ -428,7 +479,7 @@ export function unexpectedSpendDrill(lines: UnpricedLine[], mats: MaterialWithCo
       { key: "amount", label: "Amount", align: "right", fmt: money },
     ],
     rows, total: money(sum(rows, "amount")),
-    note: "Off-BOQ purchases plus committed spend above a material line's budget — both pull through to forecast cost.",
+    note: `Off-BOQ purchases plus committed spend above a material line's budget — both pull through to forecast cost.${prelimSuffix(lines)}`,
   };
 }
 

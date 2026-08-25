@@ -5,7 +5,8 @@ import { Topbar } from "./Shell";
 import { SupplierCombobox, compareSuppliers, type SupplierOption } from "./SupplierCombobox";
 import { SubstituteAction } from "./MaterialSubstitute";
 import { can } from "../../shared/permissions";
-import type { CurrentUser, MaterialWithCommitment, Supplier, SupplierStatus, Variation } from "../../shared/types";
+import type { CurrentUser, MaterialWithCommitment, OffBoqMaterial, Supplier, SupplierStatus, Variation } from "../../shared/types";
+import { offBoqRow, type MatRow } from "../lib/commercials";
 
 // Item is "priced for this job" iff total_units > 0 in the Materials sheet (col V).
 const isPriced = (m: MaterialWithCommitment) => (m.total_units ?? 0) > 0;
@@ -115,6 +116,11 @@ export function NewPO() {
   const nav = useNavigate();
   const [project, setProject] = useState<Awaited<ReturnType<typeof api.getProject>> | null>(null);
   const [mats, setMats] = useState<MaterialWithCommitment[]>([]);
+  // Materials this project has already bought outside the BOQ. Offered in the
+  // additional-items picker so re-ordering one is a pick, not a retype — the
+  // wording, unit and last rate come back with it instead of drifting into a
+  // near-duplicate the reports can't match up.
+  const [offBoq, setOffBoq] = useState<OffBoqMaterial[]>([]);
   const [approvedSuppliers, setApprovedSuppliers] = useState<Supplier[]>([]);
   const [supplier, setSupplier] = useState<string>("");
   const [customSupplier, setCustomSupplier] = useState<string>("");
@@ -191,6 +197,7 @@ export function NewPO() {
     if (!projectId) return;
     api.getProject(projectId).then(setProject).catch((e) => setErr(e.message));
     api.listMaterials(projectId).then(setMats).catch((e) => setErr(e.message));
+    api.listOffBoqMaterials(projectId).then(setOffBoq).catch(() => setOffBoq([]));
     api.listSuppliers().then(setApprovedSuppliers).catch(() => setApprovedSuppliers([]));
     api.listVariations(projectId).then(setVariations).catch(() => setVariations([]));
     api.me().then(setMe).catch(() => setMe(null));
@@ -231,6 +238,16 @@ export function NewPO() {
       if (isPriced(m)) cur.priced += 1;
       set.set(key, cur);
     }
+    // Suppliers this project has already bought from OUTSIDE the BOQ. Without
+    // them, a supplier that only ever appeared on an extra line can't be picked
+    // again — which would leave their previously-ordered items unreachable in
+    // the picker below, and force yet another retyped near-duplicate.
+    for (const o of offBoq) {
+      const key = o.manufacturer?.trim() || NO_MFR;
+      const cur = set.get(key) ?? { priced: 0, total: 0 };
+      cur.total += 1;
+      set.set(key, cur);
+    }
     // Make sure approved suppliers also appear even if they have no priced items.
     for (const s of approvedSuppliers) {
       if (!set.has(s.name)) set.set(s.name, { priced: 0, total: 0 });
@@ -250,7 +267,7 @@ export function NewPO() {
         if (a.priced !== b.priced) return b.priced - a.priced;
         return a.name.localeCompare(b.name);
       });
-  }, [mats, approvedSuppliers, approvedByName]);
+  }, [mats, offBoq, approvedSuppliers, approvedByName]);
 
   // Prelim expenditure headings come from the project's prelim line items in the
   // materials list (those under a "Preliminaries" element / type). Falls back to
@@ -297,11 +314,24 @@ export function NewPO() {
   // within their approved element scope badged to another brand (whether or not
   // it's priced under a different supplier). So Alumasc, approved for flashings,
   // can be sent a PO for flashings even though they're priced under Barwell.
-  const libraryUnpriced = useMemo(() => {
+  // Items this project has already bought off-BOQ from this supplier. They sit
+  // in the same picker as the library so an extra that's been ordered before is
+  // re-ordered by picking it — carrying its wording, unit and last rate — rather
+  // than retyped into a near-duplicate.
+  const offBoqLibrary = useMemo<MatRow[]>(() => {
     if (!supplier || isCustomSupplier) return [];
-    if (supplier === NO_MFR) return mats.filter((m) => !isPriced(m) && !effectiveMfr(m));
-    return mats.filter((m) => (effectiveMfr(m) === supplier ? !isPriced(m) : inSupplierScope(m)));
-  }, [mats, supplier, isCustomSupplier, scopeSet]); // eslint-disable-line react-hooks/exhaustive-deps
+    const rows = offBoq.map((o, i) => offBoqRow(o, i));
+    return supplier === NO_MFR
+      ? rows.filter((m) => !effectiveMfr(m))
+      : rows.filter((m) => effectiveMfr(m) === supplier);
+  }, [offBoq, supplier, isCustomSupplier]);
+  const libraryUnpriced = useMemo<MatRow[]>(() => {
+    if (!supplier || isCustomSupplier) return [];
+    const boq = supplier === NO_MFR
+      ? mats.filter((m) => !isPriced(m) && !effectiveMfr(m))
+      : mats.filter((m) => (effectiveMfr(m) === supplier ? !isPriced(m) : inSupplierScope(m)));
+    return [...boq, ...offBoqLibrary];
+  }, [mats, offBoqLibrary, supplier, isCustomSupplier, scopeSet]); // eslint-disable-line react-hooks/exhaustive-deps
   const libraryTypes = useMemo(
     () => [...new Set(libraryUnpriced.map((m) => m.type))].sort(),
     [libraryUnpriced],
@@ -419,6 +449,20 @@ export function NewPO() {
     }
     const m = libraryUnpriced.find((mm) => String(mm.id) === materialIdStr);
     if (!m) return;
+    if (m.off_boq) {
+      // Nothing in the BOQ to point at, so this is still an unpriced extra —
+      // but prefilled from the last order instead of typed from memory.
+      updateAdditional(key, {
+        source: "custom",
+        material_id: null,
+        item: m.item,
+        manufacturer: m.manufacturer ?? effectiveSupplier,
+        unit: m.total_units_unit ?? "ea",
+        unit_cost: m.live_unit_price ?? 0,
+        priced: false,
+      });
+      return;
+    }
     // Honour an active substitution — pick up the replacement's
     // item/manufacturer/unit/cost (the updated price), as the priced rows do.
     const subbed = isFullSub(m);
@@ -1238,7 +1282,7 @@ function AdditionalRowEditor({
   prelimMode?: boolean;
   prelimTypes?: string[];
   libraryTypes: string[];
-  library: MaterialWithCommitment[];
+  library: MatRow[];
   onChange: (p: Partial<AdditionalRow>) => void;
   onPick: (materialIdStr: string) => void;
   onRemove: () => void;
@@ -1295,7 +1339,9 @@ function AdditionalRowEditor({
               >
                 <option value="">{row.type ? "— select item —" : "Choose type first"}</option>
                 {itemsInType.map((m) => (
-                  <option key={m.id} value={m.id}>{m.item}</option>
+                  <option key={m.id} value={m.id}>
+                    {m.off_boq ? `${m.item} — ordered before (off-BOQ)` : m.item}
+                  </option>
                 ))}
                 <option value="__custom__">+ Custom item (not in database)…</option>
               </select>

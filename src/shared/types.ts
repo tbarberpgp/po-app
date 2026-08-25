@@ -160,6 +160,38 @@ export type MaterialWithCommitment = Material & {
   pending_sub_by?: string | null;
 };
 
+/** A material that exists only on this project's purchase orders — ordered
+ *  against the job but absent from the priced BOQ, so the pricing-snapshot
+ *  list can't show it. Aggregated per item across every live PO, which is why
+ *  it carries its own quantities rather than reusing MaterialWithCommitment:
+ *  there is no budget line behind it, and its £ is already reported once as
+ *  the project's unpriced spend. */
+export type OffBoqMaterial = {
+  /** Lowercased item wording — what the rows are grouped by, and a stable key. */
+  item_key: string;
+  /** Wording from the most recent order. */
+  item: string;
+  type: string | null;
+  /** The PO line's manufacturer, falling back to the PO's supplier. */
+  manufacturer: string | null;
+  unit: string | null;
+  /** Rate actually paid, weighted across the orders below. */
+  unit_cost: number;
+  /** Ordered on standard + framework POs (call-offs excluded, as on a BOQ row). */
+  committed_qty: number;
+  called_off_qty: number;
+  framework_reserved_qty: number;
+  committed_value: number;
+  called_off_value: number;
+  last_ordered_at: string | null;
+  /** Newest first. Each order is kept — the row aggregates the quantity, but
+   *  who ordered what and when still has to be answerable from the list. */
+  orders: Array<{
+    po_id: string; po_number: string; status: string; order_type: string;
+    line_id: number; qty: number; line_total: number; ordered_at: string | null;
+  }>;
+};
+
 export type ApprovalTier = "line_manager" | "commercial_manager" | "director";
 
 /** A pending part-substitution awaiting approval (Approvals inbox row). */
