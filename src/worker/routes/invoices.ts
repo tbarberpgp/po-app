@@ -902,15 +902,24 @@ async function computeInvoiceMatch(env: Env, inv: Record<string, unknown>) {
   ).bind(chosen.id).first());
   // The actual delivery records behind those quantities — so the invoice view
   // can show WHICH tickets satisfied the delivered leg, not just the numbers.
+  // `orphaned` marks a receipt whose po_line_id points at a line that no longer
+  // exists — the order was amended before the fix that preserves line identity,
+  // so the receipt survived while the row it named didn't. It counts toward
+  // nothing, which is why an invoice can read "not delivered" with signed
+  // tickets sitting right beside it. Surfaced so a person can re-point it.
   const deliveryRows = (await env.DB.prepare(
-    `SELECT id, description, po_line_id, received_qty, received_unit, delivered_at, ticket_key, created_by
-       FROM site_deliveries WHERE po_id = ? ORDER BY delivered_at DESC, id DESC LIMIT 40`,
+    `SELECT d.id, d.description, d.po_line_id, d.received_qty, d.received_unit, d.delivered_at,
+            d.ticket_key, d.created_by,
+            CASE WHEN d.po_line_id IS NOT NULL AND l.id IS NULL THEN 1 ELSE 0 END AS orphaned
+       FROM site_deliveries d LEFT JOIN po_lines l ON l.id = d.po_line_id
+      WHERE d.po_id = ? ORDER BY d.delivered_at DESC, d.id DESC LIMIT 40`,
   ).bind(chosen.id).all<{ id: number; description: string | null; po_line_id: number | null; received_qty: number | null;
-    received_unit: string | null; delivered_at: string | null; ticket_key: string | null; created_by: string | null }>()).results;
+    received_unit: string | null; delivered_at: string | null; ticket_key: string | null; created_by: string | null;
+    orphaned: number }>()).results;
   const deliveries = deliveryRows.map((d) => ({
     id: d.id, description: d.description, po_line_id: d.po_line_id, received_qty: d.received_qty,
     received_unit: d.received_unit, delivered_at: d.delivered_at, created_by: d.created_by,
-    ticket_key: d.ticket_key,
+    ticket_key: d.ticket_key, orphaned: d.orphaned === 1,
     ticket_url: d.ticket_key ? `/api/operations/file?key=${encodeURIComponent(d.ticket_key)}` : null,
   }));
 

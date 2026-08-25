@@ -1439,6 +1439,13 @@ export type InvoiceMatch = {
     created_by: string | null;
     ticket_key: string | null;
     ticket_url: string | null;
+    /** The line this receipt names no longer exists, so it counts toward nothing.
+     *  Caused by pre-#10 PO amendments, which replaced lines instead of updating
+     *  them. Needs a person to say which current line it belongs to — the app
+     *  deliberately doesn't guess, because a receipt saying "19 packs of Kingspan
+     *  Therma TT44" and a line called "CTF/SCHEME/1 Tapered Insulation Scheme"
+     *  may or may not be the same material, and only site staff know. */
+    orphaned?: boolean;
   }>;
   // The chosen PO's own line items — options for manually re-pointing an invoice
   // line at the right PO line when the auto-match got it wrong or missed.
