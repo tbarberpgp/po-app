@@ -8,7 +8,7 @@ import type { Env, Variables } from "../env";
 import { requirePermission } from "../auth";
 import { can } from "../../shared/permissions";
 import {
-  invMaterialCode, lineQty, scanLineMatch, SERVICE_CHARGE_LINE_ID,
+  invMaterialCode, lineQty, poRefCore, scanLineMatch, SERVICE_CHARGE_LINE_ID,
   type InvLine, type PoLineRow,
 } from "../../shared/line-match";
 import { ensureXeroContact } from "./xero";
@@ -683,6 +683,27 @@ async function withMatchState(env: Env, rows: Record<string, unknown>[]): Promis
   // The order's own identity too: its number and project, so a link to the wrong
   // order or the wrong job can be reported without a full match pass.
   const poMeta = new Map<string, { po_number: string; project_code: string | null }>();
+  // And every order keyed by its PO-number core, so the ref printed on an invoice
+  // can be resolved to what it actually IS. A quoted framework is the normal
+  // workflow, not a mislink, and that can't be told apart from the number alone.
+  // ~110 orders, so one unfiltered read beats building an IN list per request.
+  const byRefCore = new Map<string, { order_type: string | null; project_code: string | null }>();
+  {
+    const all = await env.DB.prepare(
+      `SELECT po.po_number, po.order_type, p.code AS project_code
+         FROM purchase_orders po LEFT JOIN projects p ON p.id = po.project_id`,
+    ).all<{ po_number: string; order_type: string | null; project_code: string | null }>();
+    for (const r of all.results) {
+      const core = poRefCore(r.po_number);
+      // A framework and its call-offs share a core (PO-x-y and PO-x-y-C1). The
+      // framework is the one worth recording — it's what suppliers quote.
+      if (!core) continue;
+      const prev = byRefCore.get(core);
+      if (!prev || r.order_type === "framework") {
+        byRefCore.set(core, { order_type: r.order_type, project_code: r.project_code });
+      }
+    }
+  }
   for (let i = 0; i < poIds.length; i += 90) {
     const chunk = poIds.slice(i, i + 90);
     const marks = chunk.map(() => "?").join(",");
@@ -712,11 +733,15 @@ async function withMatchState(env: Env, rows: Record<string, unknown>[]): Promis
     let invLines: InvLine[] = [];
     try { invLines = JSON.parse(String(r.lines_json)) as InvLine[]; } catch { return r; }
     const meta = poId ? poMeta.get(poId) : undefined;
+    const quotedCore = poRefCore(r.extracted_po_ref as string | null);
+    const quoted = quotedCore ? byRefCore.get(quotedCore) : undefined;
     return { ...r, match: scanLineMatch(invLines, poLines, {
       po_number: meta?.po_number ?? null,
       po_project: meta?.project_code ?? null,
       invoice_project: (r.project_code as string | null) ?? null,
       quoted_ref: (r.extracted_po_ref as string | null) ?? null,
+      quoted_type: quoted?.order_type ?? null,
+      quoted_project: quoted?.project_code ?? null,
     }) };
   });
 }

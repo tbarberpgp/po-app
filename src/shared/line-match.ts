@@ -70,6 +70,10 @@ export function lineQty(l: InvLine): number | null {
  *  `wrong_po`      — the invoice prints one of our PO numbers and it isn't the one
  *                    linked. The most serious kind: if the wrong order is linked,
  *                    every price and quantity comparison beneath it is meaningless.
+ *                    Not raised where the quoted ref is a FRAMEWORK covering the
+ *                    same job as the linked order — suppliers quote the framework
+ *                    because that's the agreement on their system, while we bill
+ *                    the call-off or job order raised under it. That is correct.
  *  `cross_project` — the linked order belongs to a different job than the invoice
  *                    is coded to. Reported against the LINK, not the coding: the
  *                    coding is set or confirmed by a person, while the link is
@@ -130,6 +134,10 @@ export type PoContext = {
   po_project?: string | null;
   invoice_project?: string | null;
   quoted_ref?: string | null;
+  /** What the quoted ref resolves to, when it resolves to one of our orders at
+   *  all. Needed to tell a mislink from the normal framework workflow. */
+  quoted_type?: string | null;
+  quoted_project?: string | null;
 };
 
 export function scanLineMatch(invLines: InvLine[], poLines: PoLineRow[], po?: PoContext): MatchSummary {
@@ -142,7 +150,17 @@ export function scanLineMatch(invLines: InvLine[], poLines: PoLineRow[], po?: Po
     const quoted = poRefCore(po.quoted_ref);
     const linked = poRefCore(po.po_number);
     if (quoted && linked && quoted !== linked) {
-      issues.push({ kind: "wrong_po", quoted: String(po.quoted_ref), linked: String(po.po_number) });
+      // A framework is the umbrella agreement, not something you bill against:
+      // you raise a standard or call-off order under it for each drop and bill
+      // that. So a supplier quoting the framework while we've linked the job
+      // order is the intended workflow, not a mislink — provided the framework
+      // covers the SAME job as the order billed. A framework on another job is
+      // still wrong, and so is a quoted ordinary order that isn't the linked one.
+      const frameworkForSameJob = po.quoted_type === "framework"
+        && !!po.quoted_project && !!po.po_project && po.quoted_project === po.po_project;
+      if (!frameworkForSameJob) {
+        issues.push({ kind: "wrong_po", quoted: String(po.quoted_ref), linked: String(po.po_number) });
+      }
     }
     if (po.invoice_project && po.po_project && po.invoice_project !== po.po_project) {
       issues.push({
