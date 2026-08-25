@@ -1379,7 +1379,7 @@ export type QitpCabinDetail = {
   sections: QitpSection[];
   records: QitpRecord[];
   signoffs: QitpSignoff[];
-  photos: Array<{ id: number; section_id: number; item_index: number | null }>;
+  photos: Array<{ id: number; section_id: number; item_index: number | null; caption: string | null }>;
 };
 
 /** An invoice/bill in the Accounts workpiece (invoices@ inbox or manual upload). */

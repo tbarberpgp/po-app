@@ -6,7 +6,7 @@ import { fmtLiftDate } from "../../shared/qitp-lift";
 import type { QitpCabinDetail, QitpItem, QitpRecord, QitpSection, QitpSectionStatus, QitpSignoff } from "../../shared/types";
 
 type Rec = QitpRecord;
-type Photo = { id: number; section_id: number; item_index: number | null };
+type Photo = { id: number; section_id: number; item_index: number | null; caption: string | null };
 const blank = (sectionId: number): Rec => ({ section_id: sectionId, status: "not_started", checks: [], entries: [], inspector: null, company: null, notes: null, photo_ref: null });
 function normChecks(stored: boolean[] | null | undefined, len: number): boolean[] {
   const out = new Array(len).fill(false);
@@ -98,6 +98,7 @@ export function CabinQitp() {
             onPatch={(p) => patch(s.id, p)}
             onPhotoAdd={(added) => setPhotos((prev) => [...prev, ...added])}
             onPhotoRemove={(id) => setPhotos((prev) => prev.filter((p) => p.id !== id))}
+            onPhotoCaption={(id, caption) => setPhotos((prev) => prev.map((p) => (p.id === id ? { ...p, caption } : p)))}
             onSigned={(party, name, at) => setSignoffs((prev) => [...prev.filter((x) => !(x.section_id === s.id && x.party === party)), { section_id: s.id, party, signed_name: name, signed_at: at }])}
             onCleared={() => setSignoffs((prev) => prev.filter((x) => x.section_id !== s.id))}
           />
@@ -114,12 +115,13 @@ const STATUS_BTNS: { value: QitpSectionStatus; label: string; cls: string }[] = 
 ];
 
 function SectionCard({
-  token, section, rec, photos, signoffs, lockedBy, isSuper, onPatch, onPhotoAdd, onPhotoRemove, onSigned, onCleared,
+  token, section, rec, photos, signoffs, lockedBy, isSuper, onPatch, onPhotoAdd, onPhotoRemove, onPhotoCaption, onSigned, onCleared,
 }: {
   token: string; section: QitpSection; rec: Rec; photos: Photo[]; signoffs: QitpSignoff[];
   lockedBy: string | null; isSuper: boolean;
   onPatch: (p: Partial<Rec>) => void;
   onPhotoAdd: (added: Photo[]) => void; onPhotoRemove: (id: number) => void;
+  onPhotoCaption: (id: number, caption: string | null) => void;
   onSigned: (party: string, name: string, at: string) => void; onCleared: () => void;
 }) {
   const items: QitpItem[] = (section.items ?? []).map((it) => typeof it === "string" ? { text: it as string, hold: /^HOLD:/i.test(it as string), photo: "none" } : it);
@@ -243,7 +245,7 @@ function SectionCard({
                       />
                     )}
                     {it.photo !== "none" && (
-                      <PhotoStrip token={token} sectionId={section.id} itemIndex={i} photos={itemPhotos(i)} onAdd={onPhotoAdd} onRemove={onPhotoRemove} compact />
+                      <PhotoStrip token={token} sectionId={section.id} itemIndex={i} photos={itemPhotos(i)} onAdd={onPhotoAdd} onRemove={onPhotoRemove} onCaption={onPhotoCaption} compact />
                     )}
                   </div>
                 </li>
@@ -273,7 +275,7 @@ function SectionCard({
 
           <div className="cq-photos">
             <div className="cq-photos-hd">Evidence photos {sectionPhotos.length > 0 && <span className="muted">({sectionPhotos.length})</span>}</div>
-            <PhotoStrip token={token} sectionId={section.id} itemIndex={null} photos={sectionPhotos} onAdd={onPhotoAdd} onRemove={onPhotoRemove} />
+            <PhotoStrip token={token} sectionId={section.id} itemIndex={null} photos={sectionPhotos} onAdd={onPhotoAdd} onRemove={onPhotoRemove} onCaption={onPhotoCaption} />
           </div>
 
           {/* Sign-off — every responsible party must sign to release the section. */}
@@ -317,9 +319,10 @@ function SectionCard({
 }
 
 /** Reusable thumbnails + camera/upload controls, for a section or a single item. */
-function PhotoStrip({ token, sectionId, itemIndex, photos, onAdd, onRemove, compact }: {
+function PhotoStrip({ token, sectionId, itemIndex, photos, onAdd, onRemove, onCaption, compact }: {
   token: string; sectionId: number; itemIndex: number | null; photos: Photo[];
-  onAdd: (added: Photo[]) => void; onRemove: (id: number) => void; compact?: boolean;
+  onAdd: (added: Photo[]) => void; onRemove: (id: number) => void;
+  onCaption: (id: number, caption: string | null) => void; compact?: boolean;
 }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -333,7 +336,7 @@ function PhotoStrip({ token, sectionId, itemIndex, photos, onAdd, onRemove, comp
       for (const f of Array.from(files)) fd.append("photo", f);
       if (itemIndex != null) fd.append("item_index", String(itemIndex));
       const r = await api.pubCabinPhoto(token, sectionId, fd);
-      onAdd(r.photos.map((p) => ({ id: p.id, section_id: sectionId, item_index: p.item_index })));
+      onAdd(r.photos.map((p) => ({ id: p.id, section_id: sectionId, item_index: p.item_index, caption: p.caption })));
     } catch (e) { setErr(e instanceof Error ? e.message : "Upload failed"); }
     finally { setBusy(false); if (camRef.current) camRef.current.value = ""; if (libRef.current) libRef.current.value = ""; }
   }
@@ -342,10 +345,7 @@ function PhotoStrip({ token, sectionId, itemIndex, photos, onAdd, onRemove, comp
       {photos.length > 0 && (
         <div className="cq-thumbs">
           {photos.map((p) => (
-            <div key={p.id} className={`cq-thumb${compact ? " sm" : ""}`}>
-              <img src={`/pub/cabin/${token}/photo/${p.id}`} alt="" loading="lazy" />
-              <button className="cq-thumb-x" onClick={() => onRemove(p.id)} aria-label="Remove">✕</button>
-            </div>
+            <PhotoCell key={p.id} token={token} photo={p} compact={compact} onRemove={onRemove} onCaption={onCaption} onErr={setErr} />
           ))}
         </div>
       )}
@@ -356,6 +356,49 @@ function PhotoStrip({ token, sectionId, itemIndex, photos, onAdd, onRemove, comp
         <input ref={camRef} type="file" accept="image/*" capture="environment" multiple hidden onChange={(e) => add(e.target.files)} />
         <input ref={libRef} type="file" accept="image/*" multiple hidden onChange={(e) => add(e.target.files)} />
       </div>
+    </div>
+  );
+}
+
+/** One evidence photo: the thumbnail, its remove control, and a caption typed
+ *  underneath. A cabin's paint section can run to 40+ photos and "Before
+ *  Repairs" alone may cover several elevations, so the label is what makes an
+ *  image evidence rather than an image. Saves on blur, like notes and readings;
+ *  the update is optimistic and reverts if the write fails, so the strip never
+ *  shows a caption that isn't stored. */
+function PhotoCell({ token, photo, compact, onRemove, onCaption, onErr }: {
+  token: string; photo: Photo; compact?: boolean;
+  onRemove: (id: number) => void; onCaption: (id: number, caption: string | null) => void;
+  onErr: (msg: string | null) => void;
+}) {
+  const [cap, setCap] = useState(photo.caption ?? "");
+  useEffect(() => { setCap(photo.caption ?? ""); }, [photo.caption]);
+
+  async function commit() {
+    const next = cap.trim();
+    const prev = photo.caption ?? "";   // captured before the optimistic write
+    if (next === prev) return;
+    onErr(null);
+    onCaption(photo.id, next || null);
+    try { await api.pubCabinPhotoCaption(token, photo.id, next); }
+    catch (e) {
+      onCaption(photo.id, prev || null);
+      setCap(prev);
+      onErr(e instanceof Error ? e.message : "Couldn't save that caption");
+    }
+  }
+
+  return (
+    <div className={`cq-cell${compact ? " sm" : ""}`}>
+      <div className={`cq-thumb${compact ? " sm" : ""}`}>
+        <img src={`/pub/cabin/${token}/photo/${photo.id}`} alt={photo.caption ?? ""} loading="lazy" />
+        <button className="cq-thumb-x" onClick={() => onRemove(photo.id)} aria-label="Remove photo">✕</button>
+      </div>
+      <input
+        className="cq-cap" type="text" value={cap} placeholder="Label…"
+        aria-label="Photo caption" maxLength={200}
+        onChange={(e) => setCap(e.target.value)} onBlur={commit}
+      />
     </div>
   );
 }

@@ -860,8 +860,8 @@ publicOps.get("/cabin/:token", async (c) => {
     "SELECT section_id, party, signed_name, signed_at FROM qitp_signoffs WHERE cabin_id = ?",
   ).bind(cab.id).all<{ section_id: number; party: string; signed_name: string; signed_at: string }>()).results;
   const photos = (await c.env.DB.prepare(
-    "SELECT id, section_id, item_index FROM qitp_photos WHERE cabin_id = ? ORDER BY id",
-  ).bind(cab.id).all<{ id: number; section_id: number; item_index: number | null }>()).results;
+    "SELECT id, section_id, item_index, caption FROM qitp_photos WHERE cabin_id = ? ORDER BY id",
+  ).bind(cab.id).all<{ id: number; section_id: number; item_index: number | null; caption: string | null }>()).results;
   return c.json({ cabin: cab, project, sections, records, signoffs, photos });
 });
 function parseJsonArr(s: string | null): unknown[] { if (!s) return []; try { const v = JSON.parse(s); return Array.isArray(v) ? v : []; } catch { return []; } }
@@ -932,7 +932,7 @@ publicOps.post("/cabin/:token/section/:sectionId/photo", async (c) => {
   const files = [...form.getAll("photo"), ...form.getAll("file")].filter((f): f is File => f instanceof File && f.size > 0);
   if (!files.length) return c.json({ error: "No photo provided." }, 400);
   const now = new Date().toISOString();
-  const added: Array<{ id: number; section_id: number; item_index: number | null }> = [];
+  const added: Array<{ id: number; section_id: number; item_index: number | null; caption: string | null }> = [];
   for (const f of files) {
     if (f.size > 20 * 1024 * 1024) return c.json({ error: "Photo too large (max 20MB)." }, 400);
     if (!/^image\//.test(f.type)) return c.json({ error: "Photos only." }, 400);
@@ -942,9 +942,25 @@ publicOps.post("/cabin/:token/section/:sectionId/photo", async (c) => {
     const res = await c.env.DB.prepare(
       "INSERT INTO qitp_photos (cabin_id, section_id, item_index, file_key, file_type, created_at) VALUES (?,?,?,?,?,?) RETURNING id",
     ).bind(cab.id, sectionId, itemIndex, key, f.type || "image/jpeg", now).first<{ id: number }>();
-    added.push({ id: res!.id, section_id: sectionId, item_index: itemIndex });
+    added.push({ id: res!.id, section_id: sectionId, item_index: itemIndex, caption: null });
   }
   return c.json({ ok: true, photos: added });
+});
+
+// Caption one evidence photo — typed under its thumbnail, saved on blur.
+// Scoped by cabin_id as well as photo id, so a cabin's QR token can only
+// label that cabin's own photos.
+publicOps.post("/cabin/:token/photo/:photoId/caption", async (c) => {
+  const cab = await resolveCabin(c.env, c.req.param("token"));
+  if (!cab) return c.json({ error: "invalid" }, 404);
+  const body = await c.req.json<{ caption?: string }>();
+  // Cleared captions store as NULL, not "", so "no caption" has one meaning.
+  const caption = (typeof body.caption === "string" ? body.caption.trim().slice(0, 200) : "") || null;
+  const res = await c.env.DB.prepare(
+    "UPDATE qitp_photos SET caption = ? WHERE id = ? AND cabin_id = ?",
+  ).bind(caption, c.req.param("photoId"), cab.id).run();
+  if (!res.meta.changes) return c.json({ error: "Photo not found." }, 404);
+  return c.json({ ok: true, caption });
 });
 
 publicOps.get("/cabin/:token/photo/:photoId", async (c) => {

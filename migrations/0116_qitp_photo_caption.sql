@@ -1,0 +1,14 @@
+-- 0116: a caption on each QITP evidence photo.
+--
+-- Paint QA is the driver: a cabin's Paint Repairs section can carry 40+ photos
+-- and "Before Repairs" alone may cover several elevations, so a photo is only
+-- evidence if you can tell what it shows. The per-item reading (0113) answers
+-- "what was the dew point"; this answers "which patch is this".
+--
+-- One nullable column, so every photo already captured stays valid and simply
+-- reads as un-captioned. Applies to evidence photos across the whole QITP, not
+-- just paint — it is the same strip component on every section, and a photo
+-- worth labelling on a paint repair is worth labelling on a strip-out too.
+--
+-- SAFETY: additive only. No existing column, row or R2 object is touched.
+ALTER TABLE qitp_photos ADD COLUMN caption TEXT;

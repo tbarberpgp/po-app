@@ -1508,7 +1508,9 @@ export const api = {
   pubCabinSign: (token: string, sectionId: number, input: { party: string; name: string; signature: string }) =>
     jfetch<{ ok: true; signed_at: string }>(`/pub/cabin/${token}/section/${sectionId}/sign`, { method: "POST", body: JSON.stringify(input) }),
   pubCabinPhoto: (token: string, sectionId: number, form: FormData) =>
-    jfetch<{ ok: true; photos: Array<{ id: number; section_id: number; item_index: number | null }> }>(`/pub/cabin/${token}/section/${sectionId}/photo`, { method: "POST", body: form }),
+    jfetch<{ ok: true; photos: Array<{ id: number; section_id: number; item_index: number | null; caption: string | null }> }>(`/pub/cabin/${token}/section/${sectionId}/photo`, { method: "POST", body: form }),
+  pubCabinPhotoCaption: (token: string, photoId: number, caption: string) =>
+    jfetch<{ ok: true; caption: string | null }>(`/pub/cabin/${token}/photo/${photoId}/caption`, { method: "POST", body: JSON.stringify({ caption }) }),
   pubCabinDeletePhoto: (token: string, photoId: number) =>
     jfetch<{ ok: true }>(`/pub/cabin/${token}/photo/${photoId}`, { method: "DELETE" }),
   qitpUnsign: (token: string, sectionId: number) =>
