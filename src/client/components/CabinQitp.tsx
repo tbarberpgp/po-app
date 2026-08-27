@@ -39,6 +39,16 @@ export function CabinQitp() {
   const [photos, setPhotos] = useState<Photo[]>([]);
   const [signoffs, setSignoffs] = useState<QitpSignoff[]>([]);
   const [isSuper, setIsSuper] = useState(false);
+  // Full-size photo viewer. Held here, not in the strip, so the overlay isn't
+  // clipped by a section card's own stacking/overflow.
+  const [viewing, setViewing] = useState<Photo | null>(null);
+
+  useEffect(() => {
+    if (!viewing) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setViewing(null); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [viewing]);
 
   useEffect(() => { api.me().then((m) => setIsSuper(m?.role === "superadmin")).catch(() => {}); }, []);
 
@@ -99,11 +109,24 @@ export function CabinQitp() {
             onPhotoAdd={(added) => setPhotos((prev) => [...prev, ...added])}
             onPhotoRemove={(id) => setPhotos((prev) => prev.filter((p) => p.id !== id))}
             onPhotoCaption={(id, caption) => setPhotos((prev) => prev.map((p) => (p.id === id ? { ...p, caption } : p)))}
+            onPhotoView={setViewing}
             onSigned={(party, name, at) => setSignoffs((prev) => [...prev.filter((x) => !(x.section_id === s.id && x.party === party)), { section_id: s.id, party, signed_name: name, signed_at: at }])}
             onCleared={() => setSignoffs((prev) => prev.filter((x) => x.section_id !== s.id))}
           />
         ))}
       </main>
+
+      {viewing && (
+        <div className="cq-viewer" onClick={() => setViewing(null)} role="dialog" aria-modal="true"
+          aria-label={viewing.caption || "Evidence photo"}>
+          <button className="cq-viewer-x" onClick={() => setViewing(null)} aria-label="Close">✕</button>
+          {/* Stop the image itself from closing the viewer, so a pinch-zoom
+              gesture that lands on it doesn't dismiss mid-inspection. */}
+          <img src={`/pub/cabin/${token}/photo/${viewing.id}`} alt={viewing.caption ?? ""}
+            onClick={(e) => e.stopPropagation()} />
+          {viewing.caption && <div className="cq-viewer-cap">{viewing.caption}</div>}
+        </div>
+      )}
     </div>
   );
 }
@@ -115,13 +138,14 @@ const STATUS_BTNS: { value: QitpSectionStatus; label: string; cls: string }[] = 
 ];
 
 function SectionCard({
-  token, section, rec, photos, signoffs, lockedBy, isSuper, onPatch, onPhotoAdd, onPhotoRemove, onPhotoCaption, onSigned, onCleared,
+  token, section, rec, photos, signoffs, lockedBy, isSuper, onPatch, onPhotoAdd, onPhotoRemove, onPhotoCaption, onPhotoView, onSigned, onCleared,
 }: {
   token: string; section: QitpSection; rec: Rec; photos: Photo[]; signoffs: QitpSignoff[];
   lockedBy: string | null; isSuper: boolean;
   onPatch: (p: Partial<Rec>) => void;
   onPhotoAdd: (added: Photo[]) => void; onPhotoRemove: (id: number) => void;
   onPhotoCaption: (id: number, caption: string | null) => void;
+  onPhotoView: (p: Photo) => void;
   onSigned: (party: string, name: string, at: string) => void; onCleared: () => void;
 }) {
   const items: QitpItem[] = (section.items ?? []).map((it) => typeof it === "string" ? { text: it as string, hold: /^HOLD:/i.test(it as string), photo: "none" } : it);
@@ -245,7 +269,7 @@ function SectionCard({
                       />
                     )}
                     {it.photo !== "none" && (
-                      <PhotoStrip token={token} sectionId={section.id} itemIndex={i} photos={itemPhotos(i)} onAdd={onPhotoAdd} onRemove={onPhotoRemove} onCaption={onPhotoCaption} compact />
+                      <PhotoStrip token={token} sectionId={section.id} itemIndex={i} photos={itemPhotos(i)} onAdd={onPhotoAdd} onRemove={onPhotoRemove} onCaption={onPhotoCaption} onView={onPhotoView} compact />
                     )}
                   </div>
                 </li>
@@ -275,7 +299,7 @@ function SectionCard({
 
           <div className="cq-photos">
             <div className="cq-photos-hd">Evidence photos {sectionPhotos.length > 0 && <span className="muted">({sectionPhotos.length})</span>}</div>
-            <PhotoStrip token={token} sectionId={section.id} itemIndex={null} photos={sectionPhotos} onAdd={onPhotoAdd} onRemove={onPhotoRemove} onCaption={onPhotoCaption} />
+            <PhotoStrip token={token} sectionId={section.id} itemIndex={null} photos={sectionPhotos} onAdd={onPhotoAdd} onRemove={onPhotoRemove} onCaption={onPhotoCaption} onView={onPhotoView} />
           </div>
 
           {/* Sign-off — every responsible party must sign to release the section. */}
@@ -319,10 +343,11 @@ function SectionCard({
 }
 
 /** Reusable thumbnails + camera/upload controls, for a section or a single item. */
-function PhotoStrip({ token, sectionId, itemIndex, photos, onAdd, onRemove, onCaption, compact }: {
+function PhotoStrip({ token, sectionId, itemIndex, photos, onAdd, onRemove, onCaption, onView, compact }: {
   token: string; sectionId: number; itemIndex: number | null; photos: Photo[];
   onAdd: (added: Photo[]) => void; onRemove: (id: number) => void;
-  onCaption: (id: number, caption: string | null) => void; compact?: boolean;
+  onCaption: (id: number, caption: string | null) => void;
+  onView: (p: Photo) => void; compact?: boolean;
 }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -345,7 +370,7 @@ function PhotoStrip({ token, sectionId, itemIndex, photos, onAdd, onRemove, onCa
       {photos.length > 0 && (
         <div className="cq-thumbs">
           {photos.map((p) => (
-            <PhotoCell key={p.id} token={token} photo={p} compact={compact} onRemove={onRemove} onCaption={onCaption} onErr={setErr} />
+            <PhotoCell key={p.id} token={token} photo={p} compact={compact} onRemove={onRemove} onCaption={onCaption} onView={onView} onErr={setErr} />
           ))}
         </div>
       )}
@@ -366,9 +391,10 @@ function PhotoStrip({ token, sectionId, itemIndex, photos, onAdd, onRemove, onCa
  *  image evidence rather than an image. Saves on blur, like notes and readings;
  *  the update is optimistic and reverts if the write fails, so the strip never
  *  shows a caption that isn't stored. */
-function PhotoCell({ token, photo, compact, onRemove, onCaption, onErr }: {
+function PhotoCell({ token, photo, compact, onRemove, onCaption, onView, onErr }: {
   token: string; photo: Photo; compact?: boolean;
   onRemove: (id: number) => void; onCaption: (id: number, caption: string | null) => void;
+  onView: (p: Photo) => void;
   onErr: (msg: string | null) => void;
 }) {
   const [cap, setCap] = useState(photo.caption ?? "");
@@ -391,8 +417,13 @@ function PhotoCell({ token, photo, compact, onRemove, onCaption, onErr }: {
   return (
     <div className={`cq-cell${compact ? " sm" : ""}`}>
       <div className={`cq-thumb${compact ? " sm" : ""}`}>
-        <img src={`/pub/cabin/${token}/photo/${photo.id}`} alt={photo.caption ?? ""} loading="lazy" />
-        <button className="cq-thumb-x" onClick={() => onRemove(photo.id)} aria-label="Remove photo">✕</button>
+        {/* Tap to view full size — a 92px thumbnail of a 12MP site photo is a
+            reminder that evidence exists, not a way to inspect it. */}
+        <img src={`/pub/cabin/${token}/photo/${photo.id}`} alt={photo.caption ?? ""} loading="lazy"
+          onClick={() => onView(photo)} role="button" tabIndex={0}
+          aria-label={photo.caption ? `View photo: ${photo.caption}` : "View photo full size"}
+          onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onView(photo); } }} />
+        <button className="cq-thumb-x" onClick={(e) => { e.stopPropagation(); onRemove(photo.id); }} aria-label="Remove photo">✕</button>
       </div>
       <input
         className="cq-cap" type="text" value={cap} placeholder="Label…"
