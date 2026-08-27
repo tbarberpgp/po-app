@@ -248,12 +248,18 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
     // what split "Capping" across blocks — one block's row carried the product
     // link, the other's didn't).
     const productByName = new Map<string, string>();
+    // Wording that some block actually prices. An off-BOQ buy matching one of
+    // these joins that budget row — the whole point of the combined view is
+    // seeing that a block bought off-BOQ what a sibling has money for.
+    const pricedNames = new Set<string>();
     for (const m of scopeMembers) {
       const d = data[m.id]; if (!d) continue;
       for (const row of d.mats) {
-        if (row.omitted || row.product_id == null) continue;
+        if (row.omitted) continue;
         const n = normName(row.sub_item || row.item || "");
-        if (n) productByName.set(n, `p:${row.product_id}`);
+        if (!n) continue;
+        pricedNames.add(n);
+        if (row.product_id != null) productByName.set(n, `p:${row.product_id}`);
       }
     }
     const by = new Map<string, Row>();
@@ -266,7 +272,15 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
       for (const row of [...d.mats, ...d.offBoq.map((o, i) => offBoqRow(o, i))] as MatRow[]) {
         if (row.omitted) continue; // omitted from the job — not procurement
         const norm = normName(row.sub_item || row.item || "");
-        const key = row.product_id != null ? `p:${row.product_id}` : (productByName.get(norm) ?? (norm ? `n:${norm}` : ""));
+        // An off-BOQ row that no block prices keeps its supplier in the key.
+        // Nothing vouches for these but the wording someone typed, and the
+        // generic ones — carriage, delivery, pallet charge — are billed under
+        // the same word by every supplier while being entirely different money.
+        // Pooled on wording alone they became a single "Mixed suppliers" line
+        // whose £/unit was an average of unrelated charges.
+        const key = row.off_boq && !pricedNames.has(norm)
+          ? (norm ? `n:${norm}\u0000${matSupplier(row).toLowerCase()}` : "")
+          : row.product_id != null ? `p:${row.product_id}` : (productByName.get(norm) ?? (norm ? `n:${norm}` : ""));
         if (!key || key === "p:") continue;
         const cur: Row = by.get(key) ?? { key, item: row.sub_item || row.item, type: row.type ?? "", unit: row.total_units_unit ?? row.sub_unit ?? row.cost_unit ?? null, supplier: new Set<string>(), boqQty: 0, committedQty: 0, calledOffQty: 0, deliveredQty: 0, budget: 0, committed: 0, calledOff: 0, effVal: 0, priced: false, offBoq: false, lastOrdered: null, blocks: new Map<string, Blk>(), mats: [], statuses: new Set<MatStatus>(), names: new Map<string, number>() };
         const effName = (row.sub_item || row.item || "").trim();
