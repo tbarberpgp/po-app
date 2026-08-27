@@ -84,13 +84,15 @@ async function recalcTotals(
 ): Promise<void> {
   const afp = await db
     .prepare(
-      `SELECT id, project_id, direction, app_number, retention_pct, vat_pct, status
+      `SELECT id, project_id, direction, app_number, retention_pct, vat_pct, status,
+              prelim_heading, claimed_amount
        FROM applications_for_payment WHERE id = ?`,
     )
     .bind(afpId)
     .first<{
       id: number; project_id: string; direction: Direction; app_number: number;
       retention_pct: number; vat_pct: number; status: Status;
+      prelim_heading: string | null; claimed_amount: number | null;
     }>();
   if (!afp || (afp.status !== "draft" && !opts.force)) return;
 
@@ -101,22 +103,37 @@ async function recalcTotals(
     .bind(afpId)
     .all<{ contract_value: number; percent_complete: number; cumulative_value: number }>();
   const contractSum = lines.results.reduce((s, l) => s + (l.contract_value ?? 0), 0);
-  const cumulative = lines.results.reduce((s, l) => s + (l.cumulative_value ?? 0), 0);
+
+  // A prelim-tagged application is a standalone drawdown against the prelim
+  // heading's allowance: its single claimed amount IS its value (management/PM
+  // time never matches BOQ lines), and it neither anchors on prior apps nor
+  // counts as "previously certified" for later BOQ apps — each claim stands
+  // alone and the allowance tracks the running total.
+  const isPrelimClaim = afp.prelim_heading != null && afp.claimed_amount != null;
+  const cumulative = isPrelimClaim
+    ? (afp.claimed_amount ?? 0)
+    : lines.results.reduce((s, l) => s + (l.cumulative_value ?? 0), 0);
 
   // Previously certified = sum of certified_amount on prior AfPs for the same
   // (project, direction). If an earlier app is still 'submitted' (not yet
   // certified) we treat its cumulative_value as the previous certified
   // anchor so we never double-claim work between overlapping apps.
-  const priors = await db
-    .prepare(
-      `SELECT COALESCE(certified_amount, cumulative_value, 0) AS prev_value
-       FROM applications_for_payment
-       WHERE project_id = ? AND direction = ? AND app_number < ?
-         AND status IN ('submitted', 'certified', 'paid')`,
-    )
-    .bind(afp.project_id, afp.direction, afp.app_number)
-    .all<{ prev_value: number }>();
-  const previousCertified = priors.results.reduce((s, p) => s + (p.prev_value ?? 0), 0);
+  // Prelim-tagged apps are excluded on both sides: their claims are
+  // standalone, not part of the cumulative measured-works position.
+  let previousCertified = 0;
+  if (!isPrelimClaim) {
+    const priors = await db
+      .prepare(
+        `SELECT COALESCE(certified_amount, cumulative_value, 0) AS prev_value
+         FROM applications_for_payment
+         WHERE project_id = ? AND direction = ? AND app_number < ?
+           AND status IN ('submitted', 'certified', 'paid')
+           AND prelim_heading IS NULL`,
+      )
+      .bind(afp.project_id, afp.direction, afp.app_number)
+      .all<{ prev_value: number }>();
+    previousCertified = priors.results.reduce((s, p) => s + (p.prev_value ?? 0), 0);
+  }
 
   // Round every monetary result to pence. These figures become the ex-VAT
   // UnitAmount on live Xero invoices/bills and the frozen certified_amount, so
@@ -155,16 +172,21 @@ async function recalcTotals(
 async function autoSubmitIfReady(db: D1Database, afpId: number, actor: string): Promise<boolean> {
   const afp = await db
     .prepare(
-      `SELECT status, direction, counterparty_supplier_id, unmatched_lines_json
+      `SELECT status, direction, counterparty_supplier_id, unmatched_lines_json,
+              prelim_heading, claimed_amount
        FROM applications_for_payment WHERE id = ?`,
     )
     .bind(afpId)
     .first<{
       status: Status; direction: Direction;
       counterparty_supplier_id: number | null; unmatched_lines_json: string | null;
+      prelim_heading: string | null; claimed_amount: number | null;
     }>();
   if (!afp || afp.status !== "draft") return false;
-  if (afp.unmatched_lines_json) return false;                                                   // still needs reconciling
+  // A prelim claim's value is its single claimed amount — line matching (and
+  // therefore reconciling the unmatched list) doesn't apply.
+  const isPrelimClaim = afp.prelim_heading != null && afp.claimed_amount != null;
+  if (afp.unmatched_lines_json && !isPrelimClaim) return false;                                 // still needs reconciling
   // Only incoming labour auto-submits (the subbie already sent it — reconciling
   // completes the record). An OUTGOING application is ours to send: it stays a
   // draft until someone presses Submit, so reconciling the last review line
@@ -2967,6 +2989,7 @@ applications.patch("/:id", async (c) => {
     vat_pct?: number;
     counterparty_supplier_id?: number | null;
     prelim_heading?: string | null;
+    claimed_amount?: number | null;
   }>();
   const cur = await c.env.DB.prepare(
     "SELECT status FROM applications_for_payment WHERE id = ?",
@@ -2975,10 +2998,12 @@ applications.patch("/:id", async (c) => {
     .first<{ status: Status }>();
   if (!cur) return c.json({ error: "not found" }, 404);
   // Tagging spend as prelims is a reporting recategorisation, not an edit of
-  // the claim — allowed at any status. Everything else stays draft-only.
+  // the claim — allowed at any status. Everything else — including the prelim
+  // claimed amount, which sets the payable value — stays draft-only.
   const prelimOnly = body.prelim_heading !== undefined
     && body.period_end == null && body.notes == null && body.retention_pct == null
-    && body.vat_pct == null && body.counterparty_supplier_id === undefined;
+    && body.vat_pct == null && body.counterparty_supplier_id === undefined
+    && body.claimed_amount === undefined;
   if (cur.status !== "draft" && !prelimOnly) return c.json({ error: "AfP is not editable in this status" }, 409);
 
   const sets: string[] = [];
@@ -2992,6 +3017,13 @@ applications.patch("/:id", async (c) => {
   if (body.prelim_heading !== undefined) {
     sets.push("prelim_heading = ?");
     vals.push(body.prelim_heading == null || !body.prelim_heading.trim() ? null : body.prelim_heading.trim());
+  }
+  // The single claimed £ for a prelim-tagged app (replaces line matching —
+  // recalcTotals makes it the application's value).
+  if (body.claimed_amount !== undefined) {
+    sets.push("claimed_amount = ?");
+    vals.push(typeof body.claimed_amount === "number" && Number.isFinite(body.claimed_amount)
+      ? Math.round(body.claimed_amount * 100) / 100 : null);
   }
   if (body.counterparty_supplier_id !== undefined) {
     sets.push("counterparty_supplier_id = ?");
@@ -3171,16 +3203,20 @@ applications.post("/:id/submit", async (c) => {
   if (denied) return denied;
   const id = Number(c.req.param("id"));
   const afp = await c.env.DB.prepare(
-    "SELECT id, status, direction, counterparty_supplier_id, unmatched_lines_json FROM applications_for_payment WHERE id = ?",
+    "SELECT id, status, direction, counterparty_supplier_id, unmatched_lines_json, prelim_heading, claimed_amount FROM applications_for_payment WHERE id = ?",
   )
     .bind(id)
     .first<{
       id: number; status: Status; direction: Direction;
       counterparty_supplier_id: number | null; unmatched_lines_json: string | null;
+      prelim_heading: string | null; claimed_amount: number | null;
     }>();
   if (!afp) return c.json({ error: "not found" }, 404);
   if (afp.status !== "draft") return c.json({ error: "only drafts can be sent" }, 409);
-  if (afp.unmatched_lines_json) return c.json({ error: "reconcile the unmatched lines before sending" }, 409);
+  // Prelim claims don't line-match — the claimed amount replaces reconciliation.
+  if (afp.unmatched_lines_json && !(afp.prelim_heading != null && afp.claimed_amount != null)) {
+    return c.json({ error: "reconcile the unmatched lines before sending" }, 409);
+  }
   if (afp.direction === "incoming_labour" && afp.counterparty_supplier_id == null) {
     return c.json({ error: "assign the subcontractor before sending" }, 409);
   }

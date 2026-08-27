@@ -1040,34 +1040,84 @@ function AddAdhocLineButton({ afpId, onAdded }: { afpId: number; onAdded: () => 
  * auto-detect the subbie. Lets them pick a labour supplier and saves it.
  */
 /** Tag an incoming labour application as PRELIMS spend under a heading —
- *  its cumulative claim then expends the Prelims budget instead of reading as
- *  measured-works labour. Works at any status (it's a recategorisation). */
+ *  it then carries a single claimed £ (no line matching: management/PM time
+ *  never matches BOQ lines) that becomes its value and draws the heading's
+ *  allowance down. Tagging works at any status (a recategorisation); the
+ *  claimed amount is draft-only because it sets the payable value. */
 function PrelimTagControl({ afp, onChanged }: { afp: ApplicationForPayment; onChanged: () => void }) {
   const [editing, setEditing] = useState(false);
-  const [headings, setHeadings] = useState<string[]>([]);
+  const [summary, setSummary] = useState<Awaited<ReturnType<typeof api.prelimsSummary>> | null>(null);
   const [pick, setPick] = useState(afp.prelim_heading ?? "");
+  const [claim, setClaim] = useState(afp.claimed_amount != null ? String(afp.claimed_amount) : "");
   const [busy, setBusy] = useState(false);
+  const isDraft = afp.status === "draft";
+  const headings = summary?.headings ?? [];
   useEffect(() => {
-    if (!editing) return;
+    if (!editing && !afp.prelim_heading) return;
     api.prelimsSummary(afp.project_id)
-      .then((r) => setHeadings((r.headings ?? []).map((h: { name: string }) => h.name)))
-      .catch(() => setHeadings([]));
-  }, [editing, afp.project_id]);
-  async function save(heading: string | null) {
+      .then(setSummary)
+      .catch(() => setSummary(null));
+  }, [editing, afp.prelim_heading, afp.project_id]);
+  async function save(body: { prelim_heading?: string | null; claimed_amount?: number | null }) {
     setBusy(true);
-    try { await api.updateAfp(afp.id, { prelim_heading: heading }); setEditing(false); onChanged(); }
+    try { await api.updateAfp(afp.id, body); setEditing(false); onChanged(); }
     catch { /* surfaced by refresh */ }
     finally { setBusy(false); }
   }
+  // Allowance position for the tagged heading — falling back to the whole
+  // Prelims allowance when the heading has no budget row of its own (projects
+  // whose cost sheet carries one Preliminaries line rather than itemised
+  // headings). A draft's claim isn't in the drawn figure yet (drawdown counts
+  // submitted+), so project it on top; a submitted/certified claim is already
+  // included.
+  const heading = headings.find((h) => h.name === (afp.prelim_heading ?? pick));
+  const claimNum = Number(claim);
+  const pending = isDraft && Number.isFinite(claimNum) ? claimNum : 0;
+  const position = heading
+    ? { label: afp.prelim_heading ?? pick, budget: heading.budget, drawn: heading.committed }
+    : summary && summary.budget > 0
+      ? { label: "Prelims", budget: summary.budget, drawn: summary.po_committed + (summary.labour_committed ?? 0) + summary.plant_accrued }
+      : null;
+  const remainingAfter = position ? position.budget - position.drawn - pending : null;
+  const overBy = remainingAfter != null && remainingAfter < -0.005 ? -remainingAfter : 0;
+
+  const allowanceChips = position && (
+    <span className="muted" style={{ fontSize: 12 }}>
+      {position.label} allowance {fmtMoney(position.budget)} · drawn {fmtMoney(position.drawn + pending)} · remaining {fmtMoney(remainingAfter ?? 0)}
+    </span>
+  );
+  const overFlag = overBy > 0 && (
+    <span className="pill" style={{ background: "var(--amber-soft, #fdf3d7)", color: "var(--amber, #8a6d1a)" }}
+      title="Flagged for visibility — an over-allowance drawdown is not blocked">
+      Exceeds allowance by {fmtMoney(overBy)}
+    </span>
+  );
+
   if (!editing) {
     return (
       <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", margin: "10px 0" }}>
         {afp.prelim_heading
           ? <>
               <span className="pill" style={{ background: "var(--navy-soft)", color: "var(--navy)" }}>Prelims · {afp.prelim_heading}</span>
-              <span className="muted" style={{ fontSize: 12 }}>This application expends the Prelims budget.</span>
+              {isDraft
+                ? <>
+                    <label className="muted" style={{ fontSize: 12.5 }}>Claimed £
+                      <input type="number" step="0.01" value={claim} placeholder="0.00"
+                        onChange={(e) => setClaim(e.target.value)}
+                        style={{ width: 110, marginLeft: 6 }} />
+                    </label>
+                    <button className="primary tiny" disabled={busy || claim === "" || !Number.isFinite(claimNum)}
+                      onClick={() => save({ claimed_amount: claimNum })}>
+                      Save claim
+                    </button>
+                  </>
+                : <span className="muted" style={{ fontSize: 12 }}>
+                    Claimed {fmtMoney(afp.claimed_amount ?? 0)}{afp.claimed_amount == null ? " — reopen as draft to set the claimed amount" : ""}
+                  </span>}
+              {allowanceChips}
+              {overFlag}
               <button className="ghost tiny" onClick={() => { setPick(afp.prelim_heading ?? ""); setEditing(true); }}>Change</button>
-              <button className="ghost tiny" disabled={busy} onClick={() => save(null)}>Untag</button>
+              <button className="ghost tiny" disabled={busy} onClick={() => save({ prelim_heading: null })}>Untag</button>
             </>
           : <button className="ghost tiny" onClick={() => setEditing(true)}
               title="Staff-time applications (e.g. a subcontract project manager) are preliminaries — tag it so the spend counts against the Prelims budget">
@@ -1081,10 +1131,10 @@ function PrelimTagControl({ afp, onChanged }: { afp: ApplicationForPayment; onCh
       <span className="muted" style={{ fontSize: 12.5 }}>Prelim heading:</span>
       <select value={pick} onChange={(e) => setPick(e.target.value)} style={{ minWidth: 200 }}>
         <option value="">— pick a heading —</option>
-        {headings.map((h) => <option key={h} value={h}>{h}</option>)}
+        {headings.map((h) => <option key={h.name} value={h.name}>{h.name}</option>)}
         <option value="Site management">Site management (general)</option>
       </select>
-      <button className="primary tiny" disabled={busy || !pick} onClick={() => save(pick)}>Tag as prelims</button>
+      <button className="primary tiny" disabled={busy || !pick} onClick={() => save({ prelim_heading: pick })}>Tag as prelims</button>
       <button className="ghost tiny" onClick={() => setEditing(false)}>Cancel</button>
     </div>
   );

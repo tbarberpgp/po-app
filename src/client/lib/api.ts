@@ -387,6 +387,7 @@ export const api = {
   prelimsSummary: (projectId: string) =>
     jfetch<{
       budget: number; po_committed: number; po_count: number;
+      labour_committed: number; labour_app_count: number;
       plant_accrued: number; plant_count: number;
       by_type: Array<{ type: string; committed: number; po_count: number }>;
       headings: Array<{ name: string; budget: number; committed: number; po_count: number; remaining: number }>;
@@ -945,7 +946,7 @@ export const api = {
   /** Undo a resolved unmatched line — reverse its effect + send it back to unmatched. */
   undoResolvedLine: (afpId: number, rawLineNo: number) =>
     jfetch<{ ok: true }>(`/api/applications/${afpId}/resolved/${rawLineNo}/undo`, { method: "POST" }),
-  updateAfp: (id: number, body: { period_end?: string; notes?: string; retention_pct?: number; vat_pct?: number; counterparty_supplier_id?: number | null; prelim_heading?: string | null }) =>
+  updateAfp: (id: number, body: { period_end?: string; notes?: string; retention_pct?: number; vat_pct?: number; counterparty_supplier_id?: number | null; prelim_heading?: string | null; claimed_amount?: number | null }) =>
     jfetch<{ ok: true }>(`/api/applications/${id}`, {
       method: "PATCH",
       body: JSON.stringify(body),

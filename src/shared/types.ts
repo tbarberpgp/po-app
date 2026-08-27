@@ -556,6 +556,9 @@ export type ApplicationForPayment = {
   extracted_meta_json?: string | null;
   /** Non-null = this labour application expends the PRELIMS budget under this heading. */
   prelim_heading?: string | null;
+  /** Prelim-tagged apps only: the single claimed £ (no line matching) that
+   *  becomes the application's value and draws the heading's allowance down. */
+  claimed_amount?: number | null;
   // joined fields
   line_count?: number;
   project_code?: string;
