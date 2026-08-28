@@ -1944,6 +1944,14 @@ body.rd-printing .rd-linedel, body.rd-printing .rd-addline, body.rd-printing .rd
 /* Download control on a dashboard cabin card — a sibling of the card link, not
    nested inside it, so both stay valid and independently clickable. */
 .qitp-card-wrap { position: relative; }
+/* Selection mode: the whole card is the target, and a picked card is obvious
+   from across the room — a supervisor assembling a handover batch shouldn't
+   have to squint at 140 tiles to see what they've got. */
+.qitp-card-pick { width: 100%; text-align: inherit; font: inherit; cursor: pointer; border: 1px solid var(--line); background: var(--card); }
+.qitp-card-wrap.picked .qitp-card-pick { border-color: var(--accent); box-shadow: inset 0 0 0 2px var(--accent); }
+.qitp-tick { position: absolute; top: 6px; right: 6px; z-index: 2; width: 22px; height: 22px; border-radius: 5px; border: 1px solid var(--line-strong); background: var(--card); color: #fff; font-size: 13px; line-height: 1; display: flex; align-items: center; justify-content: center; }
+.qitp-card-wrap.picked .qitp-tick { background: var(--accent); border-color: var(--accent); }
+
 .qitp-card-pdf { position: absolute; top: 6px; right: 6px; z-index: 2; width: 26px; height: 26px; display: flex; align-items: center; justify-content: center; border-radius: 6px; border: 1px solid var(--line-strong); background: var(--card); color: var(--ink); font-size: 13px; text-decoration: none; opacity: .55; }
 .qitp-card-wrap:hover .qitp-card-pdf, .qitp-card-pdf:focus { opacity: 1; }
 .cq-pdf { display: flex; align-items: center; justify-content: center; gap: 8px; margin: 4px 0 8px; min-height: 48px; padding: 12px 16px; border: 1px solid var(--line-strong); border-radius: var(--radius-md); background: var(--card); color: var(--ink); font-size: 15px; font-weight: 600; text-decoration: none; }

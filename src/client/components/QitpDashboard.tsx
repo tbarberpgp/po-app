@@ -41,6 +41,7 @@ export function QitpDashboard({ me, embedded }: { me: CurrentUser | null; embedd
   const [batchOpen, setBatchOpen] = useState(false);
   const [batch, setBatch] = useState<BatchProgress | null>(null);
   const [batchDone, setBatchDone] = useState<string | null>(null);
+  const [picked, setPicked] = useState<Set<number>>(new Set());
   const cancelRef = useRef(false);
   const shareUrl = clientToken ? `${window.location.origin}/pub/quality/${clientToken}` : "";
 
@@ -97,6 +98,8 @@ export function QitpDashboard({ me, embedded }: { me: CurrentUser | null; embedd
     return open.length ? Math.min(...open) : (days[0] ?? 1);
   }, [day, cabins, days]);
 
+  const pickedList = cabins.filter((c) => picked.has(c.id));
+
   const due = cabins.filter((c) => c.dismantle_day === focusDay && c.status !== "complete");
   const held = cabins.filter((c) => c.status === "held");
   const failed = cabins.filter((c) => c.status === "failed");
@@ -139,7 +142,7 @@ export function QitpDashboard({ me, embedded }: { me: CurrentUser | null; embedd
         )}
         <div style={{ display: "flex", gap: 8, marginLeft: "auto", flexWrap: "wrap" }}>
           {canViewLink && <button className="btn" onClick={() => setLinkOpen((o) => !o)}>🔗 Client dashboard</button>}
-          <button className="btn" onClick={() => setBatchOpen((o) => !o)}>⤓ Download records</button>
+          <button className="btn" onClick={() => setBatchOpen((o) => { if (o) { setPicked(new Set()); setBatchDone(null); } return !o; })}>⤓ Download records</button>
           <Link className="btn accent" to={`/projects/${id}/qitp/print`}>🏷️ Print QR labels</Link>
         </div>
       </div>
@@ -167,29 +170,36 @@ export function QitpDashboard({ me, embedded }: { me: CurrentUser | null; embedd
       {batchOpen && (
         <div className="card" style={{ padding: 14, marginBottom: 14, display: "flex", flexDirection: "column", gap: 10 }}>
           <div style={{ fontSize: 13 }}>
-            <b>Download quality records</b> — one PDF per cabin, delivered as a ZIP. The batch is whatever
-            the filters below are showing, so narrow by floor, state or day first.
+            <b>Download quality records</b> — one PDF per cabin, delivered as a ZIP.
+            Tap the cabins you want below, then download. Filter first if it helps you find them.
           </div>
           {batch ? (
             <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
               <progress value={batch.done} max={batch.total} style={{ width: 200 }} />
-              <span style={{ fontSize: 13 }}>
-                {batch.done} of {batch.total} — cabin {batch.current}
-              </span>
+              <span style={{ fontSize: 13 }}>{batch.done} of {batch.total} — cabin {batch.current}</span>
               <button className="btn ghost" onClick={() => { cancelRef.current = true; }}>Stop</button>
             </div>
           ) : (
-            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-              <button className="btn accent" disabled={filtered.length === 0}
-                onClick={() => runBatch(filtered)}>
-                Download {filtered.length} record{filtered.length === 1 ? "" : "s"}
-              </button>
+            <>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <button className="btn accent" disabled={pickedList.length === 0}
+                  onClick={() => runBatch(pickedList)}>
+                  {pickedList.length === 0
+                    ? "Choose cabins to download"
+                    : `Download ${pickedList.length} selected`}
+                </button>
+                <button className="btn ghost" disabled={filtered.length === 0}
+                  onClick={() => setPicked((prev) => { const n = new Set(prev); filtered.forEach((c) => n.add(c.id)); return n; })}>
+                  Select all {filtered.length} shown
+                </button>
+                {picked.size > 0 && <button className="btn ghost" onClick={() => setPicked(new Set())}>Clear</button>}
+              </div>
               <span className="muted" style={{ fontSize: 12.5 }}>
-                {filtered.length === 0
-                  ? "No cabins match the current filters."
-                  : `Roughly ${estMb(filtered.length)} MB, ${estMins(filtered.length)}. Each record is built on demand, so a large batch takes a while — you can stop it part way and keep what has downloaded.`}
+                {pickedList.length === 0
+                  ? "Nothing selected yet — tap a cabin card below to add it."
+                  : `Roughly ${estMb(pickedList.length)} MB, ${estMins(pickedList.length)}. Each record is built on demand, so a large batch takes a while — you can stop it part way and keep what has downloaded.`}
               </span>
-            </div>
+            </>
           )}
           {batchDone && <div className="muted" style={{ fontSize: 13 }}>{batchDone}</div>}
         </div>
@@ -267,7 +277,10 @@ export function QitpDashboard({ me, embedded }: { me: CurrentUser | null; embedd
       </div>
 
       <div className="qitp-grid">
-        {filtered.map((c) => <CabinCard key={c.id} c={c} />)}
+        {filtered.map((c) => (
+          <CabinCard key={c.id} c={c} selectable={batchOpen} selected={picked.has(c.id)}
+            onToggle={(id) => setPicked((prev) => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; })} />
+        ))}
         {filtered.length === 0 && <div className="muted" style={{ padding: 24 }}>No cabins match these filters.</div>}
       </div>
     </div>
@@ -300,12 +313,14 @@ function AttnCard({ tone, title, cabins, control }: { tone: string; title: strin
   );
 }
 
-function CabinCard({ c }: { c: QitpCabinCard }) {
-  return (
-    <div className="qitp-card-wrap">
-    <a className="qitp-card-pdf" href={cabinRecordUrl(c.token)}
-       title={`Download cabin ${c.number} quality record (PDF)`} aria-label={`Download cabin ${c.number} quality record`}>⤓</a>
-    <a className="qitp-card" href={`/cabin/${c.token}`} target="_blank" rel="noreferrer">
+/** A cabin in the grid. Normally two links — open the cabin, or take its record.
+ *  While a batch is being assembled the whole card becomes a toggle instead, so
+ *  picking cabins can't be confused with opening one. */
+function CabinCard({ c, selectable, selected, onToggle }: {
+  c: QitpCabinCard; selectable?: boolean; selected?: boolean; onToggle?: (id: number) => void;
+}) {
+  const inner = (
+    <>
       <span className={`qitp-band ${c.floor.toLowerCase()}`} title={c.floor} />
       <Ring done={c.done} total={c.total} status={c.status} number={c.number} />
       <div className="qitp-card-meta">
@@ -313,7 +328,25 @@ function CabinCard({ c }: { c: QitpCabinCard }) {
         {c.dismantle_day != null && <span className="qitp-day">Day {c.dismantle_day}</span>}
         {c.reinstall_date && <span className="qitp-day" title={`Reinstall ${fmtLiftDate(c.reinstall_date)}`}>↩ {new Date(c.reinstall_date + "T00:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short" })}</span>}
       </div>
-    </a>
+    </>
+  );
+  if (selectable) {
+    return (
+      <div className={`qitp-card-wrap${selected ? " picked" : ""}`}>
+        <button type="button" className="qitp-card qitp-card-pick" aria-pressed={!!selected}
+          aria-label={`${selected ? "Deselect" : "Select"} cabin ${c.number}`}
+          onClick={() => onToggle?.(c.id)}>
+          <span className="qitp-tick" aria-hidden="true">{selected ? "✓" : ""}</span>
+          {inner}
+        </button>
+      </div>
+    );
+  }
+  return (
+    <div className="qitp-card-wrap">
+      <a className="qitp-card-pdf" href={cabinRecordUrl(c.token)}
+         title={`Download cabin ${c.number} quality record (PDF)`} aria-label={`Download cabin ${c.number} quality record`}>⤓</a>
+      <a className="qitp-card" href={`/cabin/${c.token}`} target="_blank" rel="noreferrer">{inner}</a>
     </div>
   );
 }
