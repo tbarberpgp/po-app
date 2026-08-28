@@ -4,6 +4,7 @@ import { normalisePhone } from "../../shared/operatives-import";
 import { extractQualCard } from "./operatives";
 import { computeQualityRollup, qualityDashboardHtml } from "./quality-dashboard";
 import { isSafeMediaUrl } from "../safe-url";
+import { renderCabinQitpPdf } from "./qitp-pdf";
 
 // Public, operative-facing site sign-in. Mounted at /pub (NOT /api) so the
 // auth middleware does not gate it — operatives are not app users. The
@@ -945,6 +946,27 @@ publicOps.post("/cabin/:token/section/:sectionId/photo", async (c) => {
     added.push({ id: res!.id, section_id: sectionId, item_index: itemIndex, caption: null });
   }
   return c.json({ ok: true, photos: added });
+});
+
+// The cabin's quality record as a PDF. Gated exactly like viewing the cabin —
+// whoever can open the record can produce the document from it. The audit trail
+// is deliberately absent: it is superadmin-only and this endpoint is not.
+publicOps.get("/cabin/:token/pdf", async (c) => {
+  const cab = await resolveCabin(c.env, c.req.param("token"));
+  if (!cab) return c.json({ error: "This cabin link is no longer valid." }, 404);
+  const full = await c.env.DB.prepare(
+    "SELECT id, project_id, number, floor, elevation, wing, dismantle_day, reinstall_date, storage_bay FROM qitp_cabins WHERE id = ?",
+  ).bind(cab.id).first<Parameters<typeof renderCabinQitpPdf>[1]>();
+  if (!full) return c.json({ error: "Cabin not found" }, 404);
+  const out = await renderCabinQitpPdf(c.env, full);
+  if (!out) return c.json({ error: "The PDF service is unavailable right now. Try again shortly." }, 503);
+  return new Response(out.body, {
+    headers: {
+      "Content-Type": "application/pdf",
+      "Content-Disposition": `attachment; filename="${out.filename}"`,
+      "Cache-Control": "no-store",
+    },
+  });
 });
 
 // Caption one evidence photo — typed under its thumbnail, saved on blur.

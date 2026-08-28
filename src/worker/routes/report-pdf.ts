@@ -25,7 +25,7 @@ const esc = (s: unknown) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&
 const fmtDate = (iso: string) => { const d = new Date((iso || "") + (iso?.length === 10 ? "T00:00:00" : "")); return isNaN(d.getTime()) ? (iso || "") : d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }); };
 
 /** Bytes → base64 (chunked, to avoid arg-count limits on large images). */
-function toBase64(bytes: Uint8Array): string {
+export function toBase64(bytes: Uint8Array): string {
   let bin = "";
   const chunk = 0x8000;
   for (let i = 0; i < bytes.length; i += chunk) bin += String.fromCharCode(...bytes.subarray(i, i + chunk));
@@ -38,7 +38,7 @@ function toBase64(bytes: Uint8Array): string {
  *  loss at report scale. Uses the Images binding; if it's unavailable (binding
  *  not provisioned / account not entitled) we fall back to the original bytes so
  *  the report still generates — just larger. */
-async function shrinkPhoto(env: Env, bytes: ArrayBuffer): Promise<{ data: Uint8Array; mime: string }> {
+export async function shrinkPhoto(env: Env, bytes: ArrayBuffer): Promise<{ data: Uint8Array; mime: string }> {
   if (env.IMAGES) {
     try {
       const result = await env.IMAGES

@@ -114,6 +114,12 @@ export function CabinQitp() {
             onCleared={() => setSignoffs((prev) => prev.filter((x) => x.section_id !== s.id))}
           />
         ))}
+        {/* The deliverable. Available to whoever can open this cabin — the same
+            gate as viewing it. A plain link, not fetch(), so the browser handles
+            the download and the phone's own viewer opens it. */}
+        <a className="cq-pdf" href={`/pub/cabin/${token}/pdf`}>
+          ⤓ Download this cabin's quality record (PDF)
+        </a>
       </main>
 
       {viewing && (

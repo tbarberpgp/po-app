@@ -1937,6 +1937,8 @@ body.rd-printing .rd-linedel, body.rd-printing .rd-addline, body.rd-printing .rd
 .cq-cap { width: 100%; box-sizing: border-box; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); padding: 5px 7px; font: inherit; font-size: 12px; background: var(--card); color: var(--ink); }
 .cq-cap:focus { outline: none; border-color: var(--accent); }
 .cq-cell .cq-thumb img { cursor: zoom-in; }
+.cq-pdf { display: flex; align-items: center; justify-content: center; gap: 8px; margin: 4px 0 8px; min-height: 48px; padding: 12px 16px; border: 1px solid var(--line-strong); border-radius: var(--radius-md); background: var(--card); color: var(--ink); font-size: 15px; font-weight: 600; text-decoration: none; }
+.cq-pdf:active { background: var(--soft); }
 /* Full-size photo viewer. Fixed to the viewport so a section card's own
    stacking context can't clip it; the image is contained rather than cropped
    so a whole elevation is readable on a phone. */
