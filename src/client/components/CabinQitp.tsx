@@ -95,6 +95,7 @@ export function CabinQitp() {
             </div>
           </div>
         </div>
+        <a className="cq-head-pdf" href={`/pub/cabin/${token}/pdf`} title="Download this cabin's quality record as a PDF">⤓ PDF</a>
       </header>
 
       <main className="cq-main">

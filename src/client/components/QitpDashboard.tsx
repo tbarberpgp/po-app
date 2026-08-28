@@ -1,15 +1,20 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api } from "../lib/api";
 import type { CabinState, QitpCabinCard, QitpDashboard as Dash } from "../../shared/types";
 import type { CurrentUser } from "../../shared/types";
 import { QITP_LIFT, fmtLiftDate } from "../../shared/qitp-lift";
 import { can } from "../../shared/permissions";
+import { downloadCabinRecords, cabinRecordUrl, type BatchProgress } from "../lib/qitp-records";
 
 const STATE_LABEL: Record<CabinState, string> = {
   not_started: "Not started", in_progress: "In progress", held: "Held", failed: "Failed", complete: "Complete",
 };
 const FLOORS = ["Top", "Middle", "Ground"] as const;
+// Rough guides so nobody starts a 140-cabin batch without knowing what it costs.
+// ~2.5MB and ~7s a record, measured against Blyth.
+const estMb = (n: number) => Math.max(1, Math.round(n * 2.5));
+const estMins = (n: number) => { const m = Math.round((n * 7) / 60); return m < 1 ? "under a minute" : `about ${m} minute${m === 1 ? "" : "s"}`; };
 
 /** Supervisor dashboard for a project's cabin QITP: needs-attention triage,
  *  KPI totals, and a progress-ring grid across all cabins. */
@@ -30,6 +35,13 @@ export function QitpDashboard({ me, embedded }: { me: CurrentUser | null; embedd
   const [clientToken, setClientToken] = useState<string | null>(null);
   const [linkBusy, setLinkBusy] = useState(false);
   const [copied, setCopied] = useState(false);
+
+  // Batch record download. Scope is whatever the filters currently show, so the
+  // existing floor/status/day controls double as the batch picker.
+  const [batchOpen, setBatchOpen] = useState(false);
+  const [batch, setBatch] = useState<BatchProgress | null>(null);
+  const [batchDone, setBatchDone] = useState<string | null>(null);
+  const cancelRef = useRef(false);
   const shareUrl = clientToken ? `${window.location.origin}/pub/quality/${clientToken}` : "";
 
   useEffect(() => {
@@ -49,6 +61,31 @@ export function QitpDashboard({ me, embedded }: { me: CurrentUser | null; embedd
   function copyShareUrl() {
     if (!shareUrl) return;
     navigator.clipboard?.writeText(shareUrl).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); }).catch(() => {});
+  }
+
+  async function runBatch(list: QitpCabinCard[]) {
+    cancelRef.current = false;
+    setBatchDone(null);
+    setBatch({ done: 0, total: list.length, current: list[0]?.number ?? "" });
+    try {
+      const r = await downloadCabinRecords(
+        list.map((c) => ({ number: c.number, token: c.token })),
+        dash?.project.code ?? "QITP",
+        setBatch,
+        () => cancelRef.current,
+      );
+      setBatchDone(
+        r.cancelled
+          ? `Stopped. ${r.ok} record${r.ok === 1 ? "" : "s"} downloaded.`
+          : r.failed.length
+            ? `${r.ok} downloaded. ${r.failed.length} could not be generated: ${r.failed.join(", ")}.`
+            : `${r.ok} record${r.ok === 1 ? "" : "s"} downloaded.`,
+      );
+    } catch (e) {
+      setBatchDone(e instanceof Error ? e.message : "The download failed.");
+    } finally {
+      setBatch(null);
+    }
   }
 
   const cabins = dash?.cabins ?? [];
@@ -102,6 +139,7 @@ export function QitpDashboard({ me, embedded }: { me: CurrentUser | null; embedd
         )}
         <div style={{ display: "flex", gap: 8, marginLeft: "auto", flexWrap: "wrap" }}>
           {canViewLink && <button className="btn" onClick={() => setLinkOpen((o) => !o)}>🔗 Client dashboard</button>}
+          <button className="btn" onClick={() => setBatchOpen((o) => !o)}>⤓ Download records</button>
           <Link className="btn accent" to={`/projects/${id}/qitp/print`}>🏷️ Print QR labels</Link>
         </div>
       </div>
@@ -123,6 +161,37 @@ export function QitpDashboard({ me, embedded }: { me: CurrentUser | null; embedd
           ) : (
             <span className="muted" style={{ fontSize: 13 }}>No link has been published yet — a project manager can create one.</span>
           )}
+        </div>
+      )}
+
+      {batchOpen && (
+        <div className="card" style={{ padding: 14, marginBottom: 14, display: "flex", flexDirection: "column", gap: 10 }}>
+          <div style={{ fontSize: 13 }}>
+            <b>Download quality records</b> — one PDF per cabin, delivered as a ZIP. The batch is whatever
+            the filters below are showing, so narrow by floor, state or day first.
+          </div>
+          {batch ? (
+            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+              <progress value={batch.done} max={batch.total} style={{ width: 200 }} />
+              <span style={{ fontSize: 13 }}>
+                {batch.done} of {batch.total} — cabin {batch.current}
+              </span>
+              <button className="btn ghost" onClick={() => { cancelRef.current = true; }}>Stop</button>
+            </div>
+          ) : (
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <button className="btn accent" disabled={filtered.length === 0}
+                onClick={() => runBatch(filtered)}>
+                Download {filtered.length} record{filtered.length === 1 ? "" : "s"}
+              </button>
+              <span className="muted" style={{ fontSize: 12.5 }}>
+                {filtered.length === 0
+                  ? "No cabins match the current filters."
+                  : `Roughly ${estMb(filtered.length)} MB, ${estMins(filtered.length)}. Each record is built on demand, so a large batch takes a while — you can stop it part way and keep what has downloaded.`}
+              </span>
+            </div>
+          )}
+          {batchDone && <div className="muted" style={{ fontSize: 13 }}>{batchDone}</div>}
         </div>
       )}
 
@@ -233,6 +302,9 @@ function AttnCard({ tone, title, cabins, control }: { tone: string; title: strin
 
 function CabinCard({ c }: { c: QitpCabinCard }) {
   return (
+    <div className="qitp-card-wrap">
+    <a className="qitp-card-pdf" href={cabinRecordUrl(c.token)}
+       title={`Download cabin ${c.number} quality record (PDF)`} aria-label={`Download cabin ${c.number} quality record`}>⤓</a>
     <a className="qitp-card" href={`/cabin/${c.token}`} target="_blank" rel="noreferrer">
       <span className={`qitp-band ${c.floor.toLowerCase()}`} title={c.floor} />
       <Ring done={c.done} total={c.total} status={c.status} number={c.number} />
@@ -242,6 +314,7 @@ function CabinCard({ c }: { c: QitpCabinCard }) {
         {c.reinstall_date && <span className="qitp-day" title={`Reinstall ${fmtLiftDate(c.reinstall_date)}`}>↩ {new Date(c.reinstall_date + "T00:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short" })}</span>}
       </div>
     </a>
+    </div>
   );
 }
 
