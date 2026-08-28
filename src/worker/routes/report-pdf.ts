@@ -37,13 +37,19 @@ export function toBase64(bytes: Uint8Array): string {
  *  Resizing to ~1600px JPEG q80 brings each to a few hundred KB with no visible
  *  loss at report scale. Uses the Images binding; if it's unavailable (binding
  *  not provisioned / account not entitled) we fall back to the original bytes so
- *  the report still generates — just larger. */
-export async function shrinkPhoto(env: Env, bytes: ArrayBuffer): Promise<{ data: Uint8Array; mime: string }> {
+ *  the report still generates — just larger.
+ *
+ *  `maxPx` is the ceiling on the longest edge. It matters more than JPEG quality:
+ *  Chrome's print-to-PDF decodes embedded JPEGs and re-encodes them losslessly
+ *  (FlateDecode), so the quality setting buys nothing in the final PDF and file
+ *  size tracks pixel count alone. Callers embedding many photos should lower it
+ *  to what their print slot actually needs. */
+export async function shrinkPhoto(env: Env, bytes: ArrayBuffer, maxPx = 1600): Promise<{ data: Uint8Array; mime: string }> {
   if (env.IMAGES) {
     try {
       const result = await env.IMAGES
         .input(new Response(bytes).body as ReadableStream<Uint8Array>)
-        .transform({ width: 1600, height: 1600, fit: "scale-down" })
+        .transform({ width: maxPx, height: maxPx, fit: "scale-down" })
         .output({ format: "image/jpeg", quality: 80 });
       const buf = await result.response().arrayBuffer();
       if (buf.byteLength > 0) return { data: new Uint8Array(buf), mime: "image/jpeg" };

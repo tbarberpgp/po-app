@@ -38,6 +38,14 @@ function isReleased(sec: Section, signs: Sign[]): boolean {
   return sec.responsible.every((p) => got.has(p));
 }
 
+/** Longest edge for an embedded photo. The gallery slot is about 58mm x 31mm,
+ *  which needs ~685px at 300dpi — so 1000px prints cleanly and still allows a
+ *  reader to zoom in on screen. It is deliberately well below the 1600px the
+ *  site report uses: Chrome re-encodes embedded images losslessly, so a cabin's
+ *  49 photos at 1600px produced a 24MB file that no one could email. At 1000px
+ *  the same record is roughly a third of that. */
+const PHOTO_MAX_PX = 1000;
+
 /** Pull a cabin's photos from R2, downscale them and inline as data URIs —
  *  Browser Rendering can't reach the /pub photo URLs from inside the render.
  *  Every photo is included by design; cabins run 3–56 photos, so the ceiling is
@@ -54,7 +62,7 @@ async function inlineCabinPhotos(
       try {
         const obj = await env.R2.get(r.file_key);
         if (!obj) return null;
-        const shrunk = await shrinkPhoto(env, await obj.arrayBuffer());
+        const shrunk = await shrinkPhoto(env, await obj.arrayBuffer(), PHOTO_MAX_PX);
         const mime = shrunk.mime || obj.httpMetadata?.contentType || "image/jpeg";
         return { id: r.id, section_id: r.section_id, item_index: r.item_index, caption: r.caption, src: `data:${mime};base64,${toBase64(shrunk.data)}` };
       } catch { return null; }        // a photo that won't load must not lose the whole record
