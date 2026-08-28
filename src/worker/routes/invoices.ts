@@ -8,7 +8,7 @@ import type { Env, Variables } from "../env";
 import { requirePermission } from "../auth";
 import { can } from "../../shared/permissions";
 import {
-  invMaterialCode, lineQty, poRefCore, scanLineMatch, SERVICE_CHARGE_LINE_ID,
+  invMaterialCode, lineQty, NON_GOODS_LINE_IDS, PAYMENT_SCHEDULE_LINE_ID, poRefCore, scanLineMatch,
   type InvLine, type PoLineRow,
 } from "../../shared/line-match";
 import { ensureXeroContact } from "./xero";
@@ -706,7 +706,7 @@ function nameTokenSet(s: string): Set<string> {
  *  product line" — a human picked this deliberately, so it counts as matched
  *  (no "no_po_line" flag) but is excluded from qty/value variance checks: a
  *  £0 service line has nothing to deliver and nothing to compare a total against. */
-export { SERVICE_CHARGE_LINE_ID } from "../../shared/line-match";
+export { SERVICE_CHARGE_LINE_ID, PAYMENT_SCHEDULE_LINE_ID } from "../../shared/line-match";
 
 /** Attach the price/quantity reconciliation to invoice rows — one extra query for
  *  the whole list (the PO lines of every order these invoices are matched to),
@@ -977,10 +977,11 @@ async function computeInvoiceMatch(env: Env, inv: Record<string, unknown>) {
   // several invoice lines against one priced line legitimately.
   const takenByCode = new Set<number>();
   const lines = invLines.map((il) => {
-    if (il.po_line_id === SERVICE_CHARGE_LINE_ID) {
+    if (il.po_line_id != null && NON_GOODS_LINE_IDS.includes(il.po_line_id)) {
       const invQty = lineQty(il);
+      const label = il.po_line_id === PAYMENT_SCHEDULE_LINE_ID ? "Payment schedule" : "Service charge";
       return { description: il.description ?? "", qty: invQty, unit_price: il.unit_price ?? null, amount: il.amount ?? null,
-        po_line_id: SERVICE_CHARGE_LINE_ID, po_line_item: "Service charge", po_qty: null, po_unit: null, po_unit_cost: null,
+        po_line_id: il.po_line_id, po_line_item: label, po_qty: null, po_unit: null, po_unit_cost: null,
         po_line_total: null, invoice_line_total: typeof il.amount === "number" ? il.amount : null,
         delivered_qty: null, flags: [] as string[] };
     }

@@ -10,7 +10,7 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import {
-  invMaterialCode, lineQty, normText, poRefCore, scanLineMatch,
+  invMaterialCode, lineQty, normText, PAYMENT_SCHEDULE_LINE_ID, poRefCore, scanLineMatch,
   SERVICE_CHARGE_LINE_ID, type InvLine, type PoLineRow,
 } from "./line-match";
 
@@ -112,6 +112,32 @@ describe("line linking", () => {
     // Alumasc carriage lines — "CARR-RF1 Carriage Out - Roofing Surcharge".
     const po = [poLine({ id: 1, item: "PUBGT-30 Alumasc BGT 30mm" })];
     assert.deepEqual(kinds([{ description: "CARR-RF1 Carriage Out - Roofing Surcharge", amount: 175 }], po), ["unlinked"]);
+  });
+
+  test("a payment-schedule row is exempt", () => {
+    // Big Phillies INV-2026-001: a £22,500 container invoiced as three rows —
+    // Purchase Price £22,500, Deposit Due (20%) £4,500, Balance Remaining
+    // £18,000. They sum to £45,000 against an invoice net of £4,500, because
+    // two of them are the same money described twice. Only the first is a thing.
+    const po = [poLine({ id: 1, item: "20ft Fully Kitted Catering Container - Purchase Price", qty: 1, unit_cost: 22500 })];
+    const inv: InvLine[] = [
+      { description: "20ft Fully Kitted Catering Container - Purchase Price", quantity: 1, unit_price: 22500, amount: 22500, po_line_id: 1 },
+      { description: "Deposit Due (20%) - payable under signed Sale and Purchase Agreement", amount: 4500, po_line_id: PAYMENT_SCHEDULE_LINE_ID },
+      { description: "Balance Remaining (payable before collection or delivery)", amount: 18000, po_line_id: PAYMENT_SCHEDULE_LINE_ID },
+    ];
+    const m = scanLineMatch(inv, po);
+    assert.equal(m.state, "matched", "the one real line reconciles; the terms are not goods");
+    assert.deepEqual(m.issues, []);
+    assert.equal(m.excess, 0, "an £18,000 balance row must not read as over-billing");
+  });
+
+  test("an unmarked payment schedule still reports, so it can be spotted", () => {
+    const po = [poLine({ id: 1, item: "Container", qty: 1, unit_cost: 22500 })];
+    const inv: InvLine[] = [
+      { description: "Container", quantity: 1, unit_price: 22500, amount: 22500, po_line_id: 1 },
+      { description: "Deposit Due (20%)", amount: 4500 },
+    ];
+    assert.deepEqual(kinds(inv, po), ["unlinked"]);
   });
 
   test("an explicit service charge is exempt", () => {

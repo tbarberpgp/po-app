@@ -5,6 +5,7 @@ import { api, fmtMoney } from "../lib/api";
 import { can } from "../../shared/permissions";
 import { Topbar } from "./Shell";
 import type { CurrentUser, Invoice, InvoiceMatch, InvoiceMatchLine, MatchSummary, Project } from "../../shared/types";
+import { NON_GOODS_LINE_IDS, PAYMENT_SCHEDULE_LINE_ID, SERVICE_CHARGE_LINE_ID } from "../../shared/line-match";
 
 // Amounts render in the invoice's OWN currency — a $ or € invoice shown with a
 // £ sign misreports what we owe. Falls back to sterling when unknown.
@@ -478,10 +479,6 @@ function InvoiceDetail({ inv, projects, accounts, isAdmin, canEdit, busy, onPatc
   );
 }
 
-/** Sentinel po_line_id for "explicitly a service/misc charge, not a product
- *  line" — mirrors SERVICE_CHARGE_LINE_ID in worker/routes/invoices.ts. */
-const SERVICE_CHARGE_LINE_ID = -1;
-
 /** Flag metadata: friendly label + tone for the 3-way match variances. */
 const MATCH_FLAG: Record<string, { label: string; danger?: boolean }> = {
   no_po_line:     { label: "No PO line" },
@@ -692,9 +689,16 @@ function MatchPanel({ inv, canEdit, onReload }: { inv: Invoice; canEdit: boolean
                 // per-line checks miss on schemes).
                 const billedToDate = (m.po_billed_other ?? 0) + invNet;
                 const overPo = m.matched_po?.total != null && billedToDate > m.matched_po.total + 0.5;
+                // A deposit invoice bills a fraction of the order and says so on
+                // its face. "50% confidence" tells you nothing about that; what's
+                // still to come does — another invoice for it is on its way.
+                const toCome = m.matched_po?.total != null ? m.matched_po.total - billedToDate : 0;
                 return (
                   <div className="rs" style={overPo ? { color: "var(--danger)", fontWeight: 600 } : undefined}>
-                    {m.matched_po ? `${m.matched_po.po_number} · ${money(billedToDate)} billed to date${overPo ? " — over PO" : ""}` : "—"}
+                    {m.matched_po
+                      ? `${m.matched_po.po_number} · ${money(billedToDate)} billed${
+                          overPo ? " — over PO" : toCome > 0.5 ? ` · ${money(toCome)} still to come` : ""}`
+                      : "—"}
                   </div>
                 );
               })()}
@@ -819,6 +823,10 @@ function MatchPanel({ inv, canEdit, onReload }: { inv: Invoice; canEdit: boolean
                         <select value={l.po_line_id ?? ""} disabled={saving} onChange={(e) => setLinePo(i, e.target.value ? Number(e.target.value) : null)} title="Which PO line this invoice line is billing against">
                           <option value="">— not matched —</option>
                           <option value={SERVICE_CHARGE_LINE_ID}>Service charge (no PO line)</option>
+                          {/* Deposit invoices state the whole purchase then break the money
+                              into instalments, and extraction reads that table as goods.
+                              A payment term has nothing on the order to reconcile against. */}
+                          <option value={PAYMENT_SCHEDULE_LINE_ID}>Payment schedule — deposit / balance</option>
                           {m.po_lines.map((pl) => (
                             <option key={pl.id} value={pl.id}>{pl.item.length > 44 ? pl.item.slice(0, 44) + "…" : pl.item}{pl.qty != null ? ` (${qtyFmt(pl.qty)}${pl.unit ? ` ${pl.unit}` : ""})` : ""}</option>
                           ))}
@@ -864,7 +872,7 @@ function MatchPanel({ inv, canEdit, onReload }: { inv: Invoice; canEdit: boolean
                     })()}
                   </div>
                   <div className="r">
-                    {l.po_line_id && l.po_line_id !== SERVICE_CHARGE_LINE_ID
+                    {l.po_line_id && !NON_GOODS_LINE_IDS.includes(l.po_line_id)
                       ? <span className="lval" style={shortDeliver ? { color: "var(--danger)", cursor: "help" } : { color: "var(--success)", cursor: "help" }}
                           title={(m.deliveries ?? []).filter((dd) => dd.po_line_id === l.po_line_id)
                             .map((dd) => `${dd.received_qty ?? "?"}${dd.received_unit ? ` ${dd.received_unit}` : ""} received ${(dd.delivered_at ?? "").slice(0, 10)}`)

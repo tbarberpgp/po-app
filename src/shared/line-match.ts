@@ -35,6 +35,23 @@ export function poRefCore(s: string | null | undefined): string | null {
  *  excluded from qty/value variance checks. */
 export const SERVICE_CHARGE_LINE_ID = -1;
 
+/** Sentinel meaning "this row is a payment schedule, not something being bought".
+ *
+ *  Deposit invoices state the whole purchase and then break the money into
+ *  instalments, and extraction reads that table as goods lines. A £22,500
+ *  container invoice arrives as three rows — Purchase Price £22,500, Deposit Due
+ *  (20%) £4,500, Balance Remaining £18,000 — which sum to £45,000 against an
+ *  invoice net of £4,500, because two of them are the same money described twice.
+ *  Only the first row is a thing; the other two are terms.
+ *
+ *  Marked by hand, like the service charge, and exempt from linking and variance
+ *  for the same reason: there is nothing on the order for a payment term to
+ *  reconcile against. */
+export const PAYMENT_SCHEDULE_LINE_ID = -2;
+
+/** Rows a person has declared to be neither goods nor comparable to an order line. */
+export const NON_GOODS_LINE_IDS: readonly number[] = [SERVICE_CHARGE_LINE_ID, PAYMENT_SCHEDULE_LINE_ID];
+
 export type InvLine = {
   description?: string;
   qty?: number | null;
@@ -180,7 +197,7 @@ export function scanLineMatch(
     }
   }
   for (const il of invLines) {
-    if (il.po_line_id === SERVICE_CHARGE_LINE_ID) continue;
+    if (il.po_line_id != null && NON_GOODS_LINE_IDS.includes(il.po_line_id)) continue;
     // Same precedence as computeInvoiceMatch: stored link, then a learned alias,
     // then exact wording, then the leading product code.
     let pl = il.po_line_id ? poLines.find((p) => p.id === il.po_line_id) : null;
