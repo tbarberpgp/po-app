@@ -38,12 +38,12 @@ function isReleased(sec: Section, signs: Sign[]): boolean {
   return sec.responsible.every((p) => got.has(p));
 }
 
-/** Longest edge for an embedded photo. The gallery slot is about 58mm x 31mm,
- *  which needs ~685px at 300dpi — so 1000px prints cleanly and still allows a
- *  reader to zoom in on screen. It is deliberately well below the 1600px the
- *  site report uses: Chrome re-encodes embedded images losslessly, so a cabin's
- *  49 photos at 1600px produced a 24MB file that no one could email. At 1000px
- *  the same record is roughly a third of that. */
+/** Longest edge for an embedded photo. The gallery is two across, so a slot is
+ *  about 92mm wide — 1000px lands near 280dpi there, which prints cleanly and
+ *  still leaves something to zoom into on screen. Deliberately well below the
+ *  1600px the site report uses: Chrome re-encodes embedded images losslessly
+ *  (FlateDecode), so file size tracks pixel count alone and a 49-photo cabin at
+ *  1600px produced a 24MB file no one could email. */
 const PHOTO_MAX_PX = 1000;
 
 /** Pull a cabin's photos from R2, downscale them and inline as data URIs —
@@ -280,10 +280,15 @@ function cabinPdfHtml(d: {
   .sign-when { font-size: 9.5px; color: #6b7280; }
   .sign-none { font-size: 9.5px; color: #9aa1ad; margin-top: 2px; }
   .gal-h { font-size: 9px; letter-spacing: .07em; text-transform: uppercase; font-weight: 700; color: #6b7280; margin-bottom: 5px; }
-  .gal { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  /* Two across, and object-fit: CONTAIN — never cover. A cover crop silently
+     cuts the top and bottom off every photo, which on an evidence record can
+     remove the very defect the photo was taken to show. Letterboxing against a
+     neutral panel keeps the whole frame, and two columns make it big enough to
+     read at ~92mm wide. */
+  .gal { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
   .gal figure { margin: 0; break-inside: avoid; page-break-inside: avoid; }
-  .gal img { width: 100%; height: 118px; object-fit: cover; border-radius: 5px; border: 1px solid #dde2ea; display: block; }
-  .gal figcaption { font-size: 8.5px; color: #4b5563; margin-top: 2px; line-height: 1.3; }
+  .gal img { width: 100%; height: 250px; object-fit: contain; background: #f1f3f7; border-radius: 5px; border: 1px solid #dde2ea; display: block; }
+  .gal figcaption { font-size: 9px; color: #4b5563; margin-top: 3px; line-height: 1.35; }
   </style></head><body>
 
   <div class="mast">
