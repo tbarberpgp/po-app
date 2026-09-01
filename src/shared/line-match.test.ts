@@ -10,7 +10,8 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import {
-  invMaterialCode, jobAmbiguity, lineQty, normText, PAYMENT_SCHEDULE_LINE_ID, poRefCore, scanLineMatch,
+  invMaterialCode, jobAmbiguity, lineQty, looksLikeServiceCharge, normText, PAYMENT_SCHEDULE_LINE_ID,
+  poRefCore, scanLineMatch,
   SERVICE_CHARGE_LINE_ID, type InvLine, type PoLineRow,
 } from "./line-match";
 
@@ -122,9 +123,19 @@ describe("line linking", () => {
   });
 
   test("a line that links to nothing is reported", () => {
-    // Alumasc carriage lines — "CARR-RF1 Carriage Out - Roofing Surcharge".
+    // Goods on the invoice that aren't on the order. Still reported, and the
+    // point of the check — this used to be asserted with a carriage line, which
+    // was the wrong example: see the next test.
     const po = [poLine({ id: 1, item: "PUBGT-30 Alumasc BGT 30mm" })];
-    assert.deepEqual(kinds([{ description: "CARR-RF1 Carriage Out - Roofing Surcharge", amount: 175 }], po), ["unlinked"]);
+    assert.deepEqual(kinds([{ description: "SP-MAX-A-80/160 Spidi Max fastener", amount: 175 }], po), ["unlinked"]);
+  });
+
+  // Behaviour deliberately changed: this line asserted ["unlinked"] before.
+  // Carriage is never on the order, so "unlinked" was a flag that could never be
+  // cleared and sat on most invoices in the book. It now classifies itself.
+  test("a carriage line is not reported as unlinked", () => {
+    const po = [poLine({ id: 1, item: "PUBGT-30 Alumasc BGT 30mm" })];
+    assert.deepEqual(kinds([{ description: "CARR-RF1 Carriage Out - Roofing Surcharge", amount: 175 }], po), []);
   });
 
   test("a payment-schedule row is exempt", () => {
@@ -379,5 +390,38 @@ describe("jobAmbiguity", () => {
     // MatchIssue is a union, so quoted_po has to be reached through the kind.
     const i = jobAmbiguity("26003", "26001", "026003-0020", null);
     assert.equal(i?.kind === "ambiguous_job" ? i.quoted_po : "unset", null);
+  });
+});
+
+describe("looksLikeServiceCharge", () => {
+  // The two that came off the real book, and what each one is caught by.
+  test("the lines that produced false flags", () => {
+    assert.ok(looksLikeServiceCharge("Line Misc Charge: 12H00 Service A"));      // misc charge
+    assert.ok(looksLikeServiceCharge("CARR-RF1 Carriage Out - Roofing Surcharge")); // carriage / CARR- / surcharge
+  });
+
+  test("the usual wordings suppliers use", () => {
+    for (const s of [
+      "Carriage", "CARR-01 Delivery", "Freight charge", "Haulage",
+      "Fuel Surcharge", "Miscellaneous Charge", "Service Charge",
+      "Handling fee", "Admin charge", "Pallet deposit", "Delivery charge",
+    ]) assert.ok(looksLikeServiceCharge(s), s);
+  });
+
+  // The dangerous direction. Classifying real goods as a service charge would
+  // quietly drop them out of the money checks, which is worse than a false flag,
+  // so "service" and "delivery" on their own must NOT match.
+  test("goods are never mistaken for a charge", () => {
+    for (const s of [
+      "Service void former 100mm",
+      "Service penetration collar",
+      "Delivery note holder",
+      "PUBGT-30 Alumasc BGT PIR Insulation 30mm",
+      "SP-PL-A-40/60/2.0/3 Aluminium L bar 40mm x 60mm",
+      "DF3-SS-6.0 x 45 A2/304 Stainless halter fastener",
+      "Carrier bag",           // "carr" only counts as a leading code, not inside a word
+      "",
+      null,
+    ]) assert.equal(looksLikeServiceCharge(s), false, JSON.stringify(s));
   });
 });
