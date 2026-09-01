@@ -70,7 +70,7 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
   const [filter, setFilter] = useState("");
   const [typeFilter, setTypeFilter] = useState("");
   const [supplierFilter, setSupplierFilter] = useState("");
-  const [orderFilter, setOrderFilter] = useState<"" | "framework" | "calloff" | "omitted">(""); // framework/call-off/omitted filter
+  const [orderFilter, setOrderFilter] = useState<"" | "framework" | "calloff" | "omitted" | "offboq">(""); // framework/call-off/off-BOQ/omitted filter
   // Whether the materials table's quantity column shows committed (incl. framework
   // reservation) or only what's actually been called off against frameworks.
   const [qtyMode, setQtyMode] = useState<"committed" | "calledoff">("committed");
@@ -176,9 +176,10 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
   const visible = baseList
     .filter((m) => !typeFilter || m.type === typeFilter)
     .filter((m) => !supplierFilter || (matSupplier(m) || "—") === supplierFilter)
-    .filter((m) => !orderFilter || orderFilter === "omitted" || (orderFilter === "calloff"
-      ? (m.called_off_qty ?? 0) > 0.0001
-      : (m.framework_reserved_qty ?? 0) > 0.0001))
+    .filter((m) => !orderFilter || orderFilter === "omitted"
+      || (orderFilter === "offboq" ? !!m.off_boq
+        : orderFilter === "calloff" ? (m.called_off_qty ?? 0) > 0.0001
+        : (m.framework_reserved_qty ?? 0) > 0.0001))
     .filter((m) => !filter || (m.item + (m.sub_item ?? "") + matSupplier(m)).toLowerCase().includes(filter.toLowerCase()));
   // Click-to-sort: value per material for the active sort column. Called-off mode
   // sorts the qty column by called-off; otherwise by committed.
@@ -641,10 +642,11 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
                     <option value="">All types</option>
                     {types.map((t) => <option key={t} value={t}>{t}</option>)}
                   </select>
-                  <select value={orderFilter} onChange={(e) => setOrderFilter(e.target.value as "" | "framework" | "calloff" | "omitted")} title="Filter by framework call-off status">
+                  <select value={orderFilter} onChange={(e) => setOrderFilter(e.target.value as "" | "framework" | "calloff" | "omitted" | "offboq")} title="Filter by framework call-off status, or show only what was bought outside the bill">
                     <option value="">All orders</option>
                     <option value="framework">On a framework</option>
                     <option value="calloff">Called off to date</option>
+                    {offBoqRows.length > 0 && <option value="offboq">Off-BOQ ({offBoqRows.length})</option>}
                     {omittedCount > 0 && <option value="omitted">Omitted ({omittedCount})</option>}
                   </select>
                   <select
