@@ -204,7 +204,7 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
     for (const m of scopeMembers) {
       const d = data[m.id]; if (!d) continue;
       const s = summariseMaterials(d.mats, d.unpricedSpend);
-      priced += s.priced_total; committed += s.committed_total; unpriced += s.unpriced_spend;
+      priced += s.priced_total; committed += s.boq_committed; unpriced += s.unpriced_spend;
       savings += quoteSavingsOf(d.mats);
     }
     return { priced, committed, remaining: priced - committed, unpriced, savings };
@@ -680,10 +680,15 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
             )}
             <div className="kpis">
               <DrillKpi label="Priced material budget" value={fmtMoney(matSummary.priced)} onOpen={() => openMatDrill("Priced material budget", matSummary.priced, (d) => pricedBudgetDrill(d.mats))} />
-              <DrillKpi label="Committed" value={fmtMoney(matSummary.committed)}
-                sub={matSummary.unpriced > 0.005 ? `${fmtMoney(matSummary.committed + matSummary.unpriced)} incl. off-BOQ` : undefined}
-                tone={matSummary.committed > matSummary.priced ? "danger" : "default"} onOpen={() => openMatDrill("Committed cost", matSummary.committed, (d) => committedDrill(d.mats))} />
-              <DrillKpi label="Remaining" value={fmtMoney(matSummary.remaining)} tone={matSummary.remaining < 0 ? "danger" : "default"} />
+              <DrillKpi label="Committed" value={fmtMoney(matSummary.committed + matSummary.unpriced)}
+                sub={matSummary.unpriced > 0.005
+                  ? `${fmtMoney(matSummary.committed)} against budget · ${fmtMoney(matSummary.unpriced)} off-BOQ`
+                  : undefined}
+                tone={matSummary.committed > matSummary.priced ? "danger" : "default"}
+                onOpen={() => openMatDrill("Committed cost", matSummary.committed + matSummary.unpriced, (d) => committedDrill(d.mats, d.unpricedLines))} />
+              <DrillKpi label="Remaining" value={fmtMoney(matSummary.remaining)}
+                sub="Against the priced budget"
+                tone={matSummary.remaining < 0 ? "danger" : "default"} />
               <DrillKpi label="Unpriced spend" value={fmtMoney(matSummary.unpriced)}
                 tone={matSummary.unpriced > 0.005 ? "danger" : "default"} onOpen={() => openMatDrill("Unpriced spend", matSummary.unpriced, (d) => unpricedDrill(d.unpricedLines))} />
               <DrillKpi label="Quote savings" value={fmtMoney(matSummary.savings)} tone={matSummary.savings > 0.005 ? "success" : matSummary.savings < -0.005 ? "danger" : "default"} onOpen={() => openMatDrill("Quote savings", matSummary.savings, (d) => materialSavingsDrill(d.mats))} />
