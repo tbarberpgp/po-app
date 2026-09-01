@@ -10,7 +10,7 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import {
-  invMaterialCode, lineQty, normText, PAYMENT_SCHEDULE_LINE_ID, poRefCore, scanLineMatch,
+  invMaterialCode, jobAmbiguity, lineQty, normText, PAYMENT_SCHEDULE_LINE_ID, poRefCore, scanLineMatch,
   SERVICE_CHARGE_LINE_ID, type InvLine, type PoLineRow,
 } from "./line-match";
 
@@ -350,5 +350,32 @@ describe("normalisers", () => {
     // 80/160 and 80/185 are different products — the codes must not collide.
     assert.notEqual(invMaterialCode("SP-MAX-A-80/160 x"), invMaterialCode("SP-MAX-A-80/185 x"));
     assert.equal(invMaterialCode(""), "");
+  });
+});
+
+describe("jobAmbiguity", () => {
+  // Invoice 1611881: quotes an order on 26003, ships to Block B which is 26001.
+  test("two readings of one invoice that disagree", () => {
+    const i = jobAmbiguity("26003", "26001", "026003-0020", "PO-26003-0020");
+    assert.equal(i?.kind, "ambiguous_job");
+    assert.deepEqual(i, {
+      kind: "ambiguous_job", ref_project: "26003", address_project: "26001",
+      quoted: "026003-0020", quoted_po: "PO-26003-0020",
+    });
+  });
+
+  test("agreeing readings raise nothing", () => {
+    assert.equal(jobAmbiguity("26003", "26003", "026003-0020", "PO-26003-0020"), null);
+  });
+
+  // One signal and no contradiction is the ordinary case, not a problem.
+  test("a single reading raises nothing", () => {
+    assert.equal(jobAmbiguity("26003", null, "026003-0020", "PO-26003-0020"), null);
+    assert.equal(jobAmbiguity(null, "26001", null, null), null);
+    assert.equal(jobAmbiguity(null, null, null, null), null);
+  });
+
+  test("survives not knowing which order the ref names", () => {
+    assert.equal(jobAmbiguity("26003", "26001", "026003-0020", null)?.quoted_po, null);
   });
 });

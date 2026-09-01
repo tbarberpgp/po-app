@@ -8,7 +8,7 @@ import type { Env, Variables } from "../env";
 import { requirePermission } from "../auth";
 import { can } from "../../shared/permissions";
 import {
-  invMaterialCode, lineQty, NON_GOODS_LINE_IDS, PAYMENT_SCHEDULE_LINE_ID, poRefCore, scanLineMatch,
+  invMaterialCode, jobAmbiguity, lineQty, NON_GOODS_LINE_IDS, PAYMENT_SCHEDULE_LINE_ID, poRefCore, scanLineMatch,
   type InvLine, type PoLineRow,
 } from "../../shared/line-match";
 import { ensureXeroContact } from "./xero";
@@ -714,7 +714,6 @@ export { SERVICE_CHARGE_LINE_ID, PAYMENT_SCHEDULE_LINE_ID } from "../../shared/l
  *  state "no_po"; one whose lines all reconcile gets "matched". */
 async function withMatchState(env: Env, rows: Record<string, unknown>[]): Promise<Record<string, unknown>[]> {
   const poIds = [...new Set(rows.map((r) => r.matched_po_id as string | null).filter((x): x is string => !!x))];
-  if (!poIds.length) return rows;
   const byPo = new Map<string, PoLineRow[]>();
   // The order's own identity too: its number and project, so a link to the wrong
   // order or the wrong job can be reported without a full match pass.
@@ -725,6 +724,20 @@ async function withMatchState(env: Env, rows: Record<string, unknown>[]): Promis
   // ~110 orders, so one unfiltered read beats building an IN list per request.
   // The wording corrections people have already made, all suppliers in one read,
   // so this scan links exactly what the detail panel links.
+  // Live projects, for reading the job out of the ship-to address printed on the
+  // invoice. That reading is a SECOND opinion here, not the fallback it is at
+  // ingest: an invoice whose quoted order and whose delivery address point at
+  // different jobs is contradicting itself, and neither one gets to win quietly.
+  const addrProjects = (await env.DB.prepare(
+    `SELECT id, code, name, delivery_address, site_group_id FROM projects WHERE deleted_at IS NULL`,
+  ).all<AddrProject>()).results;
+  const jobFromAddress = (metaJson: string | null): string | null => {
+    if (!metaJson) return null;
+    let addr: string | null = null;
+    try { addr = (JSON.parse(metaJson) as InvoiceMeta).delivery_address ?? null; } catch { return null; }
+    return addr ? pickProjectByAddress(addr, addrProjects)?.code ?? null : null;
+  };
+
   const aliasesBySupplier = await aliasMapsBySupplier(env.DB, "invoice_line");
   const aliasesFor = (supplier: string | null) => {
     const merged = new Map(aliasesBySupplier.get("") ?? []);
@@ -732,7 +745,7 @@ async function withMatchState(env: Env, rows: Record<string, unknown>[]): Promis
     return merged;
   };
 
-  const byRefCore = new Map<string, { order_type: string | null; project_code: string | null }>();
+  const byRefCore = new Map<string, { po_number: string; order_type: string | null; project_code: string | null }>();
   {
     const all = await env.DB.prepare(
       `SELECT po.po_number, po.order_type, p.code AS project_code
@@ -745,7 +758,7 @@ async function withMatchState(env: Env, rows: Record<string, unknown>[]): Promis
       if (!core) continue;
       const prev = byRefCore.get(core);
       if (!prev || r.order_type === "framework") {
-        byRefCore.set(core, { order_type: r.order_type, project_code: r.project_code });
+        byRefCore.set(core, { po_number: r.po_number, order_type: r.order_type, project_code: r.project_code });
       }
     }
   }
@@ -773,21 +786,32 @@ async function withMatchState(env: Env, rows: Record<string, unknown>[]): Promis
     if (r.kind !== "project") return r;
     const poId = r.matched_po_id as string | null;
     const poLines = poId ? byPo.get(poId) : null;
-    if (!poLines?.length) return { ...r, match: { state: "no_po", issues: [], excess: 0 } };
+    const quotedCore = poRefCore(r.extracted_po_ref as string | null);
+    const quoted = quotedCore ? byRefCore.get(quotedCore) : undefined;
+    const ambiguous = jobAmbiguity(
+      quoted?.project_code ?? null,
+      jobFromAddress((r.extracted_meta_json as string | null) ?? null),
+      r.extracted_po_ref as string | null,
+      quoted?.po_number ?? null,
+    );
+    // No order linked is exactly when this matters most: there is nothing else
+    // to go on, and the invoice's own reference is sitting right there.
+    if (!poLines?.length) {
+      return { ...r, match: { state: "no_po", issues: ambiguous ? [ambiguous] : [], excess: 0 } };
+    }
     if (!r.lines_json) return r;
     let invLines: InvLine[] = [];
     try { invLines = JSON.parse(String(r.lines_json)) as InvLine[]; } catch { return r; }
     const meta = poId ? poMeta.get(poId) : undefined;
-    const quotedCore = poRefCore(r.extracted_po_ref as string | null);
-    const quoted = quotedCore ? byRefCore.get(quotedCore) : undefined;
-    return { ...r, match: scanLineMatch(invLines, poLines, {
+    const scan = scanLineMatch(invLines, poLines, {
       po_number: meta?.po_number ?? null,
       po_project: meta?.project_code ?? null,
       invoice_project: (r.project_code as string | null) ?? null,
       quoted_ref: (r.extracted_po_ref as string | null) ?? null,
       quoted_type: quoted?.order_type ?? null,
       quoted_project: quoted?.project_code ?? null,
-    }, aliasesFor((r.supplier_name as string | null) ?? null)) };
+    }, aliasesFor((r.supplier_name as string | null) ?? null));
+    return { ...r, match: ambiguous ? { ...scan, issues: [ambiguous, ...scan.issues] } : scan };
   });
 }
 

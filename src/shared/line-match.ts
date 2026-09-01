@@ -101,6 +101,14 @@ export function lineQty(l: InvLine): number | null {
  *                    same job as the linked order — suppliers quote the framework
  *                    because that's the agreement on their system, while we bill
  *                    the call-off or job order raised under it. That is correct.
+ *  `ambiguous_job` — the invoice disagrees WITH ITSELF about which job it is
+ *                    for: the order number it quotes belongs to one job, and the
+ *                    delivery address printed on it belongs to another. Reported
+ *                    ahead of everything else because it undermines the rest —
+ *                    the coding, the linked order, and every price comparison
+ *                    beneath them all rest on the job being right. Neither
+ *                    reading is preferred: both are literal readings of the
+ *                    document, and only the lines being billed can settle it.
  *  `cross_project` — the linked order belongs to a different job than the invoice
  *                    is coded to. Reported against the LINK, not the coding: the
  *                    coding is set or confirmed by a person, while the link is
@@ -123,11 +131,39 @@ export function lineQty(l: InvLine): number | null {
  *  book, treating any quantity difference as a mismatch marks 38% of invoices;
  *  this definition marks 35%, and the 9 it drops are all genuine part-invoices. */
 export type MatchIssue =
+  | { kind: "ambiguous_job"; ref_project: string; address_project: string; quoted: string; quoted_po: string | null }
   | { kind: "wrong_po"; quoted: string; linked: string }
   | { kind: "cross_project"; invoice_project: string; po_project: string; linked: string }
   | { kind: "unlinked"; item: string }
   | { kind: "rate"; item: string; billed: number; ordered: number }
   | { kind: "over"; item: string; billed: number; ordered: number; excess: number; why: "qty" | "rate" | "value" };
+
+/**
+ * Does the invoice contradict itself about which job it belongs to?
+ *
+ * Two independent readings of the same document: the order number the supplier
+ * quotes, and the ship-to address they printed. When both resolve and disagree,
+ * something is wrong with one of them and no amount of price checking will say
+ * which — so it is raised on its own, before a PO is even linked.
+ *
+ * Deliberately silent when only one reading resolves. One signal and no
+ * contradiction is the ordinary case, not a problem.
+ */
+export function jobAmbiguity(
+  refProject: string | null | undefined,
+  addressProject: string | null | undefined,
+  quotedRef: string | null | undefined,
+  quotedPo: string | null | undefined,
+): MatchIssue | null {
+  if (!refProject || !addressProject || refProject === addressProject) return null;
+  return {
+    kind: "ambiguous_job",
+    ref_project: refProject,
+    address_project: addressProject,
+    quoted: String(quotedRef ?? ""),
+    quoted_po: quotedPo ?? null,
+  };
+}
 
 /** Reconciliation of an invoice against its matched PO, on price and quantity
  *  only — the delivery leg is not consulted. `excess` totals the value billed
