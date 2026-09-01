@@ -927,6 +927,66 @@ async function computeInvoiceMatch(env: Env, inv: Record<string, unknown>) {
     }
     : null;
 
+  // ── Line arbitration ──────────────────────────────────────────────────────
+  //
+  // When the invoice contradicts itself about which job it belongs to — the
+  // order number naming one, the ship-to address naming another — the lines
+  // being billed are the only thing that can settle it. So score each candidate
+  // job's best order on line evidence ALONE.
+  //
+  // Deliberately without the coding's usual head start: the coding is one of the
+  // two readings in dispute, so letting it lead would simply confirm whichever
+  // reading reached the invoice first, which is the bug this is here to answer.
+  //
+  // A verdict is only returned where one job's evidence strictly beats the
+  // other's. A tie is reported as a tie — guessing would bury the ambiguity we
+  // just surfaced instead of resolving it.
+  const jobEvidence = await (async () => {
+    const refJob = directPo?.project_code ?? quotedFramework?.project_code ?? null;
+    if (!refJob) return null;
+    const metaJson = inv.extracted_meta_json as string | null;
+    let addr: string | null = null;
+    if (metaJson) {
+      try { addr = (JSON.parse(metaJson) as InvoiceMeta).delivery_address ?? null; } catch { addr = null; }
+    }
+    if (!addr) return null;
+    const projects = (await env.DB.prepare(
+      `SELECT id, code, name, delivery_address, site_group_id FROM projects WHERE deleted_at IS NULL`,
+    ).all<AddrProject>()).results;
+    const addrJob = pickProjectByAddress(addr, projects)?.code ?? null;
+    if (!addrJob || addrJob === refJob) return null;
+
+    const bestFor = (code: string) => {
+      const top = ranked
+        .filter((r) => r.po.project_code === code)
+        .sort((a, b) => (b.fit - a.fit) || (b.hits - a.hits) || (b.supMatch - a.supMatch))[0];
+      return top
+        ? { id: top.po.id, po_number: top.po.po_number, supplier: top.po.supplier, hits: top.hits, fit: top.fit }
+        : null;
+    };
+    const candidates = [
+      { project_code: refJob, source: "quoted_ref" as const, best_po: bestFor(refJob) },
+      { project_code: addrJob, source: "delivery_address" as const, best_po: bestFor(addrJob) },
+    ];
+    const rank = (c: (typeof candidates)[number]) => (c.best_po ? [c.best_po.fit, c.best_po.hits] : [-1, -1]);
+    const [ra, rb] = [rank(candidates[0]!), rank(candidates[1]!)];
+    const cmp = (ra[0]! - rb[0]!) || (ra[1]! - rb[1]!);
+    const winner = cmp > 0 ? candidates[0]! : cmp < 0 ? candidates[1]! : null;
+    return {
+      candidates,
+      verdict: winner?.best_po
+        ? {
+          project_code: winner.project_code,
+          po_id: winner.best_po.id,
+          po_number: winner.best_po.po_number,
+          // Said in the terms a person can check against the document.
+          why: `${winner.best_po.fit} of ${invLines.length} line${invLines.length === 1 ? "" : "s"} fit this order`
+            + `${winner.best_po.hits ? `, ${winner.best_po.hits} item code${winner.best_po.hits === 1 ? "" : "s"} match` : ""}`,
+        }
+        : null,
+    };
+  })();
+
   const chosenId = (inv.matched_po_id as string | null) || directPo?.id || ranked[0]?.po.id || null;
   const chosen = pos.find((p) => p.id === chosenId) || null;
   const rankedSug = ranked.slice(0, 5).map((r) => ({ id: r.po.id, po_number: r.po.po_number, supplier: r.po.supplier, project_code: r.po.project_code, hits: r.hits }));
@@ -955,7 +1015,7 @@ async function computeInvoiceMatch(env: Env, inv: Record<string, unknown>) {
   for (const p of pos) pushSug(asSug(p, "other"));
 
   if (!chosen) {
-    return { matched_po: null, suggested, deliveries: [], lines: invLines.map((l) => ({ description: l.description ?? "", qty: l.qty ?? null, unit_price: l.unit_price ?? null, amount: l.amount ?? null, po_line_id: null, po_line_item: null, po_qty: null, po_unit_cost: null, delivered_qty: null, flags: ["no_po_line"] })), match_status: "no_po" as const, po_ref: poRefOut };
+    return { matched_po: null, suggested, deliveries: [], lines: invLines.map((l) => ({ description: l.description ?? "", qty: l.qty ?? null, unit_price: l.unit_price ?? null, amount: l.amount ?? null, po_line_id: null, po_line_item: null, po_qty: null, po_unit_cost: null, delivered_qty: null, flags: ["no_po_line"] })), match_status: "no_po" as const, po_ref: poRefOut, job_evidence: jobEvidence };
   }
 
   const poLines = allLines.filter((l) => l.po_id === chosen.id);
@@ -1075,6 +1135,7 @@ async function computeInvoiceMatch(env: Env, inv: Record<string, unknown>) {
     po_billed_other: others?.s ?? 0,
     match_status: (!allMatched ? "partial" : anyFlags ? "flagged" : "ok") as "partial" | "flagged" | "ok",
     po_ref: poRefOut,
+    job_evidence: jobEvidence,
   };
 }
 

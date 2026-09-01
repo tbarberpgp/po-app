@@ -376,6 +376,7 @@ describe("jobAmbiguity", () => {
   });
 
   test("survives not knowing which order the ref names", () => {
-    assert.equal(jobAmbiguity("26003", "26001", "026003-0020", null)?.quoted_po, null);
+    const i = jobAmbiguity("26003", "26001", "026003-0020", null);
+    assert.equal(i?.kind === "ambiguous_job" ? i.quoted_po : "unset", null);
   });
 });
