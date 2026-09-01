@@ -376,6 +376,8 @@ describe("jobAmbiguity", () => {
   });
 
   test("survives not knowing which order the ref names", () => {
-    assert.equal(jobAmbiguity("26003", "26001", "026003-0020", null)?.quoted_po, null);
+    // MatchIssue is a union, so quoted_po has to be reached through the kind.
+    const i = jobAmbiguity("26003", "26001", "026003-0020", null);
+    assert.equal(i?.kind === "ambiguous_job" ? i.quoted_po : "unset", null);
   });
 });
