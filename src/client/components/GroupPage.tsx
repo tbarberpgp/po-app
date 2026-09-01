@@ -65,10 +65,14 @@ const STATUS_META: Record<MatStatus, { label: string; tone: string }> = {
   delivered:      { label: "Delivered",      tone: "ok" },
   unpriced:       { label: "Unpriced",       tone: "neutral" },
 };
-const MAT_STATUS_CHIPS: Array<[MatStatus | "all", string]> = [
+/** Chip filters over the combined list. "off_boq" is not a MatStatus — where a
+ *  material sits in the pipeline and whether the bill priced it are different
+ *  questions, so it filters alongside the stages instead of replacing one. */
+type MatChip = MatStatus | "all" | "off_boq";
+const MAT_STATUS_CHIPS: Array<[MatChip, string]> = [
   ["all", "All"], ["to_order", "To order"], ["on_order", "On order"],
   ["called_off", "Called off"], ["part_delivered", "Part-delivered"],
-  ["delivered", "Delivered"], ["unpriced", "Unpriced"],
+  ["delivered", "Delivered"], ["unpriced", "Unpriced"], ["off_boq", "Off-BOQ"],
 ];
 const STATUS_BAR: Record<MatStatus, string> = {
   delivered: "#2f9e44", part_delivered: "var(--warn)", on_order: "var(--accent)",
@@ -99,7 +103,7 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
   // Labour subtab data for the selected block (per-contract, fetched on demand).
   const [labourRows, setLabourRows] = useState<import("../../shared/types").LabourByCostCode[]>([]);
   const [labourLive, setLabourLive] = useState<import("../../shared/types").LabourLiveRate[]>([]);
-  const [matStatus, setMatStatus] = useState<MatStatus | "all">("all");
+  const [matStatus, setMatStatus] = useState<MatChip>("all");
   const [matQuery, setMatQuery] = useState("");
   // Show committed £/qty or called-off £/qty in the Combined-materials table.
   const [matValueMode, setMatValueMode] = useState<"committed" | "calledoff">("committed");
@@ -301,8 +305,7 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
         // first) — same basis as the per-block Materials tab.
         const comm = committedQ * effectiveSpendRate(row);
         const co = calledOffQ * effectiveSpendRate(row);
-        const rowPriced = !row.off_boq
-          && ((row.cost ?? 0) > 0 || (row.sub_cost ?? 0) > 0 || (row.live_unit_price ?? 0) > 0);
+        const rowPriced = (row.cost ?? 0) > 0 || (row.sub_cost ?? 0) > 0 || (row.live_unit_price ?? 0) > 0;
         cur.boqQty += boq; cur.committedQty += committedQ; cur.calledOffQty += calledOffQ; cur.deliveredQty += delivered;
         cur.budget += bud; cur.committed += comm; cur.calledOff += co; cur.effVal += boq * effectiveSpendRate(row); cur.mats.push(row);
         if (rowPriced) cur.priced = true;
@@ -345,7 +348,7 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
     return c;
   }, [combinedMaterials]);
   const visibleMaterials = useMemo(() => combinedMaterials
-    .filter((m) => matStatus === "all" || m.statuses.has(matStatus))
+    .filter((m) => matStatus === "all" || (matStatus === "off_boq" ? m.offBoq : m.statuses.has(matStatus)))
     .filter((m) => !matQuery || (m.item + " " + [...m.supplier].join(" ")).toLowerCase().includes(matQuery.toLowerCase())),
     [combinedMaterials, matStatus, matQuery]);
   const sortedMaterials = useMemo(() => {
@@ -696,7 +699,9 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
                 <div className="row" style={{ gap: 8, flexWrap: "wrap", padding: "0 16px 12px", alignItems: "center" }}>
                   <div className="seg" style={{ flexWrap: "wrap" }}>
                     {MAT_STATUS_CHIPS.map(([s, label]) => {
-                      const count = s === "all" ? combinedMaterials.length : (statusCounts[s as MatStatus] ?? 0);
+                      const count = s === "all" ? combinedMaterials.length
+                        : s === "off_boq" ? combinedMaterials.filter((m) => m.offBoq).length
+                        : (statusCounts[s as MatStatus] ?? 0);
                       if (s !== "all" && count === 0) return null;
                       return (
                         <button key={s} className={`seg-btn${matStatus === s ? " active" : ""}`} onClick={() => setMatStatus(s)}>
