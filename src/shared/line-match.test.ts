@@ -55,6 +55,19 @@ describe("poRefCore", () => {
     });
   }
 
+  // Fixfast pad our job code, so every invoice they send arrives like this.
+  // Until this parsed, their entire book lost wrong-PO and cross-job detection.
+  test("reads a zero-padded job code as the same order", () => {
+    assert.equal(poRefCore("026003-0020"), "26003-0020");
+    assert.equal(poRefCore("026003-0020"), poRefCore("PO-26003-0020"));
+    assert.equal(poRefCore("026001/0014"), "26001-0014");
+  });
+  test("padding is admitted, extra digits are not", () => {
+    // Two zeros is no longer a recognisable rendering of one number.
+    assert.equal(poRefCore("0026003-0020"), null);
+    assert.equal(poRefCore("1026003-0020"), null);
+  });
+
   test("does not repair typos — PO-262002-0004 has a digit too many", () => {
     // resolvePoRef does fuzzy resolution on the detail panel. Guessing here
     // would trade precision for recall in the one place precision matters.
@@ -257,6 +270,22 @@ describe("which order is linked", () => {
       quoted_ref: "PO-26001-0013-BLOCK B", quoted_type: "framework", quoted_project: "26001",
       po_number: "PO-26002-0004-C2", po_project: "26002", invoice_project: "26001",
     }).includes("wrong_po"));
+  });
+
+  // The case that went unreported for Fixfast's whole book: they pad the job
+  // code, poRefCore couldn't parse the padded form, so quoted-vs-linked never
+  // ran and the row reported only a value difference.
+  test("a zero-padded quoted ref is compared to the linked order", () => {
+    assert.ok(kinds(inv, po, {
+      quoted_ref: "026003-0020", quoted_type: "standard", quoted_project: "26003",
+      po_number: "PO-26001-0030", po_project: "26001", invoice_project: "26001",
+    }).includes("wrong_po"));
+  });
+  test("a zero-padded ref that IS the linked order raises nothing", () => {
+    assert.deepEqual(kinds(inv, po, {
+      quoted_ref: "026001-0030", quoted_type: "standard", quoted_project: "26001",
+      po_number: "PO-26001-0030", po_project: "26001", invoice_project: "26001",
+    }), []);
   });
 
   test("free text in the ref field raises nothing", () => {

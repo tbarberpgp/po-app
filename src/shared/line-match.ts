@@ -26,7 +26,17 @@ export function invMaterialCode(s: string): string {
  *  of 99 refs are text like that, and comparing them to a PO number says nothing.
  *  Only a ref that parses as one of ours is worth comparing. */
 export function poRefCore(s: string | null | undefined): string | null {
-  const m = /(?<!\d)(\d{5})\D{1,3}(\d{4})(?!\d)/.exec(String(s ?? ""));
+  // The leading 0? admits ZERO-PADDING, and nothing else. Supplier systems pad
+  // our job code to a fixed width — Fixfast print every order as "026003-0020"
+  // — and without this the ref failed to parse at all, so the quoted-reference
+  // checks below silently never ran for that supplier. Their whole book lost
+  // wrong-PO and cross-job detection on a character we put there ourselves.
+  //
+  // This is not typo repair, which stays out on purpose (see the test for
+  // PO-262002-0004): an extra 0 in front is a known rendering of the same
+  // number, while an extra digit inside it could be any of several jobs.
+  // resolvePoRef does the fuzzy guessing where recall matters more.
+  const m = /(?<!\d)0?(\d{5})\D{1,3}(\d{4})(?!\d)/.exec(String(s ?? ""));
   return m ? `${m[1]}-${m[2]}` : null;
 }
 
