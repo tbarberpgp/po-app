@@ -42,6 +42,12 @@ function qtyDiffers(l: InvoiceMatchLine): boolean {
  *  A bare "Unmatched" on a third of the book is a label; a stated reason is a
  *  task, so the badge names the biggest problem and the tooltip lists the rest. */
 function matchLabel(m: MatchSummary, cur?: string | null): string {
+  // Which JOB the invoice belongs to comes before which order and before any
+  // money: the coding, the link and every comparison beneath them assume it.
+  const amb = m.issues.find((i) => i.kind === "ambiguous_job");
+  if (amb?.kind === "ambiguous_job") {
+    return `Ambiguous job \u00b7 ref says ${amb.ref_project}, ship-to says ${amb.address_project}`;
+  }
   if (m.state === "no_po") return "No PO matched";
   // Worst first: a link to the wrong order makes the price and quantity detail
   // beneath it meaningless, so it has to be the thing the row says.
@@ -59,9 +65,12 @@ function matchLabel(m: MatchSummary, cur?: string | null): string {
 /** Every reason, spelled out. "The total differs" on its own reads as a pricing
  *  query and gets waved through as one, so each line says which figure moved. */
 function matchTitle(m: MatchSummary, cur?: string | null): string {
-  if (m.state === "no_po") return "No purchase order is matched to this invoice.";
   const money = (n: number) => fmtMoney(n, cur || "GBP");
-  return m.issues.map((i) => {
+  const reasons = m.issues.map((i) => {
+    if (i.kind === "ambiguous_job") {
+      const po = i.quoted_po ? ` (${i.quoted_po})` : "";
+      return `This invoice disagrees with itself about the job. The order number it quotes, ${i.quoted}, belongs to job ${i.ref_project}${po} \u2014 but the delivery address printed on it is job ${i.address_project}. Both are literal readings of the document, so one of them is wrong. Check which order the lines actually bill against before coding it.`;
+    }
     if (i.kind === "wrong_po") return `The invoice quotes ${i.quoted}, but it's linked to ${i.linked}. Check which order this really bills against \u2014 the price and quantity checks below mean nothing until that's right.`;
     if (i.kind === "cross_project") return `Coded to job ${i.invoice_project}, but ${i.linked} belongs to job ${i.po_project}.`;
     if (i.kind === "unlinked") return `"${i.item}" isn't linked to any line on the PO \u2014 mark it as a service charge if that's what it is.`;
@@ -70,7 +79,11 @@ function matchTitle(m: MatchSummary, cur?: string | null): string {
     if (i.why === "qty") return `${head} \u2014 more units at the agreed rate.`;
     if (i.why === "rate") return `${head} \u2014 same units, dearer rate.`;
     return `${head} \u2014 the invoice and the order use a different unit basis.`;
-  }).join("\n");
+  });
+  // An unlinked invoice used to report only that, swallowing anything else known
+  // about it — including which job its own reference points at.
+  if (m.state === "no_po") reasons.unshift("No purchase order is matched to this invoice.");
+  return reasons.join("\n");
 }
 
 
