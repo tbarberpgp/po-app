@@ -17,7 +17,7 @@ import {
   summariseMaterials, computeForecast, matSupplier, contractTotals, effectiveSpendRate, quoteSavingsOf,
   pricedBudgetDrill, committedDrill, materialSavingsDrill,
   labourSavingsDrill, variationProfitDrill, unpricedDrill, unexpectedSpendDrill, applicationsDrill,
-  offBoqRow, type Forecast, type MatRow,
+  offBoqRow, materialAddedAt, materialModifiedAt, type Forecast, type MatRow,
 } from "../lib/commercials";
 import { DrillPanel, DrillKpi, type DrillData } from "./DrillPanel";
 import { AssignBudgetCell } from "./AssignBudgetCell";
@@ -75,7 +75,7 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
   // reservation) or only what's actually been called off against frameworks.
   const [qtyMode, setQtyMode] = useState<"committed" | "calledoff">("committed");
   // Click-to-sort on the materials table headings.
-  const [sortKey, setSortKey] = useState<"type" | "item" | "supplier" | "boq" | "live" | "priced" | "committed" | "remaining" | null>(null);
+  const [sortKey, setSortKey] = useState<"type" | "item" | "supplier" | "boq" | "live" | "priced" | "committed" | "remaining" | "rate" | "added" | "modified" | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   function toggleSort(k: NonNullable<typeof sortKey>) {
     if (sortKey === k) { setSortDir((d) => (d === "asc" ? "desc" : "asc")); return; }
@@ -192,10 +192,23 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
       case "priced": return m.total_units ?? 0;
       case "committed": return qtyMode === "calledoff" ? (m.called_off_qty ?? 0) : (m.committed_qty ?? 0);
       case "remaining": return m.remaining_qty ?? 0;
+      // What we actually pay: live quote → substitution blend → BOQ cost, and
+      // for an off-BOQ row the rate it was bought at. Sorting on the BOQ cost
+      // column instead would read £0 for everything bought off the bill.
+      case "rate": return effectiveSpendRate(m);
+      // Undated rows sort last in either direction (handled below) rather than
+      // posing as the oldest thing on the job.
+      case "added": return materialAddedAt(m) ?? "";
+      case "modified": return materialModifiedAt(m) ?? "";
     }
   };
   const sortedVisible = sortKey == null ? visible : [...visible].sort((a, b) => {
     const va = sortValue(a, sortKey), vb = sortValue(b, sortKey);
+    // A material with no date can't be newest or oldest — park it at the bottom
+    // whichever way the sort runs.
+    if ((sortKey === "added" || sortKey === "modified") && (va === "" || vb === "")) {
+      return va === vb ? 0 : va === "" ? 1 : -1;
+    }
     const c = typeof va === "number" && typeof vb === "number" ? va - vb : String(va).localeCompare(String(vb));
     return sortDir === "asc" ? c : -c;
   });
@@ -633,6 +646,26 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
                     <option value="framework">On a framework</option>
                     <option value="calloff">Called off to date</option>
                     {omittedCount > 0 && <option value="omitted">Omitted ({omittedCount})</option>}
+                  </select>
+                  <select
+                    value={sortKey ? `${sortKey}:${sortDir}` : ""}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      if (!v) { setSortKey(null); return; }
+                      const [k, d] = v.split(":");
+                      setSortKey(k as NonNullable<typeof sortKey>);
+                      setSortDir(d as "asc" | "desc");
+                    }}
+                    title="Order the list — the column headings sort too, this just puts the useful orders in one place"
+                  >
+                    <option value="">Sort: default</option>
+                    <option value="item:asc">Material A–Z</option>
+                    <option value="added:desc">Date added — newest</option>
+                    <option value="added:asc">Date added — oldest</option>
+                    <option value="modified:desc">Date modified — newest</option>
+                    <option value="rate:desc">Price £/unit — high to low</option>
+                    <option value="rate:asc">Price £/unit — low to high</option>
+                    <option value="supplier:asc">Supplier A–Z</option>
                   </select>
                   <select value={qtyMode} onChange={(e) => setQtyMode(e.target.value as "committed" | "calledoff")} title="Quantity column: committed (incl. framework reservation) or only what's been called off">
                     <option value="committed">Qty: Committed</option>
