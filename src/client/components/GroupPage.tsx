@@ -14,7 +14,8 @@ import {
   summariseMaterials, computeForecast, sumForecasts, contractTotals, effectiveSpendRate, matSupplier, netUnits, quoteSavingsOf,
   pricedBudgetDrill, committedDrill, materialSavingsDrill, labourSavingsDrill,
   variationProfitDrill, unpricedDrill, unexpectedSpendDrill, applicationsDrill, combineDrill,
-  offBoqRow, type Forecast, type UnpricedLine, type DrillBody, type MatRow,
+  offBoqRow, materialAddedAt, materialModifiedAt,
+  type Forecast, type UnpricedLine, type DrillBody, type MatRow,
 } from "../lib/commercials";
 import { can } from "../../shared/permissions";
 import { combineSiteCodes } from "../../shared/site-code";
@@ -313,13 +314,10 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
         // Earliest signal that this material reached the job, latest signal that
         // anything happened to it. A merged row spans blocks, so both are taken
         // across every row feeding it.
-        const added = row.off_boq
-          ? row.off_boq.orders.reduce<string | null>((e, o) => (o.ordered_at && (e == null || o.ordered_at < e) ? o.ordered_at : e), null)
-          : row.snapshot_uploaded_at ?? null;
+        const added = materialAddedAt(row);
+        const modified = materialModifiedAt(row);
         if (added && (cur.addedAt == null || added < cur.addedAt)) cur.addedAt = added;
-        for (const at of [row.off_boq?.last_ordered_at ?? row.last_ordered_at, row.sub_created_at, row.live_price_applied_at, added]) {
-          if (at && (cur.modifiedAt == null || at > cur.modifiedAt)) cur.modifiedAt = at;
-        }
+        if (modified && (cur.modifiedAt == null || modified > cur.modifiedAt)) cur.modifiedAt = modified;
         cur.statuses.add(statusOfMat({ priced: rowPriced, committedQty: committedQ, calledOffQty: calledOffQ, deliveredQty: delivered }));
         const sup = matSupplier(row); if (sup) cur.supplier.add(sup);
         const b = cur.blocks.get(m.code) ?? { code: m.code, boqQty: 0, committedQty: 0, calledOffQty: 0, deliveredQty: 0, budget: 0, committed: 0, calledOff: 0, effVal: 0, mats: [] };

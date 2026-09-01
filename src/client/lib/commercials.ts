@@ -78,6 +78,34 @@ export function offBoqRow(o: OffBoqMaterial, idx: number): MatRow {
   };
 }
 
+/** When this material first reached the job: the first order for an off-BOQ buy,
+ *  or the upload of the bill that priced it. Materials rows carry no timestamp of
+ *  their own, so this is assembled from what the job does record — which means
+ *  every line in one bill shares a date, and it separates bills rather than lines
+ *  within a bill. */
+export function materialAddedAt(m: MatRow): string | null {
+  if (m.off_boq) {
+    return m.off_boq.orders.reduce<string | null>(
+      (earliest, o) => (o.ordered_at && (earliest == null || o.ordered_at < earliest) ? o.ordered_at : earliest),
+      null,
+    );
+  }
+  return m.snapshot_uploaded_at ?? null;
+}
+
+/** The last thing that happened to it — a new order, a substitution, or a quote
+ *  price being applied — falling back to when it was added. Orders are dated by
+ *  their PO, so a line added to an old order by amendment reads as that order's
+ *  date rather than the day it was typed. */
+export function materialModifiedAt(m: MatRow): string | null {
+  return [
+    m.off_boq?.last_ordered_at ?? m.last_ordered_at ?? null,
+    m.sub_created_at ?? null,
+    m.live_price_applied_at ?? null,
+    materialAddedAt(m),
+  ].reduce<string | null>((best, at) => (at && (best == null || at > best) ? at : best), null);
+}
+
 /** Supplier a material is bought from — the substitution's supplier/manufacturer
  *  once one is active, else the original BOQ manufacturer. */
 export function matSupplier(m: MaterialWithCommitment): string {
