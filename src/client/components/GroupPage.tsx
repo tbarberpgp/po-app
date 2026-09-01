@@ -103,7 +103,7 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
   // Show committed £/qty or called-off £/qty in the Combined-materials table.
   const [matValueMode, setMatValueMode] = useState<"committed" | "calledoff">("committed");
   // Click-to-sort on the Combined-materials headings.
-  const [matSort, setMatSort] = useState<"material" | "usage" | "rate" | "budget" | "committed" | "variance" | "status" | null>(null);
+  const [matSort, setMatSort] = useState<"material" | "usage" | "rate" | "budget" | "committed" | "variance" | "status" | "added" | "modified" | "blocks" | null>(null);
   const [matSortDir, setMatSortDir] = useState<"asc" | "desc">("asc");
   function toggleMatSort(k: NonNullable<typeof matSort>) {
     if (matSort === k) { setMatSortDir((d) => (d === "asc" ? "desc" : "asc")); return; }
@@ -232,6 +232,12 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
       /** Newest off-BOQ order date across the blocks — this row totals several
        *  orders, so it has to say when it was last bought. */
       lastOrdered: string | null;
+      /** When this material first reached the job: its first order for an
+       *  off-BOQ buy, or the upload of the bill that priced it. */
+      addedAt: string | null;
+      /** The last thing that happened to it — an order, a substitution, or a
+       *  quote price being applied. */
+      modifiedAt: string | null;
       /** Every status this item holds on SOME block — a call-off still live on
        *  one block mustn't be hidden because another block took a delivery. */
       statuses: Set<MatStatus>;
@@ -282,7 +288,7 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
           ? (norm ? `n:${norm}\u0000${matSupplier(row).toLowerCase()}` : "")
           : row.product_id != null ? `p:${row.product_id}` : (productByName.get(norm) ?? (norm ? `n:${norm}` : ""));
         if (!key || key === "p:") continue;
-        const cur: Row = by.get(key) ?? { key, item: row.sub_item || row.item, type: row.type ?? "", unit: row.total_units_unit ?? row.sub_unit ?? row.cost_unit ?? null, supplier: new Set<string>(), boqQty: 0, committedQty: 0, calledOffQty: 0, deliveredQty: 0, budget: 0, committed: 0, calledOff: 0, effVal: 0, priced: false, offBoq: false, lastOrdered: null, blocks: new Map<string, Blk>(), mats: [], statuses: new Set<MatStatus>(), names: new Map<string, number>() };
+        const cur: Row = by.get(key) ?? { key, item: row.sub_item || row.item, type: row.type ?? "", unit: row.total_units_unit ?? row.sub_unit ?? row.cost_unit ?? null, supplier: new Set<string>(), boqQty: 0, committedQty: 0, calledOffQty: 0, deliveredQty: 0, budget: 0, committed: 0, calledOff: 0, effVal: 0, priced: false, offBoq: false, lastOrdered: null, addedAt: null, modifiedAt: null, blocks: new Map<string, Blk>(), mats: [], statuses: new Set<MatStatus>(), names: new Map<string, number>() };
         const effName = (row.sub_item || row.item || "").trim();
         if (effName) cur.names.set(effName, (cur.names.get(effName) ?? 0) + 1);
         const boq = netUnits(row); // budget qty net of any partial omission
@@ -303,6 +309,16 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
           cur.offBoq = true;
           const at = row.off_boq.last_ordered_at;
           if (at && (cur.lastOrdered == null || at > cur.lastOrdered)) cur.lastOrdered = at;
+        }
+        // Earliest signal that this material reached the job, latest signal that
+        // anything happened to it. A merged row spans blocks, so both are taken
+        // across every row feeding it.
+        const added = row.off_boq
+          ? row.off_boq.orders.reduce<string | null>((e, o) => (o.ordered_at && (e == null || o.ordered_at < e) ? o.ordered_at : e), null)
+          : row.snapshot_uploaded_at ?? null;
+        if (added && (cur.addedAt == null || added < cur.addedAt)) cur.addedAt = added;
+        for (const at of [row.off_boq?.last_ordered_at ?? row.last_ordered_at, row.sub_created_at, row.live_price_applied_at, added]) {
+          if (at && (cur.modifiedAt == null || at > cur.modifiedAt)) cur.modifiedAt = at;
         }
         cur.statuses.add(statusOfMat({ priced: rowPriced, committedQty: committedQ, calledOffQty: calledOffQ, deliveredQty: delivered }));
         const sup = matSupplier(row); if (sup) cur.supplier.add(sup);
@@ -341,15 +357,33 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
       switch (matSort) {
         case "material": return m.item.toLowerCase();
         case "usage": return m.budget > 0 ? spend / m.budget : (spend > 0 ? 999 : 0);
-        case "rate": return m.boqQty > 0 ? m.effVal / m.boqQty : 0;
+        // Same fallback the £/unit cell displays: an off-BOQ row has no BOQ
+        // quantity to divide by, but we do know what it was bought at. Without
+        // this every off-BOQ material sorts as £0 and sinks to the bottom of a
+        // high-to-low price sort — the exact rows you're usually looking for.
+        case "rate": return m.boqQty > 0 ? m.effVal / m.boqQty
+          : m.committedQty > 0 ? m.committed / m.committedQty
+          : m.calledOffQty > 0 ? m.calledOff / m.calledOffQty
+          : 0;
         case "budget": return m.budget;
         case "committed": return spend;
         case "variance": return spend - m.budget;
         case "status": return m.status;
+        // Undated rows sort last in either direction, rather than pretending to
+        // be the oldest thing on the job.
+        case "added": return m.addedAt ?? "";
+        case "modified": return m.modifiedAt ?? "";
+        // Groups the list by which blocks a material is on; "All blocks" rows
+        // land together because their key is the full block list.
+        case "blocks": return [...m.blocks.keys()].sort().join(" ");
       }
     };
+    const dated = matSort === "added" || matSort === "modified";
     return [...visibleMaterials].sort((a, b) => {
       const va = val(a), vb = val(b);
+      // A material with no date can't be newest or oldest — park it at the
+      // bottom whichever way the sort runs.
+      if (dated && (va === "" || vb === "")) return va === vb ? 0 : va === "" ? 1 : -1;
       const c = typeof va === "number" && typeof vb === "number" ? va - vb : String(va).localeCompare(String(vb));
       return matSortDir === "asc" ? c : -c;
     });
@@ -674,6 +708,27 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
                     })}
                   </div>
                   <span className="grow" />
+                  <select
+                    value={matSort ? `${matSort}:${matSortDir}` : ""}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      if (!v) { setMatSort(null); return; }
+                      const [k, d] = v.split(":");
+                      setMatSort(k as NonNullable<typeof matSort>);
+                      setMatSortDir(d as "asc" | "desc");
+                    }}
+                    title="Order the list — the column headings sort too, this just puts the useful orders in one place"
+                    style={{ maxWidth: 210 }}
+                  >
+                    <option value="">Sort: default</option>
+                    <option value="material:asc">Material A–Z</option>
+                    <option value="added:desc">Date added — newest</option>
+                    <option value="added:asc">Date added — oldest</option>
+                    <option value="modified:desc">Date modified — newest</option>
+                    <option value="rate:desc">Price £/unit — high to low</option>
+                    <option value="rate:asc">Price £/unit — low to high</option>
+                    <option value="blocks:asc">Blocks</option>
+                  </select>
                   <select value={matValueMode} onChange={(e) => setMatValueMode(e.target.value as "committed" | "calledoff")} title="Show committed or called-off quantities" style={{ maxWidth: 170 }}>
                     <option value="committed">Qty: Committed</option>
                     <option value="calledoff">Qty: Called off</option>

@@ -857,6 +857,34 @@ materials.get("/:projectId", async (c) => {
                       AND mo.omit_qty IS NULL) AS omitted,
             (SELECT mo.omit_qty FROM material_omissions mo
               WHERE mo.project_id = ? AND mo.item_key = lower(m.item)) AS omitted_qty,
+            -- ── Dates, for ordering the list by what's new or what just moved ──
+            -- A priced material has no timestamp of its own, so "added" is when
+            -- the bill that priced it landed. Re-uploading the workbook restamps
+            -- the whole snapshot, which is correct: that IS when these lines
+            -- entered the job as they currently stand.
+            (SELECT s.uploaded_at FROM material_snapshots s WHERE s.id = m.snapshot_id)
+              AS snapshot_uploaded_at,
+            -- Last time anything was ordered against this line, under its own
+            -- wording, its substitution's wording, or coded to it directly.
+            -- Dated by the ORDER, not the line: po_lines carries no timestamp,
+            -- so a line added to an old PO by amendment reads as that PO's date.
+            (SELECT MAX(po.created_at)
+               FROM po_lines pl JOIN purchase_orders po ON po.id = pl.po_id
+              WHERE po.project_id = (SELECT s.project_id FROM material_snapshots s WHERE s.id = m.snapshot_id)
+                AND po.status IN ('approved', 'issued', 'pending_approval')
+                AND (lower(pl.item) = lower(m.item)
+                     OR (sub.replacement_item IS NOT NULL AND lower(pl.item) = lower(sub.replacement_item))
+                     OR pl.material_id = m.id)
+            ) AS last_ordered_at,
+            -- When a quote price was last applied to it — the other thing that
+            -- genuinely changes a priced line, alongside a substitution.
+            (SELECT mlp.applied_at
+               FROM material_live_prices mlp
+               JOIN materials om ON om.id = mlp.material_id
+              WHERE mlp.project_id = (SELECT s.project_id FROM material_snapshots s WHERE s.id = m.snapshot_id)
+                AND lower(om.item) = lower(m.item)
+                AND mlp.status IN ('applied', 'approved')
+              ORDER BY mlp.applied_at DESC LIMIT 1) AS live_price_applied_at,
             pr.element_code AS product_element_code,
             e.name        AS element_name,
             -- Latest applied live price (most recent applied_at wins). Matched by
