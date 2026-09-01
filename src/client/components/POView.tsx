@@ -28,6 +28,9 @@ export function POView({ me }: { me: CurrentUser | null }) {
   const [showDelete, setShowDelete] = useState(false);
   const [deleteReason, setDeleteReason] = useState("");
   const [showEdit, setShowEdit] = useState(false);
+  // Line-item filter. Big framework orders run to a hundred-odd lines, so let
+  // people find a material on the order without scrolling it.
+  const [lineQ, setLineQ] = useState("");
   // After-the-fact budget coding (retro POs): which line's picker is open, and
   // the project's live materials list (loaded on first use).
   const [assignLineId, setAssignLineId] = useState<number | null>(null);
@@ -103,6 +106,18 @@ export function POView({ me }: { me: CurrentUser | null }) {
   const isDeleted = po.status === "deleted";
   // Approved-supplier register status for this PO's supplier (same banners as New PO).
   const supplierRecord = approvedSuppliers.find((s) => s.name.toLowerCase() === po.supplier.trim().toLowerCase()) ?? null;
+
+  // Line search runs over the lines already loaded — no round-trip per
+  // keystroke. Match on item wording, manufacturer, cost code and budget type,
+  // and require every term to hit somewhere, so "alumasc bracket" narrows
+  // rather than widens.
+  const lineTerms = lineQ.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const lineFilterActive = lineTerms.length > 0;
+  const shownLines = !lineFilterActive ? po.lines : po.lines.filter((l) => {
+    const hay = `${l.item ?? ""} ${l.manufacturer ?? ""} ${l.cost_code ?? ""} ${l.type ?? ""}`.toLowerCase();
+    return lineTerms.every((t) => hay.includes(t));
+  });
+  const shownLinesTotal = shownLines.reduce((s, l) => s + (Number(l.line_total) || 0), 0);
 
   return (
     <>
@@ -300,12 +315,25 @@ export function POView({ me }: { me: CurrentUser | null }) {
             <SummaryCard po={po} />
 
             <div className="card">
-              <div className="card-hd">
+              <div className="card-hd" style={{ flexWrap: "wrap", gap: 8 }}>
                 <h2 style={{ flex: 1 }}>Line items</h2>
+                {po.lines.length > 1 && (
+                  <>
+                    <input
+                      className="input"
+                      value={lineQ}
+                      onChange={(e) => setLineQ(e.target.value)}
+                      placeholder="Search items, manufacturer, code…"
+                      aria-label={`Search the line items on ${po.po_number}`}
+                      style={{ width: 240, maxWidth: "45%" }}
+                    />
+                    {lineQ && <button className="ghost tiny" onClick={() => setLineQ("")}>Clear</button>}
+                  </>
+                )}
                 {canEditPO && !isDeleted && po.lines.length > 1 && assignLineId == null && (
                   <button className="ghost tiny" title="Code every line on this PO to the same budget line" onClick={() => openAssign(-1)}>Assign whole PO to budget…</button>
                 )}
-                <span className="pill">{po.lines.length}</span>
+                <span className="pill">{lineFilterActive ? `${shownLines.length} of ${po.lines.length}` : po.lines.length}</span>
               </div>
               {canEditPO && assignLineId != null && (() => {
                 const target = assignLineId === -1 ? null : po.lines.find((x) => x.id === assignLineId) ?? null;
@@ -359,7 +387,7 @@ export function POView({ me }: { me: CurrentUser | null }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {po.lines.map((l) => {
+                  {shownLines.map((l) => {
                     const ordered = Number(l.qty) || 0;
                     const co = l.called_off_qty ?? 0;
                     const remaining = l.available_qty ?? ordered - co;
@@ -427,9 +455,21 @@ export function POView({ me }: { me: CurrentUser | null }) {
                     </tr>
                     );
                   })}
+                  {shownLines.length === 0 && (
+                    <tr>
+                      <td colSpan={isFramework ? 9 : 6} className="muted" style={{ padding: 24, textAlign: "center" }}>
+                        Nothing on this order matches “{lineQ.trim()}”.{" "}
+                        <button className="ghost tiny" onClick={() => setLineQ("")}>Clear</button>
+                      </td>
+                    </tr>
+                  )}
                   <tr style={{ background: "var(--card-2)" }}>
-                    <td colSpan={isFramework ? 7 : 5} style={{ fontWeight: 600, textAlign: "right" }}>Subtotal</td>
-                    <td className="num" style={{ fontWeight: 600 }}>{fmtMoney(po.total_value)}</td>
+                    <td colSpan={isFramework ? 8 : 5} style={{ fontWeight: 600, textAlign: "right" }}>
+                      {lineFilterActive
+                        ? <>Matching lines <span className="muted" style={{ fontWeight: 400, fontSize: 12 }}>— whole PO {fmtMoney(po.total_value)}</span></>
+                        : "Subtotal"}
+                    </td>
+                    <td className="num" style={{ fontWeight: 600 }}>{fmtMoney(lineFilterActive ? shownLinesTotal : po.total_value)}</td>
                   </tr>
                 </tbody>
               </table>
