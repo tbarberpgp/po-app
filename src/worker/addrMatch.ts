@@ -27,6 +27,22 @@ function addrTokens(s: string): Set<string> {
   );
 }
 
+/**
+ * A block / unit designator — "Block B", "Blk D", "Block C1".
+ *
+ * On a grouped site every block shares one street address and one postcode, so
+ * this letter is the only thing in a delivery address that tells three separate
+ * contracts apart. addrTokens throws it away, because a one-character token is
+ * noise everywhere else — which left "Dallas Rd Block B" and "Dallas Rd Block D"
+ * scoring identically, the blocks tying, and the tie-break quietly picking
+ * whichever contract was newest. An invoice that plainly said Block B was being
+ * coded to Block D.
+ */
+function blockTag(s: string): string | null {
+  const m = /\bbl(?:oc)?k\.?\s*([a-z0-9]{1,3})\b/i.exec(s || "");
+  return m ? m[1]!.toLowerCase() : null;
+}
+
 function ukPostcode(s: string): { out: string; full: string } | null {
   const m = (s || "").toUpperCase().replace(/[^A-Z0-9 ]/g, " ").match(/\b([A-Z]{1,2}\d[A-Z0-9]?) ?(\d[A-Z]{2})\b/);
   return m ? { out: m[1]!, full: `${m[1]} ${m[2]}` } : null;
@@ -50,7 +66,8 @@ export function pickProjectByAddress(
 ): { id: string; code: string; site_group_id: string | null } | null {
   const pc = ukPostcode(addr);
   const toks = addrTokens(addr);
-  if (!pc && toks.size === 0) return null;
+  const addrBlock = blockTag(addr);
+  if (!pc && toks.size === 0 && !addrBlock) return null;
 
   const scored = rows
     .map((p) => {
@@ -61,6 +78,16 @@ export function pickProjectByAddress(
       let shared = 0;
       for (const t of toks) if (ptoks.has(t)) shared++;
       score += Math.min(3, shared) * 12;
+      // A named block decides it. Naming a DIFFERENT block rules the project out
+      // rather than merely scoring it lower: on a grouped site the blocks share
+      // an address, so a lower score still ties and the age tie-break takes over.
+      // Only applied when both sides name one — a project without a block in its
+      // name is not evidence either way.
+      const pBlock = blockTag(`${p.delivery_address ?? ""} ${p.name}`);
+      if (addrBlock && pBlock) {
+        if (addrBlock === pBlock) score += 40;
+        else return { p, score: 0 };
+      }
       return { p, score };
     })
     .filter((x) => x.score >= 36)
