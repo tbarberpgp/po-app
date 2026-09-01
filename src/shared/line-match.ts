@@ -45,6 +45,44 @@ export function poRefCore(s: string | null | undefined): string | null {
  *  excluded from qty/value variance checks. */
 export const SERVICE_CHARGE_LINE_ID = -1;
 
+/**
+ * Lines that are a charge for getting the goods here, not goods.
+ *
+ * Carriage is never on the order — you don't order delivery, it arrives as a fee
+ * on top — so nothing will ever match these and every one of them produced a
+ * false flag. Two in one inbox: Fixfast's "Line Misc Charge: 12H00 Service A" was
+ * guessed onto a stainless halter and reported a £173.32 variance that did not
+ * exist, and Alumasc's "CARR-RF1 Carriage Out - Roofing Surcharge" sat unmatched
+ * with a "No PO line" flag. Most invoices carry one, so most invoices carried a
+ * flag that meant nothing, and a book of meaningless flags is a book nobody reads.
+ *
+ * Each pattern needs a charge word, not just a charge-ish one. "Service" alone is
+ * a product word in roofing (service voids, service penetrations) and matching it
+ * bare would quietly exclude real goods from the money checks — the one thing
+ * worse than a false flag here.
+ */
+const SERVICE_CHARGE_PATTERNS: RegExp[] = [
+  /\bcarriage\b/i,
+  /^\s*carr[-_ ]/i,                              // "CARR-RF1 …" supplier codes
+  /\bfreight\b/i,
+  /\bhaulage\b/i,
+  /\bsurcharge\b/i,                              // "Roofing Surcharge", "Fuel Surcharge"
+  /\bmisc(?:ellaneous)?\s+charge\b/i,
+  /\bservice\s+charge\b/i,
+  /\bhandling\s+(?:charge|fee)\b/i,
+  /\badmin(?:istration)?\s+(?:charge|fee)\b/i,
+  /\bpallet\s+(?:charge|fee|deposit)\b/i,
+  /\bdelivery\s+(?:charge|fee|surcharge)\b/i,
+];
+
+/** Does this invoice line read as a charge for delivery rather than as goods?
+ *  Only consulted where nothing else matched and nobody has chosen for the line:
+ *  a person's own pick always stands. */
+export function looksLikeServiceCharge(description: string | null | undefined): boolean {
+  const s = String(description ?? "");
+  return s.trim().length > 0 && SERVICE_CHARGE_PATTERNS.some((re) => re.test(s));
+}
+
 /** Sentinel meaning "this row is a payment schedule, not something being bought".
  *
  *  Deposit invoices state the whole purchase and then break the money into
@@ -244,6 +282,10 @@ export function scanLineMatch(
   }
   for (const il of invLines) {
     if (il.po_line_id != null && NON_GOODS_LINE_IDS.includes(il.po_line_id)) continue;
+    // A delivery charge nobody has classified yet. Never on the order, so it can
+    // only ever be reported as unlinked — which is a flag that means nothing and
+    // sits on most invoices. Skipped here on the same basis as an explicit pick.
+    if (il.po_line_id == null && looksLikeServiceCharge(il.description)) continue;
     // Same precedence as computeInvoiceMatch: stored link, then a learned alias,
     // then exact wording, then the leading product code.
     let pl = il.po_line_id ? poLines.find((p) => p.id === il.po_line_id) : null;

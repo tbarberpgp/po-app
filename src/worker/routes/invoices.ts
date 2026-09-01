@@ -8,7 +8,8 @@ import type { Env, Variables } from "../env";
 import { requirePermission } from "../auth";
 import { can } from "../../shared/permissions";
 import {
-  invMaterialCode, jobAmbiguity, lineQty, NON_GOODS_LINE_IDS, PAYMENT_SCHEDULE_LINE_ID, poRefCore, scanLineMatch,
+  invMaterialCode, jobAmbiguity, lineQty, looksLikeServiceCharge, NON_GOODS_LINE_IDS, PAYMENT_SCHEDULE_LINE_ID,
+  poRefCore, SERVICE_CHARGE_LINE_ID as SERVICE_CHARGE, scanLineMatch,
   type InvLine, type PoLineRow,
 } from "../../shared/line-match";
 import { ensureXeroContact } from "./xero";
@@ -1006,6 +1007,15 @@ async function computeInvoiceMatch(env: Env, inv: Record<string, unknown>) {
       const label = il.po_line_id === PAYMENT_SCHEDULE_LINE_ID ? "Payment schedule" : "Service charge";
       return { description: il.description ?? "", qty: invQty, unit_price: il.unit_price ?? null, amount: il.amount ?? null,
         po_line_id: il.po_line_id, po_line_item: label, po_qty: null, po_unit: null, po_unit_cost: null,
+        po_line_total: null, invoice_line_total: typeof il.amount === "number" ? il.amount : null,
+        delivered_qty: null, flags: [] as string[] };
+    }
+    // Reads as a delivery charge and nobody has chosen for it: classify it rather
+    // than guess a product line. Only where po_line_id is null — a person's own
+    // pick always stands, including a pick that points at a product.
+    if (il.po_line_id == null && looksLikeServiceCharge(il.description)) {
+      return { description: il.description ?? "", qty: lineQty(il), unit_price: il.unit_price ?? null, amount: il.amount ?? null,
+        po_line_id: SERVICE_CHARGE, po_line_item: "Service charge — detected", po_qty: null, po_unit: null, po_unit_cost: null,
         po_line_total: null, invoice_line_total: typeof il.amount === "number" ? il.amount : null,
         delivered_qty: null, flags: [] as string[] };
     }
