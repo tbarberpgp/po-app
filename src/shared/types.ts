@@ -125,6 +125,14 @@ export type MaterialWithCommitment = Material & {
   product_element_code?: string | null;  // when linked to a master product
   /** Joined from elements table when element_code is set — canonical name for display. */
   element_name?: string | null;
+  /** When the pricing workbook behind this line was uploaded — the only "added"
+   *  date a priced material has, since materials rows carry no timestamp. */
+  snapshot_uploaded_at?: string | null;
+  /** Last order raised against this line, dated by the PO (po_lines has no
+   *  timestamp, so an amendment reads as its order's date). */
+  last_ordered_at?: string | null;
+  /** When a quote price was last applied to this line. */
+  live_price_applied_at?: string | null;
   /** Latest applied/approved quote-driven unit price for this material on this project. */
   live_unit_price?: number | null;
   /** Supplier name behind the live price, when applicable. */
