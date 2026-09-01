@@ -692,6 +692,53 @@ function MatchPanel({ inv, canEdit, onReload }: { inv: Invoice; canEdit: boolean
         <>
           {err && <div className="flash error" style={{ fontSize: 12, marginBottom: 10 }}>{err}</div>}
 
+          {/* The invoice disagrees with itself about the job, so the lines arbitrate.
+              Both readings are shown with what the lines say about each — the point
+              is to let a person decide on evidence, not to hide one of them. */}
+          {m.job_evidence && (
+            <div className="flash warn" style={{ fontSize: 12.5, marginBottom: 12, display: "grid", gap: 10 }}>
+              <div>
+                <strong>This invoice names two different jobs.</strong> The lines below are the tie-break.
+              </div>
+              <div style={{ display: "grid", gap: 6 }}>
+                {m.job_evidence.candidates.map((c) => {
+                  const won = m.job_evidence?.verdict?.project_code === c.project_code;
+                  return (
+                    <div key={c.source} style={{ display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap" }}>
+                      <span className={`pill ${won ? "approved" : ""}`} style={{ fontSize: 10, whiteSpace: "nowrap" }}>
+                        job {c.project_code}
+                      </span>
+                      <span className="muted" style={{ fontSize: 11.5 }}>
+                        {c.source === "quoted_ref" ? "the order number quoted" : "the delivery address printed"}
+                      </span>
+                      <span style={{ fontSize: 11.5 }}>
+                        {c.best_po
+                          ? <>best fit <b>{c.best_po.po_number}</b> — {c.best_po.fit} line{c.best_po.fit === 1 ? "" : "s"} fit{c.best_po.hits ? `, ${c.best_po.hits} item code${c.best_po.hits === 1 ? "" : "s"} match` : ""}</>
+                          : <span className="muted">no order on this job fits these lines</span>}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+              {m.job_evidence.verdict ? (
+                <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                  <span>
+                    The lines point at <b>{m.job_evidence.verdict.po_number}</b> on job{" "}
+                    <b>{m.job_evidence.verdict.project_code}</b> — {m.job_evidence.verdict.why}.
+                  </span>
+                  <button className="btn secondary tiny" disabled={saving}
+                    onClick={() => choosePo(m.job_evidence!.verdict!.po_id)}>
+                    Attach {m.job_evidence.verdict.po_number}
+                  </button>
+                </div>
+              ) : (
+                // Both jobs fit the lines equally. Naming a winner here would be a
+                // coin flip dressed as a finding.
+                <div>The lines fit both jobs equally well, so they can't settle it — this one needs a human decision.</div>
+              )}
+            </div>
+          )}
+
           {/* reconciliation summary */}
           <div className="recon">
             <div className="rcell"><div className="rl">Invoice net</div><div className="rv">{money(invNet)}</div><div className="rs">{total} line{total === 1 ? "" : "s"} billed</div></div>

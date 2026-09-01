@@ -1507,6 +1507,20 @@ export type InvoiceMatch = {
    *  — a live order, but one you bill via a call-off or a job order rather than
    *  directly, so it pins the job without being the match itself. */
   po_ref: { quoted: string; matched: boolean; framework?: boolean; framework_project?: string } | null;   // PO number on the invoice + whether it resolved to a live order
+  /** Set only when the invoice contradicts ITSELF about the job — its quoted
+   *  order naming one, its ship-to address naming another. The lines being
+   *  billed are the only thing that can settle that, so each candidate job's
+   *  best order is scored on line evidence alone, with no head start for the
+   *  coding (which is one of the readings in dispute). `verdict` is null on a
+   *  tie: guessing would bury the ambiguity rather than resolve it. */
+  job_evidence?: {
+    candidates: Array<{
+      project_code: string;
+      source: "quoted_ref" | "delivery_address";
+      best_po: { id: string; po_number: string; supplier: string | null; hits: number; fit: number } | null;
+    }>;
+    verdict: { project_code: string; po_id: string; po_number: string; why: string } | null;
+  } | null;
 };
 
 // ── Contract register (Commercials → Contract) ──────────────────────────────
