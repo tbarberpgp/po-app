@@ -1100,7 +1100,13 @@ materials.get("/:projectId/off-boq", async (c) => {
       WHERE po.project_id = ?2
         AND po.status IN ('approved', 'issued', 'pending_approval')
         AND COALESCE(po.category, 'materials') != 'prelims'
-        AND lower(pl.item) NOT IN (SELECT name FROM boq)
+        -- Excluded only when the line genuinely counts against a BOQ row, which
+        -- means a LINKED line (is_unpriced = 0). A free-text extra typed under a
+        -- wording the bill happens to use is NOT counted there — the committed
+        -- subqueries require is_unpriced = 0 — so excluding it here too left its
+        -- money in Unpriced spend with no row anywhere to explain it. Short
+        -- wordings like "Carriage" are exactly where this bites.
+        AND NOT (pl.is_unpriced = 0 AND lower(pl.item) IN (SELECT name FROM boq))
         AND NOT EXISTS (
               SELECT 1 FROM materials am
                WHERE am.id = pl.material_id AND lower(am.item) IN (SELECT name FROM boq))
