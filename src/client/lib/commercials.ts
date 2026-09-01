@@ -13,7 +13,18 @@ import type { DrillColumn } from "../components/DrillPanel";
 
 export type Summary = {
   priced_total: number;
+  /** Everything committed on the job — against the bill AND outside it. The
+   *  headline figure: an order placed off-BOQ is committed money like any
+   *  other, and a total that leaves it out understates what the job has spent. */
   committed_total: number;
+  /** The half of committed_total that draws on the priced bill. Remaining is
+   *  measured against THIS, never the total — off-BOQ spend consumes no bill
+   *  allowance, so letting it reduce Remaining would report headroom as gone
+   *  when it is still there to order against. */
+  boq_committed: number;
+  /** The other half — spend with no bill line behind it. Same figure as
+   *  unpriced_spend, named for what it is on the Committed tile. */
+  off_boq_committed: number;
   remaining_total: number;
   committed_pct: number;
   unpriced_spend: number;
@@ -166,7 +177,11 @@ export function summariseMaterials(mats: MaterialWithCommitment[], unpricedSpend
   }
   return {
     priced_total: priced,
-    committed_total: committed,
+    // The total is what the job has committed; Remaining and the percentage
+    // stay on the BOQ half, because that is what the allowance is drawn from.
+    committed_total: committed + unpricedSpend,
+    boq_committed: committed,
+    off_boq_committed: unpricedSpend,
     remaining_total: priced - committed,
     committed_pct: priced > 0 ? (committed / priced) * 100 : 0,
     unpriced_spend: unpricedSpend,
@@ -348,18 +363,26 @@ export function pricedBudgetDrill(mats: MaterialWithCommitment[]): DrillBody {
 
 /** Committed cost = Σ committed qty × spend cost (excludes call-offs, mirrors the
  *  materials list). */
-export function committedDrill(mats: MaterialWithCommitment[]): DrillBody {
-  const rows = mats
+/** What makes up the Committed figure. Takes the off-BOQ lines as well as the
+ *  BOQ materials, because the tile now totals both — a drill that listed only
+ *  the bill half would never add up to the number it is explaining. */
+export function committedDrill(mats: MaterialWithCommitment[], offBoq: UnpricedLine[] = []): DrillBody {
+  const boqRows = mats
     .filter((m) => (m.committed_qty ?? 0) > 0)
     .map((m) => {
       const rate = materialSpendCost(m);
-      return { item: m.sub_item || m.item, supplier: matSupplier(m) || "—", qty: m.committed_qty, rate, committed: (m.committed_qty ?? 0) * rate };
-    })
-    .sort((a, b) => b.committed - a.committed);
+      return { item: m.sub_item || m.item, supplier: matSupplier(m) || "—", against: "Budget line", qty: m.committed_qty, rate, committed: (m.committed_qty ?? 0) * rate };
+    });
+  const offRows = offBoq.map((l) => ({
+    item: l.item, supplier: l.supplier || "—", against: "Off-BOQ",
+    qty: l.qty, rate: l.qty ? l.line_total / l.qty : 0, committed: l.line_total,
+  }));
+  const rows = [...boqRows, ...offRows].sort((a, b) => b.committed - a.committed);
   return {
     columns: [
       { key: "item", label: "Material" },
       { key: "supplier", label: "Supplier", align: "center" },
+      { key: "against", label: "Against", align: "center" },
       { key: "qty", label: "Committed qty", align: "right", fmt: qtyFmt },
       { key: "rate", label: "£/unit", align: "right", fmt: money },
       { key: "committed", label: "Committed", align: "right", fmt: money },

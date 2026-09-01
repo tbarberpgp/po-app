@@ -547,11 +547,21 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
             <div className="kpis">
               <DrillKpi label="Priced material budget" value={fmtMoney(summary.priced_total)}
                 onOpen={() => setDrill({ title: "Priced material budget", value: fmtMoney(summary.priced_total), ...pricedBudgetDrill(mats) })} />
+              {/* The headline is everything committed on the job. The split sits
+                  underneath, because the two halves behave differently: only the
+                  budget half draws on the allowance that Remaining reports. */}
               <DrillKpi label="Committed" value={fmtMoney(summary.committed_total)}
-                sub={`${summary.committed_pct.toFixed(0)}% of budget${summary.unpriced_spend > 0.005 ? ` · ${fmtMoney(summary.committed_total + summary.unpriced_spend)} incl. off-BOQ` : ""}`}
-                tone={summary.committed_total > summary.priced_total ? "danger" : "default"}
-                onOpen={() => setDrill({ title: "Committed cost", value: fmtMoney(summary.committed_total), ...committedDrill(mats) })} />
-              <Kpi label="Remaining" value={fmtMoney(summary.remaining_total)} sub={summary.remaining_total < 0 ? `Over by ${fmtMoney(Math.abs(summary.remaining_total))}` : undefined} tone={summary.remaining_total < 0 ? "danger" : summary.remaining_total === 0 ? "success" : "default"} />
+                sub={summary.off_boq_committed > 0.005
+                  ? `${fmtMoney(summary.boq_committed)} against budget · ${fmtMoney(summary.off_boq_committed)} off-BOQ`
+                  : `${summary.committed_pct.toFixed(0)}% of budget`}
+                tone={summary.boq_committed > summary.priced_total ? "danger" : "default"}
+                onOpen={() => setDrill({ title: "Committed cost", value: fmtMoney(summary.committed_total), ...committedDrill(mats, poSummary?.unpriced_lines ?? []) })} />
+              {/* Measured against the priced bill only — off-BOQ spend consumes no
+                  allowance, so it must not appear to eat headroom that is still
+                  there to order against. The label says so. */}
+              <Kpi label="Remaining" value={fmtMoney(summary.remaining_total)}
+                sub={summary.remaining_total < 0 ? `Over by ${fmtMoney(Math.abs(summary.remaining_total))}` : "Against the priced budget"}
+                tone={summary.remaining_total < 0 ? "danger" : summary.remaining_total === 0 ? "success" : "default"} />
               <DrillKpi label="Unpriced spend" value={fmtMoney(summary.unpriced_spend)}
                 sub={summary.unpriced_spend > 0 ? "Outside the BOQ" : "None"}
                 tone={summary.unpriced_spend > 0 ? "danger" : "default"}
