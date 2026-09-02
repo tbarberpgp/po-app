@@ -1506,7 +1506,14 @@ export type InvoiceMatch = {
    *  can bill against. `framework` marks the case where it resolved to a framework
    *  — a live order, but one you bill via a call-off or a job order rather than
    *  directly, so it pins the job without being the match itself. */
-  po_ref: { quoted: string; matched: boolean; framework?: boolean; framework_project?: string } | null;   // PO number on the invoice + whether it resolved to a live order
+  // PO number on the invoice + whether it resolved to a live order. `superseded`
+  // means the number IS one of ours but was deleted; `successor` names the order
+  // raised to replace it, when one was.
+  po_ref: {
+    quoted: string; matched: boolean; framework?: boolean; framework_project?: string;
+    superseded?: boolean; superseded_at?: string | null;
+    successor?: string | null; successor_type?: string | null;
+  } | null;
 };
 
 // ── Contract register (Commercials → Contract) ──────────────────────────────
