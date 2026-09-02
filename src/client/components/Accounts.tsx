@@ -693,7 +693,17 @@ function MatchPanel({ inv, canEdit, onReload }: { inv: Invoice; canEdit: boolean
           // never the framework itself. Calling it "not a live order" sent people
           // looking for a deleted PO that was never missing.
           ? <span className="pill" style={{ fontSize: 10, background: "var(--navy-soft)", color: "var(--navy)" }} title={`${m.po_ref.quoted} is a framework agreement on job ${m.po_ref.framework_project ?? "?"} — invoices bill against a call-off or an order on that job, not the framework. Orders on that job are listed first below.`}>quotes framework {m.po_ref.quoted}</span>
-          : <span className="pill" style={{ fontSize: 10, background: "transparent", border: "1px solid var(--warn)", color: "var(--warn)" }} title="This PO number is printed on the invoice but isn't a live order — it may have been deleted or never raised.">quotes {m.po_ref.quoted} · not a live order</span>)}
+          : m.po_ref.superseded && m.po_ref.successor
+          // The number IS ours, it was just replaced — usually the same
+          // afternoon, when a framework got re-priced. "Not a live order" made
+          // people hunt for something that was never missing; the replacement
+          // is what the reference is really pointing at.
+          ? <span className="pill" style={{ fontSize: 10, background: "var(--navy-soft)", color: "var(--navy)" }} title={`${m.po_ref.quoted} was deleted${m.po_ref.superseded_at ? ` on ${new Date(m.po_ref.superseded_at).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}` : ""} and replaced by ${m.po_ref.successor}${m.po_ref.successor_type === "framework" ? ", a framework — bill against a call-off raised under it, not the framework itself" : ""}.`}>
+              {m.po_ref.quoted} → superseded by {m.po_ref.successor}
+            </span>
+          : m.po_ref.superseded
+          ? <span className="pill" style={{ fontSize: 10, background: "transparent", border: "1px solid var(--warn)", color: "var(--warn)" }} title={`${m.po_ref.quoted} is one of our numbers but was deleted, and nothing was raised to replace it. Pick the order this really bills against.`}>quotes {m.po_ref.quoted} · deleted, no replacement</span>
+          : <span className="pill" style={{ fontSize: 10, background: "transparent", border: "1px solid var(--warn)", color: "var(--warn)" }} title="This PO number is printed on the invoice but isn't one of ours — it may never have been raised.">quotes {m.po_ref.quoted} · not one of our orders</span>)}
       </div>
 
       {loading ? <div className="muted" style={{ fontSize: 12 }}>Checking the PO and deliveries…</div> : !m ? null : (
