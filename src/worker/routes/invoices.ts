@@ -16,7 +16,7 @@ import { ensureXeroContact } from "./xero";
 import { createSalesInvoice, getInvoice, uploadAttachment } from "../xero/client";
 import { nextPONumber } from "./pos";
 import { aliasMap, aliasMapsBySupplier, learnAliases, normText } from "../matchMemory";
-import { fuzzyFindPo } from "../poRef";
+import { findSuccessor, fuzzyFindPo, type PoLifecycle } from "../poRef";
 import { pickProjectByAddress, type AddrProject } from "../addrMatch";
 import { siteScope } from "./operations";
 
@@ -718,7 +718,7 @@ async function withMatchState(env: Env, rows: Record<string, unknown>[]): Promis
   const byPo = new Map<string, PoLineRow[]>();
   // The order's own identity too: its number and project, so a link to the wrong
   // order or the wrong job can be reported without a full match pass.
-  const poMeta = new Map<string, { po_number: string; project_code: string | null }>();
+  const poMeta = new Map<string, { po_number: string; project_code: string | null; total_value: number | null }>();
   // And every order keyed by its PO-number core, so the ref printed on an invoice
   // can be resolved to what it actually IS. A quoted framework is the normal
   // workflow, not a mislink, and that can't be told apart from the number alone.
@@ -775,11 +775,13 @@ async function withMatchState(env: Env, rows: Record<string, unknown>[]): Promis
       byPo.set(l.po_id, arr);
     }
     const metas = await env.DB.prepare(
-      `SELECT po.id, po.po_number, p.code AS project_code
+      `SELECT po.id, po.po_number, po.total_value, p.code AS project_code
          FROM purchase_orders po LEFT JOIN projects p ON p.id = po.project_id
         WHERE po.id IN (${marks})`,
-    ).bind(...chunk).all<{ id: string; po_number: string; project_code: string | null }>();
-    for (const m of metas.results) poMeta.set(m.id, { po_number: m.po_number, project_code: m.project_code });
+    ).bind(...chunk).all<{ id: string; po_number: string; project_code: string | null; total_value: number | null }>();
+    for (const m of metas.results) {
+      poMeta.set(m.id, { po_number: m.po_number, project_code: m.project_code, total_value: m.total_value });
+    }
   }
   return rows.map((r) => {
     // Only project invoices reconcile against an order; overheads are coded to a
@@ -811,6 +813,8 @@ async function withMatchState(env: Env, rows: Record<string, unknown>[]): Promis
       quoted_ref: (r.extracted_po_ref as string | null) ?? null,
       quoted_type: quoted?.order_type ?? null,
       quoted_project: quoted?.project_code ?? null,
+      po_total: meta?.total_value ?? null,
+      invoice_net: (r.net_amount as number | null) ?? null,
     }, aliasesFor((r.supplier_name as string | null) ?? null));
     return { ...r, match: ambiguous ? { ...scan, issues: [ambiguous, ...scan.issues] } : scan };
   });
@@ -915,6 +919,31 @@ async function computeInvoiceMatch(env: Env, inv: Record<string, unknown>) {
     const fuzzy = await resolvePoRef(env, inv.extracted_po_ref as string | null);
     if (fuzzy) directPo = pos.find((p) => p.id === fuzzy.id) ?? null;
   }
+  // Neither a live order nor a live framework, but the number can still be one
+  // of ours: deleted, and usually replaced the same afternoon. "Not a live
+  // order" was all the app could say, which sent people hunting for an order
+  // that was never missing — Alumasc have now quoted the superseded
+  // PO-26002-0003 on four invoices, and each was resolved by hand. Naming what
+  // replaced it is the answer the reference actually carries.
+  //
+  // Exact match only. A fuzzy hit on a DELETED order is a guess about a guess,
+  // and the live-order path above has already had its turn at the ref.
+  //
+  // The lookup runs only on this path, so the ordinary case pays nothing.
+  let superseded: { quoted_po: string; deleted_at: string | null; successor: PoLifecycle | null } | null = null;
+  if (!directPo && !quotedFramework && poRef.length >= 4) {
+    const lifecycle = (await env.DB.prepare(
+      `SELECT po.id, po.po_number, po.status, po.order_type, po.supplier, po.project_id,
+              po.created_at, po.deleted_at
+         FROM purchase_orders po JOIN projects p ON p.id = po.project_id
+        WHERE p.deleted_at IS NULL`,
+    ).all<PoLifecycle>()).results;
+    const dead = lifecycle.find((p) => p.status === "deleted" && normPoNum(p.po_number) === poRef) ?? null;
+    if (dead) {
+      superseded = { quoted_po: dead.po_number, deleted_at: dead.deleted_at, successor: findSuccessor(dead, lifecycle) };
+    }
+  }
+
   // Surface the quoted PO ref + whether it resolved to a live order, so the UI can
   // explain "invoice quotes PO-X but that's not a live order" (deleted / not raised).
   // A quoted framework is not "not a live order" — it's a live order you don't
@@ -925,6 +954,12 @@ async function computeInvoiceMatch(env: Env, inv: Record<string, unknown>) {
       quoted: String(inv.extracted_po_ref),
       matched: !!directPo,
       ...(quotedFramework ? { framework: true, framework_project: quotedFramework.project_code } : {}),
+      ...(superseded ? {
+        superseded: true,
+        superseded_at: superseded.deleted_at,
+        successor: superseded.successor?.po_number ?? null,
+        successor_type: superseded.successor?.order_type ?? null,
+      } : {}),
     }
     : null;
 
@@ -1222,8 +1257,20 @@ invoices.post("/:id/approve", async (c) => {
         : [];
       let invLines: InvLine[] = [];
       try { invLines = inv.lines_json ? JSON.parse(String(inv.lines_json)) : []; } catch { /* none */ }
+      // The order's own value, so approving over a `po_too_small` is recorded as
+      // what it is. Without a PoContext this scan saw only line-level issues, so
+      // the most serious class of override — the linked order being wrong — left
+      // no trace in the approval it was granted under.
+      const po = inv.matched_po_id
+        ? await c.env.DB.prepare("SELECT po_number, total_value FROM purchase_orders WHERE id = ?")
+            .bind(inv.matched_po_id).first<{ po_number: string; total_value: number | null }>()
+        : null;
       if (poLines.length) {
-        overrode = [...new Set(scanLineMatch(invLines, poLines).issues.map((i) => i.kind))];
+        overrode = [...new Set(scanLineMatch(invLines, poLines, {
+          po_number: po?.po_number ?? null,
+          po_total: po?.total_value ?? null,
+          invoice_net: (inv.net_amount as number | null) ?? null,
+        }).issues.map((i) => i.kind))];
       }
     } catch { /* never block an approval to write its own audit line */ }
   }

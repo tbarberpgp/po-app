@@ -53,6 +53,13 @@ function matchLabel(m: MatchSummary, cur?: string | null): string {
   // beneath it meaningless, so it has to be the thing the row says.
   const wrong = m.issues.find((i) => i.kind === "wrong_po");
   if (wrong?.kind === "wrong_po") return `Wrong PO \u00b7 invoice quotes ${wrong.quoted}`;
+  // Ranked under wrong_po because that one names the order it should be, and
+  // above cross_project because a job mismatch can still be a plausible order
+  // while this one cannot be the right order at any job.
+  const small = m.issues.find((i) => i.kind === "po_too_small");
+  if (small?.kind === "po_too_small") {
+    return `Wrong PO \u00b7 ${Math.round(small.invoice_net / small.po_total)}\u00d7 the order's whole value`;
+  }
   const xp = m.issues.find((i) => i.kind === "cross_project");
   if (xp?.kind === "cross_project") return `Wrong PO \u00b7 that order is on job ${xp.po_project}`;
   if (m.excess > 0) return `Unmatched \u00b7 ${fmtMoney(m.excess, cur || "GBP")} over order`;
@@ -73,6 +80,7 @@ function matchTitle(m: MatchSummary, cur?: string | null): string {
     }
     if (i.kind === "wrong_po") return `The invoice quotes ${i.quoted}, but it's linked to ${i.linked}. Check which order this really bills against \u2014 the price and quantity checks below mean nothing until that's right.`;
     if (i.kind === "cross_project") return `Coded to job ${i.invoice_project}, but ${i.linked} belongs to job ${i.po_project}.`;
+    if (i.kind === "po_too_small") return `This bills ${money(i.invoice_net)} against ${i.linked}, an order worth ${money(i.po_total)} in total — ${Math.round(i.invoice_net / i.po_total)}× its whole value. That isn't an overspend to explain, it's almost certainly the wrong order.`;
     if (i.kind === "unlinked") return `"${i.item}" isn't linked to any line on the PO \u2014 mark it as a service charge if that's what it is.`;
     if (i.kind === "rate") return `${i.item}: billed at ${money(i.billed)}, ordered at ${money(i.ordered)}.`;
     const head = `${i.item}: billed ${money(i.billed)} against ${money(i.ordered)} ordered, ${money(i.excess)} over`;
@@ -632,7 +640,7 @@ function MatchPanel({ inv, canEdit, onReload }: { inv: Invoice; canEdit: boolean
   // the line detail — lines reconciling against the wrong order proves nothing,
   // so this must not be allowed to read "Matched ✓".
   const poIdentityIssues = (inv.match?.issues ?? []).filter(
-    (i) => i.kind === "wrong_po" || i.kind === "cross_project",
+    (i) => i.kind === "wrong_po" || i.kind === "cross_project" || i.kind === "po_too_small",
   );
 
   // "No PO match" strictly means NO purchase order could be associated; once a
@@ -685,7 +693,17 @@ function MatchPanel({ inv, canEdit, onReload }: { inv: Invoice; canEdit: boolean
           // never the framework itself. Calling it "not a live order" sent people
           // looking for a deleted PO that was never missing.
           ? <span className="pill" style={{ fontSize: 10, background: "var(--navy-soft)", color: "var(--navy)" }} title={`${m.po_ref.quoted} is a framework agreement on job ${m.po_ref.framework_project ?? "?"} — invoices bill against a call-off or an order on that job, not the framework. Orders on that job are listed first below.`}>quotes framework {m.po_ref.quoted}</span>
-          : <span className="pill" style={{ fontSize: 10, background: "transparent", border: "1px solid var(--warn)", color: "var(--warn)" }} title="This PO number is printed on the invoice but isn't a live order — it may have been deleted or never raised.">quotes {m.po_ref.quoted} · not a live order</span>)}
+          : m.po_ref.superseded && m.po_ref.successor
+          // The number IS ours, it was just replaced — usually the same
+          // afternoon, when a framework got re-priced. "Not a live order" made
+          // people hunt for something that was never missing; the replacement
+          // is what the reference is really pointing at.
+          ? <span className="pill" style={{ fontSize: 10, background: "var(--navy-soft)", color: "var(--navy)" }} title={`${m.po_ref.quoted} was deleted${m.po_ref.superseded_at ? ` on ${new Date(m.po_ref.superseded_at).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}` : ""} and replaced by ${m.po_ref.successor}${m.po_ref.successor_type === "framework" ? ", a framework — bill against a call-off raised under it, not the framework itself" : ""}.`}>
+              {m.po_ref.quoted} → superseded by {m.po_ref.successor}
+            </span>
+          : m.po_ref.superseded
+          ? <span className="pill" style={{ fontSize: 10, background: "transparent", border: "1px solid var(--warn)", color: "var(--warn)" }} title={`${m.po_ref.quoted} is one of our numbers but was deleted, and nothing was raised to replace it. Pick the order this really bills against.`}>quotes {m.po_ref.quoted} · deleted, no replacement</span>
+          : <span className="pill" style={{ fontSize: 10, background: "transparent", border: "1px solid var(--warn)", color: "var(--warn)" }} title="This PO number is printed on the invoice but isn't one of ours — it may never have been raised.">quotes {m.po_ref.quoted} · not one of our orders</span>)}
       </div>
 
       {loading ? <div className="muted" style={{ fontSize: 12 }}>Checking the PO and deliveries…</div> : !m ? null : (
@@ -742,6 +760,13 @@ function MatchPanel({ inv, canEdit, onReload }: { inv: Invoice; canEdit: boolean
             <div key={n} className="flash error" style={{ fontSize: 12, margin: "14px 0 0", lineHeight: 1.5 }}>
               Coded to job <b>{i.invoice_project}</b>, but <b>{i.linked}</b> belongs to job <b>{i.po_project}</b>.
               Check the PO link — orders on this job are listed first.
+            </div>
+          ) : i.kind === "po_too_small" ? (
+            <div key={n} className="flash error" style={{ fontSize: 12, margin: "14px 0 0", lineHeight: 1.5 }}>
+              This invoice bills <b>{money(i.invoice_net)}</b> against <b>{i.linked}</b>, an order worth{" "}
+              <b>{money(i.po_total)}</b> in total — {Math.round(i.invoice_net / i.po_total)}× its whole value.
+              That isn't an overspend to explain, it's almost certainly the wrong order. Check what this
+              really bills against before approving.
             </div>
           ) : null)}
 

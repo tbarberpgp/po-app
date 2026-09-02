@@ -152,6 +152,30 @@ export function lineQty(l: InvLine): number | null {
  *                    coding is set or confirmed by a person, while the link is
  *                    routinely a machine guess, and on every case examined so far
  *                    the coding was right and the guessed order was wrong.
+ *  `po_too_small`  — the linked order is too small to be the source of this
+ *                    invoice at all. An identity problem, not a billing one:
+ *                    "£29,182.02 billed against a £559.78 order for a tin of
+ *                    primer, a spray gun and carriage" is not an overspend to
+ *                    explain, it is the wrong order. Raised alongside the other
+ *                    identity checks because, like them, it invalidates every
+ *                    price comparison beneath it.
+ *
+ *                    Distinct from the running "billed to date — over PO"
+ *                    caption, which is cumulative and ordinary: small orders get
+ *                    used as standing accounts for weeks of hire, and are meant
+ *                    to read as over. This tests ONE invoice against the WHOLE
+ *                    order, so a standing account never trips it.
+ *
+ *                    Thresholds measured on the current book: of 105 invoices
+ *                    linked to a live order, only three bill more than 4x their
+ *                    order's value. Two are genuine mislinks (52x and 12x, both
+ *                    Alumasc quoting a real but unrelated order number); the
+ *                    third is an Andrews Sykes hire account at 5.1x, excluded by
+ *                    the £5,000 floor because its excess is £2,216. Every ratio
+ *                    from 3x to 10x paired with a £5k-£10k floor selects exactly
+ *                    the same two invoices, so the rule is not balanced on a
+ *                    knife edge. An order with no value can't be assessed and is
+ *                    left alone — a £0 order is its own problem.
  *  `unlinked` — the line couldn't be tied to any line on the order. Usually a
  *  service, carriage or misc charge that nobody marked as a service charge.
  *  `rate`     — linked, billed at a rate we didn't agree, AND the money disagrees
@@ -172,6 +196,7 @@ export type MatchIssue =
   | { kind: "ambiguous_job"; ref_project: string; address_project: string; quoted: string; quoted_po: string | null }
   | { kind: "wrong_po"; quoted: string; linked: string }
   | { kind: "cross_project"; invoice_project: string; po_project: string; linked: string }
+  | { kind: "po_too_small"; linked: string; invoice_net: number; po_total: number }
   | { kind: "unlinked"; item: string }
   | { kind: "rate"; item: string; billed: number; ordered: number }
   | { kind: "over"; item: string; billed: number; ordered: number; excess: number; why: "qty" | "rate" | "value" };
@@ -237,7 +262,17 @@ export type PoContext = {
    *  all. Needed to tell a mislink from the normal framework workflow. */
   quoted_type?: string | null;
   quoted_project?: string | null;
+  /** The linked order's value and this invoice's net, for the `po_too_small`
+   *  identity check. Both absent = the check is skipped, so callers that don't
+   *  have them lose nothing else. */
+  po_total?: number | null;
+  invoice_net?: number | null;
 };
+
+/** An invoice this much larger than the whole order it's linked to isn't an
+ *  overspend, it's the wrong order. Both must trip — see `po_too_small`. */
+export const PO_TOO_SMALL_RATIO = 4;
+export const PO_TOO_SMALL_FLOOR = 5000;
 
 /**
  * @param aliases alias_norm → target_norm, the wording corrections people have
@@ -277,6 +312,19 @@ export function scanLineMatch(
       issues.push({
         kind: "cross_project", invoice_project: po.invoice_project,
         po_project: po.po_project, linked: String(po.po_number),
+      });
+    }
+    // Can this order be the source of this invoice at all? Deliberately measured
+    // on the invoice alone against the order's full value, so a small order used
+    // as a standing account — legitimately billed over many times — never trips.
+    const poTotal = typeof po.po_total === "number" ? po.po_total : null;
+    const invNet = typeof po.invoice_net === "number" ? po.invoice_net : null;
+    if (poTotal != null && poTotal > 0 && invNet != null
+      && invNet >= poTotal * PO_TOO_SMALL_RATIO
+      && invNet - poTotal >= PO_TOO_SMALL_FLOOR) {
+      issues.push({
+        kind: "po_too_small", linked: String(po.po_number),
+        invoice_net: invNet, po_total: poTotal,
       });
     }
   }
