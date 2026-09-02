@@ -1407,11 +1407,62 @@ invoices.post("/:id/create-po", async (c) => {
 
 /** The actual DRAFT-bill push, shared by the manual button and the automatic
  *  push on approval. Assumes the caller checked permissions and gates. */
+/**
+ * Refuse a second Xero bill for a supplier invoice number already booked.
+ *
+ * The same Amazon invoice was uploaded twice 26 seconds apart and both copies
+ * reached Xero as separate bills (#131 and #132, GB65XX05UAEUI, £8.32 booked
+ * twice), because nothing compared a push against what had already gone across.
+ *
+ * The twin must be a DIFFERENT row that already holds a bill id. Retrying a
+ * push that failed part-way has to keep working — that is what the manual Push
+ * button is for, and a guard that broke it would be worse than the duplicate.
+ *
+ * Matched on supplier_id where both rows carry one, and on the supplier's
+ * written name otherwise: supplier_id is null across plenty of the book, and it
+ * is null on both Amazon rows.
+ *
+ * Returns the refusal, or null to proceed. Called from pushInvoiceBillToXero
+ * rather than from either caller, so approval's auto-push, the manual button
+ * and any route added later are all covered by construction.
+ */
+export async function duplicateBillRefusal(
+  env: Env,
+  args: { id: string; invoiceNumber: unknown; supplierId: unknown; supplierName: string },
+): Promise<{ ok: false; error: string } | null> {
+  const invoiceNo = String(args.invoiceNumber ?? "").trim();
+  if (!invoiceNo) return null;   // nothing to compare on; a blank number can't be a duplicate of anything
+  const twin = await env.DB.prepare(
+    `SELECT id, xero_bill_number FROM invoices
+      WHERE id != CAST(? AS INTEGER)
+        AND xero_bill_id IS NOT NULL
+        AND lower(trim(COALESCE(invoice_number, ''))) = lower(?)
+        AND ((? IS NOT NULL AND supplier_id = ?)
+             OR lower(trim(COALESCE(supplier_name, ''))) = lower(?))
+      LIMIT 1`,
+  ).bind(args.id, invoiceNo, args.supplierId ?? null, args.supplierId ?? null, args.supplierName)
+    .first<{ id: number; xero_bill_number: string | null }>();
+  if (!twin) return null;
+  const asBill = twin.xero_bill_number ? ` as bill ${twin.xero_bill_number}` : "";
+  const error = `${args.supplierName} invoice ${invoiceNo} is already in Xero${asBill}, pushed from invoice #${twin.id} here. `
+    + `Pushing again would book the same document twice. Dismiss this one if it's a duplicate upload, `
+    + `or correct the invoice number if the supplier really did reuse it.`;
+  await env.DB.prepare("UPDATE invoices SET xero_sync_status = 'failed', xero_sync_error = ? WHERE id = ?")
+    .bind(error, args.id).run();
+  return { ok: false, error };
+}
+
 async function pushInvoiceBillToXero(
   env: Env, inv: Record<string, unknown>, id: string,
 ): Promise<{ ok: true; xero_bill_id: string; xero_bill_number: string | null; attach_warning?: string } | { ok: false; error: string }> {
   const supplierName = (inv.supplier_name as string | null)?.trim();
   if (!supplierName) return { ok: false, error: "Set the supplier before pushing to Xero." };
+
+  const duplicate = await duplicateBillRefusal(env, {
+    id, invoiceNumber: inv.invoice_number, supplierId: inv.supplier_id, supplierName,
+  });
+  if (duplicate) return duplicate;
+
   try {
     const contactId = await ensureXeroContact(env, supplierName);
     if (!contactId) return { ok: false, error: "Xero isn't connected — connect it in Admin → Xero." };
