@@ -2092,10 +2092,10 @@ operations.get("/:projectId/deliveries/ticket-candidates/:id/reconcile", async (
       WHERE d.project_id = ? AND d.po_id = ? AND d.po_line_id IS NOT NULL AND d.received_qty IS NOT NULL
       ORDER BY d.delivered_at ASC, d.id ASC`,
   ).bind(base, chosen.id).all<{ po_line_id: number; received_qty: number; received_unit: string | null; delivered_at: string; scan_id: number | null; dn: string | null }>()).results;
-  const priorByLine = new Map<number, Array<{ date: string; qty: number }>>();
+  const priorByLine = new Map<number, Array<{ date: string; qty: number; dn: string | null }>>();
   for (const d of dels) {
     const arr = priorByLine.get(d.po_line_id) || [];
-    arr.push({ date: d.delivered_at, qty: d.received_qty });
+    arr.push({ date: d.delivered_at, qty: d.received_qty, dn: d.dn });
     priorByLine.set(d.po_line_id, arr);
   }
 

@@ -34,6 +34,17 @@ export function POView({ me }: { me: CurrentUser | null }) {
   // After-the-fact budget coding (retro POs): which line's picker is open, and
   // the project's live materials list (loaded on first use).
   const [assignLineId, setAssignLineId] = useState<number | null>(null);
+  // Which lines' delivery history is expanded — "93 received" on its own
+  // doesn't say whether that's one drop or five, or let anyone go check the
+  // paperwork behind any of them.
+  const [openDeliveries, setOpenDeliveries] = useState<Set<number>>(new Set());
+  function toggleDeliveries(lineId: number) {
+    setOpenDeliveries((s) => {
+      const next = new Set(s);
+      next.has(lineId) ? next.delete(lineId) : next.add(lineId);
+      return next;
+    });
+  }
   const [budgetMats, setBudgetMats] = useState<Awaited<ReturnType<typeof api.listMaterials>> | null>(null);
   const [assignBusy, setAssignBusy] = useState(false);
   async function openAssign(lineId: number) {
@@ -430,6 +441,24 @@ export function POView({ me }: { me: CurrentUser | null }) {
                           l.material_id == null
                             ? <button className="ghost tiny" style={{ marginTop: 4 }} title="Code this line to a budget line so it counts inside the project budget" onClick={() => openAssign(l.id!)}>＋ Assign to budget</button>
                             : <button className="ghost tiny" style={{ marginTop: 4, opacity: 0.7 }} title="Change which budget line this is coded to" onClick={() => openAssign(l.id!)}>Recode budget line</button>
+                        )}
+                        {(l.deliveries?.length ?? 0) > 0 && l.id != null && (
+                          <div style={{ marginTop: 4 }}>
+                            <button className="ghost tiny" onClick={() => toggleDeliveries(l.id!)}>
+                              {fmtQty(l.received_qty ?? 0)} {l.unit} received · {l.deliveries!.length} deliver{l.deliveries!.length === 1 ? "y" : "ies"} {openDeliveries.has(l.id) ? "▾" : "▸"}
+                            </button>
+                            {openDeliveries.has(l.id) && (
+                              <div style={{ marginTop: 4, display: "grid", gap: 2 }}>
+                                {l.deliveries!.map((d, i) => (
+                                  <div key={i} className="muted" style={{ fontSize: 11.5, display: "flex", gap: 8 }}>
+                                    <span style={{ minWidth: 90 }}>{d.dn ? `DN ${d.dn}` : `Manual${d.by ? ` · ${d.by.split("@")[0]}` : ""}`}</span>
+                                    <span className="num">{fmtQty(d.qty)}{d.unit ? ` ${d.unit}` : ""}</span>
+                                    <span>{fmtDate(d.date)}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
                         )}
                       </td>
                       <td className="muted">{l.manufacturer ?? ""}</td>

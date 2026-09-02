@@ -465,6 +465,26 @@ pos.get("/:id", async (c) => {
   const projectCode = po.project_code as string;
   const projectNumber = derivedProjectNumber(projectCode);
 
+  // Every receipt logged against this PO's lines, so each line can show WHICH
+  // delivery notes it was actually received against — "93 received" on its own
+  // doesn't say whether that's one delivery or five, or let anyone go check the
+  // paperwork behind any of them. scan_id is null for a manual check-in (goods
+  // logged with no ticket); those show as "Manual" rather than a DN.
+  const receipts = await c.env.DB.prepare(
+    `SELECT d.po_line_id, d.received_qty, d.received_unit, d.delivered_at, d.created_by,
+            s2.delivery_note_number AS dn
+       FROM site_deliveries d
+       LEFT JOIN delivery_ticket_scans s2 ON s2.id = d.scan_id
+      WHERE d.po_id = ? AND d.po_line_id IS NOT NULL AND d.received_qty IS NOT NULL
+      ORDER BY d.delivered_at ASC, d.id ASC`,
+  ).bind(id).all<{ po_line_id: number; received_qty: number; received_unit: string | null; delivered_at: string; created_by: string | null; dn: string | null }>();
+  const deliveriesByLine = new Map<number, Array<{ dn: string | null; qty: number; unit: string | null; date: string; by: string | null }>>();
+  for (const r of receipts.results) {
+    const arr = deliveriesByLine.get(r.po_line_id) ?? [];
+    arr.push({ dn: r.dn, qty: r.received_qty, unit: r.received_unit, date: r.delivered_at, by: r.created_by });
+    deliveriesByLine.set(r.po_line_id, arr);
+  }
+
   // For a framework order, show how much of each line has already been drawn
   // down by its live call-offs — matched by item description, the same rule the
   // call-off draw-down form uses (see /:id/calloff-lines). Value is tracked
@@ -488,7 +508,11 @@ pos.get("/:id", async (c) => {
         : null;
     // SQLite stores these as 0/1 — surface real booleans so the client doesn't
     // render a stray "0" via `{flag && …}`.
-    const base = { ...l, cost_code, is_unpriced: !!l.is_unpriced, is_over_budget: !!l.is_over_budget };
+    const deliveries = deliveriesByLine.get(Number(l.id)) ?? [];
+    const base = {
+      ...l, cost_code, is_unpriced: !!l.is_unpriced, is_over_budget: !!l.is_over_budget,
+      deliveries, received_qty: deliveries.reduce((s, d) => s + d.qty, 0),
+    };
     if (drawByItem) {
       const drawn = drawByItem.get(String(l.item ?? "").toLowerCase()) ?? { qty: 0, value: 0 };
       const qty = Number(l.qty ?? 0);

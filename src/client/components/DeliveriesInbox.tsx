@@ -5,7 +5,7 @@
 // (sidebar → Delivery → Deliveries) and the project Operations → Deliveries tab.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { api } from "../lib/api";
+import { api, fmtQty } from "../lib/api";
 import type { CheckedInTicket, DeliveryTicketCandidate, CurrentUser, VarianceReport } from "../../shared/types";
 import { ConfBar, CandidateCheckIn } from "./Operations";
 import { PdfHighlightViewer } from "./PdfHighlightViewer";
@@ -133,6 +133,25 @@ function TicketDetail({ cand, projects, onActioned }: {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   useEffect(() => { setCheckingIn(false); setErr(null); setZ(1); setLbZoom(false); }, [cand.id]);
+
+  // Delivery history for whichever line(s) this ticket's own items land on —
+  // "60 outstanding" on its own doesn't say what's already arrived or which
+  // paperwork proves it. Fetched eagerly (not just inside "whole order
+  // delivered") so it's visible before anyone commits to a check-in.
+  const [recon, setRecon] = useState<Awaited<ReturnType<typeof api.opsReconcileTicket>> | null>(null);
+  useEffect(() => {
+    setRecon(null);
+    const poId = cand.matched_po_id || cand.guess_po_id;
+    if (!poId || !projectId) return;
+    let live = true;
+    api.opsReconcileTicket(projectId, cand.id, poId).then((r) => { if (live) setRecon(r); }).catch(() => {});
+    return () => { live = false; };
+  }, [cand.id, projectId, cand.matched_po_id, cand.guess_po_id]);
+  // Only the lines THIS ticket's items actually matched to — the PO behind a
+  // framework call-off can run to a hundred lines, and dumping all of them
+  // here would bury the two or three anyone actually came to check.
+  const relevantLineIds = new Set((recon?.items ?? []).map((it) => it.po_line_id).filter((x): x is number => x != null));
+  const historyLines = (recon?.po_lines ?? []).filter((pl) => relevantLineIds.has(pl.id) && pl.prior.length > 0);
   useEffect(() => {
     if (!lb) return;
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setLb(false); };
@@ -262,6 +281,30 @@ function TicketDetail({ cand, projects, onActioned }: {
         </div>
 
         <VarianceNotice v={cand.variance} />
+
+        {historyLines.length > 0 && (
+          <div style={{ marginTop: 12, padding: "10px 13px", borderRadius: 8, background: "var(--card-2)", border: "1px solid var(--line)" }}>
+            <div className="eyebrow" style={{ margin: 0 }}>Already received on this line</div>
+            <div style={{ display: "grid", gap: 8, marginTop: 6 }}>
+              {historyLines.map((pl) => (
+                <div key={pl.id}>
+                  <div style={{ fontSize: 12.5, fontWeight: 600 }}>
+                    {pl.desc} <span className="muted" style={{ fontWeight: 400 }}>— {fmtQty(pl.received)} of {fmtQty(pl.ordered)} {pl.unit}</span>
+                  </div>
+                  <div style={{ display: "grid", gap: 2, marginTop: 3 }}>
+                    {pl.prior.map((p, i) => (
+                      <div key={i} className="muted" style={{ fontSize: 11.5, display: "flex", gap: 8 }}>
+                        <span style={{ minWidth: 90 }}>{p.dn ? `DN ${p.dn}` : "Manual check-in"}</span>
+                        <span className="num">{fmtQty(p.qty)}</span>
+                        <span>{fmtDate(p.date)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {err && <div className="flash error" style={{ marginTop: 12, fontSize: 12.5 }}>{err}</div>}
 

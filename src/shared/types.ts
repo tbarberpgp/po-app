@@ -260,6 +260,11 @@ export type POLine = {
   available_qty?: number;
   called_off_value?: number;
   available_value?: number;
+  // Every receipt logged against this line, oldest first — which delivery note
+  // (or "manual", for a check-in with no ticket) each portion of `received_qty`
+  // actually came from. Set by GET /api/pos/:id.
+  received_qty?: number;
+  deliveries?: Array<{ dn: string | null; qty: number; unit: string | null; date: string; by: string | null }>;
 };
 
 export type OrderType = "standard" | "framework" | "call_off";
@@ -1191,7 +1196,7 @@ export type TicketReconciliation = {
   suggested: Array<{ id: string; po_number: string; supplier: string | null; project_code: string; hits: number }>;
   variance: VarianceReport;
   items: Array<{ desc: string; qty: number | null; unit: string | null; po_line_id: number | null; lc: number }>;
-  po_lines: Array<{ id: number; desc: string; unit: string; ordered: number; received: number; remaining: number; prior: Array<{ date: string; qty: number }> }>;
+  po_lines: Array<{ id: number; desc: string; unit: string; ordered: number; received: number; remaining: number; prior: Array<{ date: string; qty: number; dn: string | null }> }>;
 };
 
 /** A site that bundles multiple contracts (projects) sharing the operational
