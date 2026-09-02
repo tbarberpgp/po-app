@@ -12,6 +12,7 @@ import { sendReportEmail, recipientsFor } from "./site-reports";
 import { buildHsPack } from "../../shared/hs-pack-pdf";
 import { fuzzyFindPo } from "../poRef";
 import { learnAliases, aliasMapsBySupplier, normText } from "../matchMemory";
+import { deliveryVariance, matchItemToLine, type VarianceLine, type PriorReceipt } from "../../shared/delivery-variance";
 
 // Operations — Phase 1 (site-team basics). Authenticated app-side endpoints:
 // the supervisor's view of a site's QR/sign-in link, today's attendance,
@@ -1624,8 +1625,8 @@ operations.get("/deliveries-inbox", async (c) => {
         WHERE po.status != 'deleted' AND po.order_type != 'framework' AND p.deleted_at IS NULL`,
     ).all<{ id: string; po_number: string; project_code: string }>()).results;
     const guessLines = posForGuess.length ? (await c.env.DB.prepare(
-      `SELECT po_id, item FROM po_lines WHERE po_id IN (${posForGuess.map(() => "?").join(",")})`,
-    ).bind(...posForGuess.map((p) => p.id)).all<{ po_id: string; item: string }>()).results : [];
+      `SELECT id, po_id, item, qty, unit FROM po_lines WHERE po_id IN (${posForGuess.map(() => "?").join(",")})`,
+    ).bind(...posForGuess.map((p) => p.id)).all<{ id: number; po_id: string; item: string; qty: number | null; unit: string | null }>()).results : [];
     const poIndex = posForGuess.map((po) => ({
       id: po.id, po_number: po.po_number, project_code: po.project_code,
       codes: new Set(guessLines.filter((l) => l.po_id === po.id).map((l) => materialCode(l.item))),
@@ -1678,11 +1679,60 @@ operations.get("/deliveries-inbox", async (c) => {
       }
       return { ...rest, scanned_qty, scanned_unit, items, method, conf, guess_po_id, guess_po_number, guess_project_code, ticket_url: /^https?:\/\//i.test(key) ? key : `/api/operations/file?key=${encodeURIComponent(key)}` };
     });
+
+    // Does what ARRIVED match what was ordered? The PO-number match above only
+    // says the reference on the paper resolves to an order we hold — it compares
+    // no quantities, so a ticket for 5,000 against a line of 50 was reported as
+    // "Matched" and would check in as fully delivered. See shared/delivery-variance.
+    // Lines are already in hand from the guess index above; only prior receipts
+    // need fetching, and only for the POs these tickets actually point at.
+    const varRows = candidates as Array<Record<string, unknown>>;
+    const varPoIds = [...new Set(varRows
+      .map((x) => (x.matched_po_id || x.guess_po_id) as string | null)
+      .filter((x): x is string => !!x))];
+    // scan_id and the scan's delivery note are carried through so a ticket is
+    // never judged against its OWN goods. Two ways that happens: once checked
+    // in, a ticket's own delivery rows become "already received" and it flags
+    // itself for delivering more than the nothing left; and the SAME note is
+    // routinely scanned twice (15 notes on this book, one of them six times —
+    // WhatsApp and email both carry it), so the twin's receipts do the same.
+    // A note number is the unit of delivery, and within one PO it identifies it.
+    const priorRows = varPoIds.length ? (await c.env.DB.prepare(
+      `SELECT d.po_id, d.po_line_id, d.scan_id, s2.delivery_note_number AS dn, SUM(d.received_qty) AS rq
+         FROM site_deliveries d
+         LEFT JOIN delivery_ticket_scans s2 ON s2.id = d.scan_id
+        WHERE d.po_id IN (${varPoIds.map(() => "?").join(",")}) AND d.po_line_id IS NOT NULL AND d.received_qty IS NOT NULL
+        GROUP BY d.po_id, d.po_line_id, d.scan_id, s2.delivery_note_number`,
+    ).bind(...varPoIds).all<{ po_id: string; po_line_id: number; scan_id: number | null; dn: string | null; rq: number | null }>()).results : [];
+    const linesByPo = new Map<string, VarianceLine[]>();
+    for (const l of guessLines) {
+      const arr = linesByPo.get(l.po_id) ?? [];
+      arr.push({ id: l.id, item: l.item, qty: l.qty, unit: l.unit });
+      linesByPo.set(l.po_id, arr);
+    }
+    const priorByPo = new Map<string, Array<PriorReceipt & { scan_id: number | null; dn: string | null }>>();
+    for (const pr of priorRows) {
+      const arr = priorByPo.get(pr.po_id) ?? [];
+      arr.push({ po_line_id: pr.po_line_id, qty: pr.rq, scan_id: pr.scan_id, dn: pr.dn });
+      priorByPo.set(pr.po_id, arr);
+    }
+    /** Receipts that are this same delivery — its own, or a twin scan of the
+     *  same note. Everything else is a genuinely earlier drop. */
+    const isSelf = (pr: { scan_id: number | null; dn: string | null }, id: unknown, dn: unknown) =>
+      pr.scan_id === id || (!!pr.dn && !!dn && String(pr.dn).trim() === String(dn).trim());
+    candidates = varRows.map((x) => {
+      const poId = (x.matched_po_id || x.guess_po_id) as string | null;
+      if (!poId) return x;
+      const poNo = (x.matched_po_number || x.guess_po_number) as string | null;
+      const its = (x.items ?? []) as Array<{ description: string; qty: number | null; unit: string | null }>;
+      const prior = (priorByPo.get(poId) ?? []).filter((pr) => !isSelf(pr, x.id, x.delivery_note_number));
+      return { ...x, variance: deliveryVariance(its, linesByPo.get(poId) ?? [], prior, poNo) };
+    });
   } catch { candidates = []; }
 
   // KPI strip. "Overdue" = an open PO past its delivery date with nothing ever
   // received against it; "expected today" counts POs due today the same way.
-  const kpi = { expected_today: 0, overdue: 0, checked_in_today: 0, needs_po: 0 };
+  const kpi = { expected_today: 0, overdue: 0, checked_in_today: 0, needs_po: 0, variance: 0 };
   try {
     const exp = await c.env.DB.prepare(
       `SELECT
@@ -1700,6 +1750,10 @@ operations.get("/deliveries-inbox", async (c) => {
     kpi.checked_in_today = chk?.n ?? 0;
   } catch { /* tables may predate migrations */ }
   kpi.needs_po = (candidates as Array<{ method?: string }>).filter((x) => x.method === "none").length;
+  // Tickets whose GOODS disagree with the order they matched. Counted here and
+  // not in SQL because the comparison needs the ticket's parsed items, which
+  // only exist once the row has been through the reader above.
+  kpi.variance = (candidates as Array<{ variance?: { ok: boolean } }>).filter((x) => x.variance && !x.variance.ok).length;
 
   // Recently actioned tickets — the "where did it go" register. Each scan links
   // to the first delivery it created; the rest of that check-in shares the same
@@ -1793,8 +1847,8 @@ operations.get("/:projectId/deliveries/ticket-candidates", async (c) => {
         WHERE po.project_id IN (${ph}) AND po.status != 'deleted' AND po.order_type != 'framework'`,
     ).bind(...scope.memberIds).all<{ id: string; po_number: string; project_code: string }>()).results;
     const guessLines = posForGuess.length ? (await c.env.DB.prepare(
-      `SELECT po_id, item FROM po_lines WHERE po_id IN (${posForGuess.map(() => "?").join(",")})`,
-    ).bind(...posForGuess.map((p) => p.id)).all<{ po_id: string; item: string }>()).results : [];
+      `SELECT id, po_id, item, qty, unit FROM po_lines WHERE po_id IN (${posForGuess.map(() => "?").join(",")})`,
+    ).bind(...posForGuess.map((p) => p.id)).all<{ id: number; po_id: string; item: string; qty: number | null; unit: string | null }>()).results : [];
     const poIndex = posForGuess.map((po) => ({
       id: po.id, po_number: po.po_number, project_code: po.project_code,
       codes: new Set(guessLines.filter((l) => l.po_id === po.id).map((l) => materialCode(l.item))),
@@ -1853,6 +1907,55 @@ operations.get("/:projectId/deliveries/ticket-candidates", async (c) => {
       // WhatsApp tickets live at an external (Wasabi) URL; older R2-sourced ones
       // stream through the ops file endpoint.
       return { ...rest, scanned_qty, scanned_unit, items, method, conf, guess_po_id, guess_po_number, guess_project_code, ticket_url: /^https?:\/\//i.test(key) ? key : `/api/operations/file?key=${encodeURIComponent(key)}` };
+    });
+
+    // Does what ARRIVED match what was ordered? The PO-number match above only
+    // says the reference on the paper resolves to an order we hold — it compares
+    // no quantities, so a ticket for 5,000 against a line of 50 was reported as
+    // "Matched" and would check in as fully delivered. See shared/delivery-variance.
+    // Lines are already in hand from the guess index above; only prior receipts
+    // need fetching, and only for the POs these tickets actually point at.
+    const varRows = candidates as Array<Record<string, unknown>>;
+    const varPoIds = [...new Set(varRows
+      .map((x) => (x.matched_po_id || x.guess_po_id) as string | null)
+      .filter((x): x is string => !!x))];
+    // scan_id and the scan's delivery note are carried through so a ticket is
+    // never judged against its OWN goods. Two ways that happens: once checked
+    // in, a ticket's own delivery rows become "already received" and it flags
+    // itself for delivering more than the nothing left; and the SAME note is
+    // routinely scanned twice (15 notes on this book, one of them six times —
+    // WhatsApp and email both carry it), so the twin's receipts do the same.
+    // A note number is the unit of delivery, and within one PO it identifies it.
+    const priorRows = varPoIds.length ? (await c.env.DB.prepare(
+      `SELECT d.po_id, d.po_line_id, d.scan_id, s2.delivery_note_number AS dn, SUM(d.received_qty) AS rq
+         FROM site_deliveries d
+         LEFT JOIN delivery_ticket_scans s2 ON s2.id = d.scan_id
+        WHERE d.po_id IN (${varPoIds.map(() => "?").join(",")}) AND d.po_line_id IS NOT NULL AND d.received_qty IS NOT NULL
+        GROUP BY d.po_id, d.po_line_id, d.scan_id, s2.delivery_note_number`,
+    ).bind(...varPoIds).all<{ po_id: string; po_line_id: number; scan_id: number | null; dn: string | null; rq: number | null }>()).results : [];
+    const linesByPo = new Map<string, VarianceLine[]>();
+    for (const l of guessLines) {
+      const arr = linesByPo.get(l.po_id) ?? [];
+      arr.push({ id: l.id, item: l.item, qty: l.qty, unit: l.unit });
+      linesByPo.set(l.po_id, arr);
+    }
+    const priorByPo = new Map<string, Array<PriorReceipt & { scan_id: number | null; dn: string | null }>>();
+    for (const pr of priorRows) {
+      const arr = priorByPo.get(pr.po_id) ?? [];
+      arr.push({ po_line_id: pr.po_line_id, qty: pr.rq, scan_id: pr.scan_id, dn: pr.dn });
+      priorByPo.set(pr.po_id, arr);
+    }
+    /** Receipts that are this same delivery — its own, or a twin scan of the
+     *  same note. Everything else is a genuinely earlier drop. */
+    const isSelf = (pr: { scan_id: number | null; dn: string | null }, id: unknown, dn: unknown) =>
+      pr.scan_id === id || (!!pr.dn && !!dn && String(pr.dn).trim() === String(dn).trim());
+    candidates = varRows.map((x) => {
+      const poId = (x.matched_po_id || x.guess_po_id) as string | null;
+      if (!poId) return x;
+      const poNo = (x.matched_po_number || x.guess_po_number) as string | null;
+      const its = (x.items ?? []) as Array<{ description: string; qty: number | null; unit: string | null }>;
+      const prior = (priorByPo.get(poId) ?? []).filter((pr) => !isSelf(pr, x.id, x.delivery_note_number));
+      return { ...x, variance: deliveryVariance(its, linesByPo.get(poId) ?? [], prior, poNo) };
     });
   } catch { candidates = []; }
 
@@ -1973,6 +2076,7 @@ operations.get("/:projectId/deliveries/ticket-candidates/:id/reconcile", async (
     return c.json({
       ticket: { id: scan.id, dn: scan.delivery_note_number, date: scan.delivery_date, supplier: scan.supplier_name, po_number: scan.po_number },
       method, conf, matched_po: null, suggested,
+      variance: { ok: true, checked: false, issues: [], headline: null },
       items: items.map((it) => ({ desc: it.description, qty: it.qty, unit: it.unit, po_line_id: null, lc: 0 })),
       po_lines: [],
     });
@@ -1981,10 +2085,13 @@ operations.get("/:projectId/deliveries/ticket-candidates/:id/reconcile", async (
   const poLines = allLines.filter((l) => l.po_id === chosen.id);
   // Cumulative receipts per line (oldest first) for the delivery-history strip.
   const dels = (await c.env.DB.prepare(
-    `SELECT po_line_id, received_qty, received_unit, delivered_at FROM site_deliveries
-      WHERE project_id = ? AND po_id = ? AND po_line_id IS NOT NULL AND received_qty IS NOT NULL
-      ORDER BY delivered_at ASC, id ASC`,
-  ).bind(base, chosen.id).all<{ po_line_id: number; received_qty: number; received_unit: string | null; delivered_at: string }>()).results;
+    `SELECT d.po_line_id, d.received_qty, d.received_unit, d.delivered_at, d.scan_id,
+            s2.delivery_note_number AS dn
+       FROM site_deliveries d
+       LEFT JOIN delivery_ticket_scans s2 ON s2.id = d.scan_id
+      WHERE d.project_id = ? AND d.po_id = ? AND d.po_line_id IS NOT NULL AND d.received_qty IS NOT NULL
+      ORDER BY d.delivered_at ASC, d.id ASC`,
+  ).bind(base, chosen.id).all<{ po_line_id: number; received_qty: number; received_unit: string | null; delivered_at: string; scan_id: number | null; dn: string | null }>()).results;
   const priorByLine = new Map<number, Array<{ date: string; qty: number }>>();
   for (const d of dels) {
     const arr = priorByLine.get(d.po_line_id) || [];
@@ -1998,31 +2105,33 @@ operations.get("/:projectId/deliveries/ticket-candidates/:id/reconcile", async (
     return { id: l.id, desc: l.item, unit: l.unit, ordered: l.qty, received, remaining: Math.max(0, (l.qty ?? 0) - received), prior };
   });
 
-  // Match each ticket item to the best PO line: exact item-code first, else a
-  // description token-overlap fallback.
+  // Match each ticket item to the best PO line: exact item-code first, the code
+  // anywhere in the wording next, else a description token-overlap fallback.
+  // Shared with the variance check so a line blamed for an over-delivery is the
+  // same line the check-in modal pre-fills.
+  const varLines: VarianceLine[] = poLines.map((l) => ({ id: l.id, item: l.item, qty: l.qty, unit: l.unit }));
   const outItems = items.map((it) => {
-    const code = materialCode(it.description);
-    let po_line_id: number | null = null, lc = 0;
-    if (code.length >= 3) {
-      const hit = poLines.find((l) => materialCode(l.item) === code);
-      if (hit) { po_line_id = hit.id; lc = 92; }
-    }
-    if (po_line_id == null) {
-      const tks = nameTokens(it.description);
-      let best: { id: number; score: number } | null = null;
-      for (const l of poLines) {
-        const lt = nameTokens(l.item); let ov = 0; for (const t of tks) if (lt.has(t)) ov++;
-        const score = tks.size ? ov / tks.size : 0;
-        if (!best || score > best.score) best = { id: l.id, score };
-      }
-      if (best && best.score >= 0.5) { po_line_id = best.id; lc = Math.round(best.score * 80); }
-    }
-    return { desc: it.description, qty: it.qty, unit: it.unit, po_line_id, lc };
+    const m = matchItemToLine(it.description, varLines);
+    return { desc: it.description, qty: it.qty, unit: it.unit, po_line_id: m?.line.id ?? null, lc: m?.lc ?? 0 };
   });
+
+  // What arrived vs what was ordered — judged on what is still OUTSTANDING, so
+  // a top-up on a part-delivered line does not read as an over-delivery.
+  // This delivery's own receipts are excluded — its own rows, and those of any
+  // twin scan of the same note — so a checked-in or double-scanned ticket is not
+  // compared against a line its own goods have already burnt down.
+  // (The per-line history strip above deliberately keeps every receipt.)
+  const ownDn = (scan.delivery_note_number ?? "").trim();
+  const variance = deliveryVariance(
+    items, varLines,
+    dels.filter((d) => d.scan_id !== scan.id && !(ownDn && (d.dn ?? "").trim() === ownDn))
+      .map((d) => ({ po_line_id: d.po_line_id, qty: d.received_qty })),
+    chosen.po_number,
+  );
 
   return c.json({
     ticket: { id: scan.id, dn: scan.delivery_note_number, date: scan.delivery_date, supplier: scan.supplier_name, po_number: scan.po_number },
-    method, conf,
+    method, conf, variance,
     matched_po: { id: chosen.id, po_number: chosen.po_number, supplier: chosen.supplier, project_id: chosen.project_id, project_code: chosen.project_code, is_stored: scan.matched_po_id === chosen.id },
     suggested,
     items: outItems,

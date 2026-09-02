@@ -1,3 +1,5 @@
+import type { VarianceReport } from "./delivery-variance";
+export type { VarianceReport, VarianceIssue } from "./delivery-variance";
 import type { MatchIssue, MatchSummary } from "./line-match";
 
 export type Project = {
@@ -1171,6 +1173,10 @@ export type DeliveryTicketCandidate = {
   guess_po_id?: string | null;
   guess_po_number?: string | null;
   guess_project_code?: string | null;
+  /** Whether the GOODS match the order, as opposed to the order number — the
+   *  match above compares only the reference printed on the ticket. Absent when
+   *  the ticket points at no PO at all. */
+  variance?: VarianceReport;
 };
 
 /** Full reconciliation of one scanned ticket against a chosen (or best-guess) PO:
@@ -1183,6 +1189,7 @@ export type TicketReconciliation = {
   conf: number;
   matched_po: { id: string; po_number: string; supplier: string | null; project_id: string; project_code: string; is_stored: boolean } | null;
   suggested: Array<{ id: string; po_number: string; supplier: string | null; project_code: string; hits: number }>;
+  variance: VarianceReport;
   items: Array<{ desc: string; qty: number | null; unit: string | null; po_line_id: number | null; lc: number }>;
   po_lines: Array<{ id: number; desc: string; unit: string; ordered: number; received: number; remaining: number; prior: Array<{ date: string; qty: number }> }>;
 };

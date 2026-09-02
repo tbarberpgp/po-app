@@ -6,12 +6,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../lib/api";
-import type { CheckedInTicket, DeliveryTicketCandidate, CurrentUser } from "../../shared/types";
+import type { CheckedInTicket, DeliveryTicketCandidate, CurrentUser, VarianceReport } from "../../shared/types";
 import { ConfBar, CandidateCheckIn } from "./Operations";
 import { PdfHighlightViewer } from "./PdfHighlightViewer";
 
-type Kpi = { expected_today: number; overdue: number; checked_in_today: number; needs_po: number };
-type Chip = "all" | "matched" | "needs" | "done";
+type Kpi = { expected_today: number; overdue: number; checked_in_today: number; needs_po: number; variance?: number };
+type Chip = "all" | "matched" | "needs" | "mismatch" | "done";
 
 function fmtDate(s: string | null | undefined): string {
   return s ? String(s).slice(0, 10) : "—";
@@ -70,6 +70,52 @@ function KpiCard({ label, value, sub, tone }: { label: string; value: number | s
   );
 }
 
+/** What ARRIVED against what was ordered.
+ *
+ *  The "Matched" pill beside this speaks for one thing: the order number printed
+ *  on the ticket resolves to a PO we hold. It compares no quantities and no
+ *  goods, and it was being read as though it did — Fixfast's DN 704875 sat under
+ *  a green "Matched · PO-26003-0038" with 5,000 fasteners on the paper against
+ *  an order for 50. Checking that in closes the line as fully delivered without
+ *  a word, because the check-in path uses quantities only to choose part vs
+ *  complete. This is the panel that looks at the goods.
+ *
+ *  Silent unless something needs a person — a part delivery, a rounding
+ *  difference and an exact drop all render nothing. */
+function VarianceNotice({ v }: { v?: VarianceReport }) {
+  if (!v || v.ok || !v.issues.length) return null;
+  const num = (n: number | null, unit: string | null) =>
+    n == null ? "—" : `${Number.isInteger(n) ? n.toLocaleString("en-GB") : Math.round(n * 100) / 100}${unit ? ` ${unit}` : ""}`;
+  return (
+    <div style={{
+      marginTop: 12, padding: "11px 13px", borderRadius: 8,
+      background: "var(--warn-soft)", border: "1px solid var(--warn)",
+    }}>
+      <div style={{ display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap" }}>
+        <span className="eyebrow" style={{ margin: 0, color: "var(--warn)" }}>Doesn't match the order</span>
+      </div>
+      <div style={{ fontSize: 13, marginTop: 3, color: "var(--warn)" }}>{v.headline}</div>
+      <div style={{ display: "grid", gap: 6, marginTop: 9 }}>
+        {v.issues.map((is, i) => (
+          <div key={i} style={{ fontSize: 12.5, display: "grid", gap: 2 }}>
+            <div style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis" }}>{is.item}</div>
+            <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
+              <span>On the ticket <span className="num" style={{ color: "var(--warn)" }}>{num(is.ticket_qty, is.ticket_unit)}</span></span>
+              <span className="muted">Ordered <span className="num">{num(is.ordered, is.ordered_unit)}</span></span>
+              {is.outstanding != null && is.ordered != null && is.outstanding < is.ordered
+                && <span className="muted">Outstanding <span className="num">{num(is.outstanding, is.ordered_unit)}</span></span>}
+              {is.factor && <span className="muted">exactly {is.factor}x in the same unit — check whether the order should be per pack</span>}
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="muted" style={{ fontSize: 11.5, marginTop: 8 }}>
+        Checking in as read will close the line as fully delivered. Correct the quantity below, or fix the order first.
+      </div>
+    </div>
+  );
+}
+
 /** Right pane — the selected ticket: photo, extracted fields, match, check-in. */
 function TicketDetail({ cand, projects, onActioned }: {
   cand: DeliveryTicketCandidate;
@@ -103,7 +149,12 @@ function TicketDetail({ cand, projects, onActioned }: {
     const poId = cand.matched_po_id || cand.guess_po_id;
     const poNum = cand.matched_po_number || cand.guess_po_number || "the order";
     if (!poId || !projectId) return;
-    if (!window.confirm(`Mark every outstanding line on ${poNum} as fully delivered against this ticket?`)) return;
+    // The ticket already disagrees with the order — closing every line on it is
+    // the one click that hides that for good, so the numbers go in the prompt.
+    const vw = cand.variance && !cand.variance.ok
+      ? `\n\nThis ticket does NOT match the order:\n${cand.variance.issues.map((i) => `• ${i.headline}`).join("\n")}\n`
+      : "";
+    if (!window.confirm(`Mark every outstanding line on ${poNum} as fully delivered against this ticket?${vw}`)) return;
     setBusy(true); setErr(null);
     try {
       const recon = await api.opsReconcileTicket(projectId, cand.id, poId);
@@ -209,6 +260,8 @@ function TicketDetail({ cand, projects, onActioned }: {
             )}
           </div>
         </div>
+
+        <VarianceNotice v={cand.variance} />
 
         {err && <div className="flash error" style={{ marginTop: 12, fontSize: 12.5 }}>{err}</div>}
 
@@ -345,44 +398,79 @@ function TicketSplit({ rows, projects, onReload, emptyHint, checkedIn = [] }: {
   const [selId, setSelId] = useState<number | null>(null);
   const [doneSelId, setDoneSelId] = useState<number | null>(null);
 
+  // Every term has to hit somewhere, so "alumasc tape" narrows rather than
+  // widens — the same rule as the PO line-item search and the POs list.
+  const terms = useMemo(() => search.trim().toLowerCase().split(/\s+/).filter(Boolean), [search]);
+  const searching = terms.length > 0;
+
   const visible = useMemo(() => {
-    const q = search.trim().toLowerCase();
     return rows.filter((r) => {
       const st = state(r);
       if (chip === "matched" && st === "none") return false;
+      if (chip === "mismatch" && (r.variance?.ok ?? true)) return false;
       if (chip === "needs" && st !== "none") return false;
-      if (!q) return true;
-      return [r.supplier_name, r.summary, r.delivery_note_number, r.po_number, r.matched_po_number, r.guess_po_number, r.project_code]
-        .some((v) => (v ?? "").toLowerCase().includes(q));
+      if (!searching) return true;
+      // The materials the reader saw on the ticket are in here too, so you can
+      // find a drop by what arrived and not just by who sent it.
+      const hay = [
+        r.supplier_name, r.summary, r.delivery_note_number, r.po_number, r.matched_po_number,
+        r.guess_po_number, r.project_code, r.project_name,
+        ...(r.items ?? []).map((it) => it.description),
+      ].map((v) => v ?? "").join(" ").toLowerCase();
+      return terms.every((t) => hay.includes(t));
     });
-  }, [rows, chip, search]);
+  }, [rows, chip, terms, searching]);
 
   const sel = visible.find((r) => r.id === selId) ?? visible[0] ?? null;
   const matchedCount = rows.filter((r) => state(r) !== "none").length;
+  const mismatchCount = rows.filter((r) => r.variance && !r.variance.ok).length;
   const doneVisible = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    if (!q) return checkedIn;
-    return checkedIn.filter((r) =>
-      [r.supplier_name, r.summary, r.delivery_note_number, r.deliveries[0]?.po_number, r.deliveries[0]?.project_code, r.project_code]
-        .some((v) => (v ?? "").toLowerCase().includes(q)));
-  }, [checkedIn, search]);
+    if (!searching) return checkedIn;
+    return checkedIn.filter((r) => {
+      const hay = [
+        r.supplier_name, r.summary, r.delivery_note_number, r.project_code,
+        ...r.deliveries.flatMap((d) => [d.description, d.po_line_desc, d.po_number, d.project_code]),
+      ].map((v) => v ?? "").join(" ").toLowerCase();
+      return terms.every((t) => hay.includes(t));
+    });
+  }, [checkedIn, terms, searching]);
   const doneSel = doneVisible.find((r) => r.id === doneSelId) ?? doneVisible[0] ?? null;
+  // Header count follows the list you're actually looking at, and says what it
+  // is out of while a search is narrowing it.
+  const shownCount = chip === "done" ? doneVisible.length : visible.length;
+  const chipTotal = chip === "done" ? checkedIn.length
+    : chip === "matched" ? matchedCount
+    : chip === "mismatch" ? mismatchCount
+    : chip === "needs" ? rows.length - matchedCount
+    : rows.length;
 
   return (
     <div className="a-split">
       <aside className="inbox">
-        <div className="inbox-hd"><h2>Ticket inbox</h2><span className="count">{visible.length}</span></div>
+        <div className="inbox-hd"><h2>Ticket inbox</h2><span className="count">{searching ? `${shownCount} of ${chipTotal}` : shownCount}</span></div>
         <div style={{ display: "flex", gap: 6, padding: "0 12px 8px", flexWrap: "wrap" }}>
-          {([["all", `All ${rows.length}`], ["matched", `Matched ${matchedCount}`], ["needs", `Needs a PO ${rows.length - matchedCount}`], ...(checkedIn.length ? [["done", `Checked in ${checkedIn.length}`]] : [])] as Array<[Chip, string]>).map(([k, label]) => (
+          {([["all", `All ${rows.length}`], ["matched", `Matched ${matchedCount}`], ["needs", `Needs a PO ${rows.length - matchedCount}`],
+            ...(mismatchCount ? [["mismatch", `Doesn't match ${mismatchCount}`]] : []),
+            ...(checkedIn.length ? [["done", `Checked in ${checkedIn.length}`]] : [])] as Array<[Chip, string]>).map(([k, label]) => (
             <button key={k} className={chip === k ? "primary tiny" : "ghost tiny"} onClick={() => setChip(k)}>{label}</button>
           ))}
         </div>
-        <div className="inbox-search">
-          <input placeholder="Search supplier, DN or PO…" value={search} onChange={(e) => setSearch(e.target.value)} />
+        <div className="inbox-search" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <input
+            placeholder="Search supplier, DN, PO or material…"
+            aria-label="Search delivery tickets"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+          {search && <button className="ghost tiny" onClick={() => setSearch("")}>Clear</button>}
         </div>
         <div className="ilist">
           {chip === "done" ? (doneVisible.length === 0
-            ? <div className="muted" style={{ padding: "18px 15px", fontSize: 13, lineHeight: 1.5 }}>Nothing checked in yet.</div>
+            ? <div className="muted" style={{ padding: "18px 15px", fontSize: 13, lineHeight: 1.5 }}>
+                {searching
+                  ? <>Nothing checked in matches “{search.trim()}”. <button className="ghost tiny" onClick={() => setSearch("")}>Clear</button></>
+                  : "Nothing checked in yet."}
+              </div>
             : doneVisible.map((r) => (
               <button key={r.id} className={`irow${doneSel?.id === r.id ? " on" : ""}`} onClick={() => setDoneSelId(r.id)}>
                 <span className="idot matched" />
@@ -397,7 +485,11 @@ function TicketSplit({ rows, projects, onReload, emptyHint, checkedIn = [] }: {
               </button>
             ))
           ) : visible.length === 0
-            ? <div className="muted" style={{ padding: "18px 15px", fontSize: 13, lineHeight: 1.5 }}>{emptyHint}</div>
+            ? <div className="muted" style={{ padding: "18px 15px", fontSize: 13, lineHeight: 1.5 }}>
+                {searching
+                  ? <>No ticket matches “{search.trim()}”. <button className="ghost tiny" onClick={() => setSearch("")}>Clear</button></>
+                  : emptyHint}
+              </div>
             : visible.map((r) => {
               const st = state(r);
               const dot = st === "po" ? "matched" : st === "line" ? "review" : "none";
@@ -411,6 +503,12 @@ function TicketSplit({ rows, projects, onReload, emptyHint, checkedIn = [] }: {
                       {r.project_code && <span className="proj">{r.project_code}</span>}
                     </div>
                     <span className={`istatus ${dot}`}>{st === "po" ? `Matched · ${r.matched_po_number}` : st === "line" ? `Inferred · ${r.guess_po_number}` : "Needs a PO"}</span>
+                    {r.variance && !r.variance.ok && (
+                      <span className="istatus" style={{ background: "var(--warn-soft)", color: "var(--warn)", marginLeft: 6 }}
+                        title={r.variance.headline ?? ""}>
+                        {r.variance.issues.some((i) => i.kind === "over") ? "Qty ≠ order" : "No qty read"}
+                      </span>
+                    )}
                   </div>
                 </button>
               );
@@ -461,6 +559,9 @@ export function DeliveriesWorkspace(_props: { me: CurrentUser | null }) {
           <KpiCard label="Overdue" value={kpi.overdue} sub={kpi.overdue ? "past delivery date, nothing received" : "none outstanding"} tone={kpi.overdue ? "warn" : "good"} />
           <KpiCard label="Checked in today" value={kpi.checked_in_today} sub="against a PO" tone="good" />
           <KpiCard label="Needs a PO" value={kpi.needs_po} sub={kpi.needs_po ? "tickets with no order matched" : "all tickets matched"} tone={kpi.needs_po ? "warn" : "good"} />
+          <KpiCard label="Doesn't match the PO" value={kpi.variance ?? 0}
+            sub={kpi.variance ? "order number right, goods don't agree" : "quantities agree where checkable"}
+            tone={kpi.variance ? "warn" : "good"} />
         </div>
       )}
 
