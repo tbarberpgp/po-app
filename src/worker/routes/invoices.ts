@@ -718,7 +718,7 @@ async function withMatchState(env: Env, rows: Record<string, unknown>[]): Promis
   const byPo = new Map<string, PoLineRow[]>();
   // The order's own identity too: its number and project, so a link to the wrong
   // order or the wrong job can be reported without a full match pass.
-  const poMeta = new Map<string, { po_number: string; project_code: string | null }>();
+  const poMeta = new Map<string, { po_number: string; project_code: string | null; total_value: number | null }>();
   // And every order keyed by its PO-number core, so the ref printed on an invoice
   // can be resolved to what it actually IS. A quoted framework is the normal
   // workflow, not a mislink, and that can't be told apart from the number alone.
@@ -775,11 +775,13 @@ async function withMatchState(env: Env, rows: Record<string, unknown>[]): Promis
       byPo.set(l.po_id, arr);
     }
     const metas = await env.DB.prepare(
-      `SELECT po.id, po.po_number, p.code AS project_code
+      `SELECT po.id, po.po_number, po.total_value, p.code AS project_code
          FROM purchase_orders po LEFT JOIN projects p ON p.id = po.project_id
         WHERE po.id IN (${marks})`,
-    ).bind(...chunk).all<{ id: string; po_number: string; project_code: string | null }>();
-    for (const m of metas.results) poMeta.set(m.id, { po_number: m.po_number, project_code: m.project_code });
+    ).bind(...chunk).all<{ id: string; po_number: string; project_code: string | null; total_value: number | null }>();
+    for (const m of metas.results) {
+      poMeta.set(m.id, { po_number: m.po_number, project_code: m.project_code, total_value: m.total_value });
+    }
   }
   return rows.map((r) => {
     // Only project invoices reconcile against an order; overheads are coded to a
@@ -811,6 +813,8 @@ async function withMatchState(env: Env, rows: Record<string, unknown>[]): Promis
       quoted_ref: (r.extracted_po_ref as string | null) ?? null,
       quoted_type: quoted?.order_type ?? null,
       quoted_project: quoted?.project_code ?? null,
+      po_total: meta?.total_value ?? null,
+      invoice_net: (r.net_amount as number | null) ?? null,
     }, aliasesFor((r.supplier_name as string | null) ?? null));
     return { ...r, match: ambiguous ? { ...scan, issues: [ambiguous, ...scan.issues] } : scan };
   });
@@ -1222,8 +1226,20 @@ invoices.post("/:id/approve", async (c) => {
         : [];
       let invLines: InvLine[] = [];
       try { invLines = inv.lines_json ? JSON.parse(String(inv.lines_json)) : []; } catch { /* none */ }
+      // The order's own value, so approving over a `po_too_small` is recorded as
+      // what it is. Without a PoContext this scan saw only line-level issues, so
+      // the most serious class of override — the linked order being wrong — left
+      // no trace in the approval it was granted under.
+      const po = inv.matched_po_id
+        ? await c.env.DB.prepare("SELECT po_number, total_value FROM purchase_orders WHERE id = ?")
+            .bind(inv.matched_po_id).first<{ po_number: string; total_value: number | null }>()
+        : null;
       if (poLines.length) {
-        overrode = [...new Set(scanLineMatch(invLines, poLines).issues.map((i) => i.kind))];
+        overrode = [...new Set(scanLineMatch(invLines, poLines, {
+          po_number: po?.po_number ?? null,
+          po_total: po?.total_value ?? null,
+          invoice_net: (inv.net_amount as number | null) ?? null,
+        }).issues.map((i) => i.kind))];
       }
     } catch { /* never block an approval to write its own audit line */ }
   }

@@ -324,6 +324,75 @@ describe("which order is linked", () => {
   });
 });
 
+describe("an order too small to be the source of the invoice", () => {
+  // The invoice's own lines are irrelevant here — both real cases extracted no
+  // lines at all, which is exactly why every line-level check stayed silent.
+  const none: InvLine[] = [];
+  const po = [poLine({ id: 1, item: "Widget", qty: 1, unit_cost: 1 })];
+
+  test("Alumasc SI559358: £29,182.02 against a £559.78 order", () => {
+    // The order is a tin of primer, a spray gun and carriage. The invoice is
+    // 52x its whole value. Nothing flagged it: the printed ref really does
+    // resolve to this order, so wrong_po stays silent, and with no invoice
+    // lines there is nothing for the line checks to measure.
+    assert.deepEqual(kinds(none, po, {
+      po_number: "PO-26001-0028", po_total: 559.78, invoice_net: 29182.02,
+    }), ["po_too_small"]);
+  });
+
+  test("Alumasc SI559354: £22,926.20 against a £1,835.75 order", () => {
+    assert.deepEqual(kinds(none, po, {
+      po_number: "PO-26003-0018", po_total: 1835.75, invoice_net: 22926.20,
+    }), ["po_too_small"]);
+  });
+
+  test("a small order used as a standing account is left alone", () => {
+    // Andrews Sykes 422-95191 bills £2,756.05 against a £539.49 hire order —
+    // 5.1x, above the ratio, but only £2,216 over. Hire orders are raised for
+    // the first week and billed against for months; flagging them would put a
+    // red banner on ordinary business. The floor is what excludes it.
+    assert.deepEqual(kinds(none, po, {
+      po_number: "PO-26001-0025", po_total: 539.49, invoice_net: 2756.05,
+    }), []);
+  });
+
+  test("AFI-Uplift 3252577: 4.2x a £100.50 order, £323 over, left alone", () => {
+    assert.deepEqual(kinds(none, po, {
+      po_number: "PO-26004-0001", po_total: 100.50, invoice_net: 423.90,
+    }), []);
+  });
+
+  test("a £0 order can't be assessed", () => {
+    // PO-26003-0016 carries no value at all, so every ratio against it is
+    // meaningless. That is its own data problem, not a mislink.
+    assert.deepEqual(kinds(none, po, {
+      po_number: "PO-26003-0016", po_total: 0, invoice_net: 1878,
+    }), []);
+  });
+
+  test("an invoice inside its order raises nothing", () => {
+    assert.deepEqual(kinds(none, po, {
+      po_number: "PO-26001-0033", po_total: 21888.69, invoice_net: 23377.41,
+    }), []);
+  });
+
+  test("callers that pass no values lose nothing else", () => {
+    // The delivery scanner and the approve-route audit call this without an
+    // order value; they must keep working, just without this one check.
+    assert.deepEqual(kinds(none, po, { po_number: "PO-26001-0028" }), []);
+  });
+
+  test("it outranks the line detail like the other identity checks", () => {
+    const over = [poLine({ id: 1, item: "Widget", qty: 10, unit_cost: 10 })];
+    const billedOver: InvLine[] = [{ description: "Widget", quantity: 200, unit_price: 10, amount: 2000 }];
+    const issues = scanLineMatch(billedOver, over, {
+      po_number: "PO-26001-0028", po_project: "26001", invoice_project: "26001",
+      po_total: 100, invoice_net: 20000,
+    }).issues;
+    assert.deepEqual(issues.map((i) => i.kind), ["po_too_small", "over"]);
+  });
+});
+
 describe("state and totals", () => {
   test("no issues means matched", () => {
     const po = [poLine({ id: 1, item: "Widget", qty: 10, unit_cost: 10 })];
