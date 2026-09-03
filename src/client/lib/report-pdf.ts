@@ -26,7 +26,7 @@ export type ReportSections = {
   // active operative register (client reps, surveyors, inspectors, etc.).
   attendance?: { on_site: number; companies: number; first_in: string | null; last_out: string | null; inductions?: number; visitors?: number } | null;
   // Labour by company (headcount + hours + trade mix) and deliveries logged in the period.
-  labour_table?: Array<{ company: string; count: number; hours: number; trade: string }>;
+  labour_table?: Array<{ company: string; count: number; hours: number; trade: string; missing_signouts?: number }>;
   deliveries_detail?: Array<{ supplier: string; description: string; po_number: string | null; status: string }>;
   // Section keys hidden from the exported copy (set via "Edit for client"), and
   // free-form sections the editor added — both persisted so the on-screen doc,
