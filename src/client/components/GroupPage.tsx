@@ -13,7 +13,7 @@ import { AssignBudgetCell } from "./AssignBudgetCell";
 import {
   summariseMaterials, computeForecast, sumForecasts, withCombinedOverspend, contractTotals, effectiveSpendRate, matSupplier, netUnits, quoteSavingsOf,
   pricedBudgetDrill, committedDrill, materialSavingsDrill, labourSavingsDrill,
-  variationProfitDrill, unpricedDrill, combinedUnexpectedSpendDrill, stillToOrderDrill, applicationsDrill, combineDrill,
+  variationProfitDrill, unpricedDrill, combinedUnexpectedSpendDrill, applicationsDrill, combineDrill,
   offBoqRow, materialAddedAt, materialModifiedAt,
   type Forecast, type UnpricedLine, type DrillBody, type MatRow, type MaterialScope,
 } from "../lib/commercials";
@@ -191,8 +191,8 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
   // Every block's BOQ materials, each still tagged with its block. Overspend is
   // the one lever that can't be summed from the blocks — a material has to be
   // totalled across all of them before you can say the site is over budget on
-  // it, and which block a row belongs to decides whether its spare budget may
-  // net (see withCombinedOverspend) — so the summed forecast is re-based on this.
+  // it (see withCombinedOverspend) — so the summed forecast is re-based on this.
+  // The block tag is what lets the drill say which blocks a merged row sits on.
   const scopeGroups = useMemo<MaterialScope[]>(
     () => scopeMembers.filter((m) => data[m.id]).map((m) => ({ scope: m.code, mats: data[m.id].mats })),
     [data, scopeMembers],
@@ -445,13 +445,7 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
       setDrill({ title: "Unexpected spend", value: fmtMoney(fc.unexpectedSpend), ...body });
       return;
     }
-    // Still to order is the same story from the other end — one scope-wide list
-    // of what's left to buy, so a material split across blocks reads as one line.
-    if (metric === "toorder") {
-      setDrill({ title: "Still to order", value: fmtMoney(fc.stillToOrder), ...stillToOrderDrill(scopeGroups, fmtMoney(fc.stillToOrder)) });
-      return;
-    }
-    const map: Record<Exclude<ForecastDrill, "unexpected" | "toorder">, [string, number, (d: BlockData) => DrillBody]> = {
+    const map: Record<Exclude<ForecastDrill, "unexpected">, [string, number, (d: BlockData) => DrillBody]> = {
       materials: ["Profit / loss from materials", fc.materialSavings, (d) => materialSavingsDrill(d.mats)],
       labour: ["Profit / loss from labour", fc.labourSavings, (d) => labourSavingsDrill(d.contractItems)],
       variations: ["Profit / loss from variations", fc.varProfit, (d) => variationProfitDrill(d.variations)],
