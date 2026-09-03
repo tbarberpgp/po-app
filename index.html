@@ -2,11 +2,31 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <!-- Deliberately NOT viewport-fit=cover: edge-to-edge would put the mobile
+         topbar under the notch, because only the check-in and camera footers
+         handle safe-area insets today. Without it iOS insets the page below the
+         status bar in standalone mode, which is what the layout expects. -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="light dark" />
     <title>PGP Projects</title>
+
+    <!-- Installable on a phone: site staff open this in a loading bay or on a
+         roof, and a home-screen icon that launches full-screen beats finding a
+         URL in a browser tab. The manifest supplies the name and icons; the
+         apple-* tags do the same job on iOS, which ignores parts of it. -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <!-- Status bar tinted to the app's own paper colour, per theme, so the
+         chrome doesn't sit as a contrasting band above the page. -->
+    <meta name="theme-color" content="#fbfaf7" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#080a1c" media="(prefers-color-scheme: dark)" />
+
     <link rel="icon" type="image/png" href="/favicon.png" />
-    <link rel="apple-touch-icon" href="/favicon.png" />
+    <!-- Flattened (opaque) rather than the transparent favicon: iOS composites a
+         transparent touch icon on black, which hides the navy half of the mark. -->
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="PGP" />
   </head>
   <body>
     <div id="root"></div>
