@@ -11,11 +11,11 @@ import { ForecastDashboard, Glance, DateCard, moneyTone, PrelimsTab, PortfolioCa
 import { DrillPanel, DrillKpi, type DrillData } from "./DrillPanel";
 import { AssignBudgetCell } from "./AssignBudgetCell";
 import {
-  summariseMaterials, computeForecast, sumForecasts, contractTotals, effectiveSpendRate, matSupplier, netUnits, quoteSavingsOf,
+  summariseMaterials, computeForecast, sumForecasts, withCombinedOverspend, contractTotals, effectiveSpendRate, matSupplier, netUnits, quoteSavingsOf,
   pricedBudgetDrill, committedDrill, materialSavingsDrill, labourSavingsDrill,
-  variationProfitDrill, unpricedDrill, unexpectedSpendDrill, applicationsDrill, combineDrill,
+  variationProfitDrill, unpricedDrill, combinedUnexpectedSpendDrill, stillToOrderDrill, applicationsDrill, combineDrill,
   offBoqRow, materialAddedAt, materialModifiedAt,
-  type Forecast, type UnpricedLine, type DrillBody, type MatRow,
+  type Forecast, type UnpricedLine, type DrillBody, type MatRow, type MaterialScope,
 } from "../lib/commercials";
 import { can } from "../../shared/permissions";
 import { combineSiteCodes } from "../../shared/site-code";
@@ -188,9 +188,21 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
     afps: d.afps, mats: d.mats, contingency: d.contingency,
     summary: summariseMaterials(d.mats, d.unpricedSpend),
   });
+  // Every block's BOQ materials, each still tagged with its block. Overspend is
+  // the one lever that can't be summed from the blocks — a material has to be
+  // totalled across all of them before you can say the site is over budget on
+  // it, and which block a row belongs to decides whether its spare budget may
+  // net (see withCombinedOverspend) — so the summed forecast is re-based on this.
+  const scopeGroups = useMemo<MaterialScope[]>(
+    () => scopeMembers.filter((m) => data[m.id]).map((m) => ({ scope: m.code, mats: data[m.id].mats })),
+    [data, scopeMembers],
+  );
   const fc = useMemo<Forecast>(
-    () => sumForecasts(scopeMembers.map((m) => data[m.id]).filter(Boolean).map(forecastFor)),
-    [data, scopeMembers], // eslint-disable-line react-hooks/exhaustive-deps
+    () => withCombinedOverspend(
+      sumForecasts(scopeMembers.map((m) => data[m.id]).filter(Boolean).map(forecastFor)),
+      scopeGroups,
+    ),
+    [data, scopeMembers, scopeGroups], // eslint-disable-line react-hooks/exhaustive-deps
   );
 
   const contract = useMemo(() => {
@@ -408,30 +420,46 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
     combineDrill(scopeMembers.filter((m) => data[m.id]).map((m) => ({ block: m.code, body: fn(data[m.id]) })), fmtMoney(value));
 
   const openForecastDrill = (metric: ForecastDrill) => {
-    const map: Record<ForecastDrill, [string, number, (d: BlockData) => DrillBody]> = {
+    // Unexpected spend can't be built block-by-block and stacked: its
+    // over-budget half is only meaningful once a material is totalled across
+    // every block, so it gets its own scope-wide builder.
+    if (metric === "unexpected") {
+      const body = combinedUnexpectedSpendDrill(
+        scopeMembers.filter((m) => data[m.id]).map((m) => ({ block: m.code, lines: data[m.id].unpricedLines, mats: data[m.id].mats })),
+        fmtMoney(fc.unexpectedSpend),
+      );
+      // Off-BOQ rows can be coded to a budget item in place — the options come
+      // from the row's own block's materials list. Over-budget rows can span
+      // blocks and carry no PO line, so they get no control.
+      if (can(me?.role, "pos.edit")) {
+        const matsByBlock = new Map(scopeMembers.filter((m) => data[m.id]).map((m) => [m.code, data[m.id].mats]));
+        body.columns = [...body.columns, {
+          key: "__assign", label: "",
+          fmt: (_v, row) => (row.__line_id != null
+            ? <AssignBudgetCell poId={String(row.__po_id)} lineId={Number(row.__line_id)}
+                suggestId={row.__suggest_id as number | undefined} suggestItem={row.__suggest_item as string | undefined}
+                mats={matsByBlock.get(String(row.__block)) ?? []} onAssigned={load} />
+            : null),
+        }];
+      }
+      setDrill({ title: "Unexpected spend", value: fmtMoney(fc.unexpectedSpend), ...body });
+      return;
+    }
+    // Still to order is the same story from the other end — one scope-wide list
+    // of what's left to buy, so a material split across blocks reads as one line.
+    if (metric === "toorder") {
+      setDrill({ title: "Still to order", value: fmtMoney(fc.stillToOrder), ...stillToOrderDrill(scopeGroups, fmtMoney(fc.stillToOrder)) });
+      return;
+    }
+    const map: Record<Exclude<ForecastDrill, "unexpected" | "toorder">, [string, number, (d: BlockData) => DrillBody]> = {
       materials: ["Profit / loss from materials", fc.materialSavings, (d) => materialSavingsDrill(d.mats)],
       labour: ["Profit / loss from labour", fc.labourSavings, (d) => labourSavingsDrill(d.contractItems)],
       variations: ["Profit / loss from variations", fc.varProfit, (d) => variationProfitDrill(d.variations)],
-      unexpected: ["Unexpected spend", fc.unexpectedSpend, (d) => unexpectedSpendDrill(d.unpricedLines, d.mats)],
       applied: ["Applied value", fc.appliedValue, (d) => applicationsDrill(d.afps, "applied")],
       certified: ["Certified value", fc.certifiedValue, (d) => applicationsDrill(d.afps, "certified")],
     };
     const [title, value, fn] = map[metric];
-    const body = combined(fn, value);
-    // Off-BOQ rows in the Unexpected-spend drill can be coded to a budget item
-    // in place — the options come from the row's own block's materials list.
-    if (metric === "unexpected" && can(me?.role, "pos.edit")) {
-      const matsByBlock = new Map(scopeMembers.filter((m) => data[m.id]).map((m) => [m.code, data[m.id].mats]));
-      body.columns = [...body.columns, {
-        key: "__assign", label: "",
-        fmt: (_v, row) => (row.__line_id != null
-          ? <AssignBudgetCell poId={String(row.__po_id)} lineId={Number(row.__line_id)}
-              suggestId={row.__suggest_id as number | undefined} suggestItem={row.__suggest_item as string | undefined}
-              mats={matsByBlock.get(String(row.__block)) ?? []} onAssigned={load} />
-          : null),
-      }];
-    }
-    setDrill({ title, value: fmtMoney(value), ...body });
+    setDrill({ title, value: fmtMoney(value), ...combined(fn, value) });
   };
   const openMatDrill = (title: string, value: number, fn: (d: BlockData) => DrillBody) => {
     const body = combined(fn, value);

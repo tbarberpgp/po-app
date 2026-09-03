@@ -16,7 +16,7 @@ import type { ApplicationForPayment, CurrentUser, LabourByCostCode, MaterialWith
 import {
   summariseMaterials, computeForecast, matSupplier, contractTotals, effectiveSpendRate, quoteSavingsOf,
   pricedBudgetDrill, committedDrill, materialSavingsDrill,
-  labourSavingsDrill, variationProfitDrill, unpricedDrill, unexpectedSpendDrill, applicationsDrill,
+  labourSavingsDrill, variationProfitDrill, unpricedDrill, unexpectedSpendDrill, stillToOrderDrill, oneScope, applicationsDrill,
   offBoqRow, materialAddedAt, materialModifiedAt, type Forecast, type MatRow,
 } from "../lib/commercials";
 import { DrillPanel, DrillKpi, type DrillData } from "./DrillPanel";
@@ -272,6 +272,7 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
         setDrill({ title: "Unexpected spend", value: fmtMoney(forecast.unexpectedSpend), ...body });
         break;
       }
+      case "toorder": setDrill({ title: "Still to order", value: fmtMoney(forecast.stillToOrder), ...stillToOrderDrill(oneScope(mats)) }); break;
       case "applied": setDrill({ title: "Applied value", value: fmtMoney(forecast.appliedValue), ...applicationsDrill(afps, "applied") }); break;
       case "certified": setDrill({ title: "Certified value", value: fmtMoney(forecast.certifiedValue), ...applicationsDrill(afps, "certified") }); break;
     }
@@ -1523,7 +1524,7 @@ export const moneyTone = (n: number): "success" | "danger" | "default" => (n > 0
  * profit), and what's been applied for / certified by the client.
  */
 type ForecastSection = "forecast" | "levers" | "applied";
-export type ForecastDrill = "materials" | "labour" | "variations" | "unexpected" | "applied" | "certified";
+export type ForecastDrill = "materials" | "labour" | "variations" | "unexpected" | "toorder" | "applied" | "certified";
 export function ForecastDashboard({ f, sections = ["forecast", "levers", "applied"], onDrill }: { f: Forecast; sections?: ForecastSection[]; onDrill?: (m: ForecastDrill) => void }) {
   // With a drill handler the lever/applied figures become clickable and open the
   // slide-over listing exactly what made them up. Same tile otherwise.
@@ -1561,8 +1562,19 @@ export function ForecastDashboard({ f, sections = ["forecast", "levers", "applie
             <D metric="labour" label="Profit/Loss from Labour" value={fmtMoney(f.labourSavings)} sub={Math.abs(f.labourSavings) < 0.005 ? "upload labour rates" : "live vs BOQ"} tone={moneyTone(f.labourSavings)} />
             <D metric="variations" label="Profit/Loss from Variations" value={fmtMoney(f.varProfit)} tone={moneyTone(f.varProfit)} />
             <D metric="unexpected" label="Unexpected spend" value={fmtMoney(-f.unexpectedSpend)}
-              sub={`${fmtMoney(f.unpricedSpend)} off-BOQ (the Materials tab figure) + ${fmtMoney(f.materialOverspend)} over-budget POs`}
+              sub={`${fmtMoney(f.unpricedSpend)} off-BOQ (the Materials tab figure) + ${fmtMoney(f.materialOverspend)} over-budget materials`}
               tone={f.unexpectedSpend > 0.005 ? "danger" : "default"} />
+            {/* Not a lever — it is the unspent part of the material budget,
+                already inside forecast cost. It sits here because it is what
+                decides whether today's Unexpected spend is the whole story:
+                the projection is the over-run still coming down the line. */}
+            {f.stillToOrder > 0.005 && (
+              <D metric="toorder" label="Still to order" value={fmtMoney(f.stillToOrder)}
+                sub={f.projectedOverspend > f.materialOverspend + 0.005
+                  ? `${fmtMoney(f.projectedOverspend)} projected over budget once bought`
+                  : "budget with nothing ordered against it yet"}
+                tone={f.projectedOverspend > f.materialOverspend + 0.005 ? "warn" : "default"} />
+            )}
             {f.omittedValue > 0.005 && (
               <Kpi label="Omitted from scope" value={fmtMoney(f.omittedValue)} sub="BOQ items no longer being bought" tone="success" />
             )}
