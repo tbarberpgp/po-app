@@ -9,6 +9,7 @@ import { api, fmtQty } from "../lib/api";
 import type { CheckedInTicket, DeliveryTicketCandidate, CurrentUser, VarianceReport } from "../../shared/types";
 import { ConfBar, CandidateCheckIn } from "./Operations";
 import { PdfHighlightViewer } from "./PdfHighlightViewer";
+import { poDeliveryLabel, type PoDeliverySummary } from "../../shared/po-delivery-status";
 
 type Kpi = { expected_today: number; overdue: number; checked_in_today: number; needs_po: number; variance?: number };
 type Chip = "all" | "matched" | "needs" | "mismatch" | "done";
@@ -116,6 +117,45 @@ function VarianceNotice({ v }: { v?: VarianceReport }) {
   );
 }
 
+/** Where the ORDER stands, at the point someone is about to add another receipt
+ *  to it.
+ *
+ *  One order takes as many delivery notes as the supplier chooses to send, and
+ *  nothing on this screen said so: the third note against a finished order and
+ *  the first note against an untouched one presented identically, and the only
+ *  way to tell them apart was to leave the inbox and go and look at the order.
+ *
+ *  Loudest when the order is already complete, because that is the case where
+ *  checking in is most likely to be a mistake — a duplicate scan of a note
+ *  already actioned, or a note that belongs to a different order. It states the
+ *  position and leaves the decision alone: part loads are normal, and so is a
+ *  late carriage note against a closed order. */
+function OrderDeliveryNotice({ d }: { d?: PoDeliverySummary }) {
+  if (!d || d.state === "none") return null;
+  const full = d.state === "full";
+  const tone = full ? "var(--warn)" : "var(--navy)";
+  return (
+    <div style={{
+      marginTop: 12, padding: "9px 13px", borderRadius: 8,
+      background: full ? "var(--warn-soft)" : "var(--card-2)",
+      border: `1px solid ${full ? "var(--warn)" : "var(--line)"}`,
+    }}>
+      <div className="eyebrow" style={{ margin: 0, color: tone }}>
+        {full ? "This order is already fully delivered" : "This order is part delivered"}
+      </div>
+      <div style={{ fontSize: 12.5, marginTop: 2, color: full ? tone : undefined }}>
+        {d.drops === 1 ? "One delivery note is" : `${d.drops} delivery notes are`} already logged against it
+        {d.lines_total > 0 && `, covering ${d.lines_delivered} of ${d.lines_total} line${d.lines_total === 1 ? "" : "s"}`}.
+      </div>
+      <div className="muted" style={{ fontSize: 11.5, marginTop: 6 }}>
+        {full
+          ? "Checking this in adds a further receipt. If this note has already been actioned, dismiss it instead."
+          : "Checking this in adds to what has already arrived — orders are routinely delivered across several drops."}
+      </div>
+    </div>
+  );
+}
+
 /** Right pane — the selected ticket: photo, extracted fields, match, check-in. */
 function TicketDetail({ cand, projects, onActioned }: {
   cand: DeliveryTicketCandidate;
@@ -211,6 +251,17 @@ function TicketDetail({ cand, projects, onActioned }: {
           {st === "po" && <span className="pill approved">Matched · {cand.matched_po_number}</span>}
           {st === "line" && <span className="pill" style={{ background: "var(--warn-soft)", color: "var(--warn)" }}>Inferred · {cand.guess_po_number}</span>}
           {st === "none" && <span className="pill" style={{ background: "transparent", border: "1px solid var(--warn)", color: "var(--warn)" }}>Needs a PO</span>}
+          {/* Whether the matched order has already been received — the "Matched"
+              pill speaks only for the order NUMBER resolving, and says nothing
+              about how much of the order has landed. */}
+          {recon?.po_delivery && recon.po_delivery.state !== "none" && (
+            <span className="pill" title="Deliveries already logged against this order"
+              style={recon.po_delivery.state === "full"
+                ? { background: "var(--warn-soft)", color: "var(--warn)" }
+                : { background: "var(--card-2)", color: "var(--muted)", border: "1px solid var(--line)" }}>
+              {poDeliveryLabel(recon.po_delivery)}
+            </span>
+          )}
           {(cand.project_code || cand.matched_project_code) && <span className="pill" style={{ background: "var(--navy-soft)", color: "var(--navy)" }}>{cand.project_code ?? cand.matched_project_code}</span>}
         </div>
 
@@ -281,6 +332,7 @@ function TicketDetail({ cand, projects, onActioned }: {
         </div>
 
         <VarianceNotice v={cand.variance} />
+        <OrderDeliveryNotice d={recon?.po_delivery} />
 
         {historyLines.length > 0 && (
           <div style={{ marginTop: 12, padding: "10px 13px", borderRadius: 8, background: "var(--card-2)", border: "1px solid var(--line)" }}>
@@ -550,6 +602,15 @@ function TicketSplit({ rows, projects, onReload, emptyHint, checkedIn = [] }: {
                       <span className="istatus" style={{ background: "var(--warn-soft)", color: "var(--warn)", marginLeft: 6 }}
                         title={r.variance.headline ?? ""}>
                         {r.variance.issues.some((i) => i.kind === "over") ? "Qty ≠ order" : "No qty read"}
+                      </span>
+                    )}
+                    {/* The order this ticket points at may already be finished —
+                        the row-level match above only says the NUMBER resolved. */}
+                    {r.po_delivery && r.po_delivery.state !== "none" && (
+                      <span className="istatus" style={r.po_delivery.state === "full"
+                        ? { background: "var(--warn-soft)", color: "var(--warn)", marginLeft: 6 }
+                        : { background: "var(--card-2)", color: "var(--muted)", marginLeft: 6 }}>
+                        {poDeliveryLabel(r.po_delivery)}
                       </span>
                     )}
                   </div>

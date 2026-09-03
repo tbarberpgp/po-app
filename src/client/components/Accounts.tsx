@@ -6,6 +6,7 @@ import { can } from "../../shared/permissions";
 import { Topbar } from "./Shell";
 import type { CurrentUser, Invoice, InvoiceMatch, InvoiceMatchLine, MatchSummary, Project } from "../../shared/types";
 import { NON_GOODS_LINE_IDS, PAYMENT_SCHEDULE_LINE_ID, SERVICE_CHARGE_LINE_ID } from "../../shared/line-match";
+import { poStatusHint, poDeliveryLabel } from "../../shared/po-delivery-status";
 
 // Amounts render in the invoice's OWN currency — a $ or € invoice shown with a
 // £ sign misreports what we owe. Falls back to sterling when unknown.
@@ -245,6 +246,18 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
                             {r.match && r.match.state !== "matched" && (
                               <span style={{ color: "var(--danger)", fontWeight: 600 }} title={matchTitle(r.match, r.currency)}>
                                 ⚠ {matchLabel(r.match, r.currency)}
+                              </span>
+                            )}
+                            {/* The matched order's delivery state, at a glance —
+                                whether the goods this invoice bills for have
+                                actually landed. Only shown once a PO is linked;
+                                an unmatched invoice has no order to report on. */}
+                            {r.po_delivery && r.po_delivery.state !== "none" && (
+                              <span
+                                style={{ color: r.po_delivery.state === "full" ? "var(--warn)" : "var(--muted)", fontWeight: r.po_delivery.state === "full" ? 600 : 400 }}
+                                title={r.po_delivery.lines_total ? `${r.po_delivery.lines_delivered} of ${r.po_delivery.lines_total} lines` : undefined}
+                              >
+                                {r.po_delivery.state === "full" ? "✓ " : ""}{poDeliveryLabel(r.po_delivery)}
                               </span>
                             )}
                           </div>
@@ -528,6 +541,13 @@ function MatchPanel({ inv, canEdit, onReload }: { inv: Invoice; canEdit: boolean
   const [ticketLb, setTicketLb] = useState<string | null>(null);
   const [ticketLbZoom, setTicketLbZoom] = useState(false);
   const [saving, setSaving] = useState(false);
+  // Off by default: an order received and billed in full drops out of the
+  // picker (it's kept for the invoice's OWN quoted ref and its current match
+  // regardless — see computeInvoiceMatch). A credit note or a late carriage
+  // charge against a finished order is rare enough to be one click away
+  // rather than clutter the other 90% of invoices that are matching a
+  // perfectly ordinary open order.
+  const [includeDelivered, setIncludeDelivered] = useState(false);
 
   const pushed = inv.status === "pushed";
   const approved = !!inv.approved_at;
@@ -536,12 +556,12 @@ function MatchPanel({ inv, canEdit, onReload }: { inv: Invoice; canEdit: boolean
   useEffect(() => {
     let alive = true;
     setLoading(true); setErr(null);
-    api.invoiceMatch(inv.id)
+    api.invoiceMatch(inv.id, { includeDelivered })
       .then((r) => { if (alive) setM(r); })
       .catch((e) => { if (alive) setErr(e instanceof Error ? e.message : "match failed"); })
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
-  }, [inv.id, inv.matched_po_id]);
+  }, [inv.id, inv.matched_po_id, includeDelivered]);
 
   const status = m?.match_status ?? "unmatched";
   const noteRequired = status !== "ok";
@@ -556,10 +576,23 @@ function MatchPanel({ inv, canEdit, onReload }: { inv: Invoice; canEdit: boolean
     if (!m) return [];
     const sug = m.suggested ?? [];
     const label = (po_number: string, supplier: string | null) => `${po_number}${supplier ? ` · ${supplier}` : ""}`;
+    // Where the order stands rides on the option itself. An order can take
+    // several delivery notes and several invoices, so "PO-26003-0038 · Fixfast"
+    // on its own gave the reader no way to tell an order that still has
+    // everything outstanding from one that has been received and paid for.
     const toOpt = (s: (typeof sug)[number]): ComboOption => ({
       value: s.id,
       label: label(s.po_number, s.supplier),
-      hint: [s.project_code, s.hits ? `${s.hits} item${s.hits > 1 ? "s" : ""} match` : ""].filter(Boolean).join(" · "),
+      hint: [
+        s.project_code,
+        s.hits ? `${s.hits} item${s.hits > 1 ? "s" : ""} match` : "",
+        s.delivery
+          ? poStatusHint(
+            { state: s.delivery, lines_delivered: s.lines_delivered ?? 0, lines_total: s.lines_total ?? 0, drops: s.drops ?? 0 },
+            s.billed,
+          )
+          : "",
+      ].filter(Boolean).join(" · "),
     });
     const out: ComboGroup[] = [];
     // Belt-and-braces: a stored match always stays visible even if it somehow
@@ -574,7 +607,21 @@ function MatchPanel({ inv, canEdit, onReload }: { inv: Invoice; canEdit: boolean
       ["other", "All other purchase orders"],
     ] as const;
     for (const [g, heading] of buckets) {
-      const options = sug.filter((s) => (s.group ?? "other") === g).map(toOpt);
+      const inBucket = sug.filter((s) => (s.group ?? "other") === g);
+      // The catch-all bucket is the whole book, and it is where "all of the POs
+      // are shown" actually bites. Finished orders already sort last inside it
+      // server-side; giving them their own heading turns that invisible
+      // boundary into something you can see and scroll past. The ranked buckets
+      // above keep their own order — a finished order can still be the right
+      // answer for a credit, and there the status hint is enough.
+      if (g === "other") {
+        const live = inBucket.filter((s) => !s.closed).map(toOpt);
+        const done = inBucket.filter((s) => s.closed).map(toOpt);
+        if (live.length) out.push({ label: heading, options: live });
+        if (done.length) out.push({ label: "Finished — received and billed in full", options: done });
+        continue;
+      }
+      const options = inBucket.map(toOpt);
       if (options.length) out.push({ label: heading, options });
     }
     if (out.length) out.push({ label: "Clear", options: [{ value: "", label: "— No PO —" }] });
@@ -790,6 +837,13 @@ function MatchPanel({ inv, canEdit, onReload }: { inv: Invoice; canEdit: boolean
                 whether the link is RIGHT, and sat green on invoices pointed at an
                 order they don't even quote. Both neutral states now say only how
                 the link was made; a suspect order gets its own red state. */}
+            {(m.closed_omitted > 0 || includeDelivered) && (
+              <label className="muted" style={{ fontSize: 11.5, display: "flex", alignItems: "center", gap: 5, cursor: "pointer", whiteSpace: "nowrap" }}
+                title="Orders received and billed in full are left out of the list above by default — this invoice's own quoted PO and its current match always stay reachable either way.">
+                <input type="checkbox" checked={includeDelivered} onChange={(e) => setIncludeDelivered(e.target.checked)} />
+                {includeDelivered ? "Showing delivered orders too" : `${m.closed_omitted} delivered order${m.closed_omitted === 1 ? "" : "s"} hidden`}
+              </label>
+            )}
             {m.matched_po && (poIdentityIssues.length
               ? <span className="pill" style={{ fontSize: 10.5, background: "transparent", border: "1px solid var(--danger)", color: "var(--danger)" }}
                       title="The linked order isn't the one this invoice quotes, or belongs to another job">Check this order</span>

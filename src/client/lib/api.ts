@@ -733,8 +733,8 @@ export const api = {
   reextractInvoice: (id: number) =>
     jfetch<{ ok: true; po_number: string | null }>(`/api/invoices/${id}/reextract`, { method: "POST" }),
   /** 3-way match: reconcile an invoice against its PO and logged deliveries. */
-  invoiceMatch: (id: number) =>
-    jfetch<import("../../shared/types").InvoiceMatch>(`/api/invoices/${id}/match`),
+  invoiceMatch: (id: number, opts?: { includeDelivered?: boolean }) =>
+    jfetch<import("../../shared/types").InvoiceMatch>(`/api/invoices/${id}/match${opts?.includeDelivered ? "?include_delivered=1" : ""}`),
   saveInvoiceMatch: (id: number, body: { po_id: string | null; line_po_ids?: Array<number | null> }) =>
     jfetch<{ ok: true }>(`/api/invoices/${id}/match`, { method: "POST", body: JSON.stringify(body) }),
   /** Goods collected from the merchant (no ticket) — log receipt against the PO. */

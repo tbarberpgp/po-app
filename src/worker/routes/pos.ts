@@ -4,6 +4,7 @@ import type { CreatePOInput, POLine } from "../../shared/types";
 import { loadSettings, tierForApproval } from "../approval";
 import { learnAliases } from "../matchMemory";
 import { normText } from "../../shared/line-match";
+import { summarisePoDeliveries, type PoLineRef, type PoDeliveryRow } from "../../shared/po-delivery-status";
 import { emailApprovers, emailRequesterDecision, emailFrameworkOverdraw, FRAMEWORK_OVERDRAW_RECIPIENTS } from "../notify";
 import { requirePermission } from "../auth";
 import { buildCostCode, derivedProjectNumber } from "../../shared/types";
@@ -404,12 +405,42 @@ pos.get("/", async (c) => {
      ORDER BY po.created_at DESC`;
   const rows = await c.env.DB.prepare(sql)
     .bind(...binds)
-    .all<Record<string, unknown> & { is_overdrawn: number }>();
+    .all<Record<string, unknown> & { id: string; is_overdrawn: number }>();
   // SQLite returns 0/1 — surface a real boolean so `{r.is_overdrawn && …}` in
   // JSX doesn't render a literal "0" on every non-overdrawn row (0 is falsy
   // but not `false`, so React prints it instead of skipping it).
   const withBooleans = rows.results.map((r) => ({ ...r, is_overdrawn: !!r.is_overdrawn }));
-  return c.json(withBooleans);
+
+  // How far each order has got on delivery, so the pickers that ask "which
+  // order is this drop against?" can say whether it has already been received
+  // in full. An order takes as many delivery notes as the supplier chooses to
+  // send, and without this the third note against a finished order read
+  // exactly like the first note against an open one.
+  //
+  // Both reads re-use the list's own WHERE clause through a join rather than
+  // binding the returned ids: an unfiltered list is the whole book, and an
+  // `IN (?,?,…)` over it would put the query straight into D1's bound-parameter
+  // ceiling. This way the cost is two extra reads and two extra binds.
+  const scope = `JOIN purchase_orders po ON po.id = %s
+       JOIN projects p ON p.id = po.project_id
+      ${where.length ? "WHERE " + where.join(" AND ") : ""}`;
+  const dLines = (await c.env.DB.prepare(
+    `SELECT pl.id, pl.po_id FROM po_lines pl ${scope.replace("%s", "pl.po_id")}`,
+  ).bind(...binds).all<PoLineRef>()).results;
+  const dDels = (await c.env.DB.prepare(
+    `SELECT d.po_id, d.po_line_id, d.completes_po FROM site_deliveries d ${scope.replace("%s", "d.po_id")}`,
+  ).bind(...binds).all<PoDeliveryRow>()).results;
+
+  return c.json(withBooleans.map((r) => {
+    const d = summarisePoDeliveries(String(r.id), dLines, dDels);
+    return {
+      ...r,
+      delivery_state: d.state,
+      delivery_drops: d.drops,
+      delivery_lines_delivered: d.lines_delivered,
+      delivery_lines_total: d.lines_total,
+    };
+  }));
 });
 
 pos.get("/:id", async (c) => {

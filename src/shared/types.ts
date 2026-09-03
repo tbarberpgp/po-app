@@ -1,6 +1,7 @@
 import type { VarianceReport } from "./delivery-variance";
 export type { VarianceReport, VarianceIssue } from "./delivery-variance";
 import type { MatchIssue, MatchSummary } from "./line-match";
+import type { PoDeliveryState, PoBilledState, PoDeliverySummary } from "./po-delivery-status";
 
 export type Project = {
   /** Client payment terms for this contract, e.g. "45 days from application". */
@@ -316,6 +317,17 @@ export type PurchaseOrder = {
   // GET /api/pos (the PO list) so it can flag the row without a per-PO
   // round trip; not present on the single-PO GET (that shows it per-line).
   is_overdrawn?: boolean;
+  // Where the order has got to on delivery. Set by GET /api/pos (the PO list)
+  // so the order pickers can show it without a round trip per row, and derived
+  // by the shared rule in `po-delivery-status.ts` — the same one the awaiting
+  // list and the invoice matcher use. Not present on the single-PO GET, which
+  // carries the per-line receipts themselves.
+  delivery_state?: PoDeliveryState;
+  /** Delivery notes logged against the order. More than one is the normal case
+   *  and the reason the state is worth showing at all. */
+  delivery_drops?: number;
+  delivery_lines_delivered?: number;
+  delivery_lines_total?: number;
   lines: POLine[];
 };
 
@@ -1096,8 +1108,12 @@ export type PoDeliveryStatus = {
   project_id: string;
   project_code: string;
   fully_delivered: boolean;
+  /** Same fact as `fully_delivered`, in the three-way form the pickers show. */
+  delivery_state: PoDeliveryState;
   lines_delivered: number;
   lines_total: number;
+  /** Delivery notes logged against the whole order. */
+  drops: number;
   lines: Array<{ id: number; item: string; qty: number; unit: string; delivered: boolean; in_progress: boolean; drops: number; delivered_qty: number | null; delivered_unit: string | null }>;
 };
 
@@ -1182,6 +1198,11 @@ export type DeliveryTicketCandidate = {
    *  match above compares only the reference printed on the ticket. Absent when
    *  the ticket points at no PO at all. */
   variance?: VarianceReport;
+  /** Where the whole ORDER (matched_po_id, or the guess) stands on delivery —
+   *  not just this ticket's own goods. An order can carry several delivery
+   *  notes, and without this a ticket against an order already recorded
+   *  complete looked exactly like one against an untouched order. */
+  po_delivery?: { state: PoDeliveryState; drops: number; lines_delivered: number; lines_total: number } | null;
 };
 
 /** Full reconciliation of one scanned ticket against a chosen (or best-guess) PO:
@@ -1195,6 +1216,10 @@ export type TicketReconciliation = {
   matched_po: { id: string; po_number: string; supplier: string | null; project_id: string; project_code: string; is_stored: boolean } | null;
   suggested: Array<{ id: string; po_number: string; supplier: string | null; project_code: string; hits: number }>;
   variance: VarianceReport;
+  /** Where the whole ORDER stands on delivery — how the inbox knows the ticket
+   *  on screen is the third note against an order already recorded complete.
+   *  Derived by the shared rule, so it agrees with the awaiting list. */
+  po_delivery: PoDeliverySummary;
   items: Array<{ desc: string; qty: number | null; unit: string | null; po_line_id: number | null; lc: number }>;
   po_lines: Array<{ id: number; desc: string; unit: string; ordered: number; received: number; remaining: number; prior: Array<{ date: string; qty: number; dn: string | null }> }>;
 };
@@ -1417,6 +1442,12 @@ export type Invoice = {
   supplier_id: number | null;
   supplier_name: string | null;
   matched_supplier_name: string | null;
+  /** Where the matched order stands on delivery — set on the list/detail read
+   *  when `matched_po_id` is set, so the inbox can flag an invoice against an
+   *  order that's already fully delivered (or, just as usefully, one that
+   *  isn't received at all yet). Derived by the same shared rule as the PO
+   *  list and the deliveries screens. */
+  po_delivery?: { state: PoDeliveryState; drops: number; lines_delivered: number; lines_total: number } | null;
   /** Account payment terms from the matched supplier ("Net 60 days EOM"). */
   supplier_payment_terms?: string | null;
   /** Due date the account terms imply (invoice_date + terms). */
@@ -1486,7 +1517,29 @@ export type InvoiceMatch = {
   matched_po: { id: string; po_number: string; supplier: string | null; project_id: string; project_code: string; total: number | null; is_stored: boolean } | null;
   /** Every live PO, best guesses first. `group` says which bucket each came from —
    *  the heuristics order the list, they don't limit what the user can pick. */
-  suggested: Array<{ id: string; po_number: string; supplier: string | null; project_code: string; hits: number; group?: "quoted" | "likely" | "project" | "other" }>;
+  suggested: Array<{
+    id: string; po_number: string; supplier: string | null; project_code: string; hits: number;
+    group?: "quoted" | "likely" | "project" | "other";
+    // Where the order stands on the other two legs, so the picker can say so on
+    // the option itself. An invoice normally arrives AFTER the goods, so a
+    // fully-delivered order is the likeliest match, not the least likely —
+    // which is why these annotate and re-order the list rather than trim it.
+    delivery?: PoDeliveryState;
+    /** Delivery notes logged against the order. */
+    drops?: number;
+    lines_delivered?: number;
+    lines_total?: number;
+    billed?: PoBilledState;
+    /** Received in full and billed in full — nothing left to invoice. Omitted
+     *  from `suggested` by default (see `closed_omitted`); sorted to the
+     *  bottom of its bucket on the rare list that does include them. */
+    closed?: boolean;
+  }>;
+  /** How many closed orders were left out of `suggested` by default. Not an
+   *  error state — it's what lets the picker say "12 delivered orders hidden"
+   *  instead of the list just being mysteriously shorter than the book. Refetch
+   *  with `?include_delivered=1` to get them back. */
+  closed_omitted: number;
   lines: InvoiceMatchLine[];
   /** Delivery records logged against the chosen PO — the tickets behind the
    *  delivered quantities, so the invoice view can show what actually arrived. */

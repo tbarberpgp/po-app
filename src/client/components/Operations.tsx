@@ -10,6 +10,7 @@ import { GroupedCombobox } from "./GroupedCombobox";
 import { generateAttendanceXlsx } from "../lib/attendance-xlsx";
 import { generateAttendancePdf, generateHsPackPdf } from "../lib/attendance-pdf";
 import { can } from "../../shared/permissions";
+import { poDeliveryLabel, type PoDeliveryState } from "../../shared/po-delivery-status";
 import { MATRIX_QUAL_TYPES, QUAL_TYPES } from "../lib/quals";
 import { generateTrainingMatrixXlsx } from "../lib/training-matrix-xlsx";
 import type {
@@ -2065,6 +2066,57 @@ export function WhatsappTicketsPanel({ projectId, onCheckedIn }: { projectId: st
 // Shared "which site + which PO/supplier" chooser. Used to steer a WhatsApp
 // ticket to the right site at check-in, and to move/reassign a delivery that
 // was logged against the wrong site. Picking a PO carries its supplier.
+/** A PO row from the list endpoint, reduced to the delivery state a picker
+ *  shows. An order can take several delivery notes, so "PO-26003-0038 ·
+ *  Fixfast" alone left no way to tell an untouched order from one that has
+ *  already been received in full — which is the difference between logging a
+ *  second drop and checking the same note in twice. */
+type PoRowDelivery = {
+  delivery_state?: PoDeliveryState;
+  delivery_drops?: number;
+  delivery_lines_delivered?: number;
+  delivery_lines_total?: number;
+};
+function poDeliveryText(p: PoRowDelivery): string {
+  if (!p.delivery_state) return "";
+  return poDeliveryLabel({
+    state: p.delivery_state,
+    lines_delivered: p.delivery_lines_delivered ?? 0,
+    lines_total: p.delivery_lines_total ?? 0,
+    drops: p.delivery_drops ?? 0,
+  });
+}
+/** Suffix for a native <option>, which can carry no markup of its own. */
+function poOptionSuffix(p: PoRowDelivery): string {
+  const t = poDeliveryText(p);
+  return t ? ` — ${t}` : "";
+}
+/** Said again under the select once an order is chosen: an already-complete
+ *  order is where a check-in is most likely to be a duplicate, and the option
+ *  text scrolls out of sight the moment the list closes. */
+function PoDeliveryLine({ po }: { po: PoRowDelivery | null }) {
+  if (!po?.delivery_state || po.delivery_state === "none") return null;
+  const drops = po.delivery_drops ?? 0;
+  // The bare `label` rule uppercases everything inside it, which is right for
+  // the field captions and wrong for a sentence — the same reset the other
+  // prose inside these labels carries.
+  const sentence: React.CSSProperties = { fontSize: 11.5, marginTop: 3, textTransform: "none", letterSpacing: 0, fontWeight: 400 };
+  if (po.delivery_state === "full") {
+    return (
+      <div style={{ ...sentence, color: "var(--warn)" }}>
+        Already fully delivered{drops > 1 ? ` — ${drops} notes logged against it` : ""}. This check-in adds a
+        further receipt.
+      </div>
+    );
+  }
+  const t = poDeliveryText(po);
+  return (
+    <div style={{ ...sentence, color: "var(--muted)" }}>
+      {t.charAt(0).toUpperCase() + t.slice(1)} — this drop adds to what has already arrived.
+    </div>
+  );
+}
+
 function SitePoChooser({ projects, initialSite, initialPoId, initialSupplier, initialCompletesPo, initialPoLineId, initialReceivedQty, initialReceivedUnit, busy, confirmLabel, onCancel, onConfirm }: {
   projects: Awaited<ReturnType<typeof api.listProjects>>;
   initialSite: string;
@@ -2127,8 +2179,9 @@ function SitePoChooser({ projects, initialSite, initialPoId, initialSupplier, in
       <label className="field"><span>Assign to PO</span>
         <select className="input" value={poId} onChange={(e) => setPoId(e.target.value)}>
           <option value="">— No PO — set supplier below —</option>
-          {pos.map((p) => <option key={p.id} value={p.id}>{p.po_number} · {p.supplier ?? "—"}{p.order_type === "framework" ? " (framework)" : p.order_type === "call_off" ? " (call-off)" : ""}</option>)}
+          {pos.map((p) => <option key={p.id} value={p.id}>{p.po_number} · {p.supplier ?? "—"}{p.order_type === "framework" ? " (framework)" : p.order_type === "call_off" ? " (call-off)" : ""}{poOptionSuffix(p)}</option>)}
         </select>
+        <PoDeliveryLine po={selPo} />
       </label>
       {selPo && poLines.length > 0 && (
         <label className="field"><span>PO line item <span className="muted" style={{ textTransform: "none", letterSpacing: 0, fontWeight: 400 }}>· optional</span></span>
@@ -2374,8 +2427,9 @@ function MultiLineCheckIn({ projectId, cand, projects, onCancel, onDone }: {
       <label className="field"><span>PO {suggested && <span className="pill ok" style={{ fontSize: 10, fontWeight: 400, textTransform: "none", letterSpacing: 0 }}>matched from item codes</span>}</span>
         <select className="input" value={poId} onChange={(e) => setPoId(e.target.value)}>
           <option value="">{suggesting ? "Finding the PO from item codes…" : "— Pick a PO —"}</option>
-          {pos.map((p) => <option key={p.id} value={p.id}>{p.po_number} · {p.supplier ?? "—"}{p.order_type === "call_off" ? " (call-off)" : ""}</option>)}
+          {pos.map((p) => <option key={p.id} value={p.id}>{p.po_number} · {p.supplier ?? "—"}{p.order_type === "call_off" ? " (call-off)" : ""}{poOptionSuffix(p)}</option>)}
         </select>
+        <PoDeliveryLine po={selPo} />
       </label>
       {poId && (
         <div style={{ display: "grid", gap: 4 }}>

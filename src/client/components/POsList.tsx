@@ -4,6 +4,7 @@ import { api, fmtDate, fmtMoney } from "../lib/api";
 import { Topbar } from "./Shell";
 import { can } from "../../shared/permissions";
 import type { CurrentUser, PurchaseOrder } from "../../shared/types";
+import { poDeliveryLabel } from "../../shared/po-delivery-status";
 
 type PickProject = { id: string; code: string; name: string; site_group_name?: string | null };
 
@@ -11,13 +12,17 @@ type Row = PurchaseOrder & { project_code: string; project_name: string };
 
 /** Sortable columns. `get` returns a comparable — string (localeCompare) or
  *  number/date-ms (numeric). */
-type SortKey = "po_number" | "project_code" | "supplier" | "total_value" | "status" | "created_at" | "created_by";
+type SortKey = "po_number" | "project_code" | "supplier" | "total_value" | "status" | "delivery" | "created_at" | "created_by";
+// Sorts nothing-received first and fully-delivered last, so clicking the
+// column heading surfaces the orders most likely to need a delivery logged.
+const DELIVERY_RANK: Record<string, number> = { none: 0, part: 1, full: 2 };
 const SORTS: Record<SortKey, (r: Row) => string | number> = {
   po_number: (r) => r.po_number ?? "",
   project_code: (r) => r.project_code ?? "",
   supplier: (r) => (r.supplier ?? "").toLowerCase(),
   total_value: (r) => r.total_value ?? 0,
   status: (r) => r.status ?? "",
+  delivery: (r) => DELIVERY_RANK[r.delivery_state ?? "none"] ?? 0,
   created_at: (r) => Date.parse(r.created_at ?? "") || 0,
   created_by: (r) => (r.created_by ?? "").toLowerCase(),
 };
@@ -168,6 +173,7 @@ export function POsList({ me }: { me: CurrentUser | null }) {
                   <SortTh k="supplier" label="Supplier" />
                   <SortTh k="total_value" label="Value" className="num" />
                   <SortTh k="status" label="Status" className="center" />
+                  <SortTh k="delivery" label="Delivery" className="center" />
                   <th className="center">Xero</th>
                   <SortTh k="created_at" label="Raised" />
                   <SortTh k="created_by" label="By" />
@@ -193,6 +199,24 @@ export function POsList({ me }: { me: CurrentUser | null }) {
                           overdrawn
                         </span>
                       )}
+                    </td>
+                    <td className="center">
+                      {r.delivery_state && r.delivery_state !== "none" ? (
+                        <span
+                          className="pill"
+                          style={r.delivery_state === "full"
+                            ? { background: "var(--warn-soft)", color: "var(--warn)" }
+                            : { background: "var(--card-2)", color: "var(--muted)", border: "1px solid var(--line)", fontSize: 10 }}
+                          title={r.delivery_lines_total ? `${r.delivery_lines_delivered ?? 0} of ${r.delivery_lines_total} lines` : undefined}
+                        >
+                          {poDeliveryLabel({
+                            state: r.delivery_state,
+                            lines_delivered: r.delivery_lines_delivered ?? 0,
+                            lines_total: r.delivery_lines_total ?? 0,
+                            drops: r.delivery_drops ?? 0,
+                          })}
+                        </span>
+                      ) : <span className="muted" style={{ fontSize: 11 }}>—</span>}
                     </td>
                     <td className="center">
                       {r.xero_sync_status === "synced" ? (

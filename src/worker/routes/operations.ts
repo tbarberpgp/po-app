@@ -14,6 +14,7 @@ import { buildHsPack } from "../../shared/hs-pack-pdf";
 import { fuzzyFindPo } from "../poRef";
 import { learnAliases, aliasMapsBySupplier, normText } from "../matchMemory";
 import { deliveryVariance, matchItemToLine, type VarianceLine, type PriorReceipt } from "../../shared/delivery-variance";
+import { summarisePoDeliveries, type PoDeliveryRow } from "../../shared/po-delivery-status";
 
 // Operations — Phase 1 (site-team basics). Authenticated app-side endpoints:
 // the supervisor's view of a site's QR/sign-in link, today's attendance,
@@ -1730,13 +1731,28 @@ operations.get("/deliveries-inbox", async (c) => {
      *  same note. Everything else is a genuinely earlier drop. */
     const isSelf = (pr: { scan_id: number | null; dn: string | null }, id: unknown, dn: unknown) =>
       pr.scan_id === id || (!!pr.dn && !!dn && String(pr.dn).trim() === String(dn).trim());
+
+    // Where the whole ORDER stands — not just the lines this ticket's own items
+    // touch. `priorRows` above excludes whole-PO receipts (it filters
+    // po_line_id IS NOT NULL, which the variance check needs), so a separate
+    // read carries completes_po for the shared rule. Same POs, one more column.
+    const orderDelRows = varPoIds.length ? (await c.env.DB.prepare(
+      `SELECT po_id, po_line_id, completes_po FROM site_deliveries WHERE po_id IN (${varPoIds.map(() => "?").join(",")})`,
+    ).bind(...varPoIds).all<PoDeliveryRow>()).results : [];
+
     candidates = varRows.map((x) => {
       const poId = (x.matched_po_id || x.guess_po_id) as string | null;
       if (!poId) return x;
       const poNo = (x.matched_po_number || x.guess_po_number) as string | null;
       const its = (x.items ?? []) as Array<{ description: string; qty: number | null; unit: string | null }>;
       const prior = (priorByPo.get(poId) ?? []).filter((pr) => !isSelf(pr, x.id, x.delivery_note_number));
-      return { ...x, variance: deliveryVariance(its, linesByPo.get(poId) ?? [], prior, poNo) };
+      const poLineRefs = guessLines.filter((l) => l.po_id === poId);
+      const d = summarisePoDeliveries(poId, poLineRefs, orderDelRows);
+      return {
+        ...x,
+        variance: deliveryVariance(its, linesByPo.get(poId) ?? [], prior, poNo),
+        po_delivery: { state: d.state, drops: d.drops, lines_delivered: d.lines_delivered, lines_total: d.lines_total },
+      };
     });
   } catch { candidates = []; }
 
@@ -1959,13 +1975,28 @@ operations.get("/:projectId/deliveries/ticket-candidates", async (c) => {
      *  same note. Everything else is a genuinely earlier drop. */
     const isSelf = (pr: { scan_id: number | null; dn: string | null }, id: unknown, dn: unknown) =>
       pr.scan_id === id || (!!pr.dn && !!dn && String(pr.dn).trim() === String(dn).trim());
+
+    // Where the whole ORDER stands — not just the lines this ticket's own items
+    // touch. `priorRows` above excludes whole-PO receipts (it filters
+    // po_line_id IS NOT NULL, which the variance check needs), so a separate
+    // read carries completes_po for the shared rule. Same POs, one more column.
+    const orderDelRows = varPoIds.length ? (await c.env.DB.prepare(
+      `SELECT po_id, po_line_id, completes_po FROM site_deliveries WHERE po_id IN (${varPoIds.map(() => "?").join(",")})`,
+    ).bind(...varPoIds).all<PoDeliveryRow>()).results : [];
+
     candidates = varRows.map((x) => {
       const poId = (x.matched_po_id || x.guess_po_id) as string | null;
       if (!poId) return x;
       const poNo = (x.matched_po_number || x.guess_po_number) as string | null;
       const its = (x.items ?? []) as Array<{ description: string; qty: number | null; unit: string | null }>;
       const prior = (priorByPo.get(poId) ?? []).filter((pr) => !isSelf(pr, x.id, x.delivery_note_number));
-      return { ...x, variance: deliveryVariance(its, linesByPo.get(poId) ?? [], prior, poNo) };
+      const poLineRefs = guessLines.filter((l) => l.po_id === poId);
+      const d = summarisePoDeliveries(poId, poLineRefs, orderDelRows);
+      return {
+        ...x,
+        variance: deliveryVariance(its, linesByPo.get(poId) ?? [], prior, poNo),
+        po_delivery: { state: d.state, drops: d.drops, lines_delivered: d.lines_delivered, lines_total: d.lines_total },
+      };
     });
   } catch { candidates = []; }
 
@@ -2087,6 +2118,7 @@ operations.get("/:projectId/deliveries/ticket-candidates/:id/reconcile", async (
       ticket: { id: scan.id, dn: scan.delivery_note_number, date: scan.delivery_date, supplier: scan.supplier_name, po_number: scan.po_number },
       method, conf, matched_po: null, suggested,
       variance: { ok: true, checked: false, issues: [], headline: null },
+      po_delivery: { state: "none" as const, lines_delivered: 0, lines_total: 0, drops: 0 },
       items: items.map((it) => ({ desc: it.description, qty: it.qty, unit: it.unit, po_line_id: null, lc: 0 })),
       po_lines: [],
     });
@@ -2139,9 +2171,23 @@ operations.get("/:projectId/deliveries/ticket-candidates/:id/reconcile", async (
     chosen.po_number,
   );
 
+  // Where the whole ORDER stands, not just the lines this ticket happens to
+  // touch. An order takes as many notes as the supplier chooses to send, and
+  // the inbox gave no sign that the ticket on screen was the third against an
+  // order already recorded complete.
+  //
+  // Every receipt on the order counts here, twin scans of this same note
+  // included — a note that has already been checked in once is precisely what
+  // the reader needs warning about. (The variance check excludes them for its
+  // own purposes: it must not compare a ticket against goods it delivered.)
+  const orderDels = (await c.env.DB.prepare(
+    "SELECT po_id, po_line_id, completes_po FROM site_deliveries WHERE po_id = ?",
+  ).bind(chosen.id).all<PoDeliveryRow>()).results;
+  const po_delivery = summarisePoDeliveries(chosen.id, poLines, orderDels);
+
   return c.json({
     ticket: { id: scan.id, dn: scan.delivery_note_number, date: scan.delivery_date, supplier: scan.supplier_name, po_number: scan.po_number },
-    method, conf, variance,
+    method, conf, variance, po_delivery,
     matched_po: { id: chosen.id, po_number: chosen.po_number, supplier: chosen.supplier, project_id: chosen.project_id, project_code: chosen.project_code, is_stored: scan.matched_po_id === chosen.id },
     suggested,
     items: outItems,
@@ -2544,13 +2590,18 @@ operations.get("/:projectId/deliveries/po-status", async (c) => {
       const deliveredUnit = lineDels.find((d) => d.received_unit)?.received_unit ?? null;
       return { id: l.id, item: l.item, qty: l.qty, unit: l.unit, delivered, in_progress: inProgress, drops: lineDels.length, delivered_qty: deliveredQty || null, delivered_unit: deliveredUnit };
     });
-    const fullyDelivered = wholePoDone || (poLines.length > 0 && poLines.every((l) => l.delivered));
+    // The order-level roll-up comes from the shared rule, so this list, the
+    // delivery check-in picker and the invoice matcher cannot drift apart on
+    // what "already delivered" means.
+    const summary = summarisePoDeliveries(po.id, lines, poDels);
     return {
       id: po.id, po_number: po.po_number, supplier: po.supplier, order_type: po.order_type,
       project_id: po.project_id, project_code: po.project_code,
-      fully_delivered: fullyDelivered,
-      lines_delivered: poLines.filter((l) => l.delivered).length,
-      lines_total: poLines.length,
+      fully_delivered: summary.state === "full",
+      delivery_state: summary.state,
+      lines_delivered: summary.lines_delivered,
+      lines_total: summary.lines_total,
+      drops: summary.drops,
       lines: poLines,
     };
   });

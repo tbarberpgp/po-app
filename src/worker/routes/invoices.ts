@@ -16,6 +16,7 @@ import { ensureXeroContact } from "./xero";
 import { createSalesInvoice, getInvoice, uploadAttachment } from "../xero/client";
 import { nextPONumber } from "./pos";
 import { aliasMap, aliasMapsBySupplier, learnAliases, normText } from "../matchMemory";
+import { summarisePoDeliveries, poBilledState, isPoClosed, type PoDeliveryRow, type PoLineRef } from "../../shared/po-delivery-status";
 import { findSuccessor, fuzzyFindPo, type PoLifecycle } from "../poRef";
 import { pickProjectByAddress, type AddrProject } from "../addrMatch";
 import { siteScope } from "./operations";
@@ -783,7 +784,33 @@ async function withMatchState(env: Env, rows: Record<string, unknown>[]): Promis
       poMeta.set(m.id, { po_number: m.po_number, project_code: m.project_code, total_value: m.total_value });
     }
   }
+
+  // Delivery state per matched order, so the inbox row can flag "already fully
+  // delivered" (or "nothing received yet") without opening the invoice. Same
+  // shared rule as the PO list and deliveries screens — chunked the same way
+  // as the po_lines read just above, over the same id set.
+  const delsByPo = new Map<string, PoDeliveryRow[]>();
+  for (let i = 0; i < poIds.length; i += 90) {
+    const chunk = poIds.slice(i, i + 90);
+    const marks = chunk.map(() => "?").join(",");
+    const res = await env.DB.prepare(
+      `SELECT po_id, po_line_id, completes_po FROM site_deliveries WHERE po_id IN (${marks})`,
+    ).bind(...chunk).all<PoDeliveryRow>();
+    for (const d of res.results) {
+      const arr = delsByPo.get(d.po_id) ?? [];
+      arr.push(d);
+      delsByPo.set(d.po_id, arr);
+    }
+  }
+  const poDeliveryFor = (poId: string) => {
+    const lines: PoLineRef[] = (byPo.get(poId) ?? []).map((l) => ({ id: l.id, po_id: poId }));
+    const s = summarisePoDeliveries(poId, lines, delsByPo.get(poId) ?? []);
+    return { state: s.state, drops: s.drops, lines_delivered: s.lines_delivered, lines_total: s.lines_total };
+  };
+
   return rows.map((r) => {
+    const matchedPoId = r.matched_po_id as string | null;
+    if (matchedPoId) r = { ...r, po_delivery: poDeliveryFor(matchedPoId) };
     // Only project invoices reconcile against an order; overheads are coded to a
     // nominal and have nothing to compare.
     if (r.kind !== "project") return r;
@@ -834,7 +861,7 @@ async function withMatchState(env: Env, rows: Record<string, unknown>[]): Promis
  *   ok      → all three legs agree (PO matched, lines linked, delivered, priced)
  * Shared by the GET endpoint and the approval gate.
  */
-async function computeInvoiceMatch(env: Env, inv: Record<string, unknown>) {
+async function computeInvoiceMatch(env: Env, inv: Record<string, unknown>, opts: { includeClosed?: boolean } = {}) {
   let invLines: InvLine[] = [];
   try { invLines = inv.lines_json ? JSON.parse(String(inv.lines_json)) : []; } catch { /* none */ }
 
@@ -990,8 +1017,71 @@ async function computeInvoiceMatch(env: Env, inv: Record<string, unknown>) {
   }
   for (const p of pos) pushSug(asSug(p, "other"));
 
+  // Where each candidate stands on the other two legs, so the picker can say so
+  // on the option itself rather than offering 86 indistinguishable numbers.
+  //
+  // Nothing is trimmed, and that is the whole design. An invoice arrives AFTER
+  // the goods, so a fully delivered order is the LIKELIEST match for one —
+  // filtering delivered orders out of this list would hide precisely the right
+  // answers. What earns a demotion is an order finished on both legs: received
+  // in full and billed in full, with nothing left for another invoice to
+  // attach to. Those sort to the bottom of their own bucket and stay one click
+  // away, because a credit note or a late carriage charge still has to be able
+  // to reach its order.
+  //
+  // Both reads mirror the candidate query's WHERE through a join instead of
+  // binding the ids: the pool is every live order in the book, and an
+  // `IN (?,?,…)` over it would sit on D1's bound-parameter ceiling.
+  const poScope = `JOIN purchase_orders po ON po.id = %s
+       JOIN projects p ON p.id = po.project_id
+      WHERE po.status != 'deleted' AND po.order_type != 'framework' AND p.deleted_at IS NULL`;
+  const delRows = (await env.DB.prepare(
+    `SELECT d.po_id, d.po_line_id, d.completes_po FROM site_deliveries d ${poScope.replace("%s", "d.po_id")}`,
+  ).all<PoDeliveryRow>()).results;
+  // Billed-to-date per order, excluding the invoice being matched — counting it
+  // would let the invoice in front of you push its own candidate to "fully
+  // billed" and then demote it for being finished.
+  const billedRows = (await env.DB.prepare(
+    `SELECT i.matched_po_id AS po_id, COALESCE(SUM(i.net_amount), 0) AS s
+       FROM invoices i ${poScope.replace("%s", "i.matched_po_id")}
+        AND i.status != 'dismissed' AND i.id != ?
+      GROUP BY i.matched_po_id`,
+  ).bind(inv.id).all<{ po_id: string; s: number }>()).results;
+  const billedByPo = new Map(billedRows.map((r) => [r.po_id, r.s]));
+  const poValueById = new Map(pos.map((p) => [p.id, p.total_value]));
+  const annotated = suggested.map((sg) => {
+    const d = summarisePoDeliveries(sg.id, allLines, delRows);
+    const billed = poBilledState(billedByPo.get(sg.id) ?? 0, poValueById.get(sg.id));
+    return {
+      ...sg,
+      delivery: d.state, drops: d.drops,
+      lines_delivered: d.lines_delivered, lines_total: d.lines_total,
+      billed, closed: isPoClosed(d.state, billed),
+    };
+  });
+  // Buckets keep their order; finished orders go last inside each one. The sort
+  // is stable, so the quantity-fit / item-code ranking inside "likely" and the
+  // PO-number ordering inside "other" both survive it.
+  const GROUP_RANK = { quoted: 0, likely: 1, project: 2, other: 3 } as const;
+  annotated.sort((a, b) => (GROUP_RANK[a.group] - GROUP_RANK[b.group]) || (Number(a.closed) - Number(b.closed)));
+
+  // Received in full and billed in full — nothing left for another invoice to
+  // attach to — drop out of the picker entirely by default. Kept reachable in
+  // exactly two cases where dropping it would hide the right answer outright:
+  // the order this invoice is ALREADY matched to (so approving/re-approving
+  // never loses the link under you), and a DIRECT hit on the PO number the
+  // invoice itself prints (that is the supplier telling you which order this
+  // is — a closed order is still evidence, not noise, e.g. a credit note or a
+  // late carriage charge against a finished job). Everything else closed is
+  // one checkbox away via `includeClosed`, never permanently hidden.
+  const currentId = chosenId;
+  const filtered = opts.includeClosed
+    ? annotated
+    : annotated.filter((s) => !s.closed || s.group === "quoted" || s.id === currentId);
+  const closedOmitted = annotated.length - filtered.length;
+
   if (!chosen) {
-    return { matched_po: null, suggested, deliveries: [], lines: invLines.map((l) => ({ description: l.description ?? "", qty: l.qty ?? null, unit_price: l.unit_price ?? null, amount: l.amount ?? null, po_line_id: null, po_line_item: null, po_qty: null, po_unit_cost: null, delivered_qty: null, flags: ["no_po_line"] })), match_status: "no_po" as const, po_ref: poRefOut };
+    return { matched_po: null, suggested: filtered, closed_omitted: closedOmitted, deliveries: [], lines: invLines.map((l) => ({ description: l.description ?? "", qty: l.qty ?? null, unit_price: l.unit_price ?? null, amount: l.amount ?? null, po_line_id: null, po_line_item: null, po_qty: null, po_unit_cost: null, delivered_qty: null, flags: ["no_po_line"] })), match_status: "no_po" as const, po_ref: poRefOut };
   }
 
   const poLines = allLines.filter((l) => l.po_id === chosen.id);
@@ -1111,7 +1201,8 @@ async function computeInvoiceMatch(env: Env, inv: Record<string, unknown>) {
 
   return {
     matched_po: { id: chosen.id, po_number: chosen.po_number, supplier: chosen.supplier, project_id: chosen.project_id, project_code: chosen.project_code, total: chosen.total_value ?? null, is_stored: !!inv.matched_po_id },
-    suggested,
+    suggested: filtered,
+    closed_omitted: closedOmitted,
     deliveries,
     lines,
     // The chosen PO's own lines, so the UI can offer a per-invoice-line PO-line
@@ -1128,7 +1219,8 @@ invoices.get("/:id/match", async (c) => {
   if (denied) return denied;
   const inv = await c.env.DB.prepare("SELECT * FROM invoices WHERE id = ?").bind(c.req.param("id")).first<Record<string, unknown>>();
   if (!inv) return c.json({ error: "not found" }, 404);
-  return c.json(await computeInvoiceMatch(c.env, inv));
+  const includeClosed = c.req.query("include_delivered") === "1";
+  return c.json(await computeInvoiceMatch(c.env, inv, { includeClosed }));
 });
 
 /** Persist the chosen PO and per-line PO-line mappings for an invoice. */
