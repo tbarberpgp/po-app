@@ -108,11 +108,19 @@ export function POView({ me }: { me: CurrentUser | null }) {
 
   if (!po) return <main className="muted">Loading…</main>;
 
+  // An amend after rejection can leave a PO with no tier at all; the worker
+  // then accepts any approver, so mirror that here rather than hiding the
+  // button on a PO the API would let you approve.
+  const holdsTier = po.approval_tier != null
+    ? me?.approver_tiers.includes(po.approval_tier) ?? false
+    : me?.is_approver ?? false;
+  // A rejection isn't the end of the road: the approver who turned a PO down
+  // can change their mind and approve it here, which overturns the rejection.
+  const wasRejected = po.status === "rejected";
   const canApprove =
-    po.status === "pending_approval" &&
+    (po.status === "pending_approval" || wasRejected) &&
     me?.is_approver &&
-    po.approval_tier != null &&
-    me.approver_tiers.includes(po.approval_tier);
+    holdsTier;
   const canIssue = po.status === "approved" && me?.email === po.created_by && can(me?.role, "pos.issue");
   const isDeleted = po.status === "deleted";
   // Approved-supplier register status for this PO's supplier (same banners as New PO).
@@ -522,11 +530,22 @@ export function POView({ me }: { me: CurrentUser | null }) {
           <div className="inspector">
             {canApprove && !showReject && (
               <div className="decision-card">
-                <div className="eyebrow">Your decision</div>
+                <div className="eyebrow">{wasRejected ? "Changed your mind?" : "Your decision"}</div>
                 <h3 className="serif">Approve {po.po_number}?</h3>
-                <p className="explainer">
-                  This PO needs <b>{po.approval_tier?.replace("_", " ")}</b> approval — reason: {po.approval_reason?.replace("_", " ")}.
-                </p>
+                {wasRejected ? (
+                  <p className="explainer">
+                    This PO was <b>rejected</b>
+                    {po.rejected_by ? <> by {po.rejected_by === me?.email ? "you" : po.rejected_by}</> : null}
+                    {po.rejected_at ? <> on {fmtDate(po.rejected_at)}</> : null}
+                    {po.rejection_reason ? <> — “{po.rejection_reason}”</> : null}.
+                    Approving now overturns that: {po.created_by} is told it's approved and the
+                    order can be issued. The rejection stays in the activity trail below.
+                  </p>
+                ) : (
+                  <p className="explainer">
+                    This PO needs <b>{po.approval_tier?.replace("_", " ")}</b> approval — reason: {po.approval_reason?.replace("_", " ")}.
+                  </p>
+                )}
                 <textarea
                   rows={3}
                   value={approveNote}
@@ -540,12 +559,14 @@ export function POView({ me }: { me: CurrentUser | null }) {
                     disabled={busy}
                     onClick={() => act(() => api.approvePO(po.id))}
                   >
-                    Approve {fmtMoney(po.total_value)}
+                    {wasRejected ? "Approve anyway" : "Approve"} {fmtMoney(po.total_value)}
                   </button>
-                  <div className="pair">
-                    <button className="ghost" disabled={busy}>Request changes</button>
-                    <button className="danger" disabled={busy} onClick={() => setShowReject(true)}>Reject</button>
-                  </div>
+                  {!wasRejected && (
+                    <div className="pair">
+                      <button className="ghost" disabled={busy}>Request changes</button>
+                      <button className="danger" disabled={busy} onClick={() => setShowReject(true)}>Reject</button>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -728,6 +749,7 @@ function ReasonExplainer({ po }: { po: PurchaseOrder }) {
 }
 
 function ActivityRow({ entry, highlight }: { entry: Activity[number]; highlight: boolean }) {
+  const overturn = entry.details ? tryParseOverturn(entry.details) : null;
   return (
     <div className="activity-row">
       <div className={`avatar${highlight ? " accent" : ""}`}>{initials(entry.actor)}</div>
@@ -735,6 +757,11 @@ function ActivityRow({ entry, highlight }: { entry: Activity[number]; highlight:
         <div><b>{entry.actor}</b> {actionVerb(entry.action)} this PO</div>
         {entry.details && tryParseQuote(entry.details) && (
           <div className="quote">“{tryParseQuote(entry.details)}”</div>
+        )}
+        {overturn && (
+          <div className="muted" style={{ fontSize: 12, marginTop: 2 }}>
+            Overturned the earlier rejection{overturn.rejected_by ? ` by ${overturn.rejected_by}` : ""}.
+          </div>
         )}
       </div>
       <div className="ts">{fmtDate(entry.created_at)}</div>
@@ -750,6 +777,14 @@ function actionVerb(a: string): string {
     case "issued": return "marked as issued for";
     default: return a;
   }
+}
+
+/** An approval that overturned a rejection carries the rejection it replaced. */
+function tryParseOverturn(details: string): { rejected_by: string | null } | null {
+  try {
+    const o = JSON.parse(details);
+    return o?.overturned_rejection ?? null;
+  } catch { return null; }
 }
 
 function tryParseQuote(details: string): string | null {

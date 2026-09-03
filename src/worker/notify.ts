@@ -397,6 +397,9 @@ export async function emailRequesterDecision(
     requesterEmail: string;
     actorEmail: string;
     reason?: string | null;
+    /** Set when this approval overturns an earlier rejection — the requester
+     *  has already had the rejection email, so say so plainly. */
+    overturns?: { rejectedBy: string | null; reason: string | null } | null;
   },
 ) {
   if (!env.RESEND_API_KEY) {
@@ -411,8 +414,16 @@ export async function emailRequesterDecision(
     args.decision === "rejected" && args.reason
       ? `<p><b>Reason:</b> ${escapeHtml(args.reason)}</p>`
       : "";
+  const overturnBlock = args.overturns
+    ? `<p>This <b>replaces the earlier rejection</b>${
+        args.overturns.rejectedBy ? ` by ${escapeHtml(args.overturns.rejectedBy)}` : ""
+      }${
+        args.overturns.reason ? ` (&ldquo;${escapeHtml(args.overturns.reason)}&rdquo;)` : ""
+      } — the order is approved and can be issued.</p>`
+    : "";
   const html = `
     <p>Your purchase order has been <b>${verb}</b> by <b>${escapeHtml(args.actorEmail)}</b>.</p>
+    ${overturnBlock}
     <table style="border-collapse:collapse">
       <tr><td><b>PO number</b></td><td>${escapeHtml(args.po.po_number)}</td></tr>
       <tr><td><b>Project</b></td><td>${escapeHtml(args.project.code)} — ${escapeHtml(args.project.name)}</td></tr>

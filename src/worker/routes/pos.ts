@@ -1184,11 +1184,32 @@ pos.post("/:id/lines/:lineId/assign-budget", async (c) => {
   return c.json({ ok: true, material_id: materialId, call_off_lines: cascaded });
 });
 
+/**
+ * Which statuses the approve endpoint accepts, and whether approving now
+ * overturns a rejection.
+ *
+ * 'pending_approval' is the normal path. 'rejected' is an approver changing
+ * their mind: a rejection used to be the end of the road — an amend
+ * deliberately preserves workflow status, so nothing could move a rejected PO
+ * again and the only way forward was to raise the whole order a second time.
+ * Approving from 'rejected' runs the identical path (same email to the
+ * requester, same Xero push) and clears the rejection off the row; the audit
+ * trail keeps what was rejected, by whom and why.
+ */
+export function approveGate(
+  status: string,
+): { ok: true; reversal: boolean } | { ok: false; error: string } {
+  if (status === "pending_approval") return { ok: true, reversal: false };
+  if (status === "rejected") return { ok: true, reversal: true };
+  return { ok: false, error: `cannot approve a ${status} PO` };
+}
+
 pos.post("/:id/approve", async (c) => {
   const id = c.req.param("id");
   const actor = c.get("userEmail");
   const po = await c.env.DB.prepare(
     `SELECT po.id, po.project_id, po.status, po.approval_tier, po.po_number, po.supplier, po.total_value, po.created_by,
+            po.rejected_at, po.rejected_by, po.rejection_reason,
             p.code AS project_code, p.name AS project_name
      FROM purchase_orders po
      JOIN projects p ON p.id = po.project_id
@@ -1198,31 +1219,50 @@ pos.post("/:id/approve", async (c) => {
     .first<{
       id: string; project_id: string; status: string; approval_tier: string | null;
       po_number: string; supplier: string; total_value: number; created_by: string;
+      rejected_at: string | null; rejected_by: string | null; rejection_reason: string | null;
       project_code: string; project_name: string;
     }>();
   if (!po) return c.json({ error: "not found" }, 404);
-  if (po.status !== "pending_approval") {
-    return c.json({ error: `cannot approve a ${po.status} PO` }, 409);
-  }
-  const approver = await c.env.DB.prepare(
-    "SELECT 1 AS ok FROM approvers WHERE lower(email) = ? AND tier = ? LIMIT 1",
-  )
-    .bind(actor, po.approval_tier ?? "")
-    .first();
+  const gate = approveGate(po.status);
+  if (!gate.ok) return c.json({ error: gate.error }, 409);
+  // Authority to approve belongs to the tier. A PO amended after it was
+  // rejected can have been recomputed out of the approval net altogether and
+  // left with no tier, so fall back to "is an approver at all" rather than
+  // dead-ending it on a tier nobody holds.
+  const approver = po.approval_tier
+    ? await c.env.DB.prepare(
+        "SELECT 1 AS ok FROM approvers WHERE lower(email) = ? AND tier = ? LIMIT 1",
+      ).bind(actor, po.approval_tier).first()
+    : await c.env.DB.prepare(
+        "SELECT 1 AS ok FROM approvers WHERE lower(email) = ? LIMIT 1",
+      ).bind(actor).first();
   if (!approver) {
     return c.json({ error: "you are not an approver for this tier" }, 403);
   }
   const now = new Date().toISOString();
+  // Clearing the rejection columns is a no-op on the normal path.
   await c.env.DB.prepare(
-    "UPDATE purchase_orders SET status = 'approved', approved_at = ?, approved_by = ? WHERE id = ?",
+    `UPDATE purchase_orders
+        SET status = 'approved', approved_at = ?, approved_by = ?,
+            rejected_at = NULL, rejected_by = NULL, rejection_reason = NULL
+      WHERE id = ?`,
   )
     .bind(now, actor, id)
     .run();
+  const overturned = gate.reversal
+    ? {
+        overturned_rejection: {
+          rejected_by: po.rejected_by,
+          rejected_at: po.rejected_at,
+          reason: po.rejection_reason,
+        },
+      }
+    : null;
   await c.env.DB.prepare(
     `INSERT INTO audit_log (entity_type, entity_id, action, actor, details, created_at)
-     VALUES ('po', ?, 'approved', ?, NULL, ?)`,
+     VALUES ('po', ?, 'approved', ?, ?, ?)`,
   )
-    .bind(id, actor, now)
+    .bind(id, actor, overturned ? JSON.stringify(overturned) : null, now)
     .run();
 
   if (!isSandboxId(po.project_id)) c.executionCtx.waitUntil(
@@ -1232,6 +1272,9 @@ pos.post("/:id/approve", async (c) => {
       project: { code: po.project_code, name: po.project_name },
       requesterEmail: po.created_by,
       actorEmail: actor,
+      overturns: gate.reversal
+        ? { rejectedBy: po.rejected_by, reason: po.rejection_reason }
+        : null,
     }),
   );
 
