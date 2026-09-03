@@ -14,7 +14,7 @@ import { QitpDashboard } from "./QitpDashboard";
 import { SubBadge, SubstituteAction } from "./MaterialSubstitute";
 import type { ApplicationForPayment, CurrentUser, LabourByCostCode, MaterialWithCommitment, OffBoqMaterial, Project, ProjectCommercial, PurchaseOrder } from "../../shared/types";
 import {
-  summariseMaterials, computeForecast, matSupplier, contractTotals, effectiveSpendRate, quoteSavingsOf,
+  summariseMaterials, computeForecast, totalChange, matSupplier, contractTotals, effectiveSpendRate, quoteSavingsOf,
   pricedBudgetDrill, committedDrill, materialSavingsDrill,
   labourSavingsDrill, variationProfitDrill, unpricedDrill, unexpectedSpendDrill, applicationsDrill,
   offBoqRow, materialAddedAt, materialModifiedAt, type Forecast, type MatRow,
@@ -1566,7 +1566,14 @@ export function ForecastDashboard({ f, sections = ["forecast", "levers", "applie
             {f.omittedValue > 0.005 && (
               <Kpi label="Omitted from scope" value={fmtMoney(f.omittedValue)} sub="BOQ items no longer being bought" tone="success" />
             )}
-            <Kpi label="Total Change in Profit/Loss" value={fmtMoney(f.materialSavings + f.labourSavings + f.varProfit + f.omittedValue - f.unexpectedSpend)} sub="vs base contract" tone={moneyTone(f.materialSavings + f.labourSavings + f.varProfit + f.omittedValue - f.unexpectedSpend)} />
+            {/* Contingency is a lever like any other — money added to forecast
+                cost, so it comes off forecast profit. It used to appear only in
+                the Forecast Final Cost sub-line while Total Change ignored it,
+                which left the tile overstating profit by exactly the buffer. */}
+            {f.contingency > 0.005 && (
+              <Kpi label="Contingency" value={fmtMoney(-f.contingency)} sub="buffer held in forecast cost" tone="danger" />
+            )}
+            <Kpi label="Total Change in Profit/Loss" value={fmtMoney(totalChange(f))} sub="vs base contract" tone={moneyTone(totalChange(f))} />
           </div>
         </>
       )}

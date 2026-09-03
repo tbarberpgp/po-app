@@ -646,6 +646,20 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
                     ))}
                   </tbody>
                 </table>
+                {/* The blocks' own figures each carry their own over-runs; the
+                    combined figure nets a material across the site first, so the
+                    column genuinely doesn't add to the headline. Say so with the
+                    amount rather than leaving a QS to find the gap by hand. */}
+                {(() => {
+                  const netted = perBlock.reduce((t, b) => t + b.ffc, 0) - fc.ffc;
+                  return netted > 0.005 ? (
+                    <p className="muted" style={{ padding: "10px 14px 2px", fontSize: 12.5, margin: 0 }}>
+                      These add to {fmtMoney(perBlock.reduce((t, b) => t + b.ffc, 0))} — {fmtMoney(netted)} more than the
+                      combined forecast cost above. Each block counts its own over-ordering; across the site those
+                      materials are inside budget, so the combined figure doesn't. Open a block to see its own position.
+                    </p>
+                  ) : null;
+                })()}
               </div>
             )}
 

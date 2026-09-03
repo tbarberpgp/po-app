@@ -3,9 +3,10 @@ import assert from "node:assert/strict";
 import {
   accumulateMaterials, materialOverspendOf, summariseMaterials, oneScope,
   unexpectedSpendDrill, combinedUnexpectedSpendDrill, withCombinedOverspend,
+  computeForecast, contractTotals, totalChange,
   type UnpricedLine, type Forecast,
 } from "./commercials";
-import type { MaterialWithCommitment } from "../../shared/types";
+import type { MaterialWithCommitment, ProjectCommercial } from "../../shared/types";
 
 /** A priced BOQ row — only the fields the commercial maths reads. */
 function mat(o: Partial<MaterialWithCommitment> & { item: string; cost: number; total_units: number; committed_qty: number }): MaterialWithCommitment {
@@ -145,4 +146,49 @@ test("re-basing the overspend pulls forecast cost, profit and GP% with it", () =
   assert.ok(Math.abs(fc.ffc - (900 - OVER_26001)) < 0.01);
   assert.ok(Math.abs(fc.forecastProfit - (1000 - fc.ffc)) < 0.01);
   assert.ok(Math.abs((fc.forecastGpPct ?? 0) - fc.forecastProfit / 1000) < 1e-9);
+});
+
+// ── The levers have to add up to the outturn ────────────────────────────────
+
+/** Total Change in Profit/Loss is the profit-lever tiles summed; Forecast Profit
+ *  comes the other way round, off contract value and cost. They are the same
+ *  quantity, so they have to agree — a term that reaches one and not the other
+ *  is the bug this guards. */
+function forecastWith(o: { contingency?: number; committed?: number; unpriced?: number; variationSell?: number; variationCost?: number }) {
+  const commercials = [{ is_total: 1, value: 100_000, cost: 80_000 }] as unknown as ProjectCommercial[];
+  const mats = [mat({ item: "Butyl Tape", cost: 10, total_units: 1000, committed_qty: o.committed ?? 0, live_unit_price: 9 })];
+  const variations = (o.variationSell || o.variationCost)
+    ? [{ sell_value: o.variationSell ?? 0, material_budget: o.variationCost ?? 0, labour_budget: 0 }] as never[]
+    : [];
+  return computeForecast({
+    commercials, variations, contractItems: [], afps: [], mats,
+    contingency: o.contingency ?? 0,
+    summary: summariseMaterials(mats, o.unpriced ?? 0),
+  });
+}
+
+const contractGp = () => {
+  const ct = contractTotals([{ is_total: 1, value: 100_000, cost: 80_000 }] as unknown as ProjectCommercial[])!;
+  return ct.value - ct.cost;
+};
+
+for (const [name, opts] of [
+  ["a bare contract", {}],
+  ["with a contingency", { contingency: 5_000 }],
+  ["with material spend over budget", { committed: 1200 }],
+  ["with off-BOQ spend", { unpriced: 3_000 }],
+  ["with a variation", { variationSell: 9_000, variationCost: 6_000 }],
+  ["with all of them at once", { contingency: 5_000, committed: 1200, unpriced: 3_000, variationSell: 9_000, variationCost: 6_000 }],
+] as const) {
+  test(`the levers reconcile to forecast profit — ${name}`, () => {
+    const f = forecastWith(opts);
+    assert.ok(
+      Math.abs(totalChange(f) - (f.forecastProfit - contractGp())) < 0.005,
+      `levers ${totalChange(f).toFixed(2)} vs outturn ${(f.forecastProfit - contractGp()).toFixed(2)}`,
+    );
+  });
+}
+
+test("a contingency comes off the change in profit, pound for pound", () => {
+  assert.equal(totalChange(forecastWith({})) - totalChange(forecastWith({ contingency: 5_000 })), 5_000);
 });

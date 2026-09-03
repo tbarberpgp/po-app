@@ -357,6 +357,15 @@ export function computeForecast(input: {
   };
 }
 
+/** Every lever added up — what the forecast says the job will make or lose
+ *  against the contract it was priced at. Identical by construction to
+ *  `forecastProfit − contract gross profit`: the same terms, rearranged (see the
+ *  test). Keep the two in step — anything that joins forecast cost belongs here
+ *  too, or the tile and the Forecast outturn row start telling different
+ *  stories, which is what contingency did until 2026-09-03. */
+export const totalChange = (f: Forecast): number =>
+  f.materialSavings + f.labourSavings + f.varProfit + f.omittedValue - f.unexpectedSpend - f.contingency;
+
 /** Sum two forecasts (used to combine per-block forecasts on the group page). */
 export function addForecasts(a: Forecast, b: Forecast): Forecast {
   const ffa = a.ffa + b.ffa, ffc = a.ffc + b.ffc;
