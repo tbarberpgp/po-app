@@ -426,6 +426,7 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
         key: "__assign", label: "",
         fmt: (_v, row) => (row.__line_id != null
           ? <AssignBudgetCell poId={String(row.__po_id)} lineId={Number(row.__line_id)}
+              suggestId={row.__suggest_id as number | undefined} suggestItem={row.__suggest_item as string | undefined}
               mats={matsByBlock.get(String(row.__block)) ?? []} onAssigned={load} />
           : null),
       }];
@@ -442,6 +443,7 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
         key: "__assign", label: "",
         fmt: (_v, row) => (row.__line_id != null
           ? <AssignBudgetCell poId={String(row.__po_id)} lineId={Number(row.__line_id)}
+              suggestId={row.__suggest_id as number | undefined} suggestItem={row.__suggest_item as string | undefined}
               mats={matsByBlock.get(String(row.__block)) ?? []} onAssigned={load} />
           : null),
       }];

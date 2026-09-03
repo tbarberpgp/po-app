@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import Anthropic from "@anthropic-ai/sdk";
 import type { Env, Variables } from "../env";
+import { aliasMapsBySupplier, normText } from "../matchMemory";
 import { requirePermission } from "../auth";
 
 export const projects = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -420,9 +421,56 @@ projects.get("/:id/summary", async (c) => {
     }>();
 
   const unpriced_spend = unpricedLines.results.reduce((s, r) => s + (r.line_total ?? 0), 0);
+
+  // Codings this project's team has already made. Assigning a PO line to a
+  // budget line records the mapping (learnAliases in pos.ts, kind
+  // 'budget_item') so "the same mapping never has to be made by hand twice" —
+  // but until now only the invoice matcher read those aliases back. The person
+  // who patiently taught the app that this supplier's "Carriage" belongs to a
+  // particular budget line got no benefit on the screen where they taught it,
+  // and coded it again the next month.
+  //
+  // Suggested, never applied: the £ still sits in unpriced spend until someone
+  // accepts it. Auto-coding at this point would silently move money between
+  // budget lines, and at PO creation it would also change approval routing —
+  // a wrongly-learned alias could let an order auto-approve.
+  const suggestions = new Map<number, { material_id: number; item: string }>();
+  if (unpricedLines.results.length > 0) {
+    try {
+      const [aliases, mats] = await Promise.all([
+        aliasMapsBySupplier(c.env.DB, "budget_item"),
+        c.env.DB.prepare(
+          `SELECT m.id, m.item FROM materials m
+             JOIN material_snapshots s ON s.id = m.snapshot_id
+            WHERE s.project_id = ? AND s.is_active = 1`,
+        ).bind(id).all<{ id: number; item: string }>(),
+      ]);
+      // target_norm (the budget line's wording) back to a material on THIS
+      // project — an alias learned on another job still applies here, as long
+      // as this project's bill carries a line with the same wording.
+      const byNorm = new Map<string, { material_id: number; item: string }>();
+      for (const m of mats.results) {
+        const k = normText(m.item);
+        if (k && !byNorm.has(k)) byNorm.set(k, { material_id: m.id, item: m.item });
+      }
+      for (const l of unpricedLines.results) {
+        const key = normText(l.item);
+        if (!key) continue;
+        // Supplier-specific memory first, then the catch-all bucket — the same
+        // precedence aliasMap applies.
+        const target = aliases.get(normText(l.supplier))?.get(key) ?? aliases.get("")?.get(key);
+        const hit = target ? byNorm.get(target) : undefined;
+        if (hit) suggestions.set(l.line_id, hit);
+      }
+    } catch { /* no memory table yet — no suggestions, everything else stands */ }
+  }
+
   return c.json({
     unpriced_spend,
-    unpriced_lines: unpricedLines.results,
+    unpriced_lines: unpricedLines.results.map((l) => {
+      const s = suggestions.get(l.line_id);
+      return s ? { ...l, suggested_material_id: s.material_id, suggested_material_item: s.item } : l;
+    }),
     by_status: counts.results,
     overdrawn_framework_lines: overdrawnRows.results,
   });

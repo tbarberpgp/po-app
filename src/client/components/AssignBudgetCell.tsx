@@ -13,10 +13,14 @@ import type { MaterialWithCommitment } from "../../shared/types";
 /** Width the assign column always reserves, open or closed — see below. */
 const ASSIGN_W = 230;
 
-export function AssignBudgetCell({ poId, lineId, mats, onAssigned }: {
+export function AssignBudgetCell({ poId, lineId, mats, suggestId, suggestItem, onAssigned }: {
   poId: string;
   lineId: number;
   mats: MaterialWithCommitment[];
+  /** The budget line this wording was coded to before, from the learned aliases.
+   *  Offered as a one-click accept so the same decision isn't re-made by hand. */
+  suggestId?: number;
+  suggestItem?: string;
   onAssigned?: () => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -31,8 +35,20 @@ export function AssignBudgetCell({ poId, lineId, mats, onAssigned }: {
   // it doesn't squeeze the Detail column and reflow the whole drawer.
   if (!open) {
     return (
-      <div style={{ minWidth: ASSIGN_W, display: "flex", justifyContent: "flex-end" }}>
+      <div style={{ minWidth: ASSIGN_W, display: "flex", justifyContent: "flex-end", gap: 6, alignItems: "center" }}>
+        {suggestId != null && suggestItem && (
+          <button
+            className="ghost tiny"
+            style={{ whiteSpace: "nowrap", maxWidth: 150, overflow: "hidden", textOverflow: "ellipsis" }}
+            title={`Code it to “${suggestItem}”, where this wording was coded before. Click Assign to pick a different line.`}
+            disabled={busy}
+            onClick={() => void assign(String(suggestId))}
+          >
+            {busy ? "Coding…" : `↩ ${suggestItem}`}
+          </button>
+        )}
         <button className="ghost tiny" style={{ whiteSpace: "nowrap" }} title="Code this cost to a budget line so it counts inside the project budget" onClick={() => setOpen(true)}>Assign →</button>
+        {err && <span style={{ fontSize: 11.5, color: "var(--danger)" }}>{err}</span>}
       </div>
     );
   }
