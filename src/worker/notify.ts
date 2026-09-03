@@ -13,6 +13,96 @@ const tierLabel: Record<ApprovalTier, string> = {
   director: "Director",
 };
 
+/** £1,250.00 — grouped, because these figures are read at a glance on a phone. */
+function money(n: number): string {
+  return `£${n.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+/** Quantities are packs, metres and each — trailing zeros just add noise. */
+function qty(n: number): string {
+  return Number.isInteger(n) ? String(n) : String(Math.round(n * 100) / 100);
+}
+
+/** How many line items to put in the email before deferring to the app. Long
+ *  enough for the overwhelming majority of orders to be judged from the inbox,
+ *  short enough that a 200-line framework doesn't become an unreadable email. */
+const EMAIL_LINE_CAP = 25;
+
+/**
+ * The order's line items as an email-safe table: what is being bought, at what
+ * rate, and — for anything that tripped the approval gate — the budget position
+ * behind it.
+ *
+ * This is the actual substance of the decision. The email used to carry only
+ * the PO number, supplier, total and reason, so every approval (including a
+ * £400 one) meant opening the link on a phone and authenticating through
+ * Access to read four lines of text. Approving a purchase order is mostly a
+ * judgement about WHAT is being bought.
+ *
+ * Styles are inline: mail clients strip <style> blocks.
+ */
+function lineItemsTable(po: PurchaseOrder): string {
+  const lines = po.lines ?? [];
+  if (lines.length === 0) return "";
+
+  const th = 'style="text-align:left;padding:6px 8px;border-bottom:1px solid #ddd;font-size:12px;color:#666;text-transform:uppercase;letter-spacing:.04em"';
+  const thR = 'style="text-align:right;padding:6px 8px;border-bottom:1px solid #ddd;font-size:12px;color:#666;text-transform:uppercase;letter-spacing:.04em"';
+  const td = 'style="padding:7px 8px;border-bottom:1px solid #f0f0f0;font-size:14px;vertical-align:top"';
+  const tdR = 'style="padding:7px 8px;border-bottom:1px solid #f0f0f0;font-size:14px;text-align:right;white-space:nowrap;vertical-align:top"';
+
+  const shown = lines.slice(0, EMAIL_LINE_CAP);
+  const rows = shown.map((l) => {
+    // Why this line needs a decision, in the same words the app uses on the PO
+    // page ("Over priced allowance" / "Outside the priced BOQ").
+    const tags: string[] = [];
+    if (l.is_unpriced) tags.push('<span style="display:inline-block;background:#fdecd2;color:#8a5a10;font-size:11px;padding:1px 6px;border-radius:9px;margin-left:6px">outside the priced BOQ</span>');
+    if (l.is_over_budget) tags.push('<span style="display:inline-block;background:#fbe4e0;color:#a3382a;font-size:11px;padding:1px 6px;border-radius:9px;margin-left:6px">over priced allowance</span>');
+
+    // The allowance this line eats into. Only meaningful on a priced line that
+    // went over — that is precisely the number the approver is being asked about.
+    let budget = "";
+    if (l.is_over_budget && l.priced_qty_at_order != null) {
+      const before = l.committed_before ?? 0;
+      const over = before + l.qty - l.priced_qty_at_order;
+      const unit = l.unit ? ` ${escapeHtml(l.unit)}` : "";
+      budget = `<div style="font-size:12px;color:#a3382a;margin-top:3px">`
+        + `Allowance ${qty(l.priced_qty_at_order)}${unit} · ${qty(before)}${unit} already committed · this order ${qty(l.qty)}${unit}`
+        + (over > 0 ? ` → <b>${qty(over)}${unit} over</b>` : "")
+        + `</div>`;
+    }
+
+    const sub = [l.manufacturer, l.type].filter(Boolean).map((v) => escapeHtml(String(v))).join(" · ");
+    return `<tr>`
+      + `<td ${td}>${escapeHtml(l.item)}${tags.join("")}`
+      + (sub ? `<div style="font-size:12px;color:#777;margin-top:2px">${sub}</div>` : "")
+      + budget
+      + `</td>`
+      + `<td ${tdR}>${qty(l.qty)}${l.unit ? ` ${escapeHtml(l.unit)}` : ""}</td>`
+      + `<td ${tdR}>${money(l.unit_cost)}</td>`
+      + `<td ${tdR}>${money(l.line_total)}</td>`
+      + `</tr>`;
+  }).join("");
+
+  const hidden = lines.length - shown.length;
+  const more = hidden > 0
+    ? `<tr><td colspan="4" style="padding:7px 8px;font-size:13px;color:#777">… and ${hidden} more line${hidden === 1 ? "" : "s"} — open the order to see them all.</td></tr>`
+    : "";
+
+  return `
+    <p style="margin:18px 0 6px;font-size:13px;color:#666;text-transform:uppercase;letter-spacing:.06em">
+      ${lines.length} line item${lines.length === 1 ? "" : "s"}
+    </p>
+    <table style="border-collapse:collapse;width:100%;max-width:640px">
+      <thead><tr><th ${th}>Item</th><th ${thR}>Qty</th><th ${thR}>Unit cost</th><th ${thR}>Line total</th></tr></thead>
+      <tbody>${rows}${more}</tbody>
+      <tfoot><tr>
+        <td colspan="3" style="padding:8px;text-align:right;font-size:14px;border-top:2px solid #ddd"><b>Total</b></td>
+        <td style="padding:8px;text-align:right;font-size:14px;border-top:2px solid #ddd;white-space:nowrap"><b>${money(po.total_value)}</b></td>
+      </tr></tfoot>
+    </table>
+    <p style="margin:6px 0 0;font-size:12px;color:#777">Figures are ex VAT.</p>`;
+}
+
 export async function emailApprovers(
   env: Env,
   po: PurchaseOrder,
@@ -37,18 +127,35 @@ export async function emailApprovers(
         ? "exceeds the priced allowance for one or more materials"
         : "exceeds priced allowance and contains unpriced materials";
 
-  const subject = `[${tier} approval] ${po.po_number} — ${project.code} ${project.name}`;
+  // The project name may arrive equal to the code (callers that only had the
+  // code to hand); printing it twice reads as a glitch, so collapse it.
+  const projectLabel = project.name && project.name !== project.code
+    ? `${project.code} — ${project.name}`
+    : project.code;
+
+  // Subject keeps the code and name space-separated (the label's own em-dash
+  // would make a second one here); the value is on the end so a phone's
+  // notification preview answers "how much" without opening anything.
+  const projectSubject = project.name && project.name !== project.code
+    ? `${project.code} ${project.name}`
+    : project.code;
+  const subject = `[${tier} approval] ${po.po_number} — ${projectSubject} · ${money(po.total_value)}`;
+  const kv = 'style="padding:3px 14px 3px 0;font-size:14px;color:#555;white-space:nowrap"';
+  const kvV = 'style="padding:3px 0;font-size:14px"';
   const html = `
-    <p>A purchase order needs your approval.</p>
+    <p style="font-size:15px">A purchase order needs your approval.</p>
     <table style="border-collapse:collapse">
-      <tr><td><b>PO number</b></td><td>${escapeHtml(po.po_number)}</td></tr>
-      <tr><td><b>Project</b></td><td>${escapeHtml(project.code)} — ${escapeHtml(project.name)}</td></tr>
-      <tr><td><b>Supplier</b></td><td>${escapeHtml(po.supplier)}</td></tr>
-      <tr><td><b>Total value</b></td><td>£${po.total_value.toFixed(2)}</td></tr>
-      <tr><td><b>Raised by</b></td><td>${escapeHtml(po.created_by)}</td></tr>
-      <tr><td><b>Reason</b></td><td>${reason}</td></tr>
+      <tr><td ${kv}><b>PO number</b></td><td ${kvV}>${escapeHtml(po.po_number)}</td></tr>
+      <tr><td ${kv}><b>Project</b></td><td ${kvV}>${escapeHtml(projectLabel)}</td></tr>
+      <tr><td ${kv}><b>Supplier</b></td><td ${kvV}>${escapeHtml(po.supplier)}</td></tr>
+      <tr><td ${kv}><b>Total value</b></td><td ${kvV}>${money(po.total_value)}</td></tr>
+      <tr><td ${kv}><b>Required by</b></td><td ${kvV}>${po.delivery_date ? escapeHtml(po.delivery_date) : "—"}</td></tr>
+      <tr><td ${kv}><b>Raised by</b></td><td ${kvV}>${escapeHtml(po.created_by)}</td></tr>
+      <tr><td ${kv}><b>Reason</b></td><td ${kvV}>${reason}</td></tr>
     </table>
-    <p><a href="${link}">Review and approve →</a></p>
+    ${po.notes ? `<p style="margin:14px 0 0;font-size:14px"><b>Note from ${escapeHtml(po.created_by)}:</b> ${escapeHtml(po.notes)}</p>` : ""}
+    ${lineItemsTable(po)}
+    <p style="margin:22px 0 0"><a href="${link}" style="font-size:15px">Review and approve →</a></p>
   `;
 
   await fetch("https://api.resend.com/emails", {

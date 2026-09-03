@@ -787,7 +787,7 @@ pos.post("/", async (c) => {
           issued_at: null,
           lines: enriched,
         },
-        { code: project.code, name: project.code },
+        { code: project.code, name: project.name },
         approvers.results,
       ),
     );
