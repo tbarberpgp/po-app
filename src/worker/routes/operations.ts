@@ -8,6 +8,7 @@ import { isSafeMediaUrl } from "../safe-url";
 // be an import cycle now that operatives.ts pulls siteScope from here.
 import { normalisePhone } from "../../shared/operatives-import";
 import { isSandboxId } from "../sandbox";
+import { signinsCarryOperativeId } from "../schema";
 import { sendReportEmail, recipientsFor } from "./site-reports";
 import { buildHsPack } from "../../shared/hs-pack-pdf";
 import { fuzzyFindPo } from "../poRef";
@@ -928,10 +929,19 @@ operations.post("/:projectId/attendance/manual-signin", async (c) => {
         AND substr(signed_in_at,1,10) = ?`,
   ).bind(projectId, op.phone, now.slice(0, 10)).first<{ id: number }>();
   if (open) return c.json({ ok: true, id: open.id, already_on_site: true });
+  // operative_id is guarded the same way as the public sign-in — a deploy can
+  // land before migration 0117 is applied.
+  const withOperative = await signinsCarryOperativeId(c.env);
   const res = await c.env.DB.prepare(
-    `INSERT INTO site_signins (project_id, name, company, trade, phone, signed_in_at, created_at)
-     VALUES (?,?,?,?,?,?,?)`,
-  ).bind(projectId, op.name, op.company, op.trade, op.phone, now, now).run();
+    withOperative
+      ? `INSERT INTO site_signins (project_id, operative_id, name, company, trade, phone, signed_in_at, created_at)
+         VALUES (?,?,?,?,?,?,?,?)`
+      : `INSERT INTO site_signins (project_id, name, company, trade, phone, signed_in_at, created_at)
+         VALUES (?,?,?,?,?,?,?)`,
+  ).bind(
+    ...(withOperative ? [projectId, op.id] : [projectId]),
+    op.name, op.company, op.trade, op.phone, now, now,
+  ).run();
   return c.json({ ok: true, id: res.meta?.last_row_id ?? null, already_on_site: false });
 });
 

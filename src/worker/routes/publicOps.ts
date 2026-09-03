@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import type { Env, Variables } from "../env";
 import { normalisePhone } from "../../shared/operatives-import";
+import { signinsCarryOperativeId } from "../schema";
 import { extractQualCard } from "./operatives";
 import { computeQualityRollup, qualityDashboardHtml } from "./quality-dashboard";
 import { isSafeMediaUrl } from "../safe-url";
@@ -401,12 +402,28 @@ publicOps.post("/site/:token/signin", async (c) => {
   const trade = op ? op.trade : (body.trade?.trim() || null);
   const phone = op ? op.phone : (body.phone?.trim() || null);
   const now = new Date().toISOString();
+  const withOperative = await signinsCarryOperativeId(c.env);
   const res = await c.env.DB.prepare(
-    `INSERT INTO site_signins
-       (project_id, name, company, trade, phone, signature, lat, lng, accuracy, signed_in_at, created_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?) RETURNING id`,
+    // Who signed in, not just what they were called. The picker already
+    // resolved the operative above; storing only their name meant every
+    // downstream join (trades, RAMS, induction) matched on a name string, and
+    // one spelling variant silently split a person in two. NULL stays correct
+    // for a visitor, who has no register entry.
+    //
+    // Guarded on the column existing: sign-in is the one thing that must never
+    // break, and a deploy can land before migration 0117 is applied.
+    withOperative
+      ? `INSERT INTO site_signins
+           (project_id, operative_id, name, company, trade, phone, signature, lat, lng, accuracy, signed_in_at, created_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`
+      : `INSERT INTO site_signins
+           (project_id, name, company, trade, phone, signature, lat, lng, accuracy, signed_in_at, created_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?) RETURNING id`,
   ).bind(
-    site.project_id, name, company, trade, phone, body.signature || null,
+    ...(withOperative
+      ? [site.project_id, op?.id ?? null]
+      : [site.project_id]),
+    name, company, trade, phone, body.signature || null,
     body.lat ?? null, body.lng ?? null, body.accuracy ?? null, now, now,
   ).first<{ id: number }>();
   const signinId = res!.id;
