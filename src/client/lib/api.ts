@@ -103,7 +103,13 @@ export const api = {
   /** Create / re-seed the walled-off demo project (admin). Also runs nightly. */
   resetSandbox: () => jfetch<{ ok: true }>("/api/sandbox/reset", { method: "POST" }),
   getProject: (id: string) =>
-    jfetch<{ project: Project; active_snapshot: { id: number; filename: string; uploaded_at: string } | null }>(
+    jfetch<{
+      project: Project;
+      active_snapshot: { id: number; filename: string; uploaded_at: string } | null;
+      /** True when this job has a QITP plan (sections and/or cabins) — gates the
+       *  Quality tab, which used to be hardcoded to one project code. */
+      has_qitp: boolean;
+    }>(
       `/api/projects/${id}`,
     ),
   updateProject: (

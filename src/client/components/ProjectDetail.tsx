@@ -442,7 +442,7 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
           >
             Operations
           </button>
-          {info.project.code === "26004" && (
+          {info.has_qitp && (
             <button
               type="button"
               role="tab"

@@ -129,7 +129,22 @@ projects.get("/:id", async (c) => {
   )
     .bind(id)
     .first();
-  return c.json({ project, active_snapshot: snapshot });
+  // Does this job have a Quality Inspection & Test Plan? Drives whether the
+  // Quality tab appears. It used to be `project.code === "26004"` in the
+  // client — QITP is a general capability and the only thing tying it to one
+  // job is which project happens to have a plan.
+  //
+  // Cabins count as well as sections: a plan being built out in either order
+  // should light the tab up rather than depend on which table was filled first.
+  let has_qitp = false;
+  try {
+    const q = await c.env.DB.prepare(
+      `SELECT (SELECT COUNT(*) FROM qitp_sections WHERE project_id = ?)
+            + (SELECT COUNT(*) FROM qitp_cabins WHERE project_id = ?) AS n`,
+    ).bind(id, id).first<{ n: number }>();
+    has_qitp = (q?.n ?? 0) > 0;
+  } catch { /* QITP tables predate migration 0062 — no plan, no tab */ }
+  return c.json({ project, active_snapshot: snapshot, has_qitp });
 });
 
 projects.delete("/:id", async (c) => {
