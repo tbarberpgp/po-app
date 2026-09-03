@@ -139,10 +139,19 @@ export function reportPdfHtml(report: ReportForPdf, s: ReportSections, photos: A
   // the page break instead of leaving a big gap.
   const card = (icon: string, title: string, body: string, meta = "") => body ? `<table class="card"><thead><tr><td><div class="ch"><span class="ic">${icon}</span><span class="ct">${esc(title)}</span>${meta ? `<span class="cmeta">${esc(meta)}</span>` : ""}<span class="cont">cont.</span></div></td></tr></thead><tbody><tr><td class="cb">${body}</td></tr></tbody></table>` : "";
 
+  // Shifts nobody signed out of carry no hours (see labourTable in
+  // site-reports.ts). Footnote them here exactly as the on-screen report does —
+  // this PDF is the copy the client receives, so an unqualified partial total
+  // is the one that would actually mislead someone.
+  const labourMissing = s.labour_table?.reduce((a, r) => a + (r.missing_signouts ?? 0), 0) ?? 0;
   const labourBody = (s.labour_table?.length)
     ? `<table class="lt"><thead><tr><th>Company</th><th>Trade</th><th class="n">No.</th><th class="n">Hours</th></tr></thead><tbody>${
-        s.labour_table.map((r) => `<tr><td>${esc(r.company)}</td><td class="mut">${esc(r.trade || "—")}</td><td class="n">${r.count}</td><td class="n">${r.hours > 0 ? r.hours.toFixed(1) : "—"}</td></tr>`).join("")
-      }<tr class="tot"><td><b>Total</b></td><td></td><td class="n"><b>${s.labour_table.reduce((a, r) => a + r.count, 0)}</b></td><td class="n"><b>${(() => { const h = s.labour_table!.reduce((a, r) => a + r.hours, 0); return h > 0 ? h.toFixed(1) : "—"; })()}</b></td></tr></tbody></table>`
+        s.labour_table.map((r) => `<tr><td>${esc(r.company)}</td><td class="mut">${esc(r.trade || "—")}</td><td class="n">${r.count}</td><td class="n">${r.hours > 0 ? r.hours.toFixed(1) : "—"}${(r.missing_signouts ?? 0) > 0 ? '<span class="mut">*</span>' : ""}</td></tr>`).join("")
+      }<tr class="tot"><td><b>Total</b></td><td></td><td class="n"><b>${s.labour_table.reduce((a, r) => a + r.count, 0)}</b></td><td class="n"><b>${(() => { const h = s.labour_table!.reduce((a, r) => a + r.hours, 0); return h > 0 ? h.toFixed(1) : "—"; })()}</b></td></tr></tbody></table>${
+        labourMissing > 0
+          ? `<p class="fn">* ${labourMissing} shift${labourMissing === 1 ? "" : "s"} had no sign-out recorded, so ${labourMissing === 1 ? "its" : "their"} hours are not included.</p>`
+          : ""
+      }`
     : list(s.labour ?? []);
 
   const deliveriesBody = (s.deliveries_detail?.length)
@@ -191,6 +200,7 @@ export function reportPdfHtml(report: ReportForPdf, s: ReportSections, photos: A
   ul.li li, .sb, table.lt tr, .gal figure { break-inside: avoid; }
   ul.li { margin: 0; padding-left: 18px; } ul.li li { margin-bottom: 3px; } .tk { color: #1f9d55; font-weight: 700; margin-left: -14px; margin-right: 6px; }
   .mut { color: #6a6d8a; }
+  .fn { margin: 5px 0 0; font-size: 10px; color: #6a6d8a; }
   table.lt { width: 100%; border-collapse: collapse; font-size: 12px; }
   table.lt th { text-align: left; font-size: 9.5px; text-transform: uppercase; letter-spacing: .05em; color: #6a6d8a; padding: 4px 6px; border-bottom: 1px solid #e6e3da; }
   table.lt td { padding: 5px 6px; border-bottom: 1px solid #f0eee7; } table.lt td.n, table.lt th.n { text-align: right; } table.lt tr.tot td { border-top: 2px solid #e6e3da; border-bottom: 0; }

@@ -343,22 +343,45 @@ export function SiteReportDoc({ report, busy, onEmail, onClose, onSaved }: {
               </div>
             );
           })()}
-          {(s.labour_table?.length ?? 0) > 0 ? (
-            <table className="rep-table" style={{ marginTop: 8 }}>
-              <thead><tr><th>Company</th><th>Trade</th><th className="num">No.</th><th className="num">Hours</th></tr></thead>
-              <tbody>
-                {s.labour_table!.map((r, i) => (
-                  <tr key={i}><td>{r.company}</td><td className="muted">{r.trade || "—"}</td><td className="num">{r.count}</td><td className="num">{r.hours > 0 ? r.hours.toFixed(1) : "—"}</td></tr>
-                ))}
-                <tr>
-                  <td><strong>Total</strong></td>
-                  <td />
-                  <td className="num"><strong>{s.labour_table!.reduce((a, r) => a + r.count, 0)}</strong></td>
-                  <td className="num"><strong>{(() => { const h = s.labour_table!.reduce((a, r) => a + r.hours, 0); return h > 0 ? h.toFixed(1) : "—"; })()}</strong></td>
-                </tr>
-              </tbody>
-            </table>
-          ) : (s.labour ?? []).length > 0 ? <Bullets items={s.labour} field="labour" /> : null}
+          {(s.labour_table?.length ?? 0) > 0 ? (() => {
+            // Shifts nobody signed out of contribute no hours (see labourTable).
+            // Mark the rows they affect and say so under the table, so a partial
+            // figure reads as partial instead of as the whole week's labour.
+            const missing = s.labour_table!.reduce((a, r) => a + (r.missing_signouts ?? 0), 0);
+            return (
+              <>
+                <table className="rep-table" style={{ marginTop: 8 }}>
+                  <thead><tr><th>Company</th><th>Trade</th><th className="num">No.</th><th className="num">Hours</th></tr></thead>
+                  <tbody>
+                    {s.labour_table!.map((r, i) => (
+                      <tr key={i}>
+                        <td>{r.company}</td>
+                        <td className="muted">{r.trade || "—"}</td>
+                        <td className="num">{r.count}</td>
+                        <td className="num">
+                          {r.hours > 0 ? r.hours.toFixed(1) : "—"}
+                          {(r.missing_signouts ?? 0) > 0 && <span className="muted" title={`${r.missing_signouts} shift${r.missing_signouts === 1 ? "" : "s"} with no sign-out recorded`}>*</span>}
+                        </td>
+                      </tr>
+                    ))}
+                    <tr>
+                      <td><strong>Total</strong></td>
+                      <td />
+                      <td className="num"><strong>{s.labour_table!.reduce((a, r) => a + r.count, 0)}</strong></td>
+                      <td className="num"><strong>{(() => { const h = s.labour_table!.reduce((a, r) => a + r.hours, 0); return h > 0 ? h.toFixed(1) : "—"; })()}</strong></td>
+                    </tr>
+                  </tbody>
+                </table>
+                {missing > 0 && (
+                  <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+                    * {missing} shift{missing === 1 ? "" : "s"} had no sign-out recorded, so {missing === 1 ? "its" : "their"} hours
+                    are not included. Correcting the sign-out {missing === 1 ? "time" : "times"} on the project's Operations tab
+                    and regenerating will complete the figure.
+                  </div>
+                )}
+              </>
+            );
+          })() : (s.labour ?? []).length > 0 ? <Bullets items={s.labour} field="labour" /> : null}
           {s.attendance && (s.attendance.first_in || s.attendance.last_out || (s.attendance.inductions ?? 0) > 0 || (s.attendance.visitors ?? 0) > 0) && (
             <div className="muted" style={{ fontSize: 12.5, marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--line)" }}>
               {[

@@ -9,6 +9,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import type { Env, Variables } from "../env";
 import { requirePermission } from "../auth";
 import { isSandboxId } from "../sandbox";
+import { signinsCarryOperativeId } from "../schema";
 import { isSafeMediaUrl } from "../safe-url";
 import { reportPdfAttachment, renderReportPdf, type ReportForPdf } from "./report-pdf";
 
@@ -43,7 +44,9 @@ export type ReportSections = {
   attendance?: { on_site: number; companies: number; first_in: string | null; last_out: string | null; inductions?: number; visitors?: number } | null;
   // Labour broken down by company (from site sign-ins): headcount + hours, with
   // a best-effort trade breakdown matched against the operative register.
-  labour_table?: Array<{ company: string; count: number; hours: number; trade: string }>;
+  // `missing_signouts` counts the shifts whose hours are NOT in `hours` because
+  // nobody signed out — absent on reports generated before this was recorded.
+  labour_table?: Array<{ company: string; count: number; hours: number; trade: string; missing_signouts?: number }>;
   // Deliveries logged in the period (from site_deliveries).
   deliveries_detail?: Array<{ supplier: string; description: string; po_number: string | null; status: string }>;
   // Section keys hidden from the exported/emailed copy (via "Edit for client"),
@@ -411,12 +414,20 @@ async function attendanceSummary(
     } catch { /* site_inductions absent */ }
     // Visitors = distinct signed-in people not on the active operative register
     // (i.e. not our labour) — client reps, surveyors, inspectors, drivers, etc.
+    //
+    // A sign-in linked to an operative is never a visitor, whatever the name
+    // text says. On the name test alone, one of our own operatives whose name
+    // was entered differently from the register counted as a visitor in a
+    // client-facing report. The name test stays as the fallback for rows the
+    // 0117 backfill couldn't link (and for visitors, who have no link at all).
     let visitors = 0;
     try {
+      const linked = await signinsCarryOperativeId(env);
       const vr = await env.DB.prepare(
         `SELECT COUNT(DISTINCT lower(ss.name)) AS n
            FROM site_signins ss
           WHERE ss.project_id IN (${ph}) AND substr(ss.signed_in_at, 1, 10) BETWEEN ? AND ?
+            ${linked ? "AND ss.operative_id IS NULL" : ""}
             AND lower(ss.name) NOT IN (SELECT lower(name) FROM operatives WHERE archived_at IS NULL AND name IS NOT NULL)`,
       ).bind(...ids, start, end).first<{ n: number }>();
       visitors = vr?.n ?? 0;
@@ -425,29 +436,55 @@ async function attendanceSummary(
   } catch { return null; }
 }
 
-/** Labour grouped by company for the period: distinct headcount + hours worked
- *  (where operatives signed out). Drives the report's labour table. */
-async function labourTable(env: Env, projectId: string, start: string, end: string): Promise<Array<{ company: string; count: number; hours: number; trade: string }>> {
+/** Labour grouped by company for the period: distinct headcount + hours worked.
+ *  Drives the report's labour table.
+ *
+ *  Hours come ONLY from shifts somebody actually signed out of. A shift closed
+ *  by the 19:00 auto sign-out (signed_out_auto = 1) carries a real timestamp but
+ *  not a real finish time, and counting it billed an operative who left at 15:00
+ *  as a twelve-hour day — in a document that goes to the client. Those shifts are
+ *  excluded and counted in `missing`, so the report can say the hours are partial
+ *  rather than quietly overstating them. Estimating them was the alternative and
+ *  is worse: it would hide the missing sign-out instead of prompting a correction
+ *  (the Operations tab can fix the time, and the report regenerates).
+ *
+ *  Still-open shifts (no sign-out yet) were already contributing nothing, and
+ *  now count as missing too — they're the same gap seen earlier in the day. */
+async function labourTable(env: Env, projectId: string, start: string, end: string): Promise<Array<{ company: string; count: number; hours: number; trade: string; missing_signouts?: number }>> {
   try {
     const ids = await signinScope(env, projectId);
     const ph = ids.map(() => "?").join(",");
+    // Once sign-ins carry the operative they belong to, a person counts once
+    // however their name was typed. Falls back to the name text for rows the
+    // 0117 backfill couldn't link, and for visitors (who have no operative).
+    const linked = await signinsCarryOperativeId(env);
+    const person = linked ? "COALESCE(operative_id, lower(name))" : "lower(name)";
+    const personSs = linked ? "COALESCE(ss.operative_id, lower(ss.name))" : "lower(ss.name)";
     const r = await env.DB.prepare(
       `SELECT COALESCE(NULLIF(trim(company), ''), 'Unspecified') AS company,
-              COUNT(DISTINCT lower(name)) AS count,
-              SUM(CASE WHEN signed_out_at IS NOT NULL THEN (julianday(signed_out_at) - julianday(signed_in_at)) * 24 ELSE 0 END) AS hours
+              COUNT(DISTINCT ${person}) AS count,
+              SUM(CASE WHEN signed_out_at IS NOT NULL AND signed_out_auto = 0
+                       THEN (julianday(signed_out_at) - julianday(signed_in_at)) * 24 ELSE 0 END) AS hours,
+              SUM(CASE WHEN signed_out_at IS NULL OR signed_out_auto = 1 THEN 1 ELSE 0 END) AS missing
          FROM site_signins
         WHERE project_id IN (${ph}) AND substr(signed_in_at, 1, 10) BETWEEN ? AND ?
         GROUP BY lower(COALESCE(NULLIF(trim(company), ''), 'unspecified'))
         ORDER BY count DESC, company`,
-    ).bind(...ids, start, end).all<{ company: string; count: number; hours: number }>();
-    // Best-effort trade breakdown — match signed-in names to the operative
-    // register (e.g. "Roofer ×4, Labourer ×1"); blank where names don't match.
+    ).bind(...ids, start, end).all<{ company: string; count: number; hours: number; missing: number }>();
+    // Trade breakdown (e.g. "Roofer ×4, Labourer ×1"). This used to match on
+    // the name text alone and was blank wherever a name didn't match the
+    // register exactly — the reason it was only ever "best-effort". Matching on
+    // the stored operative makes it exact; the name join stays as the fallback
+    // for unlinked rows. When the link is used, an operative archived AFTER the
+    // shift still resolves, which is right for a historical report.
     const tradeByCo = new Map<string, string>();
     try {
       const tr = await env.DB.prepare(
-        `SELECT COALESCE(NULLIF(trim(ss.company), ''), 'Unspecified') AS company, o.trade AS trade, COUNT(DISTINCT lower(ss.name)) AS n
+        `SELECT COALESCE(NULLIF(trim(ss.company), ''), 'Unspecified') AS company, o.trade AS trade, COUNT(DISTINCT ${personSs}) AS n
            FROM site_signins ss
-           JOIN operatives o ON lower(o.name) = lower(ss.name) AND o.archived_at IS NULL
+           JOIN operatives o ON ${linked
+             ? "(o.id = ss.operative_id OR (ss.operative_id IS NULL AND lower(o.name) = lower(ss.name) AND o.archived_at IS NULL))"
+             : "(lower(o.name) = lower(ss.name) AND o.archived_at IS NULL)"}
           WHERE ss.project_id IN (${ph}) AND substr(ss.signed_in_at, 1, 10) BETWEEN ? AND ?
             AND o.trade IS NOT NULL AND trim(o.trade) <> ''
           GROUP BY company, o.trade ORDER BY n DESC`,
@@ -456,7 +493,13 @@ async function labourTable(env: Env, projectId: string, start: string, end: stri
       for (const x of tr.results) { const a = acc.get(x.company) ?? []; a.push(`${x.trade} ×${x.n}`); acc.set(x.company, a); }
       for (const [co, parts] of acc) tradeByCo.set(co, parts.join(", "));
     } catch { /* operatives table absent / join issue */ }
-    return r.results.map((x) => ({ company: x.company, count: x.count, hours: Math.round((x.hours || 0) * 10) / 10, trade: tradeByCo.get(x.company) ?? "" }));
+    return r.results.map((x) => ({
+      company: x.company,
+      count: x.count,
+      hours: Math.round((x.hours || 0) * 10) / 10,
+      trade: tradeByCo.get(x.company) ?? "",
+      missing_signouts: x.missing || 0,
+    }));
   } catch { return []; }
 }
 
