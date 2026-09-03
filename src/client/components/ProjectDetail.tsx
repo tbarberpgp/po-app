@@ -264,6 +264,7 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
             key: "__assign", label: "",
             fmt: (_v, row) => (row.__line_id != null
               ? <AssignBudgetCell poId={String(row.__po_id)} lineId={Number(row.__line_id)} mats={mats}
+                            suggestId={row.__suggest_id as number | undefined} suggestItem={row.__suggest_item as string | undefined}
                   onAssigned={() => { if (id) { api.getProjectSummary(id).then(setPoSummary).catch(() => {}); api.listMaterials(id).then(setMats).catch(() => {}); } }} />
               : null),
           }];
@@ -573,6 +574,7 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
                       key: "__assign", label: "",
                       fmt: (_v, row) => (row.__line_id != null
                         ? <AssignBudgetCell poId={String(row.__po_id)} lineId={Number(row.__line_id)} mats={mats}
+                            suggestId={row.__suggest_id as number | undefined} suggestItem={row.__suggest_item as string | undefined}
                             onAssigned={() => { if (id) { api.getProjectSummary(id).then(setPoSummary).catch(() => {}); api.listMaterials(id).then(setMats).catch(() => {}); } }} />
                         : null),
                     }];

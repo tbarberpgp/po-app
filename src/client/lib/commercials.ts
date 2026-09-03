@@ -56,6 +56,11 @@ export type UnpricedLine = {
    *  own Preliminaries budget, so it reads differently from a genuinely
    *  unbudgeted material buy. */
   category?: string;
+  /** The budget line this wording was coded to last time, from the learned
+   *  aliases (matchMemory). A suggestion only — the cost stays in unpriced
+   *  spend until someone accepts it. */
+  suggested_material_id?: number;
+  suggested_material_item?: string;
 };
 
 /** A row in the Materials table. `off_boq` is set on the rows that came from a
@@ -489,7 +494,7 @@ export function unpricedDrill(lines: UnpricedLine[]): DrillBody {
   // Rows carry hidden PO/line refs so the drawer can offer "assign to a
   // budget item" in place (same affordance as the unexpected-spend drill).
   const rows = lines
-    .map((l) => ({ po: l.po_number, supplier: l.supplier || "—", item: l.item, qty: l.qty, line_total: l.line_total, status: l.status, category: l.category ?? "materials", __po_id: l.po_id, __line_id: l.line_id }))
+    .map((l) => ({ po: l.po_number, supplier: l.supplier || "—", item: l.item, qty: l.qty, line_total: l.line_total, status: l.status, category: l.category ?? "materials", __po_id: l.po_id, __line_id: l.line_id, __suggest_id: l.suggested_material_id, __suggest_item: l.suggested_material_item }))
     .sort((a, b) => b.line_total - a.line_total);
   return {
     columns: [
@@ -513,6 +518,7 @@ export function unexpectedSpendDrill(lines: UnpricedLine[], mats: MaterialWithCo
     kind: l.category === "prelims" ? "Off-BOQ · prelim" : "Off-BOQ",
     detail: `${l.po_number} · ${l.item}`, amount: l.line_total,
     __po_id: l.po_id, __line_id: l.line_id,
+    __suggest_id: l.suggested_material_id, __suggest_item: l.suggested_material_item,
   }));
   const over = mats
     .filter((m) => !m.omitted)
