@@ -11,6 +11,7 @@ import { can } from "../../shared/permissions";
 import { generateAfpPdf } from "../lib/afp-pdf";
 import { generateAfpXlsx } from "../lib/afp-xlsx";
 import { afpDocLabel } from "../../shared/types";
+import { parseMoney, parsePositiveMoney } from "../../shared/money";
 import type { AfpDetail, AfpLine, AfpStatus, CurrentUser, ApplicationForPayment } from "../../shared/types";
 
 export function AfpView({ me }: { me: CurrentUser | null }) {
@@ -20,6 +21,9 @@ export function AfpView({ me }: { me: CurrentUser | null }) {
   const [detail, setDetail] = useState<AfpDetail | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // The certify decision panel (replaces a window.prompt that couldn't show the
+  // figures behind the number it was asking for, or parse "1,250.00").
+  const [certifyOpen, setCertifyOpen] = useState(false);
   const canEdit = can(me?.role, "projects.edit");
 
   function refresh() {
@@ -165,13 +169,16 @@ export function AfpView({ me }: { me: CurrentUser | null }) {
     catch (e) { setErr(e instanceof Error ? e.message : "sign-off failed"); }
     finally { setBusy(false); }
   }
-  async function certify() {
-    const input = prompt(`Amount certified by ${isOutgoing ? "the client" : "PowerGrid"} for THIS application (£, this period — not cumulative). Leave blank to accept the amount due ${fmtMoney(afp.amount_due ?? 0)}.`);
-    if (input === null) return;
-    const amount = input.trim() ? Number(input) : undefined;
-    if (input.trim() && !Number.isFinite(amount)) { setErr("Invalid amount"); return; }
-    setBusy(true);
-    try { await api.certifyAfp(afp.id, amount != null ? { certified_amount: amount } : undefined); refresh(); }
+  /** Commit the certified figure. The amount is always explicit now — the panel
+   *  pre-fills it with the claimed amount due, which is what the server used to
+   *  default to when the old prompt was left blank. */
+  async function certify(amount: number) {
+    setBusy(true); setErr(null);
+    try {
+      await api.certifyAfp(afp.id, { certified_amount: amount });
+      setCertifyOpen(false);
+      refresh();
+    }
     catch (e) { setErr(e instanceof Error ? e.message : "certify failed"); }
     finally { setBusy(false); }
   }
@@ -277,7 +284,7 @@ export function AfpView({ me }: { me: CurrentUser | null }) {
                   </button>
                 </>
               ) : (
-                <button className="accent" onClick={certify} disabled={busy}>Mark certified</button>
+                <button className="accent" onClick={() => setCertifyOpen(true)} disabled={busy || certifyOpen}>Mark certified</button>
               )
             )}
             {/* Labour certificates push to Xero as a live bill (ACCPAY) to the subbie. */}
@@ -411,6 +418,21 @@ export function AfpView({ me }: { me: CurrentUser | null }) {
             canEdit={canEdit}
             locked={afp.xero_sync_status === "synced"}
             onChanged={refresh}
+          />
+        )}
+
+        {/* Certify decision — the figures that produce the claim, the amount
+            being certified, and what follows from it, all on screen together. */}
+        {certifyOpen && canEdit && afp.status === "submitted" && (
+          <CertifyPanel
+            afp={afp}
+            isOutgoing={isOutgoing}
+            certifiedWorks={certifiedWorks}
+            hasPerLineCertified={lines.some((l) => (l.certified_percent ?? 0) > 0)}
+            cisRate={detail.cis?.rate ?? null}
+            busy={busy}
+            onCancel={() => setCertifyOpen(false)}
+            onCertify={certify}
           />
         )}
 
@@ -657,6 +679,173 @@ function Field({ label, value }: { label: string; value: React.ReactNode }) {
     <div>
       <div className="eyebrow">{label}</div>
       <div style={{ marginTop: 4, fontSize: 14 }}>{value}</div>
+    </div>
+  );
+}
+
+/**
+ * The certify decision. Replaces a `window.prompt` that asked for the single
+ * most consequential figure in the commercial workflow while showing none of
+ * the numbers that produce it — and that rejected "1,250.00" and "£1250",
+ * because it parsed with `Number()`.
+ *
+ * Three things it now does that the prompt could not: show the claim it is
+ * being measured against, offer the figure the per-line certified percentages
+ * already imply, and show the VAT and invoice total that follow from whatever
+ * is typed, before it is committed.
+ *
+ * `certified_amount` sits at the same level as `amount_due` — this period,
+ * after retention, before VAT. It becomes the ex-VAT line on the Xero
+ * invoice/bill, so the arithmetic here mirrors recalcTotals server-side.
+ */
+function CertifyPanel({
+  afp, isOutgoing, certifiedWorks, hasPerLineCertified, cisRate, busy, onCancel, onCertify,
+}: {
+  afp: ApplicationForPayment;
+  isOutgoing: boolean;
+  certifiedWorks: number;
+  hasPerLineCertified: boolean;
+  cisRate: number | null;
+  busy: boolean;
+  onCancel: () => void;
+  onCertify: (amount: number) => void;
+}) {
+  const claimed = afp.amount_due ?? 0;
+  const retPct = afp.retention_pct ?? 0;
+  const vatPct = afp.vat_pct ?? 0;
+  const r2 = (n: number) => Math.round(n * 100) / 100;
+
+  const [raw, setRaw] = useState(claimed.toFixed(2));
+  const [touched, setTouched] = useState(false);
+
+  const amount = parsePositiveMoney(raw);
+  // Tell "not a number" apart from "a negative number" so the message can say
+  // which — a minus sign is a different mistake from a typo.
+  const negative = amount == null && (parseMoney(raw) ?? 0) < 0;
+  const blank = !raw.trim();
+  const valid = amount != null;
+
+  const vat = valid ? r2(amount * (vatPct / 100)) : 0;
+  const total = valid ? r2(amount + vat) : 0;
+  const delta = valid ? r2(amount - claimed) : 0;
+
+  // What the per-line certified percentages already add up to, expressed at the
+  // same level as the figure being typed. Offered, never imposed: the header
+  // figure is the one that gets frozen, and the two are allowed to differ.
+  //
+  // Rounded in the same three steps as recalcTotals, not as one multiply by
+  // (1 − retention). The two disagree by a penny on about 2.6% of figures, and
+  // this one is offered as a button that fills the field someone then certifies
+  // — so it has to land on the value the server's own chain would produce, or
+  // the app and Xero reconcile a penny apart.
+  const perLineNet = r2(Math.max(0, certifiedWorks - (afp.previous_certified ?? 0)));
+  const perLineDue = r2(perLineNet - r2(perLineNet * (retPct / 100)));
+  const offerPerLine = hasPerLineCertified && Math.abs(perLineDue - claimed) >= 0.01 && Math.abs(perLineDue - (amount ?? -1)) >= 0.01;
+
+  const who = isOutgoing ? "the client" : "PowerGrid";
+  const label = afpDocLabel(afp.direction, afp.status);
+
+  function commit() {
+    if (valid && !busy) onCertify(amount);
+  }
+
+  return (
+    <div className="card" style={{ marginBottom: 16, borderColor: "var(--accent-2)" }}>
+      <div className="card-hd">
+        <div className="eyebrow" style={{ marginBottom: 0 }}>Your decision</div>
+        <h2 style={{ flex: 1, margin: 0, fontSize: 17 }}>Certify {label} #{afp.app_number}</h2>
+      </div>
+
+      {/* The claim being measured against — the same chain the server used. */}
+      <div className="card-bd" style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 24 }}>
+        <Field label="This period (net)" value={fmtMoney(afp.this_period_net ?? 0)} />
+        <Field label={`Retention (${retPct}%)`} value={`-${fmtMoney(afp.retention_amount ?? 0)}`} />
+        <Field label="Claimed, ex VAT" value={<b>{fmtMoney(claimed)}</b>} />
+      </div>
+
+      <div className="card-bd" style={{ borderTop: "1px solid var(--line)" }}>
+        <label htmlFor="cert-amount">Amount certified by {who} — this period, ex VAT</label>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <input
+            id="cert-amount"
+            className="num"
+            autoFocus
+            inputMode="decimal"
+            value={raw}
+            onChange={(e) => { setRaw(e.target.value); setTouched(true); }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") { e.preventDefault(); commit(); }
+              if (e.key === "Escape") { e.preventDefault(); onCancel(); }
+            }}
+            style={{ width: 180, fontSize: 16 }}
+            aria-invalid={touched && !valid}
+            aria-describedby="cert-hint"
+          />
+          {valid && Math.abs(delta) >= 0.01 && (
+            <span className={`pill ${delta < 0 ? "rejected" : "issued"}`}>
+              {delta < 0 ? "−" : "+"}{fmtMoney(Math.abs(delta))} vs claimed
+            </span>
+          )}
+          {valid && Math.abs(delta) < 0.01 && <span className="pill approved">certifies the claim in full</span>}
+        </div>
+        <div id="cert-hint" className="muted" style={{ fontSize: 12.5, marginTop: 6 }}>
+          {touched && blank
+            ? "Enter the amount certified."
+            : touched && negative
+              ? "A certified amount can't be negative."
+              : touched && !valid
+                ? "That isn't an amount — try 1,250.00"
+                : <>Pounds and commas are fine — <code>1,250.00</code> and <code>£1,250</code> both read as {fmtMoney(1250)}.</>}
+        </div>
+
+        {offerPerLine && (
+          <div className="flash info" style={{ marginTop: 12, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+            <span style={{ flex: 1, minWidth: 240 }}>
+              The certified percentages set on the lines below come to{" "}
+              <b>{fmtMoney(certifiedWorks)}</b> of works — <b>{fmtMoney(perLineDue)}</b> for this period after retention.
+            </span>
+            <button type="button" className="ghost tiny" onClick={() => { setRaw(perLineDue.toFixed(2)); setTouched(true); }}>
+              Use {fmtMoney(perLineDue)}
+            </button>
+          </div>
+        )}
+
+        {valid && amount > claimed + 0.01 && (
+          <div className="flash info" style={{ marginTop: 12 }}>
+            That certifies <b>{fmtMoney(amount - claimed)}</b> more than was claimed. Allowed, but worth a second look.
+          </div>
+        )}
+      </div>
+
+      {/* What follows from the figure, before it is committed. */}
+      <div className="card-bd" style={{ borderTop: "1px solid var(--line)", background: "var(--card-2)", display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 24 }}>
+        <Field label="Certified, ex VAT" value={valid ? <b>{fmtMoney(amount)}</b> : <span className="muted">—</span>} />
+        <Field label={`VAT (${vatPct}%)`} value={valid ? fmtMoney(vat) : <span className="muted">—</span>} />
+        <Field
+          label={isOutgoing ? "Total to invoice" : "Total on the bill"}
+          value={valid ? <span style={{ fontWeight: 700, color: "var(--accent-2)" }}>{fmtMoney(total)}</span> : <span className="muted">—</span>}
+        />
+      </div>
+
+      {cisRate != null && cisRate > 0 && (
+        <div className="card-bd" style={{ borderTop: "1px solid var(--line)" }}>
+          <div className="muted" style={{ fontSize: 12.5 }}>
+            A <b>{cisRate}%</b> CIS deduction applies to the labour element of this certificate. The exact
+            deduction and net payable are shown once it's certified — expenses sit outside CIS, so the base
+            is worked out server-side rather than guessed at here.
+          </div>
+        </div>
+      )}
+
+      <div className="card-bd" style={{ borderTop: "1px solid var(--line)", display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <button className="accent" onClick={commit} disabled={busy || !valid}>
+          {busy ? "Certifying…" : valid ? `Certify ${fmtMoney(amount)}` : "Certify"}
+        </button>
+        <button className="ghost" onClick={onCancel} disabled={busy}>Cancel</button>
+        <span className="muted" style={{ fontSize: 12, alignSelf: "center" }}>
+          This freezes the certified figure and emails whoever sent the application.
+        </span>
+      </div>
     </div>
   );
 }
