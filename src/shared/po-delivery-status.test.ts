@@ -14,6 +14,7 @@ import {
   deliveryNoteKey,
   suspectedDuplicateReceipts,
   lineReceivedInFull,
+  isDeliverableLine,
   poBilledState,
   isPoClosed,
   poDeliveryLabel,
@@ -342,6 +343,93 @@ describe("quantities can close a line the flag never learned about", () => {
       [{ po_id: "po-a", po_line_id: 1, completes_po: 0 }]);
     assert.equal(s.state, "part");
     assert.equal(s.lines_delivered, 0);
+  });
+});
+
+describe("isDeliverableLine", () => {
+  // Every one of these is a real PO line in the book, and none of them is
+  // something a van brings. An order of one material plus a carriage line was
+  // reading "1 of 2 lines" and could never reach fully delivered.
+  const charges = [
+    "Carriage", "Carriage Out", "carriage", "Delivery Charge", "Delivery charge",
+    "481200003 - AC Van Delivery Charge", "Free Supplier Delivery",
+    "COL Collection Charge", "COLSUR Collection Surcharge", "Customer Collection",
+    "Customer Collection (00006)", "Voucher", "00021 Voucher", "Voucher (Code 00021)",
+    "ENVIRONMENT AND ENERGY SURCHARGE", "Enviroment and Energy Surcharge",
+    "Environment & Energy Surcharge", "FIXED CHARGES", "FIXED CHARGES (Billing Doc 3088704048)",
+    "12.00% Damage Waiver", "AFI Allrisk @20% OR Damage Waiver @10% on Hire charges only",
+    "Line Misc Charge: 12H00 Service A",
+  ];
+  for (const c of charges) {
+    test(`not deliverable: ${c}`, () => assert.equal(isDeliverableLine(c), false));
+  }
+
+  // The other half of the job, and the more important one: real goods must
+  // survive. A charge word has to be a charge PHRASE — bare "collection" would
+  // take a dust collection bag, bare "service" a service void.
+  const goods = [
+    "Carbon steel light-section mainfix fastener (DF3-5.5 x 45)",
+    "SP-PL-A-40/60/2.0/3 Aluminium L Bar 40mm x 60mm",
+    "PRIMER/GH Euroroof Spray Gun & Hose",
+    "Cylinder Propane Size D",
+    "DCB112 - DEWALT 18v Lithium Charger Multi Voltage",
+    "462CM Timberland Pro Hypercharge Comp Toe Boot Brown 7",
+    "Delivery Instructions (Rigid V)",
+    "MS-B36 - METShield MS-B36 Bars @ 3.6m Long",
+    "Dust collection bag",
+    "Service void closure",
+  ];
+  for (const g of goods) {
+    test(`deliverable: ${g}`, () => assert.equal(isDeliverableLine(g), true));
+  }
+
+  test("nothing to judge on is treated as goods", () => {
+    assert.equal(isDeliverableLine(""), true);
+    assert.equal(isDeliverableLine(null), true);
+    assert.equal(isDeliverableLine(undefined), true);
+  });
+});
+
+describe("charges stay out of the line count", () => {
+  const withCarriage: PoLineRef[] = [
+    { id: 1, po_id: "po-a", qty: 71, item: "1 HR brackets 206mm" },
+    { id: 2, po_id: "po-a", qty: 1, item: "Carriage Out" },
+  ];
+
+  test("an order of one material plus carriage is one line", () => {
+    const s = summarisePoDeliveries("po-a", withCarriage, [
+      { po_id: "po-a", po_line_id: 1, completes_po: 1 },
+    ]);
+    assert.equal(s.lines_total, 1);
+    assert.equal(s.state, "full", "the carriage line must not hold the order open");
+  });
+
+  test("the carriage line isn't counted as started either", () => {
+    const s = summarisePoDeliveries("po-a", withCarriage, [
+      { po_id: "po-a", po_line_id: 1, completes_po: 0, received_qty: 10 },
+    ]);
+    assert.equal(s.lines_started, 1);
+    assert.equal(s.lines_total, 1);
+    // One line left after the carriage is dropped, so no "x of y" clause.
+    assert.equal(poDeliveryLabel(s), "part delivered · 1 delivery note");
+  });
+
+  // Guard: an order that is ALL charges would otherwise have no lines at all,
+  // and "every line delivered" over an empty list is a nonsense answer.
+  test("an order of nothing but charges keeps its lines", () => {
+    const allCharges: PoLineRef[] = [
+      { id: 1, po_id: "po-a", qty: 1, item: "Carriage" },
+      { id: 2, po_id: "po-a", qty: 1, item: "Delivery Charge" },
+    ];
+    const s = summarisePoDeliveries("po-a", allCharges, []);
+    assert.equal(s.lines_total, 2);
+    assert.equal(s.state, "none");
+  });
+
+  // A caller that doesn't select the wording keeps exactly what it had.
+  test("lines with no wording are all counted", () => {
+    const s = summarisePoDeliveries("po-a", [{ id: 1, po_id: "po-a" }, { id: 2, po_id: "po-a" }], []);
+    assert.equal(s.lines_total, 2);
   });
 });
 

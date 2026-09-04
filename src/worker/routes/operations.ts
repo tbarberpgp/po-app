@@ -14,7 +14,7 @@ import { buildHsPack } from "../../shared/hs-pack-pdf";
 import { fuzzyFindPo } from "../poRef";
 import { learnAliases, aliasMapsBySupplier, normText } from "../matchMemory";
 import { deliveryVariance, matchItemToLine, type VarianceLine, type PriorReceipt } from "../../shared/delivery-variance";
-import { summarisePoDeliveries, lineReceivedInFull, PO_DELIVERY_NOTE_COLUMNS, PO_DELIVERY_NOTE_JOIN, type PoDeliveryRow } from "../../shared/po-delivery-status";
+import { summarisePoDeliveries, lineReceivedInFull, isDeliverableLine, PO_DELIVERY_NOTE_COLUMNS, PO_DELIVERY_NOTE_JOIN, type PoDeliveryRow } from "../../shared/po-delivery-status";
 
 // Operations — Phase 1 (site-team basics). Authenticated app-side endpoints:
 // the supervisor's view of a site's QR/sign-in link, today's attendance,
@@ -2620,7 +2620,8 @@ operations.get("/:projectId/deliveries/po-status", async (c) => {
   const out = pos.results.map((po) => {
     const poDels = dels.filter((d) => d.po_id === po.id);
     const wholePoDone = poDels.some((d) => d.po_line_id == null && d.completes_po === 1);
-    const poLines = lines.filter((l) => l.po_id === po.id).map((l) => {
+    // Charges, vouchers and collections are never chased — they don't arrive.
+    const poLines = lines.filter((l) => l.po_id === po.id && isDeliverableLine(l.item)).map((l) => {
       const lineDels = poDels.filter((d) => d.po_line_id === l.id);
       const deliveredQtyTotal = lineDels.reduce((t, d) => t + (d.received_qty ?? 0), 0);
       const delivered = wholePoDone

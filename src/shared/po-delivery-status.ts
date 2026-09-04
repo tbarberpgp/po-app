@@ -17,6 +17,8 @@
 // in `delivery-variance.ts`, and only on the one leg where both sides provably
 // name the same unit.
 
+import { looksLikeServiceCharge } from "./line-match";
+
 export type PoDeliveryRow = {
   po_id: string;
   /** null = the delivery was logged against the whole order, not one line. */
@@ -91,12 +93,54 @@ export const PO_DELIVERY_NOTE_COLUMNS =
 export const PO_DELIVERY_NOTE_JOIN =
   "LEFT JOIN delivery_ticket_scans s ON s.id = d.scan_id";
 
+/**
+ * Lines that are not goods and so can never be delivered — carriage, vouchers,
+ * collection charges — asked of a PURCHASE ORDER line rather than an invoice
+ * line.
+ *
+ * The core of the question is already answered by `looksLikeServiceCharge`,
+ * which the invoice matcher uses to stop flagging carriage as an unmatched
+ * product, so this builds on it rather than restating it: one list of charge
+ * words, and the two screens cannot drift on what a carriage line is.
+ *
+ * The extras below are the ones that only matter here. An invoice needs to know
+ * "is there anything on the order to reconcile this against"; a delivery needs
+ * to know "will a van ever bring this". A voucher is a discount, a customer
+ * collection is the goods NOT being delivered, a damage waiver is insurance on
+ * a hire — all real order lines, none of them ever arriving, and every one of
+ * them holding an order at "3 of 4 lines" forever. They are kept out of the
+ * invoice rule deliberately: widening that changes which invoice lines get
+ * money-checked, which is a different decision with different stakes.
+ *
+ * Each needs an unambiguous fee phrase, not a fee-ish word. Bare "collection"
+ * would take a dust collection bag with it.
+ */
+const NEVER_DELIVERED_PATTERNS: RegExp[] = [
+  /\bvoucher\b/i,
+  /\bcustomer\s+collection\b/i,
+  /\bcollection\s+(?:charge|surcharge|fee)\b/i,
+  /\bfree\s+(?:\w+\s+)?delivery\b/i,       // "Free Supplier Delivery"
+  /\bfixed\s+charges?\b/i,
+  /\bdamage\s+waiver\b/i,
+];
+
+/** Will a van ever bring this line? Charges, vouchers and collections won't, so
+ *  they are not counted among the lines an order is waiting on. */
+export function isDeliverableLine(item: string | null | undefined): boolean {
+  const s = String(item ?? "").trim();
+  if (!s) return true; // nothing to judge on — assume it's goods
+  return !looksLikeServiceCharge(s) && !NEVER_DELIVERED_PATTERNS.some((re) => re.test(s));
+}
+
 export type PoLineRef = {
   id: number;
   po_id: string;
   /** Ordered quantity, when the caller has it. Lets a line be judged received
    *  from the receipts themselves rather than only from `completes_po`. */
   qty?: number | null;
+  /** The line's wording, when the caller has it — used to keep carriage and
+   *  other never-delivered lines out of the count. */
+  item?: string | null;
 };
 
 /** How far an order has got: nothing received, some of it, or all of it. */
@@ -134,7 +178,15 @@ export function summarisePoDeliveries(
 ): PoDeliverySummary {
   const poDels = dels.filter((d) => d.po_id === poId);
   const wholePoDone = poDels.some((d) => d.po_line_id == null && d.completes_po === 1);
-  const poLines = lines.filter((l) => l.po_id === poId);
+  const allPoLines = lines.filter((l) => l.po_id === poId);
+  // Carriage is not something a van brings — it is the charge for the van. An
+  // order of one material plus a carriage line was reading "1 of 2 lines" and
+  // could never reach fully delivered, because the second line was a fee that
+  // will never arrive. Lines are only dropped when the caller supplied the
+  // wording; an order that is ALL charges keeps them, since counting nothing
+  // would make every one of those orders permanently undeliverable.
+  const deliverable = allPoLines.filter((l) => isDeliverableLine(l.item));
+  const poLines = deliverable.length > 0 ? deliverable : allPoLines;
   // A line is received when a receipt SAYS so, or when the receipts against it
   // ADD UP to the order. The second half is not belt-and-braces: the flag is
   // derived at check-in and only when the check-in already knows the order, so

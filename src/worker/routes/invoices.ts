@@ -831,7 +831,7 @@ async function withMatchState(env: Env, rows: Record<string, unknown>[]): Promis
     }
   }
   const poDeliveryFor = (poId: string) => {
-    const lines: PoLineRef[] = (byPo.get(poId) ?? []).map((l) => ({ id: l.id, po_id: poId, qty: l.qty }));
+    const lines: PoLineRef[] = (byPo.get(poId) ?? []).map((l) => ({ id: l.id, po_id: poId, qty: l.qty, item: l.item }));
     const s = summarisePoDeliveries(poId, lines, delsByPo.get(poId) ?? []);
     return s;
   };
