@@ -11,6 +11,7 @@ import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import {
   summarisePoDeliveries,
+  deliveryNoteKey,
   poBilledState,
   isPoClosed,
   poDeliveryLabel,
@@ -81,6 +82,67 @@ describe("summarisePoDeliveries", () => {
   });
 });
 
+describe("counting notes rather than rows", () => {
+  // The count feeds "fully delivered · 3 notes", and a note is checked in as
+  // one ROW PER PO LINE it covers. Counting rows made one van turning up once
+  // against five lines read as five separate deliveries — PO-26001-0013 in
+  // production carries 16 rows from 3 notes.
+  const scanned = (scan_id: number, po_line_id: number): PoDeliveryRow =>
+    ({ po_id: "po-a", po_line_id, completes_po: 1, scan_id, created_at: "2026-08-01T09:00:00.000Z", created_by: "site@x" });
+
+  test("one scanned ticket across three lines is one note", () => {
+    const s = summarisePoDeliveries("po-a", lines, [scanned(7, 1), scanned(7, 2), scanned(7, 1)]);
+    assert.equal(s.drops, 1);
+    assert.equal(s.state, "full");
+  });
+
+  test("separate tickets stay separate notes", () => {
+    assert.equal(summarisePoDeliveries("po-a", lines, [scanned(7, 1), scanned(8, 2)]).drops, 2);
+  });
+
+  test("a ticket with no scan groups on the copied ticket file", () => {
+    const row = (ticket_key: string, po_line_id: number): PoDeliveryRow =>
+      ({ po_id: "po-a", po_line_id, completes_po: 0, ticket_key });
+    const s = summarisePoDeliveries("po-a", lines, [row("k/1.jpg", 1), row("k/1.jpg", 2), row("k/2.jpg", 1)]);
+    assert.equal(s.drops, 2);
+  });
+
+  // A manual check-in has neither a scan nor a ticket; every row of one is
+  // written with the same instant, which is the only thing tying them together.
+  test("a manual check-in groups on the instant it was logged", () => {
+    const row = (created_at: string, po_line_id: number): PoDeliveryRow =>
+      ({ po_id: "po-a", po_line_id, completes_po: 0, created_at, created_by: "admin@x" });
+    const s = summarisePoDeliveries("po-a", lines, [
+      row("2026-08-01T09:00:00.000Z", 1), row("2026-08-01T09:00:00.000Z", 2),
+      row("2026-08-04T14:22:11.000Z", 1),
+    ]);
+    assert.equal(s.drops, 2);
+  });
+
+  test("the same instant from two people is two check-ins", () => {
+    const at = "2026-08-01T09:00:00.000Z";
+    const s = summarisePoDeliveries("po-a", lines, [
+      { po_id: "po-a", po_line_id: 1, completes_po: 0, created_at: at, created_by: "a@x" },
+      { po_id: "po-a", po_line_id: 2, completes_po: 0, created_at: at, created_by: "b@x" },
+    ]);
+    assert.equal(s.drops, 2);
+  });
+
+  // Callers that don't select the grouping columns keep the old count rather
+  // than collapsing every row into one phantom note.
+  test("rows with nothing to group on are each their own note", () => {
+    const s = summarisePoDeliveries("po-a", lines, [del("po-a", 1, 0), del("po-a", 1, 0), del("po-a", 2, 0)]);
+    assert.equal(s.drops, 3);
+  });
+
+  test("the key prefers the scan, then the ticket, then the check-in", () => {
+    assert.equal(deliveryNoteKey({ scan_id: 7, ticket_key: "k", created_at: "t", created_by: "u" }), "s:7");
+    assert.equal(deliveryNoteKey({ scan_id: null, ticket_key: "k", created_at: "t" }), "t:k");
+    assert.equal(deliveryNoteKey({ created_at: "t", created_by: "u" }), "m:t|u");
+    assert.equal(deliveryNoteKey({ id: 4 }), "r:4");
+  });
+});
+
 describe("poBilledState", () => {
   test("nothing billed", () => {
     assert.equal(poBilledState(0, 1000), "none");
@@ -118,21 +180,25 @@ describe("isPoClosed", () => {
 });
 
 describe("labels", () => {
-  test("the note count survives into the label", () => {
-    assert.equal(poDeliveryLabel({ state: "full", lines_delivered: 2, lines_total: 2, drops: 3 }), "fully delivered · 3 notes");
-    assert.equal(poDeliveryLabel({ state: "full", lines_delivered: 1, lines_total: 1, drops: 1 }), "fully delivered");
-    assert.equal(poDeliveryLabel({ state: "part", lines_delivered: 1, lines_total: 4, drops: 2 }), "part delivered · 1 of 4 lines · 2 notes");
+  // "3 notes" was read as three materials on one ticket, so the label names
+  // what it counts and says it at one as well as at three.
+  test("the note count survives into the label, spelled out", () => {
+    assert.equal(poDeliveryLabel({ state: "full", lines_delivered: 2, lines_total: 2, drops: 3 }), "fully delivered · 3 delivery notes");
+    assert.equal(poDeliveryLabel({ state: "full", lines_delivered: 1, lines_total: 1, drops: 1 }), "fully delivered · 1 delivery note");
+    assert.equal(poDeliveryLabel({ state: "part", lines_delivered: 1, lines_total: 4, drops: 2 }), "part delivered · 1 of 4 lines · 2 delivery notes");
+    assert.equal(poDeliveryLabel({ state: "part", lines_delivered: 0, lines_total: 1, drops: 1 }), "part delivered · 1 delivery note");
+    // Nothing received is nothing to count — "0 delivery notes" would be noise.
     assert.equal(poDeliveryLabel({ state: "none", lines_delivered: 0, lines_total: 2, drops: 0 }), "nothing received");
   });
 
   test("the billing half only shows when it changes the reading", () => {
     const full = { state: "full" as const, lines_delivered: 1, lines_total: 1, drops: 1 };
     const none = { state: "none" as const, lines_delivered: 0, lines_total: 1, drops: 0 };
-    assert.equal(poStatusHint(full, "none"), "fully delivered · not yet billed");
-    assert.equal(poStatusHint(full, "full"), "fully delivered · fully billed");
-    assert.equal(poStatusHint(full, "over"), "fully delivered · billed over the order");
+    assert.equal(poStatusHint(full, "none"), "fully delivered · 1 delivery note · not yet billed");
+    assert.equal(poStatusHint(full, "full"), "fully delivered · 1 delivery note · fully billed");
+    assert.equal(poStatusHint(full, "over"), "fully delivered · 1 delivery note · billed over the order");
     // Nothing received and nothing billed is one fact, not two.
     assert.equal(poStatusHint(none, "none"), "nothing received");
-    assert.equal(poStatusHint(full, "unknown"), "fully delivered");
+    assert.equal(poStatusHint(full, "unknown"), "fully delivered · 1 delivery note");
   });
 });

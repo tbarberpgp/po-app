@@ -22,7 +22,37 @@ export type PoDeliveryRow = {
   /** null = the delivery was logged against the whole order, not one line. */
   po_line_id: number | null;
   completes_po: number;
+  // Which NOTE this row arrived on. A delivery note is checked in as one row
+  // per PO line it covers, so without these the row count stands in for the
+  // note count and one ticket covering five lines reads as five deliveries.
+  // All three are optional: a caller that doesn't select them falls back to
+  // the row count, which is what the count has always been.
+  /** The scanned ticket this row was checked in from. */
+  scan_id?: number | null;
+  /** R2 key of the ticket image — every row of one check-in shares the copy. */
+  ticket_key?: string | null;
+  /** Written once per check-in, so it groups a manual (ticket-less) drop. */
+  created_at?: string | null;
+  created_by?: string | null;
 };
+
+/**
+ * Which delivery note a receipt row belongs to.
+ *
+ * The three keys are tried in order of how firmly they tie rows together: the
+ * scan is the note itself; the copied ticket file is shared by every row of a
+ * check-in that has no scan; and a manual check-in writes one instant across
+ * all its rows. A row carrying none of them is its own note — falling back to
+ * the row id would be the same thing, since nothing links it to another row.
+ */
+export function deliveryNoteKey(
+  r: Pick<PoDeliveryRow, "scan_id" | "ticket_key" | "created_at" | "created_by"> & { id?: number },
+): string {
+  if (r.scan_id != null) return `s:${r.scan_id}`;
+  if (r.ticket_key) return `t:${r.ticket_key}`;
+  if (r.created_at) return `m:${r.created_at}|${r.created_by ?? ""}`;
+  return `r:${r.id ?? Math.random()}`;
+}
 
 export type PoLineRef = { id: number; po_id: string };
 
@@ -33,9 +63,10 @@ export type PoDeliverySummary = {
   state: PoDeliveryState;
   lines_delivered: number;
   lines_total: number;
-  /** Delivery notes logged against the order. This is the number that makes
-   *  "another note for an order that is already complete" legible at a glance,
-   *  and it is why the count is carried separately from the state. */
+  /** Delivery notes logged against the order — DISTINCT notes, not receipt
+   *  rows. This is the number that makes "another note for an order that is
+   *  already complete" legible at a glance, and it is why the count is carried
+   *  separately from the state. */
   drops: number;
 };
 
@@ -59,11 +90,15 @@ export function summarisePoDeliveries(
     (l) => wholePoDone || poDels.some((d) => d.po_line_id === l.id && d.completes_po === 1),
   ).length;
   const full = wholePoDone || (poLines.length > 0 && delivered === poLines.length);
+  // Notes, not rows: one ticket checked in against five lines is one delivery.
+  // Rows selected without the grouping columns each key to themselves, so the
+  // count degrades to the row count rather than collapsing to 1.
+  const notes = new Set(poDels.map((d, i) => deliveryNoteKey({ ...d, id: i })));
   return {
     state: full ? "full" : poDels.length > 0 ? "part" : "none",
     lines_delivered: delivered,
     lines_total: poLines.length,
-    drops: poDels.length,
+    drops: notes.size,
   };
 }
 
@@ -94,11 +129,16 @@ export function isPoClosed(delivery: PoDeliveryState, billed: PoBilledState): bo
   return delivery === "full" && (billed === "full" || billed === "over");
 }
 
-/** The delivery state in the words a buyer would use, with the note count when
- *  more than one has landed — "fully delivered · 3 notes" is the whole point of
- *  the exercise, so it is never abbreviated away. */
+/** The delivery state in the words a buyer would use, followed by how many
+ *  delivery notes are behind it.
+ *
+ *  Both halves of that phrasing were learned the hard way. "3 notes" got read
+ *  as three materials on ONE ticket — a count only earns its place if it says
+ *  what it is counting, so it is spelled out. And it shows at one as well as
+ *  at three: "fully delivered" alone left the reader to guess whether any
+ *  paperwork existed, when "1 delivery note" answers it outright. */
 export function poDeliveryLabel(d: PoDeliverySummary): string {
-  const notes = d.drops > 1 ? ` · ${d.drops} notes` : "";
+  const notes = d.drops > 0 ? ` · ${d.drops} delivery note${d.drops === 1 ? "" : "s"}` : "";
   if (d.state === "full") return `fully delivered${notes}`;
   if (d.state === "part") {
     return d.lines_total > 1

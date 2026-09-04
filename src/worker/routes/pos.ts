@@ -1,10 +1,10 @@
 import { Hono } from "hono";
 import type { Env, Variables } from "../env";
-import type { CreatePOInput, POLine } from "../../shared/types";
+import type { CreatePOInput, POLine, PoDeliveryDrop } from "../../shared/types";
 import { loadSettings, tierForApproval } from "../approval";
 import { learnAliases } from "../matchMemory";
 import { normText } from "../../shared/line-match";
-import { summarisePoDeliveries, type PoLineRef, type PoDeliveryRow } from "../../shared/po-delivery-status";
+import { summarisePoDeliveries, deliveryNoteKey, type PoLineRef, type PoDeliveryRow } from "../../shared/po-delivery-status";
 import { emailApprovers, emailRequesterDecision, emailFrameworkOverdraw, FRAMEWORK_OVERDRAW_RECIPIENTS } from "../notify";
 import { requirePermission } from "../auth";
 import { buildCostCode, derivedProjectNumber } from "../../shared/types";
@@ -427,8 +427,19 @@ pos.get("/", async (c) => {
   const dLines = (await c.env.DB.prepare(
     `SELECT pl.id, pl.po_id FROM po_lines pl ${scope.replace("%s", "pl.po_id")}`,
   ).bind(...binds).all<PoLineRef>()).results;
+  // Receipts join on the order id OR, for one booked in before deliveries
+  // recorded the order itself, on the free-text PO number — po_number is
+  // UNIQUE, so that can't reach another order's paperwork. The single-PO GET
+  // recovers them the same way; matching here keeps the two in step rather
+  // than leaving the list a receipt behind on those orders.
+  const delScope = `JOIN purchase_orders po
+         ON (po.id = d.po_id OR (d.po_id IS NULL AND po.po_number = d.po_number))
+       JOIN projects p ON p.id = po.project_id
+      ${where.length ? "WHERE " + where.join(" AND ") : ""}`;
   const dDels = (await c.env.DB.prepare(
-    `SELECT d.po_id, d.po_line_id, d.completes_po FROM site_deliveries d ${scope.replace("%s", "d.po_id")}`,
+    `SELECT COALESCE(d.po_id, po.id) AS po_id, d.po_line_id, d.completes_po,
+            d.scan_id, d.ticket_key, d.created_at, d.created_by
+       FROM site_deliveries d ${delScope}`,
   ).bind(...binds).all<PoDeliveryRow>()).results;
 
   return c.json(withBooleans.map((r) => {
@@ -496,25 +507,112 @@ pos.get("/:id", async (c) => {
   const projectCode = po.project_code as string;
   const projectNumber = derivedProjectNumber(projectCode);
 
-  // Every receipt logged against this PO's lines, so each line can show WHICH
-  // delivery notes it was actually received against — "93 received" on its own
-  // doesn't say whether that's one delivery or five, or let anyone go check the
-  // paperwork behind any of them. scan_id is null for a manual check-in (goods
-  // logged with no ticket); those show as "Manual" rather than a DN.
+  // Every receipt logged against this order. Two things are built from it: the
+  // per-line history (which notes a line's "93 received" actually came from),
+  // and the order's own delivery register — one entry per NOTE, because an
+  // order takes as many notes as the supplier chooses to send and the page had
+  // nothing on it that said which deliveries those were.
+  //
+  // A note is checked in as one row PER PO LINE it covers, so the rows are
+  // regrouped back into the drops they arrived as (see `deliveryNoteKey`).
+  // scan_id is null for a manual check-in — goods logged with no ticket — and
+  // those show as "Manual", not as a DN they don't have.
+  //
+  // Deliveries booked in before po_id was captured carry only the free-text PO
+  // number. po_number is UNIQUE on purchase_orders, so matching on that as well
+  // recovers them without any risk of pulling in another order's paperwork.
   const receipts = await c.env.DB.prepare(
-    `SELECT d.po_line_id, d.received_qty, d.received_unit, d.delivered_at, d.created_by,
+    `SELECT d.id, d.po_id, d.po_line_id, d.po_line_desc, d.description, d.supplier, d.status,
+            d.notes, d.signed_by, d.received_qty, d.received_unit, d.completes_po,
+            d.ticket_key, d.ticket_type, d.scan_id, d.delivered_at, d.created_at, d.created_by,
             s2.delivery_note_number AS dn
        FROM site_deliveries d
        LEFT JOIN delivery_ticket_scans s2 ON s2.id = d.scan_id
-      WHERE d.po_id = ? AND d.po_line_id IS NOT NULL AND d.received_qty IS NOT NULL
+      WHERE d.po_id = ?1 OR (d.po_id IS NULL AND d.po_number = ?2)
       ORDER BY d.delivered_at ASC, d.id ASC`,
-  ).bind(id).all<{ po_line_id: number; received_qty: number; received_unit: string | null; delivered_at: string; created_by: string | null; dn: string | null }>();
-  const deliveriesByLine = new Map<number, Array<{ dn: string | null; qty: number; unit: string | null; date: string; by: string | null }>>();
+  ).bind(id, po.po_number).all<{
+    id: number; po_id: string | null; po_line_id: number | null; po_line_desc: string | null;
+    description: string | null; supplier: string | null; status: string | null; notes: string | null;
+    signed_by: string | null; received_qty: number | null;
+    received_unit: string | null; completes_po: number | null; ticket_key: string | null;
+    ticket_type: string | null; scan_id: number | null; delivered_at: string; created_at: string;
+    created_by: string | null; dn: string | null;
+  }>();
+
+  // The ticket travels with each per-line receipt as well as with the note, so
+  // a line's own history can show the paperwork behind it without sending the
+  // reader off to find which note the number belonged to.
+  const ticketUrl = (key: string | null) =>
+    key ? `/api/operations/file?key=${encodeURIComponent(key)}` : null;
+  // Each receipt says which note it came in on, because one note can book in
+  // the same PO line several times over — a tapered-insulation scheme line on
+  // PO-26001-0013 takes nine ticket rows off ONE delivery note. Counting rows
+  // told that line it had had nine deliveries.
+  const deliveriesByLine = new Map<number, Array<{ note: string; dn: string | null; qty: number; unit: string | null; date: string; by: string | null; ticket_url: string | null; ticket_type: string | null }>>();
   for (const r of receipts.results) {
+    if (r.po_line_id == null || r.received_qty == null) continue;
     const arr = deliveriesByLine.get(r.po_line_id) ?? [];
-    arr.push({ dn: r.dn, qty: r.received_qty, unit: r.received_unit, date: r.delivered_at, by: r.created_by });
+    arr.push({
+      note: deliveryNoteKey(r),
+      dn: r.dn, qty: r.received_qty, unit: r.received_unit, date: r.delivered_at, by: r.created_by,
+      ticket_url: ticketUrl(r.ticket_key), ticket_type: r.ticket_type,
+    });
     deliveriesByLine.set(r.po_line_id, arr);
   }
+
+  // The register, oldest note first — it reads as the order's receipt history,
+  // and the numbering ("2 of 3") only means anything in that direction.
+  const dropsByNote = new Map<string, PoDeliveryDrop>();
+  for (const r of receipts.results) {
+    const key = deliveryNoteKey(r);
+    let drop = dropsByNote.get(key);
+    if (!drop) {
+      drop = {
+        key,
+        dn: r.dn,
+        delivered_at: r.delivered_at,
+        supplier: r.supplier,
+        status: (r.status as PoDeliveryDrop["status"]) ?? "received",
+        signed_by: r.signed_by,
+        notes: r.notes,
+        created_at: r.created_at,
+        created_by: r.created_by,
+        // Neither a scan nor a ticket file: someone logged the goods from
+        // memory. Saying so is the point — it's the drop with no paperwork
+        // behind it to go and check.
+        manual: r.scan_id == null && !r.ticket_key,
+        ticket_url: ticketUrl(r.ticket_key),
+        ticket_type: r.ticket_type,
+        linked_by: r.po_id ? "po_id" : "po_number",
+        whole_order: false,
+        items: [],
+      };
+      dropsByNote.set(key, drop);
+    }
+    // A row with no line is the whole order signed for in one go, so it has no
+    // item detail to list — the flag carries it instead of a blank row.
+    if (r.po_line_id == null) drop.whole_order = true;
+    else {
+      drop.items.push({
+        id: r.id,
+        po_line_id: r.po_line_id,
+        description: r.description ?? r.po_line_desc ?? "",
+        line_desc: r.po_line_desc,
+        qty: r.received_qty,
+        unit: r.received_unit,
+        completes: r.completes_po === 1,
+      });
+    }
+  }
+  const deliveries = [...dropsByNote.values()];
+
+  // The order-level state, on the shared rule — so this page, the PO list and
+  // the awaiting list can't disagree about whether the order has landed.
+  const deliverySummary = summarisePoDeliveries(
+    id,
+    lines.results.map((l) => ({ id: Number(l.id), po_id: id })),
+    receipts.results.map((r) => ({ ...r, po_id: id, completes_po: r.completes_po ?? 0 })),
+  );
 
   // For a framework order, show how much of each line has already been drawn
   // down by its live call-offs — matched by item description, the same rule the
@@ -578,7 +676,18 @@ pos.get("/:id", async (c) => {
       .bind(po.parent_po_id).first<{ id: string; po_number: string }>();
   }
 
-  return c.json({ ...po, requires_approval: !!po.requires_approval, lines: enriched, call_offs, parent });
+  return c.json({
+    ...po,
+    requires_approval: !!po.requires_approval,
+    lines: enriched,
+    call_offs,
+    parent,
+    deliveries,
+    delivery_state: deliverySummary.state,
+    delivery_drops: deliverySummary.drops,
+    delivery_lines_delivered: deliverySummary.lines_delivered,
+    delivery_lines_total: deliverySummary.lines_total,
+  });
 });
 
 /**

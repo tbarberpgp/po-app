@@ -265,7 +265,15 @@ export type POLine = {
   // (or "manual", for a check-in with no ticket) each portion of `received_qty`
   // actually came from. Set by GET /api/pos/:id.
   received_qty?: number;
-  deliveries?: Array<{ dn: string | null; qty: number; unit: string | null; date: string; by: string | null }>;
+  deliveries?: Array<{
+    /** Which delivery note this receipt came in on — one note can book the
+     *  same line in several times, so rows are not notes. */
+    note: string;
+    dn: string | null; qty: number; unit: string | null; date: string; by: string | null;
+    /** The ticket photo/PDF behind this receipt, when the check-in kept one. */
+    ticket_url: string | null;
+    ticket_type: string | null;
+  }>;
 };
 
 export type OrderType = "standard" | "framework" | "call_off";
@@ -318,17 +326,65 @@ export type PurchaseOrder = {
   // round trip; not present on the single-PO GET (that shows it per-line).
   is_overdrawn?: boolean;
   // Where the order has got to on delivery. Set by GET /api/pos (the PO list)
-  // so the order pickers can show it without a round trip per row, and derived
-  // by the shared rule in `po-delivery-status.ts` — the same one the awaiting
-  // list and the invoice matcher use. Not present on the single-PO GET, which
-  // carries the per-line receipts themselves.
+  // so the order pickers can show it without a round trip per row, and by the
+  // single-PO GET — both derived by the shared rule in `po-delivery-status.ts`,
+  // the same one the awaiting list and the invoice matcher use.
   delivery_state?: PoDeliveryState;
   /** Delivery notes logged against the order. More than one is the normal case
    *  and the reason the state is worth showing at all. */
   delivery_drops?: number;
   delivery_lines_delivered?: number;
   delivery_lines_total?: number;
+  /** The order's delivery register — one entry per delivery NOTE, oldest
+   *  first. Set by GET /api/pos/:id only; the list carries the counts, not the
+   *  notes themselves. */
+  deliveries?: PoDeliveryDrop[];
   lines: POLine[];
+};
+
+/**
+ * One delivery against an order, as it arrived: a single note (or a single
+ * ticket-less check-in), with every line it covered underneath it.
+ *
+ * The unit here is the NOTE, not the receipt row. A note is checked in as one
+ * row per PO line it covers, so five rows can be one van turning up once — and
+ * the register has to say "one delivery, five items" or it is answering a
+ * question nobody asked.
+ */
+export type PoDeliveryDrop = {
+  /** Stable within one response; groups the rows, and nothing else. */
+  key: string;
+  /** The supplier's delivery-note number, when the ticket was scanned. */
+  dn: string | null;
+  delivered_at: string;
+  supplier: string | null;
+  status: DeliveryStatus;
+  signed_by: string | null;
+  notes: string | null;
+  created_at: string;
+  created_by: string | null;
+  /** No ticket and no scan — the goods were logged from memory. */
+  manual: boolean;
+  /** Where to open the ticket image/PDF, when there is one. */
+  ticket_url: string | null;
+  ticket_type: string | null;
+  /** Whether the receipt names this order by id or only by its PO number —
+   *  the latter is a pre-`po_id` booking-in, matched on the unique number. */
+  linked_by: "po_id" | "po_number";
+  /** The whole order was signed for in one go, with no per-line detail. */
+  whole_order: boolean;
+  items: Array<{
+    id: number;
+    po_line_id: number;
+    /** What the ticket called it. */
+    description: string;
+    /** What the PO line called it, as snapshotted at check-in. */
+    line_desc: string | null;
+    qty: number | null;
+    unit: string | null;
+    /** This receipt finished that line off. */
+    completes: boolean;
+  }>;
 };
 
 export type Approver = {

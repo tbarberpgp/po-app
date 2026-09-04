@@ -1343,6 +1343,43 @@ operations.get("/file", async (c) => {
   if (c.req.query("download")) {
     headers.set("Content-Disposition", `attachment; filename="${sanitizeName(key.split("/").pop() || "file")}"`);
   }
+
+  // `w` asks for a thumbnail, capped on the WIDTH. A ticket photographed on a
+  // phone is several megabytes, and the PO delivery register asks for one per
+  // note — sending the full frame to draw it 36px wide is the whole download
+  // for none of the detail.
+  //
+  // Only the width is constrained, deliberately. `shrinkPhoto` boxes width AND
+  // height, which is right for a print slot but here would hand the page a
+  // ticket squashed to a square: callers crop these to a square in CSS, and a
+  // source that has already been distorted can't be cropped back. Leaving the
+  // height free keeps the aspect ratio.
+  //
+  // A failed or unavailable transform serves the original bytes, so asking for
+  // a thumbnail is never worse than not asking. The etag carries the width so
+  // a thumbnail and the full image can't be served to each other from cache.
+  const w = Number(c.req.query("w"));
+  const type = obj.httpMetadata?.contentType ?? "";
+  if (Number.isInteger(w) && w >= 16 && w <= 2000 && /^image\//i.test(type) && !/svg/i.test(type)) {
+    const original = await obj.arrayBuffer();
+    let thumb: { body: ArrayBuffer; mime: string } | null = null;
+    if (c.env.IMAGES) {
+      try {
+        const out = await c.env.IMAGES
+          .input(new Response(original).body as ReadableStream<Uint8Array>)
+          .transform({ width: w, fit: "scale-down" })
+          .output({ format: "image/jpeg", quality: 78 });
+        const buf = await out.response().arrayBuffer();
+        if (buf.byteLength > 0) thumb = { body: buf, mime: "image/jpeg" };
+      } catch (e) {
+        console.warn("thumbnail resize failed — serving the original:", e instanceof Error ? e.message : e);
+      }
+    }
+    if (thumb) headers.set("Content-Type", thumb.mime);
+    headers.set("etag", `${obj.httpEtag.replace(/"$/, "")}-w${w}"`);
+    return new Response(thumb?.body ?? original, { headers });
+  }
+
   return new Response(obj.body, { headers });
 });
 
@@ -1737,7 +1774,7 @@ operations.get("/deliveries-inbox", async (c) => {
     // po_line_id IS NOT NULL, which the variance check needs), so a separate
     // read carries completes_po for the shared rule. Same POs, one more column.
     const orderDelRows = varPoIds.length ? (await c.env.DB.prepare(
-      `SELECT po_id, po_line_id, completes_po FROM site_deliveries WHERE po_id IN (${varPoIds.map(() => "?").join(",")})`,
+      `SELECT po_id, po_line_id, completes_po, scan_id, ticket_key, created_at, created_by FROM site_deliveries WHERE po_id IN (${varPoIds.map(() => "?").join(",")})`,
     ).bind(...varPoIds).all<PoDeliveryRow>()).results : [];
 
     candidates = varRows.map((x) => {
@@ -1981,7 +2018,7 @@ operations.get("/:projectId/deliveries/ticket-candidates", async (c) => {
     // po_line_id IS NOT NULL, which the variance check needs), so a separate
     // read carries completes_po for the shared rule. Same POs, one more column.
     const orderDelRows = varPoIds.length ? (await c.env.DB.prepare(
-      `SELECT po_id, po_line_id, completes_po FROM site_deliveries WHERE po_id IN (${varPoIds.map(() => "?").join(",")})`,
+      `SELECT po_id, po_line_id, completes_po, scan_id, ticket_key, created_at, created_by FROM site_deliveries WHERE po_id IN (${varPoIds.map(() => "?").join(",")})`,
     ).bind(...varPoIds).all<PoDeliveryRow>()).results : [];
 
     candidates = varRows.map((x) => {
@@ -2181,7 +2218,7 @@ operations.get("/:projectId/deliveries/ticket-candidates/:id/reconcile", async (
   // the reader needs warning about. (The variance check excludes them for its
   // own purposes: it must not compare a ticket against goods it delivered.)
   const orderDels = (await c.env.DB.prepare(
-    "SELECT po_id, po_line_id, completes_po FROM site_deliveries WHERE po_id = ?",
+    "SELECT po_id, po_line_id, completes_po, scan_id, ticket_key, created_at, created_by FROM site_deliveries WHERE po_id = ?",
   ).bind(chosen.id).all<PoDeliveryRow>()).results;
   const po_delivery = summarisePoDeliveries(chosen.id, poLines, orderDels);
 
@@ -2573,9 +2610,9 @@ operations.get("/:projectId/deliveries/po-status", async (c) => {
   ).bind(...poIds).all<{ id: number; po_id: string; item: string; qty: number; unit: string }>()).results;
   // Deliveries logged against these POs (on the base project).
   const dels = (await c.env.DB.prepare(
-    `SELECT po_id, po_line_id, completes_po, received_qty, received_unit FROM site_deliveries
+    `SELECT po_id, po_line_id, completes_po, scan_id, ticket_key, created_at, created_by, received_qty, received_unit FROM site_deliveries
       WHERE project_id = ? AND po_id IN (${lph})`,
-  ).bind(base, ...poIds).all<{ po_id: string; po_line_id: number | null; completes_po: number; received_qty: number | null; received_unit: string | null }>()).results;
+  ).bind(base, ...poIds).all<PoDeliveryRow & { received_qty: number | null; received_unit: string | null }>()).results;
 
   const out = pos.results.map((po) => {
     const poDels = dels.filter((d) => d.po_id === po.id);

@@ -5,7 +5,8 @@ import { downloadPdf, generatePoPdf } from "../lib/po-pdf";
 import { Topbar } from "./Shell";
 import { GroupedCombobox } from "./GroupedCombobox";
 import { can } from "../../shared/permissions";
-import type { CurrentUser, PurchaseOrder, Supplier } from "../../shared/types";
+import type { CurrentUser, PoDeliveryDrop, PurchaseOrder, Supplier } from "../../shared/types";
+import { poDeliveryLabel } from "../../shared/po-delivery-status";
 
 type Row = PurchaseOrder & {
   project_code: string; project_name: string;
@@ -450,24 +451,45 @@ export function POView({ me }: { me: CurrentUser | null }) {
                             ? <button className="ghost tiny" style={{ marginTop: 4 }} title="Code this line to a budget line so it counts inside the project budget" onClick={() => openAssign(l.id!)}>＋ Assign to budget</button>
                             : <button className="ghost tiny" style={{ marginTop: 4, opacity: 0.7 }} title="Change which budget line this is coded to" onClick={() => openAssign(l.id!)}>Recode budget line</button>
                         )}
-                        {(l.deliveries?.length ?? 0) > 0 && l.id != null && (
+                        {(l.deliveries?.length ?? 0) > 0 && l.id != null && (() => {
+                          // Notes, not receipt rows: one note can book this line
+                          // in several times over (a scheme line takes a row per
+                          // component), and "9 deliveries" for one van reads as
+                          // nine visits.
+                          const noteCount = new Set(l.deliveries!.map((d) => d.note)).size;
+                          return (
                           <div style={{ marginTop: 4 }}>
                             <button className="ghost tiny" onClick={() => toggleDeliveries(l.id!)}>
-                              {fmtQty(l.received_qty ?? 0)} {l.unit} received · {l.deliveries!.length} deliver{l.deliveries!.length === 1 ? "y" : "ies"} {openDeliveries.has(l.id) ? "▾" : "▸"}
+                              {fmtQty(l.received_qty ?? 0)} {l.unit} received · {noteCount} delivery note{noteCount === 1 ? "" : "s"} {openDeliveries.has(l.id) ? "▾" : "▸"}
                             </button>
                             {openDeliveries.has(l.id) && (
                               <div style={{ marginTop: 4, display: "grid", gap: 2 }}>
-                                {l.deliveries!.map((d, i) => (
-                                  <div key={i} className="muted" style={{ fontSize: 11.5, display: "flex", gap: 8 }}>
-                                    <span style={{ minWidth: 90 }}>{d.dn ? `DN ${d.dn}` : `Manual${d.by ? ` · ${d.by.split("@")[0]}` : ""}`}</span>
+                                {l.deliveries!.map((d, i) => {
+                                  // The note's ticket and number head its first
+                                  // row only — repeating them down nine rows of
+                                  // one ticket is what made it look like nine.
+                                  // Receipts arrive grouped by note (ordered by
+                                  // delivery date then id), so the row before
+                                  // settles it.
+                                  const heads = i === 0 || l.deliveries![i - 1].note !== d.note;
+                                  return (
+                                  <div key={i} className="muted" style={{ fontSize: 11.5, display: "flex", gap: 8, alignItems: "center" }}>
+                                    {!heads
+                                      ? <span style={{ width: 36, flex: "0 0 auto" }} />
+                                      : d.ticket_url
+                                        ? <TicketThumb url={d.ticket_url} type={d.ticket_type} label={d.dn ? `DN ${d.dn}` : "Delivery note"} size={36} />
+                                        : <NoTicketBox size={36} />}
+                                    <span style={{ minWidth: 90 }}>{!heads ? "" : d.dn ? `DN ${d.dn}` : `Manual${d.by ? ` · ${d.by.split("@")[0]}` : ""}`}</span>
                                     <span className="num">{fmtQty(d.qty)}{d.unit ? ` ${d.unit}` : ""}</span>
-                                    <span>{fmtDate(d.date)}</span>
+                                    <span>{heads ? fmtDate(d.date) : ""}</span>
                                   </div>
-                                ))}
+                                  );
+                                })}
                               </div>
                             )}
                           </div>
-                        )}
+                          );
+                        })()}
                       </td>
                       <td className="muted">{l.manufacturer ?? ""}</td>
                       <td className="num">{fmtQty(l.qty)}</td>
@@ -511,6 +533,8 @@ export function POView({ me }: { me: CurrentUser | null }) {
                 </tbody>
               </table>
             </div>
+
+            <DeliveriesCard po={po} />
 
             {activity.length > 0 && (
               <div className="card">
@@ -625,6 +649,233 @@ export function POView({ me }: { me: CurrentUser | null }) {
 }
 
 /* ── Sub-components ───────────────────────────────────────────────────── */
+
+/* ── The delivery note itself ─────────────────────────────────────────────
+   A DN number is a reference to a piece of paper, and the paper is what
+   settles an argument about what actually turned up. The thumbnail sits
+   inline with the receipt and opens full size, so checking the ticket never
+   means leaving the order to go and find it.
+
+   The crop is anchored to the TOP of the photo on purpose: that is where the
+   letterhead and the note number are, so a square thumbnail of a portrait
+   ticket is still recognisable as which ticket it is. A PDF can't be
+   thumbnailed in the page, and an image that fails to load shouldn't leave a
+   broken icon behind — both fall back to a plain link. */
+function TicketThumb({ url, type, label, size }: { url: string; type: string | null; label: string; size: number }) {
+  const [lb, setLb] = useState(false);
+  const [broken, setBroken] = useState(false);
+  const isPdf = /pdf/i.test(type ?? "") || /\.pdf(\?|$)/i.test(url);
+
+  useEffect(() => {
+    if (!lb) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setLb(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [lb]);
+
+  if (isPdf || broken) {
+    return (
+      <a className="ghost tiny" href={url} target="_blank" rel="noreferrer" style={{ flex: "0 0 auto" }}>
+        {isPdf ? "Ticket (PDF) ↗" : "Open ticket ↗"}
+      </a>
+    );
+  }
+  // The thumbnail asks the file route to downscale — at 2× for retina — so a
+  // register of twenty notes doesn't pull twenty full-size phone photos. The
+  // lightbox still opens the original.
+  const thumbSrc = `${url}${url.includes("?") ? "&" : "?"}w=${size * 2}`;
+  return (
+    <>
+      <img
+        src={thumbSrc}
+        alt={`${label} — delivery note`}
+        title={`${label} — click to enlarge`}
+        loading="lazy"
+        onClick={() => setLb(true)}
+        onError={() => setBroken(true)}
+        style={{
+          width: size, height: size, flex: "0 0 auto", objectFit: "cover", objectPosition: "top",
+          borderRadius: 6, border: "1px solid var(--line)", background: "#fff", cursor: "zoom-in",
+        }}
+      />
+      {lb && (
+        <div className="acctx-lb" onClick={(e) => { if (e.target === e.currentTarget) setLb(false); }}>
+          <div className="lb-bar">
+            <div className="ti">{label}</div>
+            <span className="sp" />
+            <a className="lb-vbtn" href={url} target="_blank" rel="noreferrer">Open ↗</a>
+            <button className="lb-vbtn" onClick={() => setLb(false)}>Close ✕</button>
+          </div>
+          <div className="lb-stage" onClick={(e) => { if (e.target === e.currentTarget) setLb(false); }}>
+            <img className="lb-img" src={url} alt={`${label} — delivery note`} />
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+/* ── A drop with no paperwork behind it ───────────────────────────────────
+   Holds the thumbnail's place so the notes line up, and says why it's empty
+   rather than leaving a gap the reader has to interpret. */
+function NoTicketBox({ size }: { size: number }) {
+  // "no ticket" only fits once the box is big enough to hold it; at thumbnail
+  // size it clipped into two cramped lines, so a small box says it with a dash
+  // and leaves the wording to the tooltip.
+  const roomy = size >= 56;
+  return (
+    <div
+      title="No ticket — these goods were logged without paperwork"
+      style={{
+        width: size, height: size, flex: "0 0 auto", borderRadius: 6,
+        border: "1px dashed var(--line-strong, var(--line))", color: "var(--muted)",
+        display: "flex", alignItems: "center", justifyContent: "center",
+        fontSize: roomy ? 10 : 12, textAlign: "center", lineHeight: 1.2, padding: 4,
+      }}
+    >
+      {roomy ? "no ticket" : "—"}
+    </div>
+  );
+}
+
+/* ── The order's delivery register ────────────────────────────────────────
+   One order takes as many delivery notes as the supplier chooses to send.
+   Until this card, the page carried those receipts only per LINE — you could
+   open an item and see "93 received", but nothing on the page said whether
+   the 93 came in on one van or five, which note was which, or where the
+   paperwork for any of them was. The register lists the notes themselves, in
+   the order they arrived, each with the items it actually carried.
+
+   The unit is the NOTE, not the receipt row: a ticket checked in against five
+   lines writes five rows and is still one delivery. The worker regroups them
+   (see `deliveryNoteKey`) so this reads "1 delivery, 5 items". */
+function DeliveriesCard({ po }: { po: Row }) {
+  const drops = po.deliveries ?? [];
+  const state = po.delivery_state ?? "none";
+  const label = poDeliveryLabel({
+    state,
+    lines_delivered: po.delivery_lines_delivered ?? 0,
+    lines_total: po.delivery_lines_total ?? po.lines.length,
+    drops: po.delivery_drops ?? drops.length,
+  });
+
+  return (
+    <div className="card">
+      <div className="card-hd" style={{ flexWrap: "wrap", gap: 8 }}>
+        <h2 style={{ flex: 1 }}>Deliveries</h2>
+        <span
+          className="pill"
+          style={state === "full"
+            ? { background: "var(--success-soft)", color: "var(--success)" }
+            : state === "part"
+              ? { background: "var(--warn-soft)", color: "var(--warn)" }
+              : { background: "var(--card-2)", color: "var(--muted)", border: "1px solid var(--line)" }}
+        >
+          {label}
+        </span>
+      </div>
+      {drops.length === 0 ? (
+        <div className="card-bd">
+          <div className="muted" style={{ fontSize: 13 }}>
+            Nothing has been booked in against this order yet. Delivery notes appear here as
+            soon as a ticket is checked in against {po.po_number} on the Deliveries screen
+            {" "}(<Link to="/deliveries">open it</Link>).
+          </div>
+        </div>
+      ) : (
+        <div style={{ display: "grid" }}>
+          {drops.map((d, i) => <DeliveryDropRow key={d.key} drop={d} index={i + 1} total={drops.length} />)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DeliveryDropRow({ drop, index, total }: { drop: PoDeliveryDrop; index: number; total: number }) {
+  const [open, setOpen] = useState(total <= 3);
+  // A check-in writes its own explanatory preamble ("Checked in from WhatsApp
+  // delivery ticket", "MANUAL CHECK-IN — no delivery ticket. Logged by …"),
+  // which only repeats what the row already says. A manual check-in appends
+  // whatever the person typed AFTER that preamble, so it is stripped rather
+  // than used to discard the note — the typed half is the half worth reading.
+  const written = (drop.notes ?? "")
+    .replace(/^MANUAL CHECK-IN\s*—\s*no delivery ticket\.\s*Logged by \S+\.?\s*/i, "")
+    .replace(/^Checked in from [^.]*$/i, "")
+    .trim() || null;
+  const title = drop.dn ? `DN ${drop.dn}` : drop.manual ? "Manual check-in" : "Delivery note";
+
+  return (
+    <div style={{ padding: "12px 14px", borderTop: index === 1 ? "none" : "1px solid var(--line)", display: "flex", gap: 12, alignItems: "flex-start" }}>
+      {/* The note itself, big enough to recognise across the desk. Drops with
+          no paperwork keep the column so the register stays in line. */}
+      {drop.ticket_url
+        ? <TicketThumb url={drop.ticket_url} type={drop.ticket_type} label={title} size={72} />
+        : <NoTicketBox size={72} />}
+      <div style={{ flex: 1, minWidth: 0 }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
+        <span className="pill neutral" style={{ fontSize: 11 }} title={`Delivery ${index} of ${total} against this order`}>
+          {index} of {total}
+        </span>
+        <b style={{ fontSize: 14 }}>{title}</b>
+        <span className="muted" style={{ fontSize: 12.5 }}>
+          {fmtDate(drop.delivered_at)}
+          {drop.supplier ? ` · ${drop.supplier}` : ""}
+          {drop.signed_by ? ` · signed by ${drop.signed_by}` : ""}
+        </span>
+        {drop.whole_order && (
+          <span className="pill" style={{ fontSize: 10 }} title="Signed for as one drop, with no per-item breakdown">
+            whole order
+          </span>
+        )}
+        {drop.status === "rejected" && <span className="badge rejected" title="This delivery was rejected on site">rejected</span>}
+        {drop.status === "partial" && <span className="badge over" title="Logged as a part load">part load</span>}
+        {drop.linked_by === "po_number" && (
+          <span className="badge" title="Matched to this order by its PO number — booked in before deliveries recorded the order itself">
+            matched by number
+          </span>
+        )}
+        <span style={{ flex: 1 }} />
+        {drop.items.length > 0 && (
+          <button className="ghost tiny" onClick={() => setOpen((v) => !v)}>
+            {drop.items.length} item{drop.items.length === 1 ? "" : "s"} {open ? "▾" : "▸"}
+          </button>
+        )}
+      </div>
+
+      {written && <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>“{written}”</div>}
+
+      {open && drop.items.length > 0 && (
+        <div style={{ marginTop: 8, display: "grid", gap: 4 }}>
+          {drop.items.map((it) => (
+            <div key={it.id} style={{ display: "flex", gap: 10, fontSize: 12.5, alignItems: "baseline" }}>
+              <span className="num" style={{ minWidth: 76, fontWeight: 600 }}>
+                {it.qty != null ? `${fmtQty(it.qty)}${it.unit ? ` ${it.unit}` : ""}` : "—"}
+              </span>
+              <span style={{ flex: 1 }}>
+                {it.description || it.line_desc || "—"}
+                {/* What the ticket calls the goods and what the order calls
+                    them are routinely different words for the same thing, so
+                    the line it was booked against is shown whenever it adds
+                    something the description doesn't already say. */}
+                {it.line_desc && it.line_desc !== it.description && (
+                  <span className="muted"> → {it.line_desc}</span>
+                )}
+              </span>
+              {it.completes && (
+                <span className="badge approved" title="This receipt finished that line off">complete</span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {drop.items.length === 0 && !drop.whole_order && (
+        <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>No item detail was recorded against this note.</div>
+      )}
+      </div>
+    </div>
+  );
+}
 
 function SummaryCard({ po }: { po: PurchaseOrder & { project_code: string; project_name: string } }) {
   return (
