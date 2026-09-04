@@ -16,7 +16,7 @@ import { ensureXeroContact } from "./xero";
 import { createSalesInvoice, getInvoice, uploadAttachment } from "../xero/client";
 import { nextPONumber } from "./pos";
 import { aliasMap, aliasMapsBySupplier, learnAliases, normText } from "../matchMemory";
-import { summarisePoDeliveries, poBilledState, isPoClosed, type PoDeliveryRow, type PoLineRef } from "../../shared/po-delivery-status";
+import { summarisePoDeliveries, poBilledState, isPoClosed, PO_DELIVERY_NOTE_COLUMNS, PO_DELIVERY_NOTE_JOIN, type PoDeliveryRow, type PoLineRef } from "../../shared/po-delivery-status";
 import { findSuccessor, fuzzyFindPo, type PoLifecycle } from "../poRef";
 import { pickProjectByAddress, type AddrProject } from "../addrMatch";
 import { siteScope } from "./operations";
@@ -821,7 +821,8 @@ async function withMatchState(env: Env, rows: Record<string, unknown>[]): Promis
     const chunk = poIds.slice(i, i + 90);
     const marks = chunk.map(() => "?").join(",");
     const res = await env.DB.prepare(
-      `SELECT po_id, po_line_id, completes_po, scan_id, ticket_key, created_at, created_by FROM site_deliveries WHERE po_id IN (${marks})`,
+      `SELECT d.po_id, ${PO_DELIVERY_NOTE_COLUMNS} FROM site_deliveries d ${PO_DELIVERY_NOTE_JOIN}
+        WHERE d.po_id IN (${marks})`,
     ).bind(...chunk).all<PoDeliveryRow>();
     for (const d of res.results) {
       const arr = delsByPo.get(d.po_id) ?? [];
@@ -1063,7 +1064,8 @@ async function computeInvoiceMatch(env: Env, inv: Record<string, unknown>, opts:
        JOIN projects p ON p.id = po.project_id
       WHERE po.status != 'deleted' AND po.order_type != 'framework' AND p.deleted_at IS NULL`;
   const delRows = (await env.DB.prepare(
-    `SELECT d.po_id, d.po_line_id, d.completes_po, d.scan_id, d.ticket_key, d.created_at, d.created_by FROM site_deliveries d ${poScope.replace("%s", "d.po_id")}`,
+    `SELECT d.po_id, ${PO_DELIVERY_NOTE_COLUMNS}
+       FROM site_deliveries d ${PO_DELIVERY_NOTE_JOIN} ${poScope.replace("%s", "d.po_id")}`,
   ).all<PoDeliveryRow>()).results;
   // Billed-to-date per order, excluding the invoice being matched — counting it
   // would let the invoice in front of you push its own candidate to "fully

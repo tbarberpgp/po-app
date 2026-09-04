@@ -14,7 +14,7 @@ import { buildHsPack } from "../../shared/hs-pack-pdf";
 import { fuzzyFindPo } from "../poRef";
 import { learnAliases, aliasMapsBySupplier, normText } from "../matchMemory";
 import { deliveryVariance, matchItemToLine, type VarianceLine, type PriorReceipt } from "../../shared/delivery-variance";
-import { summarisePoDeliveries, type PoDeliveryRow } from "../../shared/po-delivery-status";
+import { summarisePoDeliveries, PO_DELIVERY_NOTE_COLUMNS, PO_DELIVERY_NOTE_JOIN, type PoDeliveryRow } from "../../shared/po-delivery-status";
 
 // Operations — Phase 1 (site-team basics). Authenticated app-side endpoints:
 // the supervisor's view of a site's QR/sign-in link, today's attendance,
@@ -1774,7 +1774,8 @@ operations.get("/deliveries-inbox", async (c) => {
     // po_line_id IS NOT NULL, which the variance check needs), so a separate
     // read carries completes_po for the shared rule. Same POs, one more column.
     const orderDelRows = varPoIds.length ? (await c.env.DB.prepare(
-      `SELECT po_id, po_line_id, completes_po, scan_id, ticket_key, created_at, created_by FROM site_deliveries WHERE po_id IN (${varPoIds.map(() => "?").join(",")})`,
+      `SELECT d.po_id, ${PO_DELIVERY_NOTE_COLUMNS} FROM site_deliveries d ${PO_DELIVERY_NOTE_JOIN}
+        WHERE d.po_id IN (${varPoIds.map(() => "?").join(",")})`,
     ).bind(...varPoIds).all<PoDeliveryRow>()).results : [];
 
     candidates = varRows.map((x) => {
@@ -2018,7 +2019,8 @@ operations.get("/:projectId/deliveries/ticket-candidates", async (c) => {
     // po_line_id IS NOT NULL, which the variance check needs), so a separate
     // read carries completes_po for the shared rule. Same POs, one more column.
     const orderDelRows = varPoIds.length ? (await c.env.DB.prepare(
-      `SELECT po_id, po_line_id, completes_po, scan_id, ticket_key, created_at, created_by FROM site_deliveries WHERE po_id IN (${varPoIds.map(() => "?").join(",")})`,
+      `SELECT d.po_id, ${PO_DELIVERY_NOTE_COLUMNS} FROM site_deliveries d ${PO_DELIVERY_NOTE_JOIN}
+        WHERE d.po_id IN (${varPoIds.map(() => "?").join(",")})`,
     ).bind(...varPoIds).all<PoDeliveryRow>()).results : [];
 
     candidates = varRows.map((x) => {
@@ -2218,7 +2220,7 @@ operations.get("/:projectId/deliveries/ticket-candidates/:id/reconcile", async (
   // the reader needs warning about. (The variance check excludes them for its
   // own purposes: it must not compare a ticket against goods it delivered.)
   const orderDels = (await c.env.DB.prepare(
-    "SELECT po_id, po_line_id, completes_po, scan_id, ticket_key, created_at, created_by FROM site_deliveries WHERE po_id = ?",
+    `SELECT d.po_id, ${PO_DELIVERY_NOTE_COLUMNS} FROM site_deliveries d ${PO_DELIVERY_NOTE_JOIN} WHERE d.po_id = ?`,
   ).bind(chosen.id).all<PoDeliveryRow>()).results;
   const po_delivery = summarisePoDeliveries(chosen.id, poLines, orderDels);
 
@@ -2610,8 +2612,9 @@ operations.get("/:projectId/deliveries/po-status", async (c) => {
   ).bind(...poIds).all<{ id: number; po_id: string; item: string; qty: number; unit: string }>()).results;
   // Deliveries logged against these POs (on the base project).
   const dels = (await c.env.DB.prepare(
-    `SELECT po_id, po_line_id, completes_po, scan_id, ticket_key, created_at, created_by, received_qty, received_unit FROM site_deliveries
-      WHERE project_id = ? AND po_id IN (${lph})`,
+    `SELECT d.po_id, ${PO_DELIVERY_NOTE_COLUMNS}, d.received_qty, d.received_unit
+       FROM site_deliveries d ${PO_DELIVERY_NOTE_JOIN}
+      WHERE d.project_id = ? AND d.po_id IN (${lph})`,
   ).bind(base, ...poIds).all<PoDeliveryRow & { received_qty: number | null; received_unit: string | null }>()).results;
 
   const out = pos.results.map((po) => {

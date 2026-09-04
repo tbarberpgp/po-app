@@ -4,7 +4,7 @@ import type { CreatePOInput, POLine, PoDeliveryDrop } from "../../shared/types";
 import { loadSettings, tierForApproval } from "../approval";
 import { learnAliases } from "../matchMemory";
 import { normText } from "../../shared/line-match";
-import { summarisePoDeliveries, deliveryNoteKey, type PoLineRef, type PoDeliveryRow } from "../../shared/po-delivery-status";
+import { summarisePoDeliveries, deliveryNoteKey, PO_DELIVERY_NOTE_COLUMNS, PO_DELIVERY_NOTE_JOIN, type PoLineRef, type PoDeliveryRow } from "../../shared/po-delivery-status";
 import { emailApprovers, emailRequesterDecision, emailFrameworkOverdraw, FRAMEWORK_OVERDRAW_RECIPIENTS } from "../notify";
 import { requirePermission } from "../auth";
 import { buildCostCode, derivedProjectNumber } from "../../shared/types";
@@ -437,9 +437,8 @@ pos.get("/", async (c) => {
        JOIN projects p ON p.id = po.project_id
       ${where.length ? "WHERE " + where.join(" AND ") : ""}`;
   const dDels = (await c.env.DB.prepare(
-    `SELECT COALESCE(d.po_id, po.id) AS po_id, d.po_line_id, d.completes_po,
-            d.scan_id, d.ticket_key, d.created_at, d.created_by
-       FROM site_deliveries d ${delScope}`,
+    `SELECT COALESCE(d.po_id, po.id) AS po_id, ${PO_DELIVERY_NOTE_COLUMNS}
+       FROM site_deliveries d ${PO_DELIVERY_NOTE_JOIN} ${delScope}`,
   ).bind(...binds).all<PoDeliveryRow>()).results;
 
   return c.json(withBooleans.map((r) => {
@@ -544,6 +543,20 @@ pos.get("/:id", async (c) => {
   // reader off to find which note the number belonged to.
   const ticketUrl = (key: string | null) =>
     key ? `/api/operations/file?key=${encodeURIComponent(key)}` : null;
+
+  // Every ticket held against each note, in arrival order and de-duplicated.
+  // A note photographed twice is one note (see `deliveryNoteKey`) but keeps
+  // both photos, and only one of the two captures may have kept a file at all
+  // — so the note's paperwork is gathered here rather than taken from whichever
+  // row happens to come first.
+  const ticketsByNote = new Map<string, Array<{ url: string; type: string | null }>>();
+  for (const r of receipts.results) {
+    const url = ticketUrl(r.ticket_key);
+    if (!url) continue;
+    const arr = ticketsByNote.get(deliveryNoteKey(r)) ?? [];
+    if (!arr.some((t) => t.url === url)) arr.push({ url, type: r.ticket_type });
+    ticketsByNote.set(deliveryNoteKey(r), arr);
+  }
   // Each receipt says which note it came in on, because one note can book in
   // the same PO line several times over — a tapered-insulation scheme line on
   // PO-26001-0013 takes nine ticket rows off ONE delivery note. Counting rows
@@ -552,10 +565,15 @@ pos.get("/:id", async (c) => {
   for (const r of receipts.results) {
     if (r.po_line_id == null || r.received_qty == null) continue;
     const arr = deliveriesByLine.get(r.po_line_id) ?? [];
+    // The NOTE's ticket, not this row's: every row of a note is the same piece
+    // of paper, and the row that heads the group on screen is often the one
+    // whose own check-in kept no copy.
+    const note = deliveryNoteKey(r);
+    const ticket = ticketsByNote.get(note)?.[0] ?? null;
     arr.push({
-      note: deliveryNoteKey(r),
+      note,
       dn: r.dn, qty: r.received_qty, unit: r.received_unit, date: r.delivered_at, by: r.created_by,
-      ticket_url: ticketUrl(r.ticket_key), ticket_type: r.ticket_type,
+      ticket_url: ticket?.url ?? null, ticket_type: ticket?.type ?? null,
     });
     deliveriesByLine.set(r.po_line_id, arr);
   }
@@ -580,9 +598,8 @@ pos.get("/:id", async (c) => {
         // Neither a scan nor a ticket file: someone logged the goods from
         // memory. Saying so is the point — it's the drop with no paperwork
         // behind it to go and check.
-        manual: r.scan_id == null && !r.ticket_key,
-        ticket_url: ticketUrl(r.ticket_key),
-        ticket_type: r.ticket_type,
+        manual: r.scan_id == null && !ticketsByNote.has(key),
+        tickets: ticketsByNote.get(key) ?? [],
         linked_by: r.po_id ? "po_id" : "po_number",
         whole_order: false,
         items: [],

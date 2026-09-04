@@ -25,8 +25,12 @@ export type PoDeliveryRow = {
   // Which NOTE this row arrived on. A delivery note is checked in as one row
   // per PO line it covers, so without these the row count stands in for the
   // note count and one ticket covering five lines reads as five deliveries.
-  // All three are optional: a caller that doesn't select them falls back to
+  // All of them are optional: a caller that doesn't select them falls back to
   // the row count, which is what the count has always been.
+  /** The supplier's own number for the note, off the scanned ticket. */
+  dn?: string | null;
+  /** When the goods landed — the other half of the note's identity. */
+  delivered_at?: string | null;
   /** The scanned ticket this row was checked in from. */
   scan_id?: number | null;
   /** R2 key of the ticket image — every row of one check-in shares the copy. */
@@ -39,20 +43,50 @@ export type PoDeliveryRow = {
 /**
  * Which delivery note a receipt row belongs to.
  *
- * The three keys are tried in order of how firmly they tie rows together: the
- * scan is the note itself; the copied ticket file is shared by every row of a
- * check-in that has no scan; and a manual check-in writes one instant across
- * all its rows. A row carrying none of them is its own note — falling back to
- * the row id would be the same thing, since nothing links it to another row.
+ * The keys are tried in order of how firmly they tie rows together.
+ *
+ * The supplier's note NUMBER plus the delivery DATE comes first, because the
+ * scan is not the note — the note is the piece of paper, and one piece of
+ * paper gets photographed more than once. A ticket that arrives twice on
+ * WhatsApp is checked in twice, from two scans, and read as two deliveries:
+ * DEL557528 landed on PO-26001-0028 that way, seventeen minutes apart. Every
+ * multi-scan number-and-date group in production is one physical note.
+ *
+ * The date has to be in that key. Suppliers reuse and mis-read numbers across
+ * days — Fixfast's 697728 appears on three different delivery dates, and those
+ * ARE three deliveries. Number alone would have merged them.
+ *
+ * Failing a number: the scan; then the copied ticket file, shared by every row
+ * of a check-in that has no scan; then the instant a manual check-in wrote
+ * across all its rows. A row carrying none of them is its own note — falling
+ * back to the row id says the same thing, since nothing links it to another.
  */
 export function deliveryNoteKey(
-  r: Pick<PoDeliveryRow, "scan_id" | "ticket_key" | "created_at" | "created_by"> & { id?: number },
+  r: Pick<PoDeliveryRow, "dn" | "delivered_at" | "scan_id" | "ticket_key" | "created_at" | "created_by"> & { id?: number },
 ): string {
+  if (r.dn && r.delivered_at) return `d:${r.dn}|${r.delivered_at.slice(0, 10)}`;
   if (r.scan_id != null) return `s:${r.scan_id}`;
   if (r.ticket_key) return `t:${r.ticket_key}`;
   if (r.created_at) return `m:${r.created_at}|${r.created_by ?? ""}`;
   return `r:${r.id ?? Math.random()}`;
 }
+
+/**
+ * What a caller has to SELECT for the counting above to see notes rather than
+ * rows, as a SQL fragment. Kept here beside the rule because it has now been
+ * threaded through seven queries twice: a new call site that copies the shape
+ * gets the whole set, instead of silently falling back to the row count.
+ *
+ * Assumes `site_deliveries` is aliased `d` and joined with NOTE_JOIN. The PO id
+ * is deliberately left out — one caller has to coalesce it against the order it
+ * matched by number — so callers add their own.
+ */
+export const PO_DELIVERY_NOTE_COLUMNS =
+  "d.po_line_id, d.completes_po, s.delivery_note_number AS dn, d.delivered_at, d.scan_id, d.ticket_key, d.created_at, d.created_by";
+
+/** The join `PO_DELIVERY_NOTE_COLUMNS` needs to reach the note number. */
+export const PO_DELIVERY_NOTE_JOIN =
+  "LEFT JOIN delivery_ticket_scans s ON s.id = d.scan_id";
 
 export type PoLineRef = { id: number; po_id: string };
 

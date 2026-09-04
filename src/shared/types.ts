@@ -365,9 +365,9 @@ export type PoDeliveryDrop = {
   created_by: string | null;
   /** No ticket and no scan — the goods were logged from memory. */
   manual: boolean;
-  /** Where to open the ticket image/PDF, when there is one. */
-  ticket_url: string | null;
-  ticket_type: string | null;
+  /** The note's paperwork: usually one image or PDF, occasionally two when the
+   *  same note was photographed twice and both captures were checked in. */
+  tickets: Array<{ url: string; type: string | null }>;
   /** Whether the receipt names this order by id or only by its PO number —
    *  the latter is a pre-`po_id` booking-in, matched on the unique number. */
   linked_by: "po_id" | "po_number";

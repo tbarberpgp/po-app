@@ -135,11 +135,37 @@ describe("counting notes rather than rows", () => {
     assert.equal(s.drops, 3);
   });
 
-  test("the key prefers the scan, then the ticket, then the check-in", () => {
+  test("the key prefers number-and-date, then scan, ticket, check-in", () => {
+    assert.equal(deliveryNoteKey({ dn: "DEL557528", delivered_at: "2026-06-25", scan_id: 7, ticket_key: "k" }), "d:DEL557528|2026-06-25");
+    // A full timestamp and a bare date are the same delivery day.
+    assert.equal(deliveryNoteKey({ dn: "X1", delivered_at: "2026-06-25T14:02:00.000Z" }), "d:X1|2026-06-25");
+    // A number with no date can't be placed, so it falls through.
+    assert.equal(deliveryNoteKey({ dn: "X1", delivered_at: null, scan_id: 7 }), "s:7");
     assert.equal(deliveryNoteKey({ scan_id: 7, ticket_key: "k", created_at: "t", created_by: "u" }), "s:7");
     assert.equal(deliveryNoteKey({ scan_id: null, ticket_key: "k", created_at: "t" }), "t:k");
     assert.equal(deliveryNoteKey({ created_at: "t", created_by: "u" }), "m:t|u");
     assert.equal(deliveryNoteKey({ id: 4 }), "r:4");
+  });
+
+  // The case that prompted the rule: one note photographed twice, checked in
+  // from two scans seventeen minutes apart, against the same line.
+  test("one note captured by two scans is one note", () => {
+    const twice: PoDeliveryRow[] = [
+      { po_id: "po-a", po_line_id: 1, completes_po: 1, dn: "DEL557528", delivered_at: "2026-06-25", scan_id: 157 },
+      { po_id: "po-a", po_line_id: 1, completes_po: 1, dn: "DEL557528", delivered_at: "2026-06-25", scan_id: 280 },
+    ];
+    assert.equal(summarisePoDeliveries("po-a", lines, twice).drops, 1);
+  });
+
+  // …and the case that keeps the date in the key: Fixfast reuses a number
+  // across days, and those are separate deliveries.
+  test("the same number on different days stays separate", () => {
+    const reused: PoDeliveryRow[] = [
+      { po_id: "po-a", po_line_id: 1, completes_po: 0, dn: "697728", delivered_at: "2026-07-21", scan_id: 1 },
+      { po_id: "po-a", po_line_id: 1, completes_po: 0, dn: "697728", delivered_at: "2026-07-22", scan_id: 2 },
+      { po_id: "po-a", po_line_id: 1, completes_po: 0, dn: "697728", delivered_at: "2026-07-30", scan_id: 3 },
+    ];
+    assert.equal(summarisePoDeliveries("po-a", lines, reused).drops, 3);
   });
 });
 

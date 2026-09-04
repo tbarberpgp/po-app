@@ -806,11 +806,24 @@ function DeliveryDropRow({ drop, index, total }: { drop: PoDeliveryDrop; index: 
 
   return (
     <div style={{ padding: "12px 14px", borderTop: index === 1 ? "none" : "1px solid var(--line)", display: "flex", gap: 12, alignItems: "flex-start" }}>
-      {/* The note itself, big enough to recognise across the desk. Drops with
-          no paperwork keep the column so the register stays in line. */}
-      {drop.ticket_url
-        ? <TicketThumb url={drop.ticket_url} type={drop.ticket_type} label={title} size={72} />
-        : <NoTicketBox size={72} />}
+      {/* The note itself, big enough to recognise across the desk. A note
+          photographed twice shows both; drops with no paperwork keep the
+          column so the register stays in line. */}
+      {drop.tickets.length === 0
+        ? <NoTicketBox size={72} />
+        : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 4, flex: "0 0 auto" }}>
+            {drop.tickets.map((t, i) => (
+              <TicketThumb
+                key={t.url}
+                url={t.url}
+                type={t.type}
+                label={drop.tickets.length > 1 ? `${title} — photo ${i + 1} of ${drop.tickets.length}` : title}
+                size={72}
+              />
+            ))}
+          </div>
+        )}
       <div style={{ flex: 1, minWidth: 0 }}>
       <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
         <span className="pill neutral" style={{ fontSize: 11 }} title={`Delivery ${index} of ${total} against this order`}>
