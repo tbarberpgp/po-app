@@ -148,6 +148,61 @@ export function summarisePoDeliveries(
   };
 }
 
+/** A receipt, as much of it as the duplicate check needs. */
+export type ReceiptRef = {
+  id: number;
+  /** null = booked against the whole order rather than one line. */
+  po_line_id: number | null;
+  qty: number | null;
+  /** Which capture of the note it came in on — the scanned ticket's id. */
+  scan_id?: number | null;
+};
+
+/**
+ * Which receipts on ONE delivery note look like the same goods entered twice.
+ *
+ * A note gets photographed more than once, and each photograph is checked in
+ * separately: PO-26001-0028 holds two receipts for one spray gun, from two
+ * captures of DEL557528 seventeen minutes apart. Merging the captures into one
+ * note (see `deliveryNoteKey`) stops that reading as two deliveries, but the
+ * order still believes it received two spray guns — so the re-entry is named
+ * rather than quietly folded away.
+ *
+ * The signal is the CAPTURE, not the repetition. One ticket legitimately lists
+ * the same PO line several times — five such notes in production, up to three
+ * rows of "2 Pack of 3" against one line, each row a real pallet. Those come
+ * off a single capture and are left alone. Only a line-and-quantity that
+ * reappears on a LATER capture of the same note is flagged, which across the
+ * whole book picks out two receipts, both genuine re-entries.
+ *
+ * Judgement, not fact: the first capture of a group stands and later ones are
+ * flagged, because nothing here can prove which of two identical rows was the
+ * mistake. It reads as "check this", never as "this is wrong".
+ */
+export function suspectedDuplicateReceipts(rows: readonly ReceiptRef[]): Set<number> {
+  const groups = new Map<string, ReceiptRef[]>();
+  for (const r of rows) {
+    // Quantities are compared at three decimals: these are pack and pallet
+    // counts, and an exact float match would miss 1 against 1.0000000001.
+    const key = `${r.po_line_id ?? "whole"}|${r.qty == null ? "none" : r.qty.toFixed(3)}`;
+    const arr = groups.get(key) ?? [];
+    arr.push(r);
+    groups.set(key, arr);
+  }
+  const flagged = new Set<number>();
+  for (const arr of groups.values()) {
+    if (arr.length < 2) continue;
+    const capture = (r: ReceiptRef) => (r.scan_id == null ? "manual" : `s:${r.scan_id}`);
+    const byId = [...arr].sort((a, b) => a.id - b.id);
+    const first = capture(byId[0]);
+    // Everything from the capture that got there first is the original — a
+    // ticket that lists a line three times books it three times, and all three
+    // are real. Anything from a different capture is the same paper again.
+    for (const r of byId) if (capture(r) !== first) flagged.add(r.id);
+  }
+  return flagged;
+}
+
 /** How much of the order's value has been invoiced. */
 export type PoBilledState = "none" | "part" | "full" | "over" | "unknown";
 

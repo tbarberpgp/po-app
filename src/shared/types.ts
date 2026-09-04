@@ -273,6 +273,8 @@ export type POLine = {
     /** The ticket photo/PDF behind this receipt, when the check-in kept one. */
     ticket_url: string | null;
     ticket_type: string | null;
+    /** Looks like the same goods entered twice. */
+    duplicate: boolean;
   }>;
 };
 
@@ -375,6 +377,9 @@ export type PoDeliveryDrop = {
   linked_by: "po_id" | "po_number";
   /** The whole order was signed for in one go, with no per-line detail. */
   whole_order: boolean;
+  /** Receipts on this note that look like the same goods entered twice. Counted
+   *  over every receipt, including whole-order ones that carry no item row. */
+  duplicates: number;
   items: Array<{
     id: number;
     po_line_id: number;
@@ -386,6 +391,9 @@ export type PoDeliveryDrop = {
     unit: string | null;
     /** This receipt finished that line off. */
     completes: boolean;
+    /** Looks like the same goods entered twice — see
+     *  `suspectedDuplicateReceipts`. A prompt to check, not a verdict. */
+    duplicate: boolean;
   }>;
 };
 

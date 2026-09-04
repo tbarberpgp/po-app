@@ -482,6 +482,14 @@ export function POView({ me }: { me: CurrentUser | null }) {
                                     <span style={{ minWidth: 90 }}>{!heads ? "" : d.dn ? `DN ${d.dn}` : `Manual${d.by ? ` · ${d.by.split("@")[0]}` : ""}`}</span>
                                     <span className="num">{fmtQty(d.qty)}{d.unit ? ` ${d.unit}` : ""}</span>
                                     <span>{heads ? fmtDate(d.date) : ""}</span>
+                                    {d.duplicate && (
+                                      <span
+                                        className="badge over"
+                                        title="Same line and quantity as a receipt from an earlier check-in of this note — most likely counted twice"
+                                      >
+                                        possible duplicate
+                                      </span>
+                                    )}
                                   </div>
                                   );
                                 })}
@@ -856,6 +864,22 @@ function DeliveryDropRow({ drop, index, total }: { drop: PoDeliveryDrop; index: 
         )}
       </div>
 
+      {/* The quantities are the point, not the tidiness: a note checked in
+          twice books its goods twice, so the order believes it received more
+          than it did. Named rather than folded away, because only a person can
+          say which of two identical receipts was the mistake. */}
+      {drop.duplicates > 0 && (
+        <div style={{ marginTop: 6, fontSize: 12, color: "var(--warn)", display: "flex", gap: 6 }}>
+          <span aria-hidden>⚠</span>
+          <span>
+            This note was checked in more than once.{" "}
+            {drop.duplicates === 1 ? "One receipt below repeats" : `${drop.duplicates} receipts below repeat`}{" "}
+            an earlier check-in of the same note, so {drop.duplicates === 1 ? "that quantity is" : "those quantities are"}{" "}
+            counted twice on this order. Delete the repeat on the Deliveries screen to correct it.
+          </span>
+        </div>
+      )}
+
       {written && <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>“{written}”</div>}
 
       {open && drop.items.length > 0 && (
@@ -875,6 +899,14 @@ function DeliveryDropRow({ drop, index, total }: { drop: PoDeliveryDrop; index: 
                   <span className="muted"> → {it.line_desc}</span>
                 )}
               </span>
+              {it.duplicate && (
+                <span
+                  className="badge over"
+                  title="Same line and quantity as a receipt from an earlier check-in of this note — most likely the same goods entered twice"
+                >
+                  possible duplicate
+                </span>
+              )}
               {it.completes && (
                 <span className="badge approved" title="This receipt finished that line off">complete</span>
               )}

@@ -12,6 +12,7 @@ import assert from "node:assert/strict";
 import {
   summarisePoDeliveries,
   deliveryNoteKey,
+  suspectedDuplicateReceipts,
   poBilledState,
   isPoClosed,
   poDeliveryLabel,
@@ -207,6 +208,84 @@ describe("lines started vs lines finished", () => {
   test("another order's receipts don't start these lines", () => {
     const s = summarisePoDeliveries("po-a", lines, [del("po-b", 9, 0)]);
     assert.equal(s.lines_started, 0);
+  });
+});
+
+describe("suspectedDuplicateReceipts", () => {
+  // The real one: PO-26001-0028 holds two receipts for one spray gun, from two
+  // captures of DEL557528 seventeen minutes apart.
+  test("the same line and quantity on a second capture is flagged", () => {
+    const dup = suspectedDuplicateReceipts([
+      { id: 129, po_line_id: 821, qty: 1, scan_id: 157 },
+      { id: 146, po_line_id: 821, qty: 1, scan_id: 280 },
+    ]);
+    assert.deepEqual([...dup], [146], "the later capture is the re-entry");
+  });
+
+  // The population that must NOT be flagged: one ticket listing a line several
+  // times, each row a real pallet. Five such notes in production.
+  test("one capture listing a line three times is left alone", () => {
+    const dup = suspectedDuplicateReceipts([
+      { id: 183, po_line_id: 790, qty: 2, scan_id: 150 },
+      { id: 185, po_line_id: 790, qty: 2, scan_id: 150 },
+      { id: 186, po_line_id: 790, qty: 2, scan_id: 150 },
+    ]);
+    assert.equal(dup.size, 0);
+  });
+
+  // Both together: the first capture's rows all stand, however many; only the
+  // second capture's repeat is flagged.
+  test("a repeat capture is flagged without disturbing the first", () => {
+    const dup = suspectedDuplicateReceipts([
+      { id: 1, po_line_id: 5, qty: 2, scan_id: 10 },
+      { id: 2, po_line_id: 5, qty: 2, scan_id: 10 },
+      { id: 3, po_line_id: 5, qty: 2, scan_id: 11 },
+    ]);
+    assert.deepEqual([...dup], [3]);
+  });
+
+  test("a different quantity on the same line is a different drop", () => {
+    const dup = suspectedDuplicateReceipts([
+      { id: 1, po_line_id: 5, qty: 2, scan_id: 10 },
+      { id: 2, po_line_id: 5, qty: 3, scan_id: 11 },
+    ]);
+    assert.equal(dup.size, 0);
+  });
+
+  test("a different line at the same quantity is not a duplicate", () => {
+    const dup = suspectedDuplicateReceipts([
+      { id: 1, po_line_id: 5, qty: 2, scan_id: 10 },
+      { id: 2, po_line_id: 6, qty: 2, scan_id: 11 },
+    ]);
+    assert.equal(dup.size, 0);
+  });
+
+  // PO-26001-0026: two whole-order receipts, no line and no quantity between
+  // them, from two captures of one note.
+  test("whole-order receipts duplicate the same way", () => {
+    const dup = suspectedDuplicateReceipts([
+      { id: 113, po_line_id: null, qty: null, scan_id: 40 },
+      { id: 115, po_line_id: null, qty: null, scan_id: 41 },
+    ]);
+    assert.deepEqual([...dup], [115]);
+  });
+
+  // A manual check-in writes several rows at once with no scan at all; they are
+  // one capture, so repeats within it are the person's own entry, not a re-scan.
+  test("rows from one ticket-less check-in are one capture", () => {
+    const dup = suspectedDuplicateReceipts([
+      { id: 1, po_line_id: 5, qty: 2, scan_id: null },
+      { id: 2, po_line_id: 5, qty: 2, scan_id: null },
+    ]);
+    assert.equal(dup.size, 0);
+  });
+
+  test("float noise doesn't hide a repeat", () => {
+    const dup = suspectedDuplicateReceipts([
+      { id: 1, po_line_id: 5, qty: 1, scan_id: 10 },
+      { id: 2, po_line_id: 5, qty: 1.0000000001, scan_id: 11 },
+    ]);
+    assert.deepEqual([...dup], [2]);
   });
 });
 

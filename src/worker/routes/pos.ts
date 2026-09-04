@@ -4,7 +4,7 @@ import type { CreatePOInput, POLine, PoDeliveryDrop } from "../../shared/types";
 import { loadSettings, tierForApproval } from "../approval";
 import { learnAliases } from "../matchMemory";
 import { normText } from "../../shared/line-match";
-import { summarisePoDeliveries, deliveryNoteKey, PO_DELIVERY_NOTE_COLUMNS, PO_DELIVERY_NOTE_JOIN, type PoLineRef, type PoDeliveryRow } from "../../shared/po-delivery-status";
+import { summarisePoDeliveries, deliveryNoteKey, suspectedDuplicateReceipts, PO_DELIVERY_NOTE_COLUMNS, PO_DELIVERY_NOTE_JOIN, type PoLineRef, type PoDeliveryRow } from "../../shared/po-delivery-status";
 import { emailApprovers, emailRequesterDecision, emailFrameworkOverdraw, FRAMEWORK_OVERDRAW_RECIPIENTS } from "../notify";
 import { requirePermission } from "../auth";
 import { buildCostCode, derivedProjectNumber } from "../../shared/types";
@@ -545,6 +545,23 @@ pos.get("/:id", async (c) => {
   const ticketUrl = (key: string | null) =>
     key ? `/api/operations/file?key=${encodeURIComponent(key)}` : null;
 
+  // Receipts that look like the same goods entered twice — a note photographed
+  // and checked in more than once. Worked out per note, since that is the only
+  // scope in which "the same line and quantity again" means anything.
+  const duplicateIds = new Set<number>();
+  const byNote = new Map<string, typeof receipts.results>();
+  for (const r of receipts.results) {
+    const k = deliveryNoteKey(r);
+    const arr = byNote.get(k) ?? [];
+    arr.push(r);
+    byNote.set(k, arr);
+  }
+  for (const rows of byNote.values()) {
+    for (const id of suspectedDuplicateReceipts(
+      rows.map((r) => ({ id: r.id, po_line_id: r.po_line_id, qty: r.received_qty, scan_id: r.scan_id })),
+    )) duplicateIds.add(id);
+  }
+
   // Every ticket held against each note, in arrival order and de-duplicated.
   // A note photographed twice is one note (see `deliveryNoteKey`) but keeps
   // both photos, and only one of the two captures may have kept a file at all
@@ -562,7 +579,7 @@ pos.get("/:id", async (c) => {
   // the same PO line several times over — a tapered-insulation scheme line on
   // PO-26001-0013 takes nine ticket rows off ONE delivery note. Counting rows
   // told that line it had had nine deliveries.
-  const deliveriesByLine = new Map<number, Array<{ note: string; dn: string | null; qty: number; unit: string | null; date: string; by: string | null; ticket_url: string | null; ticket_type: string | null }>>();
+  const deliveriesByLine = new Map<number, Array<{ note: string; dn: string | null; qty: number; unit: string | null; date: string; by: string | null; ticket_url: string | null; ticket_type: string | null; duplicate: boolean }>>();
   for (const r of receipts.results) {
     if (r.po_line_id == null || r.received_qty == null) continue;
     const arr = deliveriesByLine.get(r.po_line_id) ?? [];
@@ -575,6 +592,7 @@ pos.get("/:id", async (c) => {
       note,
       dn: r.dn, qty: r.received_qty, unit: r.received_unit, date: r.delivered_at, by: r.created_by,
       ticket_url: ticket?.url ?? null, ticket_type: ticket?.type ?? null,
+      duplicate: duplicateIds.has(r.id),
     });
     deliveriesByLine.set(r.po_line_id, arr);
   }
@@ -603,12 +621,16 @@ pos.get("/:id", async (c) => {
         tickets: ticketsByNote.get(key) ?? [],
         linked_by: r.po_id ? "po_id" : "po_number",
         whole_order: false,
+        duplicates: 0,
         items: [],
       };
       dropsByNote.set(key, drop);
     }
     // A row with no line is the whole order signed for in one go, so it has no
     // item detail to list — the flag carries it instead of a blank row.
+    // Counted for the whole note, so a duplicated whole-order receipt — which
+    // has no item row to carry a badge — still says so.
+    if (duplicateIds.has(r.id)) drop.duplicates += 1;
     if (r.po_line_id == null) drop.whole_order = true;
     else {
       drop.items.push({
@@ -619,6 +641,7 @@ pos.get("/:id", async (c) => {
         qty: r.received_qty,
         unit: r.received_unit,
         completes: r.completes_po === 1,
+        duplicate: duplicateIds.has(r.id),
       });
     }
   }
