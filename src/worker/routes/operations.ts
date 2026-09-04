@@ -2622,7 +2622,10 @@ operations.get("/:projectId/deliveries/po-status", async (c) => {
     const wholePoDone = poDels.some((d) => d.po_line_id == null && d.completes_po === 1);
     const poLines = lines.filter((l) => l.po_id === po.id).map((l) => {
       const lineDels = poDels.filter((d) => d.po_line_id === l.id);
-      const delivered = wholePoDone || lineDels.some((d) => d.completes_po === 1);
+      const deliveredQtyTotal = lineDels.reduce((t, d) => t + (d.received_qty ?? 0), 0);
+      const delivered = wholePoDone
+        || lineDels.some((d) => d.completes_po === 1)
+        || lineReceivedInFull(deliveredQtyTotal, l.qty);
       const inProgress = !delivered && lineDels.length > 0;
       // Running tally of what's landed, in the delivery's own unit (packs/pallets)
       // — NOT compared to the PO line's ordered unit (m²/scheme), which differs.

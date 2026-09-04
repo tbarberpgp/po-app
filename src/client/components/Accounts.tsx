@@ -269,7 +269,7 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
                               <span
                                 style={{ color: r.po_delivery.state === "full" ? "var(--warn)" : "var(--muted)", fontWeight: r.po_delivery.state === "full" ? 600 : 400 }}
                                 title={r.po_delivery.lines_total
-                                  ? `${r.po_delivery.lines_started} of ${r.po_delivery.lines_total} lines started, ${r.po_delivery.lines_delivered} complete`
+                                  ? `${r.po_delivery.lines_started} of ${r.po_delivery.lines_total} lines have had a delivery`
                                   : undefined}
                               >
                                 {r.po_delivery.state === "full" ? "✓ " : ""}{poDeliveryLabel(r.po_delivery)}

@@ -208,7 +208,7 @@ export function POsList({ me }: { me: CurrentUser | null }) {
                             ? { background: "var(--warn-soft)", color: "var(--warn)" }
                             : { background: "var(--card-2)", color: "var(--muted)", border: "1px solid var(--line)", fontSize: 10 }}
                           title={r.delivery_lines_total
-                            ? `${r.delivery_lines_started ?? 0} of ${r.delivery_lines_total} lines started, ${r.delivery_lines_delivered ?? 0} complete`
+                            ? `${r.delivery_lines_started ?? 0} of ${r.delivery_lines_total} lines have had a delivery`
                             : undefined}
                         >
                           {poDeliveryLabel({

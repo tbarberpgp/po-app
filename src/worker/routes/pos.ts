@@ -425,7 +425,7 @@ pos.get("/", async (c) => {
        JOIN projects p ON p.id = po.project_id
       ${where.length ? "WHERE " + where.join(" AND ") : ""}`;
   const dLines = (await c.env.DB.prepare(
-    `SELECT pl.id, pl.po_id FROM po_lines pl ${scope.replace("%s", "pl.po_id")}`,
+    `SELECT pl.id, pl.po_id, pl.qty FROM po_lines pl ${scope.replace("%s", "pl.po_id")}`,
   ).bind(...binds).all<PoLineRef>()).results;
   // Receipts join on the order id OR, for one booked in before deliveries
   // recorded the order itself, on the free-text PO number — po_number is
@@ -651,7 +651,7 @@ pos.get("/:id", async (c) => {
   // the awaiting list can't disagree about whether the order has landed.
   const deliverySummary = summarisePoDeliveries(
     id,
-    lines.results.map((l) => ({ id: Number(l.id), po_id: id })),
+    lines.results.map((l) => ({ id: Number(l.id), po_id: id, qty: l.qty == null ? null : Number(l.qty) })),
     receipts.results.map((r) => ({ ...r, po_id: id, completes_po: r.completes_po ?? 0 })),
   );
 

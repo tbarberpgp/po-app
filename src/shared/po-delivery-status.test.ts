@@ -186,17 +186,16 @@ describe("lines started vs lines finished", () => {
     assert.equal(s.lines_total, 2);
   });
 
-  test("the label counts what has started when nothing is finished", () => {
+  // "part delivered" has already said not everything is here, so the count
+  // beside it is simply how much of the order has seen a delivery.
+  test("the label counts lines a delivery has landed against", () => {
     assert.equal(
       poDeliveryLabel({ state: "part", lines_delivered: 0, lines_started: 1, lines_total: 4, drops: 1 }),
-      "part delivered · 1 of 4 lines started · 1 delivery note",
+      "part delivered · 1 of 4 lines · 1 delivery note",
     );
-  });
-
-  test("finished lines lead as soon as there are any", () => {
     assert.equal(
-      poDeliveryLabel({ state: "part", lines_delivered: 2, lines_started: 4, lines_total: 4, drops: 3 }),
-      "part delivered · 2 of 4 lines complete · 3 delivery notes",
+      poDeliveryLabel({ state: "part", lines_delivered: 2, lines_started: 7, lines_total: 7, drops: 1 }),
+      "part delivered · 7 of 7 lines · 1 delivery note",
     );
   });
 
@@ -290,6 +289,62 @@ describe("suspectedDuplicateReceipts", () => {
   });
 });
 
+describe("quantities can close a line the flag never learned about", () => {
+  // PO-26001-0058: checked in against no order (the ticket's "PO number" was
+  // the invoice number), reassigned onto a retrospective order later, so
+  // completes_po was never derived. 71 of 71 and 114 of 114 on the page.
+  const qtyLines: PoLineRef[] = [
+    { id: 1, po_id: "po-a", qty: 71 },
+    { id: 2, po_id: "po-a", qty: 114 },
+  ];
+  const receipt = (po_line_id: number, received_qty: number): PoDeliveryRow =>
+    ({ po_id: "po-a", po_line_id, completes_po: 0, received_qty, dn: "317018", delivered_at: "2026-08-27" });
+
+  test("an order received in full reads as fully delivered", () => {
+    const s = summarisePoDeliveries("po-a", qtyLines, [receipt(1, 71), receipt(2, 114)]);
+    assert.equal(s.state, "full");
+    assert.equal(s.lines_delivered, 2);
+    assert.equal(poDeliveryLabel(s), "fully delivered · 1 delivery note");
+  });
+
+  test("one line of two covered is still part delivered", () => {
+    const s = summarisePoDeliveries("po-a", qtyLines, [receipt(1, 71)]);
+    assert.equal(s.state, "part");
+    assert.equal(s.lines_delivered, 1);
+    assert.equal(s.lines_started, 1);
+  });
+
+  test("a part load is not closed by its quantity", () => {
+    const s = summarisePoDeliveries("po-a", [{ id: 1, po_id: "po-a", qty: 290 }], [receipt(1, 60)]);
+    assert.equal(s.state, "part");
+    assert.equal(s.lines_delivered, 0);
+    assert.equal(s.lines_started, 1);
+  });
+
+  test("several part loads adding up to the order close it", () => {
+    const s = summarisePoDeliveries("po-a", [{ id: 1, po_id: "po-a", qty: 100 }],
+      [receipt(1, 60), receipt(1, 40)]);
+    assert.equal(s.state, "full");
+  });
+
+  // The packs-versus-m² guard: no ordered quantity to compare against means
+  // the flag is the only word on it, and a caller that doesn't select qty at
+  // all keeps the behaviour it had.
+  test("without an ordered quantity only the flag counts", () => {
+    const noQty: PoLineRef[] = [{ id: 1, po_id: "po-a" }, { id: 2, po_id: "po-a", qty: null }];
+    const s = summarisePoDeliveries("po-a", noQty, [receipt(1, 999), receipt(2, 999)]);
+    assert.equal(s.state, "part");
+    assert.equal(s.lines_delivered, 0);
+  });
+
+  test("a receipt with no quantity closes nothing", () => {
+    const s = summarisePoDeliveries("po-a", [{ id: 1, po_id: "po-a", qty: 5 }],
+      [{ po_id: "po-a", po_line_id: 1, completes_po: 0 }]);
+    assert.equal(s.state, "part");
+    assert.equal(s.lines_delivered, 0);
+  });
+});
+
 describe("lineReceivedInFull", () => {
   // PO-26001-0058: 71 of 71 and 114 of 114 received, both lines reporting
   // themselves undelivered because the flag was never re-derived.
@@ -361,7 +416,7 @@ describe("labels", () => {
   test("the note count survives into the label, spelled out", () => {
     assert.equal(poDeliveryLabel({ state: "full", lines_delivered: 2, lines_started: 2, lines_total: 2, drops: 3 }), "fully delivered · 3 delivery notes");
     assert.equal(poDeliveryLabel({ state: "full", lines_delivered: 1, lines_started: 1, lines_total: 1, drops: 1 }), "fully delivered · 1 delivery note");
-    assert.equal(poDeliveryLabel({ state: "part", lines_delivered: 1, lines_started: 3, lines_total: 4, drops: 2 }), "part delivered · 1 of 4 lines complete · 2 delivery notes");
+    assert.equal(poDeliveryLabel({ state: "part", lines_delivered: 1, lines_started: 3, lines_total: 4, drops: 2 }), "part delivered · 3 of 4 lines · 2 delivery notes");
     assert.equal(poDeliveryLabel({ state: "part", lines_delivered: 0, lines_started: 1, lines_total: 1, drops: 1 }), "part delivered · 1 delivery note");
     // Nothing received is nothing to count — "0 delivery notes" would be noise.
     assert.equal(poDeliveryLabel({ state: "none", lines_delivered: 0, lines_started: 0, lines_total: 2, drops: 0 }), "nothing received");

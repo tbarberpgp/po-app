@@ -22,6 +22,9 @@ export type PoDeliveryRow = {
   /** null = the delivery was logged against the whole order, not one line. */
   po_line_id: number | null;
   completes_po: number;
+  /** How much this receipt booked in. Read alongside the line's ordered qty so
+   *  a line whose flag was never derived is still seen as received. */
+  received_qty?: number | null;
   // Which NOTE this row arrived on. A delivery note is checked in as one row
   // per PO line it covers, so without these the row count stands in for the
   // note count and one ticket covering five lines reads as five deliveries.
@@ -82,13 +85,19 @@ export function deliveryNoteKey(
  * matched by number — so callers add their own.
  */
 export const PO_DELIVERY_NOTE_COLUMNS =
-  "d.po_line_id, d.completes_po, s.delivery_note_number AS dn, d.delivered_at, d.scan_id, d.ticket_key, d.created_at, d.created_by";
+  "d.po_line_id, d.completes_po, d.received_qty, s.delivery_note_number AS dn, d.delivered_at, d.scan_id, d.ticket_key, d.created_at, d.created_by";
 
 /** The join `PO_DELIVERY_NOTE_COLUMNS` needs to reach the note number. */
 export const PO_DELIVERY_NOTE_JOIN =
   "LEFT JOIN delivery_ticket_scans s ON s.id = d.scan_id";
 
-export type PoLineRef = { id: number; po_id: string };
+export type PoLineRef = {
+  id: number;
+  po_id: string;
+  /** Ordered quantity, when the caller has it. Lets a line be judged received
+   *  from the receipts themselves rather than only from `completes_po`. */
+  qty?: number | null;
+};
 
 /** How far an order has got: nothing received, some of it, or all of it. */
 export type PoDeliveryState = "none" | "part" | "full";
@@ -126,8 +135,27 @@ export function summarisePoDeliveries(
   const poDels = dels.filter((d) => d.po_id === poId);
   const wholePoDone = poDels.some((d) => d.po_line_id == null && d.completes_po === 1);
   const poLines = lines.filter((l) => l.po_id === poId);
+  // A line is received when a receipt SAYS so, or when the receipts against it
+  // ADD UP to the order. The second half is not belt-and-braces: the flag is
+  // derived at check-in and only when the check-in already knows the order, so
+  // a ticket that matched no PO — its "PO number" was really an invoice number
+  // — and was reassigned onto a retrospective order later carries no derived
+  // flag at all. PO-26001-0058 had 71 of 71 and 114 of 114 on the page and
+  // reported neither line delivered. Reading the quantities here means the
+  // answer is right whether or not the flag was ever worked out.
+  //
+  // Quantities only ever ADD a delivered line, never remove one — see
+  // `lineReceivedInFull` for why that direction is the only trustworthy one
+  // when the note counts packs and the order counts m².
+  const lineReceived = (l: PoLineRef) =>
+    lineReceivedInFull(
+      poDels.reduce((t, d) => (d.po_line_id === l.id ? t + (d.received_qty ?? 0) : t), 0),
+      l.qty,
+    );
   const delivered = poLines.filter(
-    (l) => wholePoDone || poDels.some((d) => d.po_line_id === l.id && d.completes_po === 1),
+    (l) => wholePoDone
+      || poDels.some((d) => d.po_line_id === l.id && d.completes_po === 1)
+      || lineReceived(l),
   ).length;
   // Started counts a receipt of any size, and a whole-order receipt starts
   // every line whether or not it closed them.
@@ -262,18 +290,15 @@ export function poDeliveryLabel(d: PoDeliverySummary): string {
   const notes = d.drops > 0 ? ` · ${d.drops} delivery note${d.drops === 1 ? "" : "s"}` : "";
   if (d.state === "full") return `fully delivered${notes}`;
   if (d.state === "part") {
-    // Which line count to show, and what to call it. Naming it matters as much
-    // as the number: "0 of 4 lines" was being read as nothing having arrived,
-    // on an order where 60 of 290 L bars were sitting on site — they had, the
-    // line just wasn't finished. Finished lines lead when there are any;
-    // otherwise the count is of lines something has landed against.
-    if (d.lines_total > 1 && d.lines_delivered > 0) {
-      return `part delivered · ${d.lines_delivered} of ${d.lines_total} lines complete${notes}`;
-    }
-    if (d.lines_total > 1 && d.lines_started > 0) {
-      return `part delivered · ${d.lines_started} of ${d.lines_total} lines started${notes}`;
-    }
-    return `part delivered${notes}`;
+    // Lines something has landed against, out of the order's lines. No
+    // "started" or "complete" qualifier: "part delivered" has already said
+    // that not everything is here, and naming it twice read as two different
+    // measurements of the same order. The count that belongs next to "part
+    // delivered" is how much of the order has seen a delivery — "0 of 4"
+    // under a row reading "60 ea received" was the thing to avoid.
+    return d.lines_total > 1
+      ? `part delivered · ${d.lines_started} of ${d.lines_total} lines${notes}`
+      : `part delivered${notes}`;
   }
   return "nothing received";
 }
