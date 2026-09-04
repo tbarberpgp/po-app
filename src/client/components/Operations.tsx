@@ -2075,6 +2075,7 @@ type PoRowDelivery = {
   delivery_state?: PoDeliveryState;
   delivery_drops?: number;
   delivery_lines_delivered?: number;
+  delivery_lines_started?: number;
   delivery_lines_total?: number;
 };
 function poDeliveryText(p: PoRowDelivery): string {
@@ -2082,6 +2083,7 @@ function poDeliveryText(p: PoRowDelivery): string {
   return poDeliveryLabel({
     state: p.delivery_state,
     lines_delivered: p.delivery_lines_delivered ?? 0,
+    lines_started: p.delivery_lines_started ?? 0,
     lines_total: p.delivery_lines_total ?? 0,
     drops: p.delivery_drops ?? 0,
   });

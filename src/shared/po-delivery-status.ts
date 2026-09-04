@@ -95,7 +95,13 @@ export type PoDeliveryState = "none" | "part" | "full";
 
 export type PoDeliverySummary = {
   state: PoDeliveryState;
+  /** Lines finished off — every ordered unit accounted for. */
   lines_delivered: number;
+  /** Lines something has landed against, finished or not. The two are worth
+   *  carrying separately: an order can be a week into deliveries with nothing
+   *  yet complete, and reporting only the finished count says "0 of 4 lines"
+   *  on a page that is visibly showing 60 received. */
+  lines_started: number;
   lines_total: number;
   /** Delivery notes logged against the order — DISTINCT notes, not receipt
    *  rows. This is the number that makes "another note for an order that is
@@ -123,6 +129,11 @@ export function summarisePoDeliveries(
   const delivered = poLines.filter(
     (l) => wholePoDone || poDels.some((d) => d.po_line_id === l.id && d.completes_po === 1),
   ).length;
+  // Started counts a receipt of any size, and a whole-order receipt starts
+  // every line whether or not it closed them.
+  const started = poLines.filter(
+    (l) => poDels.some((d) => d.po_line_id == null || d.po_line_id === l.id),
+  ).length;
   const full = wholePoDone || (poLines.length > 0 && delivered === poLines.length);
   // Notes, not rows: one ticket checked in against five lines is one delivery.
   // Rows selected without the grouping columns each key to themselves, so the
@@ -131,6 +142,7 @@ export function summarisePoDeliveries(
   return {
     state: full ? "full" : poDels.length > 0 ? "part" : "none",
     lines_delivered: delivered,
+    lines_started: started,
     lines_total: poLines.length,
     drops: notes.size,
   };
@@ -175,9 +187,18 @@ export function poDeliveryLabel(d: PoDeliverySummary): string {
   const notes = d.drops > 0 ? ` · ${d.drops} delivery note${d.drops === 1 ? "" : "s"}` : "";
   if (d.state === "full") return `fully delivered${notes}`;
   if (d.state === "part") {
-    return d.lines_total > 1
-      ? `part delivered · ${d.lines_delivered} of ${d.lines_total} lines${notes}`
-      : `part delivered${notes}`;
+    // Which line count to show, and what to call it. Naming it matters as much
+    // as the number: "0 of 4 lines" was being read as nothing having arrived,
+    // on an order where 60 of 290 L bars were sitting on site — they had, the
+    // line just wasn't finished. Finished lines lead when there are any;
+    // otherwise the count is of lines something has landed against.
+    if (d.lines_total > 1 && d.lines_delivered > 0) {
+      return `part delivered · ${d.lines_delivered} of ${d.lines_total} lines complete${notes}`;
+    }
+    if (d.lines_total > 1 && d.lines_started > 0) {
+      return `part delivered · ${d.lines_started} of ${d.lines_total} lines started${notes}`;
+    }
+    return `part delivered${notes}`;
   }
   return "nothing received";
 }

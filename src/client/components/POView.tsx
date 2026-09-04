@@ -755,6 +755,7 @@ function DeliveriesCard({ po }: { po: Row }) {
   const label = poDeliveryLabel({
     state,
     lines_delivered: po.delivery_lines_delivered ?? 0,
+    lines_started: po.delivery_lines_started ?? 0,
     lines_total: po.delivery_lines_total ?? po.lines.length,
     drops: po.delivery_drops ?? drops.length,
   });

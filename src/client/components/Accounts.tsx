@@ -268,7 +268,9 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
                             {r.po_delivery && r.po_delivery.state !== "none" && (
                               <span
                                 style={{ color: r.po_delivery.state === "full" ? "var(--warn)" : "var(--muted)", fontWeight: r.po_delivery.state === "full" ? 600 : 400 }}
-                                title={r.po_delivery.lines_total ? `${r.po_delivery.lines_delivered} of ${r.po_delivery.lines_total} lines` : undefined}
+                                title={r.po_delivery.lines_total
+                                  ? `${r.po_delivery.lines_started} of ${r.po_delivery.lines_total} lines started, ${r.po_delivery.lines_delivered} complete`
+                                  : undefined}
                               >
                                 {r.po_delivery.state === "full" ? "✓ " : ""}{poDeliveryLabel(r.po_delivery)}
                               </span>
@@ -608,7 +610,7 @@ function MatchPanel({ inv, canEdit, onReload }: { inv: Invoice; canEdit: boolean
         s.hits ? `${s.hits} item${s.hits > 1 ? "s" : ""} match` : "",
         s.delivery
           ? poStatusHint(
-            { state: s.delivery, lines_delivered: s.lines_delivered ?? 0, lines_total: s.lines_total ?? 0, drops: s.drops ?? 0 },
+            { state: s.delivery, lines_delivered: s.lines_delivered ?? 0, lines_started: s.lines_started ?? 0, lines_total: s.lines_total ?? 0, drops: s.drops ?? 0 },
             s.billed,
           )
           : "",

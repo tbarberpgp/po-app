@@ -169,6 +169,47 @@ describe("counting notes rather than rows", () => {
   });
 });
 
+describe("lines started vs lines finished", () => {
+  // PO-26003-0020: 60 of 290 L bars landed on one of four lines. Nothing is
+  // complete, so the finished count is 0 — and reporting only that said
+  // "0 of 4 lines" directly under a row reading "60 ea received".
+  const partLoad: PoDeliveryRow[] = [
+    { po_id: "po-a", po_line_id: 1, completes_po: 0, dn: "703766", delivered_at: "2026-08-25" },
+  ];
+
+  test("a part load starts its line without finishing it", () => {
+    const s = summarisePoDeliveries("po-a", lines, partLoad);
+    assert.equal(s.lines_delivered, 0);
+    assert.equal(s.lines_started, 1);
+    assert.equal(s.lines_total, 2);
+  });
+
+  test("the label counts what has started when nothing is finished", () => {
+    assert.equal(
+      poDeliveryLabel({ state: "part", lines_delivered: 0, lines_started: 1, lines_total: 4, drops: 1 }),
+      "part delivered · 1 of 4 lines started · 1 delivery note",
+    );
+  });
+
+  test("finished lines lead as soon as there are any", () => {
+    assert.equal(
+      poDeliveryLabel({ state: "part", lines_delivered: 2, lines_started: 4, lines_total: 4, drops: 3 }),
+      "part delivered · 2 of 4 lines complete · 3 delivery notes",
+    );
+  });
+
+  test("a whole-order receipt starts every line it never named", () => {
+    const s = summarisePoDeliveries("po-a", lines, [del("po-a", null, 0)]);
+    assert.equal(s.lines_started, 2);
+    assert.equal(s.lines_delivered, 0);
+  });
+
+  test("another order's receipts don't start these lines", () => {
+    const s = summarisePoDeliveries("po-a", lines, [del("po-b", 9, 0)]);
+    assert.equal(s.lines_started, 0);
+  });
+});
+
 describe("poBilledState", () => {
   test("nothing billed", () => {
     assert.equal(poBilledState(0, 1000), "none");
@@ -209,17 +250,17 @@ describe("labels", () => {
   // "3 notes" was read as three materials on one ticket, so the label names
   // what it counts and says it at one as well as at three.
   test("the note count survives into the label, spelled out", () => {
-    assert.equal(poDeliveryLabel({ state: "full", lines_delivered: 2, lines_total: 2, drops: 3 }), "fully delivered · 3 delivery notes");
-    assert.equal(poDeliveryLabel({ state: "full", lines_delivered: 1, lines_total: 1, drops: 1 }), "fully delivered · 1 delivery note");
-    assert.equal(poDeliveryLabel({ state: "part", lines_delivered: 1, lines_total: 4, drops: 2 }), "part delivered · 1 of 4 lines · 2 delivery notes");
-    assert.equal(poDeliveryLabel({ state: "part", lines_delivered: 0, lines_total: 1, drops: 1 }), "part delivered · 1 delivery note");
+    assert.equal(poDeliveryLabel({ state: "full", lines_delivered: 2, lines_started: 2, lines_total: 2, drops: 3 }), "fully delivered · 3 delivery notes");
+    assert.equal(poDeliveryLabel({ state: "full", lines_delivered: 1, lines_started: 1, lines_total: 1, drops: 1 }), "fully delivered · 1 delivery note");
+    assert.equal(poDeliveryLabel({ state: "part", lines_delivered: 1, lines_started: 3, lines_total: 4, drops: 2 }), "part delivered · 1 of 4 lines complete · 2 delivery notes");
+    assert.equal(poDeliveryLabel({ state: "part", lines_delivered: 0, lines_started: 1, lines_total: 1, drops: 1 }), "part delivered · 1 delivery note");
     // Nothing received is nothing to count — "0 delivery notes" would be noise.
-    assert.equal(poDeliveryLabel({ state: "none", lines_delivered: 0, lines_total: 2, drops: 0 }), "nothing received");
+    assert.equal(poDeliveryLabel({ state: "none", lines_delivered: 0, lines_started: 0, lines_total: 2, drops: 0 }), "nothing received");
   });
 
   test("the billing half only shows when it changes the reading", () => {
-    const full = { state: "full" as const, lines_delivered: 1, lines_total: 1, drops: 1 };
-    const none = { state: "none" as const, lines_delivered: 0, lines_total: 1, drops: 0 };
+    const full = { state: "full" as const, lines_delivered: 1, lines_started: 1, lines_total: 1, drops: 1 };
+    const none = { state: "none" as const, lines_delivered: 0, lines_started: 0, lines_total: 1, drops: 0 };
     assert.equal(poStatusHint(full, "none"), "fully delivered · 1 delivery note · not yet billed");
     assert.equal(poStatusHint(full, "full"), "fully delivered · 1 delivery note · fully billed");
     assert.equal(poStatusHint(full, "over"), "fully delivered · 1 delivery note · billed over the order");

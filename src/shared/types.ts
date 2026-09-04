@@ -334,6 +334,8 @@ export type PurchaseOrder = {
    *  and the reason the state is worth showing at all. */
   delivery_drops?: number;
   delivery_lines_delivered?: number;
+  /** Lines something has landed against, finished or not. */
+  delivery_lines_started?: number;
   delivery_lines_total?: number;
   /** The order's delivery register — one entry per delivery NOTE, oldest
    *  first. Set by GET /api/pos/:id only; the list carries the counts, not the
@@ -1167,6 +1169,7 @@ export type PoDeliveryStatus = {
   /** Same fact as `fully_delivered`, in the three-way form the pickers show. */
   delivery_state: PoDeliveryState;
   lines_delivered: number;
+  lines_started: number;
   lines_total: number;
   /** Delivery notes logged against the whole order. */
   drops: number;
@@ -1258,7 +1261,7 @@ export type DeliveryTicketCandidate = {
    *  not just this ticket's own goods. An order can carry several delivery
    *  notes, and without this a ticket against an order already recorded
    *  complete looked exactly like one against an untouched order. */
-  po_delivery?: { state: PoDeliveryState; drops: number; lines_delivered: number; lines_total: number } | null;
+  po_delivery?: PoDeliverySummary | null;
 };
 
 /** Full reconciliation of one scanned ticket against a chosen (or best-guess) PO:
@@ -1503,7 +1506,7 @@ export type Invoice = {
    *  order that's already fully delivered (or, just as usefully, one that
    *  isn't received at all yet). Derived by the same shared rule as the PO
    *  list and the deliveries screens. */
-  po_delivery?: { state: PoDeliveryState; drops: number; lines_delivered: number; lines_total: number } | null;
+  po_delivery?: PoDeliverySummary | null;
   /** Account payment terms from the matched supplier ("Net 60 days EOM"). */
   supplier_payment_terms?: string | null;
   /** Due date the account terms imply (invoice_date + terms). */
@@ -1584,6 +1587,7 @@ export type InvoiceMatch = {
     /** Delivery notes logged against the order. */
     drops?: number;
     lines_delivered?: number;
+    lines_started?: number;
     lines_total?: number;
     billed?: PoBilledState;
     /** Received in full and billed in full — nothing left to invoice. Omitted

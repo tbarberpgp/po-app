@@ -1789,7 +1789,7 @@ operations.get("/deliveries-inbox", async (c) => {
       return {
         ...x,
         variance: deliveryVariance(its, linesByPo.get(poId) ?? [], prior, poNo),
-        po_delivery: { state: d.state, drops: d.drops, lines_delivered: d.lines_delivered, lines_total: d.lines_total },
+        po_delivery: d,
       };
     });
   } catch { candidates = []; }
@@ -2034,7 +2034,7 @@ operations.get("/:projectId/deliveries/ticket-candidates", async (c) => {
       return {
         ...x,
         variance: deliveryVariance(its, linesByPo.get(poId) ?? [], prior, poNo),
-        po_delivery: { state: d.state, drops: d.drops, lines_delivered: d.lines_delivered, lines_total: d.lines_total },
+        po_delivery: d,
       };
     });
   } catch { candidates = []; }
@@ -2157,7 +2157,7 @@ operations.get("/:projectId/deliveries/ticket-candidates/:id/reconcile", async (
       ticket: { id: scan.id, dn: scan.delivery_note_number, date: scan.delivery_date, supplier: scan.supplier_name, po_number: scan.po_number },
       method, conf, matched_po: null, suggested,
       variance: { ok: true, checked: false, issues: [], headline: null },
-      po_delivery: { state: "none" as const, lines_delivered: 0, lines_total: 0, drops: 0 },
+      po_delivery: { state: "none" as const, lines_delivered: 0, lines_started: 0, lines_total: 0, drops: 0 },
       items: items.map((it) => ({ desc: it.description, qty: it.qty, unit: it.unit, po_line_id: null, lc: 0 })),
       po_lines: [],
     });
@@ -2640,6 +2640,7 @@ operations.get("/:projectId/deliveries/po-status", async (c) => {
       fully_delivered: summary.state === "full",
       delivery_state: summary.state,
       lines_delivered: summary.lines_delivered,
+      lines_started: summary.lines_started,
       lines_total: summary.lines_total,
       drops: summary.drops,
       lines: poLines,

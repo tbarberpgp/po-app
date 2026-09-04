@@ -833,7 +833,7 @@ async function withMatchState(env: Env, rows: Record<string, unknown>[]): Promis
   const poDeliveryFor = (poId: string) => {
     const lines: PoLineRef[] = (byPo.get(poId) ?? []).map((l) => ({ id: l.id, po_id: poId }));
     const s = summarisePoDeliveries(poId, lines, delsByPo.get(poId) ?? []);
-    return { state: s.state, drops: s.drops, lines_delivered: s.lines_delivered, lines_total: s.lines_total };
+    return s;
   };
 
   return rows.map((r) => {
@@ -1084,7 +1084,7 @@ async function computeInvoiceMatch(env: Env, inv: Record<string, unknown>, opts:
     return {
       ...sg,
       delivery: d.state, drops: d.drops,
-      lines_delivered: d.lines_delivered, lines_total: d.lines_total,
+      lines_delivered: d.lines_delivered, lines_started: d.lines_started, lines_total: d.lines_total,
       billed, closed: isPoClosed(d.state, billed),
     };
   });

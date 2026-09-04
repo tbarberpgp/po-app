@@ -448,6 +448,7 @@ pos.get("/", async (c) => {
       delivery_state: d.state,
       delivery_drops: d.drops,
       delivery_lines_delivered: d.lines_delivered,
+      delivery_lines_started: d.lines_started,
       delivery_lines_total: d.lines_total,
     };
   }));
@@ -703,6 +704,7 @@ pos.get("/:id", async (c) => {
     delivery_state: deliverySummary.state,
     delivery_drops: deliverySummary.drops,
     delivery_lines_delivered: deliverySummary.lines_delivered,
+    delivery_lines_started: deliverySummary.lines_started,
     delivery_lines_total: deliverySummary.lines_total,
   });
 });
