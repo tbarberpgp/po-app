@@ -610,6 +610,33 @@ invoices.post("/:id/dismiss", async (c) => {
   return c.json({ ok: true });
 });
 
+/** Undo a dismissal — put the invoice back in the review queue.
+ *
+ *  Dismissing is a judgement ("duplicate upload", "not ours") and judgements
+ *  get made in error, so it needs an undo. Without one the Dismissed tab was a
+ *  one-way door and the only way back was a hand-written UPDATE.
+ *
+ *  It returns to 'inbox' rather than to whatever it held before, because the
+ *  pre-dismissal status isn't recorded and 'inbox' is the one status that can't
+ *  skip a step — an invoice restored straight to 'ready' would read as coded
+ *  and confirmed on someone else's say-so. */
+invoices.post("/:id/undismiss", async (c) => {
+  const denied = requirePermission(c, "commercial.edit");
+  if (denied) return denied;
+  const id = c.req.param("id");
+  const cur = await c.env.DB.prepare("SELECT status FROM invoices WHERE id = ?")
+    .bind(id).first<{ status: string | null }>();
+  if (!cur) return c.json({ error: "not found" }, 404);
+  // Not an error worth a 500, but not a silent no-op either: restoring a
+  // pushed invoice would read as un-booking it from Xero, which this doesn't do.
+  if (cur.status !== "dismissed") {
+    return c.json({ error: `This invoice isn't dismissed — it's ${cur.status ?? "unknown"}.` }, 409);
+  }
+  await c.env.DB.prepare("UPDATE invoices SET status = 'inbox' WHERE id = ?").bind(id).run();
+  await logInvoice(c.env, id, "undismissed", c.get("userEmail"), { status: { from: "dismissed", to: "inbox" } });
+  return c.json({ ok: true });
+});
+
 /** Re-run Claude extraction on the stored file — re-reads the supplier, PO ref,
  *  amounts and lines from the document (e.g. to pick up the PO number on an
  *  invoice ingested before PO-ref capture). Leaves the coding (kind/project)

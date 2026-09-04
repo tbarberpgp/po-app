@@ -726,6 +726,9 @@ export const api = {
   }>) => jfetch<{ ok: true }>(`/api/invoices/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   dismissInvoice: (id: number) =>
     jfetch<{ ok: true }>(`/api/invoices/${id}/dismiss`, { method: "POST" }),
+  /** Undo a dismissal — back to the review queue as 'inbox'. */
+  undismissInvoice: (id: number) =>
+    jfetch<{ ok: true }>(`/api/invoices/${id}/undismiss`, { method: "POST" }),
   pushInvoiceXero: (id: number) =>
     jfetch<{ ok: true; xero_bill_id: string; xero_bill_number?: string }>(`/api/invoices/${id}/push-xero`, { method: "POST" }),
   invoiceFileUrl: (id: number) => `/api/invoices/${id}/file`,

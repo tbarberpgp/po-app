@@ -176,6 +176,19 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
     finally { setBusy(false); }
   }
 
+  /** Undo a dismissal. The row leaves this tab either way, so the flash says
+   *  where it went rather than just "restored" — "it's gone" is the wrong
+   *  impression to leave someone who has just un-dismissed an invoice. */
+  async function undismiss(id: number) {
+    setBusy(true); setErr(null); setInfo(null);
+    try {
+      await api.undismissInvoice(id);
+      setInfo("Restored to Inbox.");
+      load(); setSelId(null);
+    } catch (e) { setErr(e instanceof Error ? e.message : "restore failed"); }
+    finally { setBusy(false); }
+  }
+
   async function push(id: number) {
     setBusy(true); setErr(null); setInfo(null);
     try {
@@ -276,7 +289,8 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
                 ? <div className="a-card a-pad"><div className="muted" style={{ fontSize: 13 }}>Select an invoice to review, code and push to Xero.</div></div>
                 : <InvoiceDetail key={sel.id} inv={sel} projects={projects} accounts={accounts} isAdmin={isAdmin} canEdit={canEdit} busy={busy}
                     onPatch={(b) => patch(sel.id, b)} onPush={() => push(sel.id)} onReload={() => reloadOne(sel.id)} onReread={() => reread(sel.id)}
-                    onDismiss={async () => { await api.dismissInvoice(sel.id); load(); setSelId(null); }} />}
+                    onDismiss={async () => { await api.dismissInvoice(sel.id); load(); setSelId(null); }}
+                    onUndismiss={() => undismiss(sel.id)} />}
             </section>
           </div>
         </div>
@@ -367,10 +381,10 @@ function InvoiceViewer({ inv }: { inv: Invoice }) {
   );
 }
 
-function InvoiceDetail({ inv, projects, accounts, isAdmin, canEdit, busy, onPatch, onPush, onReload, onReread, onDismiss }: {
+function InvoiceDetail({ inv, projects, accounts, isAdmin, canEdit, busy, onPatch, onPush, onReload, onReread, onDismiss, onUndismiss }: {
   inv: Invoice; projects: Project[]; accounts: Array<{ code: string; name: string; type: string }>;
   isAdmin: boolean; canEdit: boolean; busy: boolean;
-  onPatch: (b: Parameters<typeof api.updateInvoice>[1]) => void; onPush: () => void; onReload: () => void | Promise<void>; onReread: () => void; onDismiss: () => void;
+  onPatch: (b: Parameters<typeof api.updateInvoice>[1]) => void; onPush: () => void; onReload: () => void | Promise<void>; onReread: () => void; onDismiss: () => void; onUndismiss: () => void;
 }) {
   const [f, setF] = useState({
     supplier_name: inv.supplier_name ?? "", invoice_number: inv.invoice_number ?? "",
@@ -380,6 +394,7 @@ function InvoiceDetail({ inv, projects, accounts, isAdmin, canEdit, busy, onPatc
   const lines: Array<{ description: string; amount: number | null }> = (() => { try { return inv.lines_json ? JSON.parse(inv.lines_json) : []; } catch { return []; } })();
   const purchaseAccounts = accounts.filter((a) => /EXPENSE|OVERHEAD|DIRECTCOSTS|CURRLIAB/i.test(a.type) || a.type === "");
   const pushed = inv.status === "pushed";
+  const dismissed = inv.status === "dismissed";
   const isProject = inv.kind === "project";
   const pushBlockedForApproval = isProject && !inv.approved_at;
   const disabled = pushed || !canEdit;
@@ -489,7 +504,12 @@ function InvoiceDetail({ inv, projects, accounts, isAdmin, canEdit, busy, onPatc
                   <button className="accent" disabled={busy} onClick={onPush} title="The approval didn't reach Xero — send it again">Retry Xero push</button>
                 )}
                 <button className="ghost" disabled={busy} onClick={onReread} title="Re-read the invoice document (e.g. to pick up the PO number it quotes)">Re-read</button>
-                <button className="ghost" disabled={busy} onClick={onDismiss}>Dismiss</button>
+                {/* One or the other: offering "Dismiss" on something already
+                    dismissed is what made the tab look like a dead end. */}
+                {dismissed
+                  ? <button className="ghost" disabled={busy} onClick={onUndismiss}
+                      title="Undo the dismissal and put this back in the review queue">Restore</button>
+                  : <button className="ghost" disabled={busy} onClick={onDismiss}>Dismiss</button>}
               </div>
             )}
             {!pushed && canEdit && pushBlockedForApproval &&
