@@ -148,6 +148,26 @@ export function summarisePoDeliveries(
   };
 }
 
+/**
+ * Has a line now been received in full, judged on quantities alone?
+ *
+ * Only ever used to PROMOTE a receipt to "completes the line", never to clear
+ * one, and that asymmetry is the whole point. The order can count m² where the
+ * note counts packs (see the top of this file), so a quantity comparison is
+ * trustworthy in exactly one direction: when it says "yes, that covers it".
+ * Five packs against 200 m² reads as a 97% shortfall, and demoting on that
+ * would erase a correct human judgement.
+ *
+ * A line with no quantity to reach can't be promoted — there is nothing to
+ * compare, so whatever the check-in decided stands. (The check-in path treats a
+ * missing ordered qty as "nothing left to wait for" instead: there it is
+ * judging a fresh receipt, not second-guessing one somebody already ruled on.)
+ */
+export function lineReceivedInFull(receivedToDate: number, ordered: number | null | undefined): boolean {
+  if (ordered == null || ordered <= 0) return false;
+  return receivedToDate >= ordered - 0.001;
+}
+
 /** A receipt, as much of it as the duplicate check needs. */
 export type ReceiptRef = {
   id: number;

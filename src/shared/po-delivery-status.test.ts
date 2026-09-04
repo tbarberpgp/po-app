@@ -13,6 +13,7 @@ import {
   summarisePoDeliveries,
   deliveryNoteKey,
   suspectedDuplicateReceipts,
+  lineReceivedInFull,
   poBilledState,
   isPoClosed,
   poDeliveryLabel,
@@ -286,6 +287,35 @@ describe("suspectedDuplicateReceipts", () => {
       { id: 2, po_line_id: 5, qty: 1.0000000001, scan_id: 11 },
     ]);
     assert.deepEqual([...dup], [2]);
+  });
+});
+
+describe("lineReceivedInFull", () => {
+  // PO-26001-0058: 71 of 71 and 114 of 114 received, both lines reporting
+  // themselves undelivered because the flag was never re-derived.
+  test("an exact match covers the line", () => {
+    assert.equal(lineReceivedInFull(71, 71), true);
+    assert.equal(lineReceivedInFull(114, 114), true);
+  });
+
+  test("more than ordered still covers it", () => {
+    assert.equal(lineReceivedInFull(75, 71), true);
+  });
+
+  test("a part load does not", () => {
+    assert.equal(lineReceivedInFull(60, 290), false);
+  });
+
+  test("float noise doesn't block an exact match", () => {
+    assert.equal(lineReceivedInFull(70.9999, 71), true);
+  });
+
+  // Nothing to compare against, so nothing can be promoted — the packs-versus-m²
+  // problem means silence is the only safe answer here.
+  test("no ordered quantity is not a promotion", () => {
+    assert.equal(lineReceivedInFull(5, null), false);
+    assert.equal(lineReceivedInFull(5, undefined), false);
+    assert.equal(lineReceivedInFull(5, 0), false);
   });
 });
 

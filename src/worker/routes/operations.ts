@@ -14,7 +14,7 @@ import { buildHsPack } from "../../shared/hs-pack-pdf";
 import { fuzzyFindPo } from "../poRef";
 import { learnAliases, aliasMapsBySupplier, normText } from "../matchMemory";
 import { deliveryVariance, matchItemToLine, type VarianceLine, type PriorReceipt } from "../../shared/delivery-variance";
-import { summarisePoDeliveries, PO_DELIVERY_NOTE_COLUMNS, PO_DELIVERY_NOTE_JOIN, type PoDeliveryRow } from "../../shared/po-delivery-status";
+import { summarisePoDeliveries, lineReceivedInFull, PO_DELIVERY_NOTE_COLUMNS, PO_DELIVERY_NOTE_JOIN, type PoDeliveryRow } from "../../shared/po-delivery-status";
 
 // Operations — Phase 1 (site-team basics). Authenticated app-side endpoints:
 // the supervisor's view of a site's QR/sign-in link, today's attendance,
@@ -2793,6 +2793,43 @@ operations.post("/deliveries/:id/reassign", async (c) => {
 
   binds.push(id);
   await c.env.DB.prepare(`UPDATE site_deliveries SET ${sets.join(", ")} WHERE id = ?`).bind(...binds).run();
+
+  // A reassign is often where a delivery FIRST meets its order, and until now
+  // nothing worked out what that meant for completeness. The check-in derives
+  // it from the quantities, but only when it already knows the PO — and a
+  // ticket whose "PO number" was really the invoice number is checked in with
+  // no PO at all. PO-26001-0058 was reassigned onto a retrospective order at
+  // 71 of 71 and 114 of 114 received, and reported neither line delivered,
+  // because this route only ever wrote completes_po when the caller named it.
+  //
+  // So once the row has landed on a line, re-read what that line has received
+  // in total and promote the receipt if it now covers the order. Promotion
+  // only: see `lineReceivedInFull` for why the comparison is trusted in one
+  // direction and never the other.
+  const mayHaveChangedTheSum =
+    body.po_id !== undefined || body.po_line_id !== undefined || body.received_qty !== undefined;
+  if (body.completes_po === undefined && mayHaveChangedTheSum) {
+    try {
+      const row = await c.env.DB.prepare(
+        "SELECT po_id, po_line_id, completes_po FROM site_deliveries WHERE id = ?",
+      ).bind(id).first<{ po_id: string | null; po_line_id: number | null; completes_po: number }>();
+      if (row?.po_id && row.po_line_id != null && row.completes_po !== 1) {
+        const tot = await c.env.DB.prepare(
+          `SELECT (SELECT qty FROM po_lines WHERE id = ?1 AND po_id = ?2) AS ordered,
+                  (SELECT COALESCE(SUM(received_qty), 0) FROM site_deliveries
+                    WHERE po_id = ?2 AND po_line_id = ?1) AS received`,
+        ).bind(row.po_line_id, row.po_id).first<{ ordered: number | null; received: number }>();
+        if (tot && lineReceivedInFull(tot.received ?? 0, tot.ordered)) {
+          await c.env.DB.prepare("UPDATE site_deliveries SET completes_po = 1 WHERE id = ?").bind(id).run();
+        }
+      }
+    } catch (e) {
+      // The reassign itself stands; only the derived flag is missing, and the
+      // next reassign or check-in on that line will settle it.
+      console.warn("reassign completeness re-derive failed:", e instanceof Error ? e.message : e);
+    }
+  }
+
   return c.json({ ok: true });
 });
 
