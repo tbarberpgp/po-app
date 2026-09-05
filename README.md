@@ -23,6 +23,44 @@ backed by Cloudflare D1.
    - Thresholds live in the `settings` table — change them in D1.
 4. **Email** — Resend notifies the relevant approvers with an in-app link.
 5. **Audit** — every create/approve/reject/issue is logged in `audit_log`.
+6. **Payables → Xero: two signatures, always.** Nothing payable reaches Xero on one
+   person's say-so. Both routes money leaves by end in a **held** state, and a named
+   release approver's sign-off is what actually creates the bill:
+
+   | | Stage 1 — agree the money | Held | Stage 2 — release |
+   |---|---|---|---|
+   | **Supplier invoices** (Accounts) | Approve for payment (`commercial.edit`) — confirms the 3-way match against the PO and deliveries | ✓ | Sign-off creates the draft ACCPAY bill |
+   | **Labour certificates** (Applications) | Certify the value (QS), then approve for payment (`commercial.edit`) | ✓ | Sign-off creates the draft ACCPAY bill |
+
+   Overhead invoices have no PO to match, so coding one to a nominal takes the place of
+   stage 1 — they still need the release. The manual "Push to Xero" buttons are retries
+   for a sign-off whose push failed, not a second way in: both refuse an unreleased
+   payable. A Xero failure never rolls back a sign-off — it's recorded on the row and the
+   retry picks it up.
+
+   Who may release is a row in **`release_approvers`**, keyed by email — not a role, and
+   one list for both payables. It has to be identity, because no role draws the line in
+   the right place: the releasers are *some* superadmins and not all of them, and one of
+   them approves payables at stage one as well, so any permission check would either miss
+   a releaser or hand the second signature to people meant to have only the first.
+   Seeded with `tbarber` and `adouty`. To change the list, insert or delete a row:
+
+   ```sql
+   INSERT INTO release_approvers (email, name, added_at, added_by)
+   VALUES ('someone@powergridprojects.net', 'Their Name', datetime('now'), 'you@…');
+   ```
+
+   An empty table means nothing can be pushed to Xero at all — the gate fails closed, and
+   so does a database that hasn't had migrations `0118` and `0119` applied.
+
+   Note the two signatures are two *stages*, not necessarily two *people*: a release
+   approver who also has `commercial.edit` can approve a payable at stage one and release
+   it at stage two, and nothing currently stops that. The audit trail always records both
+   acts and who performed each, so a self-release is visible after the fact — but if the
+   control needs to be enforced rather than observed, that is a separate change.
+
+   Client sales invoices (ACCREC, money *in*) are not covered by this — the gate is about
+   money leaving.
 
 ## Stack
 

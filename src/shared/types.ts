@@ -397,6 +397,66 @@ export type PoDeliveryDrop = {
   }>;
 };
 
+/**
+ * The paperwork behind one order awaiting approval, as the approvals list
+ * shows it: the invoice it was raised to cover and the delivery notes linked
+ * to it.
+ *
+ * Deliberately thinner than `PoDeliveryDrop` — this answers "did the goods
+ * turn up, and what does the paper say" at a glance, and the order page
+ * remains the place for the full register. Only receipts LINKED to the order
+ * appear; same-supplier deliveries that matched no order are counted in
+ * `unlinked_supplier_deliveries` and never presented as evidence.
+ */
+export type PoApprovalEvidence = {
+  invoice: {
+    id: number;
+    invoice_number: string | null;
+    invoice_date: string | null;
+    net_amount: number | null;
+    /** `pushed` means the bill is already in Xero — the money has moved. */
+    status: string | null;
+    file_url: string | null;
+    file_type: string | null;
+    xero_bill_number: string | null;
+  } | null;
+  /** One entry per delivery NOTE, oldest first — not per receipt row. */
+  deliveries: Array<{
+    key: string;
+    dn: string | null;
+    delivered_at: string;
+    status: string;
+    signed_by: string | null;
+    /** No scan and no ticket file: logged from memory, with no paper behind it. */
+    manual: boolean;
+    ticket_url: string | null;
+    ticket_type: string | null;
+    items: Array<{
+      description: string;
+      qty: number | null;
+      unit: string | null;
+      /** What the order asked for on the line this receipt was booked against. */
+      ordered_qty: number | null;
+      ordered_unit: string | null;
+    }>;
+  }>;
+  /** Lines where more has arrived than was ever ordered, totalled across every
+   *  note. Under-delivery is deliberately absent: a part delivery against an
+   *  open order is ordinary, but goods in excess of the order mean the ticket
+   *  and the order disagree about what is being paid for. */
+  over_delivered: Array<{
+    po_line_id: number;
+    description: string;
+    received_qty: number;
+    ordered_qty: number;
+    unit: string | null;
+  }>;
+  /** Deliveries from this supplier on this project tied to no order at all.
+   *  A pointer to the deliveries inbox, NOT a claim that any of them belong
+   *  to this order. */
+  unlinked_supplier_deliveries: number;
+};
+
 export type Approver = {
   id: number;
   project_id: string | null;
@@ -414,6 +474,12 @@ export type CurrentUser = {
   active: boolean;
   is_approver: boolean;
   approver_tiers: ApprovalTier[];
+  /** May release a held payable to Xero — the final sign-off that creates the
+   *  bill. Covers both supplier invoices and labour certificates; one list for
+   *  both. Set from the `release_approvers` allowlist, not from the role:
+   *  approving a payable and releasing it are done by people holding the same
+   *  role, so the two stages are separated by identity. */
+  can_release_payables: boolean;
 };
 
 export type AppUser = {
@@ -637,6 +703,12 @@ export type ApplicationForPayment = {
   pay_approved_at?: string | null;
   pay_approved_by?: string | null;
   pay_approval_note?: string | null;
+  // Final sign-off (labour certificates). Approving for payment now HOLDS the
+  // certificate; a named release approver signs it off and that is what pushes
+  // the bill. So `pay_approved_at && !pay_released_at` is the held state.
+  pay_released_at?: string | null;
+  pay_released_by?: string | null;
+  pay_release_note?: string | null;
   // Source application document persisted in R2, attached to the Xero bill.
   source_file_key?: string | null;
   source_file_name?: string | null;
@@ -1501,6 +1573,7 @@ export type QitpCabinDetail = {
 export type Invoice = {
   id: number;
   status: string;                 // inbox | ready | pushed | dismissed
+                                  // (held is derived: approved_at && !released_at)
   kind: string | null;            // project | overhead | null (unrouted)
   project_id: string | null;
   project_code: string | null;
@@ -1546,6 +1619,12 @@ export type Invoice = {
   approved_at: string | null;     // approved-for-payment gate (project invoices)
   approved_by: string | null;
   approval_note: string | null;   // required when approved despite match flags
+  /** Final sign-off. An approved invoice is HELD until a release approver signs
+   *  it off; that release is what pushes the bill to Xero. Approval alone no
+   *  longer reaches Xero, so `approved_at && !released_at` is the held state. */
+  released_at: string | null;
+  released_by: string | null;
+  release_note: string | null;
   /** Price/quantity reconciliation against the matched PO. Computed on read, so
    *  it stays visible after approval — a mismatch that's been approved anyway
    *  still needs chasing with the supplier. Absent for overhead invoices, which
@@ -1604,9 +1683,9 @@ export type InvoiceMatch = {
     closed?: boolean;
   }>;
   /** How many closed orders were left out of `suggested` by default. Not an
-   *  error state — it's what lets the picker say "12 delivered orders hidden"
-   *  instead of the list just being mysteriously shorter than the book. Refetch
-   *  with `?include_delivered=1` to get them back. */
+   *  error state — it's what lets the picker say "12 orders hidden — delivered
+   *  & billed in full" instead of the list just being mysteriously shorter than
+   *  the book. Refetch with `?include_delivered=1` to get them back. */
   closed_omitted: number;
   lines: InvoiceMatchLine[];
   /** Delivery records logged against the chosen PO — the tickets behind the

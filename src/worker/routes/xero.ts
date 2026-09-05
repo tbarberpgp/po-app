@@ -30,6 +30,12 @@ import type { XeroContact, XeroPOInput, XeroInvoiceInput } from "../xero/client"
 import { encryptToken } from "../xero/crypto";
 import { recheckPaidStatus } from "../xero/paid";
 import { isSandboxId } from "../sandbox";
+import { isCertInXero, isCertReleased } from "../../shared/payment-release";
+
+/** Refusal for a certificate that hasn't been signed off. Shared by the push
+ *  itself and the route that pre-checks it, so the two can't word it differently. */
+export const CERT_HELD_MESSAGE =
+  "This certificate is held. A nominated release approver has to sign it off before it can go to Xero.";
 
 export const xero = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -515,6 +521,14 @@ xero.post("/push-afp/:id", async (c) => {
   if (denied) return denied;
   const nc = notConfigured(c.env);
   if (nc) return nc;
+  // Pre-check purely for an honest status code — pushAfpToXero enforces this
+  // too, and is the reason it can't be bypassed.
+  const held = await c.env.DB.prepare(
+    "SELECT pay_released_at, xero_po_id, xero_sync_status FROM applications_for_payment WHERE id = ?",
+  ).bind(Number(c.req.param("id"))).first<{ pay_released_at: string | null; xero_po_id: string | null; xero_sync_status: string | null }>();
+  if (held && !isCertReleased(held) && !isCertInXero(held)) {
+    return c.json({ error: CERT_HELD_MESSAGE, held: true }, 403);
+  }
   try {
     const result = await pushAfpToXero(c.env, Number(c.req.param("id")));
     return c.json(result);
@@ -806,7 +820,8 @@ export async function pushAfpToXero(env: Env, afpId: number): Promise<
   const afp = await env.DB.prepare(
     `SELECT a.id, a.project_id, a.app_number, a.direction, a.status, a.period_end, a.vat_pct,
             a.amount_due, a.certified_amount, a.counterparty_supplier_id,
-            a.pay_approved_at, a.source_file_key, a.source_file_name, a.source_file_type,
+            a.pay_approved_at, a.pay_released_at,
+            a.source_file_key, a.source_file_name, a.source_file_type,
             a.xero_po_id, a.xero_po_number,
             p.code AS project_code, p.name AS project_name
      FROM applications_for_payment a JOIN projects p ON p.id = a.project_id
@@ -815,7 +830,8 @@ export async function pushAfpToXero(env: Env, afpId: number): Promise<
     id: number; project_id: string; app_number: number; direction: string; status: string;
     period_end: string; vat_pct: number; amount_due: number | null;
     certified_amount: number | null; counterparty_supplier_id: number | null;
-    pay_approved_at: string | null; source_file_key: string | null;
+    pay_approved_at: string | null; pay_released_at: string | null;
+    source_file_key: string | null;
     source_file_name: string | null; source_file_type: string | null;
     xero_po_id: string | null; xero_po_number: string | null;
     project_code: string; project_name: string;
@@ -823,6 +839,19 @@ export async function pushAfpToXero(env: Env, afpId: number): Promise<
   if (!afp) throw new Error("Application not found");
   // Sandbox/demo project never writes to the live Xero org (return, not a failure).
   if (isSandboxId(afp.project_id)) return { ok: true, skipped: true, reason: "sandbox" };
+
+  // The release gate, and it sits OUTSIDE the try below deliberately. Anything
+  // thrown in there is recorded on the certificate as xero_sync_status='failed'
+  // with the reason — right for a Xero rejection, wrong for this: a held
+  // certificate would read as one Xero had refused, and the view would offer a
+  // "Retry Xero push" that could only fail again. Nothing is wrong with the
+  // certificate; it just hasn't been signed off.
+  //
+  // Enforced here rather than on the route so it holds for every caller,
+  // including the release sign-off itself — that sets the column before calling
+  // in, and so passes. The route pre-checks too, only to answer 403 instead of
+  // 502; both read the same message.
+  if (!isCertReleased(afp)) throw new Error(CERT_HELD_MESSAGE);
 
   // Wrap EVERYTHING (validation + the Xero call) so ANY failure is recorded on
   // the certificate as xero_sync_status='failed' with the reason — including the

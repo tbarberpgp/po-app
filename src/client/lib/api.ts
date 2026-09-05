@@ -5,6 +5,7 @@ import type {
   AppUser,
   CreatePOInput,
   UpdatePOInput,
+  PoApprovalEvidence,
   CurrentUser,
   Element,
   LabourByCostCode,
@@ -368,6 +369,10 @@ export const api = {
       `/api/pos${usp.toString() ? "?" + usp.toString() : ""}`,
     );
   },
+  /** The invoice + delivery notes behind every order awaiting approval, keyed
+   *  by PO id. One request for the whole list, not one per row. */
+  listApprovalEvidence: () =>
+    jfetch<Record<string, PoApprovalEvidence>>("/api/pos/approval-evidence"),
   getPO: (id: string) =>
     jfetch<PurchaseOrder & {
       project_code: string; project_name: string;
@@ -736,15 +741,24 @@ export const api = {
   reextractInvoice: (id: number) =>
     jfetch<{ ok: true; po_number: string | null }>(`/api/invoices/${id}/reextract`, { method: "POST" }),
   /** 3-way match: reconcile an invoice against its PO and logged deliveries. */
-  invoiceMatch: (id: number, opts?: { includeDelivered?: boolean }) =>
-    jfetch<import("../../shared/types").InvoiceMatch>(`/api/invoices/${id}/match${opts?.includeDelivered ? "?include_delivered=1" : ""}`),
+  // `includeClosed` is the worker's own word for it: received in full AND billed
+  // in full. The wire param stays `include_delivered` so a cached client keeps
+  // working across a deploy — it was always a misnomer, never the meaning.
+  invoiceMatch: (id: number, opts?: { includeClosed?: boolean }) =>
+    jfetch<import("../../shared/types").InvoiceMatch>(`/api/invoices/${id}/match${opts?.includeClosed ? "?include_delivered=1" : ""}`),
   saveInvoiceMatch: (id: number, body: { po_id: string | null; line_po_ids?: Array<number | null> }) =>
     jfetch<{ ok: true }>(`/api/invoices/${id}/match`, { method: "POST", body: JSON.stringify(body) }),
   /** Goods collected from the merchant (no ticket) — log receipt against the PO. */
   markInvoiceCollected: (id: number) =>
     jfetch<{ ok: true; lines: number }>(`/api/invoices/${id}/mark-collected`, { method: "POST" }),
+  /** Approve for payment. This HOLDS the invoice — it no longer reaches Xero
+   *  here; a release approver signs it off with `releaseInvoice`. */
   approveInvoice: (id: number, note?: string) =>
-    jfetch<{ ok: true; approved_at: string; pushed?: boolean; xero_bill_number?: string | null; xero_error?: string; attach_warning?: string }>(`/api/invoices/${id}/approve`, { method: "POST", body: JSON.stringify({ note: note ?? "" }) }),
+    jfetch<{ ok: true; approved_at: string; held?: boolean; pushed?: boolean; xero_bill_number?: string | null; xero_error?: string; attach_warning?: string }>(`/api/invoices/${id}/approve`, { method: "POST", body: JSON.stringify({ note: note ?? "" }) }),
+  /** Final sign-off on a held invoice — this is what sends it to Xero.
+   *  403s for anyone not on the release-approver list. */
+  releaseInvoice: (id: number, note?: string) =>
+    jfetch<{ ok: true; released_at: string; pushed?: boolean; xero_bill_id?: string; xero_bill_number?: string | null; xero_error?: string; attach_warning?: string }>(`/api/invoices/${id}/release`, { method: "POST", body: JSON.stringify({ note: note ?? "" }) }),
   unapproveInvoice: (id: number) =>
     jfetch<{ ok: true }>(`/api/invoices/${id}/approve`, { method: "POST", body: JSON.stringify({ unapprove: true }) }),
   /** Raise a PO retrospectively from an invoice that arrived without one.
@@ -992,7 +1006,8 @@ export const api = {
       body: JSON.stringify(body ?? {}),
     }),
   /** Approve a certified labour certificate for payment (flag-don't-block); a
-   *  note is required when paying over the budgeted labour. Gates the Xero push. */
+   *  note is required when paying over the budgeted labour. This HOLDS the
+   *  certificate — a release approver signs it off with `releaseAfpPayment`. */
   approveAfpPayment: (id: number, note?: string) =>
     jfetch<{ ok: true; pay_approved_at?: string }>(`/api/applications/${id}/approve-payment`, {
       method: "POST",
@@ -1003,6 +1018,13 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ unapprove: true }),
     }),
+  /** Final sign-off on a held labour certificate — this is what pushes the
+   *  bill to Xero. 403s for anyone not on the release-approver list. */
+  releaseAfpPayment: (id: number, note?: string) =>
+    jfetch<{ ok: true; pay_released_at: string; pushed?: boolean; xero_po_number?: string | null; xero_error?: string; skipped?: boolean; reason?: string }>(
+      `/api/applications/${id}/release-payment`,
+      { method: "POST", body: JSON.stringify({ note: note ?? "" }) },
+    ),
   markAfpPaid: (id: number, payment_reference?: string) =>
     jfetch<{ ok: true }>(`/api/applications/${id}/mark-paid`, {
       method: "POST",

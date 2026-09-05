@@ -2062,6 +2062,12 @@ body.rd-printing .rd-linedel, body.rd-printing .rd-addline, body.rd-printing .rd
 .acctx .istatus { display:inline-block; font-size:10px; font-weight:700; letter-spacing:.04em; text-transform:uppercase; margin-top:5px; padding:1px 6px; border-radius:5px; }
 .acctx .istatus.matched { background:var(--success-soft); color:var(--success); }
 .acctx .istatus.review { background:var(--warn-soft); color:var(--warn); }
+/* Held: matched, approved, waiting on the release sign-off. Navy rather than
+   amber or accent — amber on this row means someone still has work to do on
+   the invoice and accent is the brand orange, so either would read as another
+   shade of "needs attention". A held invoice is finished from the approver's
+   side and parked on someone else. */
+.acctx .istatus.held { background:var(--navy-soft); color:var(--navy); }
 .acctx .istatus.none { background:var(--danger-soft); color:var(--danger); }
 
 .acctx .detail { display:flex; flex-direction:column; gap:18px; min-width:0; }

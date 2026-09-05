@@ -84,6 +84,41 @@ export async function authMiddleware(
   await next();
 }
 
+/**
+ * May this user give a held payable its final sign-off and let it into Xero?
+ * Covers both routes money leaves by — supplier invoices and subcontractor
+ * labour certificates — against one list.
+ *
+ * Checked by email against `release_approvers`, NOT by role: no role draws the
+ * line in the right place. The releasers are a subset of `superadmin` and not
+ * all of it, and one of them (adouty) also approves payables at stage one — so
+ * a permission check would either miss a releaser or hand the second signature
+ * to people who are only meant to have the first. Only a named list can say
+ * who signs off.
+ */
+export async function isReleaseApprover(
+  env: Env,
+  email: string | null | undefined,
+): Promise<boolean> {
+  if (!email) return false;
+  try {
+    const row = await env.DB.prepare(
+      "SELECT 1 AS ok FROM release_approvers WHERE lower(email) = ?",
+    )
+      .bind(email.toLowerCase())
+      .first<{ ok: number }>();
+    return !!row;
+  } catch (e) {
+    // Table missing — migration 0118 hasn't been applied to this database.
+    // Fail CLOSED. The open fallback would hand the release back to everyone
+    // who can approve, which is the single thing this gate exists to stop.
+    const msg = e instanceof Error ? e.message : String(e);
+    if (!/no such table: release_approvers/i.test(msg)) throw e;
+    console.warn("release_approvers missing — releases blocked. Apply migration 0118.");
+    return false;
+  }
+}
+
 export async function loadCurrentUser(c: Context<{ Bindings: Env; Variables: Variables }>) {
   const email = c.get("userEmail");
   const approverRows = await c.env.DB.prepare(
@@ -99,6 +134,7 @@ export async function loadCurrentUser(c: Context<{ Bindings: Env; Variables: Var
     active: true,
     is_approver: tiers.length > 0,
     approver_tiers: tiers as Array<"line_manager" | "commercial_manager" | "director">,
+    can_release_payables: await isReleaseApprover(c.env, email),
   };
 }
 

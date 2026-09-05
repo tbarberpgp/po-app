@@ -5,7 +5,8 @@
 import { Hono } from "hono";
 import Anthropic from "@anthropic-ai/sdk";
 import type { Env, Variables } from "../env";
-import { requirePermission } from "../auth";
+import { isReleaseApprover, requirePermission } from "../auth";
+import { isReleased, needsApprovalBeforeRelease } from "../../shared/payment-release";
 import { can } from "../../shared/permissions";
 import {
   invMaterialCode, jobAmbiguity, lineQty, looksLikeServiceCharge, NON_GOODS_LINE_IDS, PAYMENT_SCHEDULE_LINE_ID,
@@ -20,6 +21,7 @@ import { summarisePoDeliveries, poBilledState, isPoClosed, PO_DELIVERY_NOTE_COLU
 import { findSuccessor, fuzzyFindPo, type PoLifecycle } from "../poRef";
 import { pickProjectByAddress, type AddrProject } from "../addrMatch";
 import { siteScope } from "./operations";
+import { isSandboxId } from "../sandbox";
 
 /**
  * Record an invoice event. Invoices had no audit trail at all: audit_log covered
@@ -618,8 +620,9 @@ invoices.post("/:id/dismiss", async (c) => {
  *
  *  It returns to 'inbox' rather than to whatever it held before, because the
  *  pre-dismissal status isn't recorded and 'inbox' is the one status that can't
- *  skip a step — an invoice restored straight to 'ready' would read as coded
- *  and confirmed on someone else's say-so. */
+ *  skip a step. Which queue it then shows up in follows from its own coding, as
+ *  it does for every other invoice: one already approved for payment reads as
+ *  HELD again, an uncoded one as Inbox. */
 invoices.post("/:id/undismiss", async (c) => {
   const denied = requirePermission(c, "commercial.edit");
   if (denied) return denied;
@@ -1308,7 +1311,19 @@ invoices.post("/:id/approve", async (c) => {
   let body: { note?: string; unapprove?: boolean } = {};
   try { body = await c.req.json(); } catch { /* none */ }
   if (body.unapprove) {
-    await c.env.DB.prepare("UPDATE invoices SET approved_at = NULL, approved_by = NULL WHERE id = ?").bind(c.req.param("id")).run();
+    // Withdrawing the approval withdraws the final sign-off with it. Otherwise
+    // a re-approval would arrive already released and go straight to Xero on
+    // the old sign-off — the gate would be open for the one invoice someone
+    // had just second-guessed. A bill already in Xero is past this point and
+    // keeps its release; the link to Xero is the thing that can't be undone here.
+    const inXero = "(status = 'pushed' OR xero_bill_id IS NOT NULL)";
+    await c.env.DB.prepare(
+      `UPDATE invoices SET approved_at = NULL, approved_by = NULL,
+              released_at  = CASE WHEN ${inXero} THEN released_at  ELSE NULL END,
+              released_by  = CASE WHEN ${inXero} THEN released_by  ELSE NULL END,
+              release_note = CASE WHEN ${inXero} THEN release_note ELSE NULL END
+        WHERE id = ?`,
+    ).bind(c.req.param("id")).run();
     await logInvoice(c.env, c.req.param("id"), "unapproved", c.get("userEmail"));
     return c.json({ ok: true });
   }
@@ -1400,23 +1415,22 @@ invoices.post("/:id/approve", async (c) => {
     ...(note ? { reason: note, overrode: overrode ?? [] } : { clean_match: true }),
   });
 
-  // Approval IS the release: push straight to Xero as a draft bill, same as PO
-  // approval auto-pushes. Best-effort — a failure never rolls back the
-  // approval; it's stored on the row and the manual Push button retries.
-  const alreadyPushed = inv.status === "pushed" || inv.xero_bill_id;
-  const kindReady = inv.kind === "project"
-    || (inv.kind === "overhead" && isAdmin(c) && !!(inv.nominal_code as string | null)?.trim());
-  const canPush = !alreadyPushed && kindReady && !!c.env.XERO_CLIENT_ID && !!c.env.XERO_CLIENT_SECRET
-    && !!(inv.supplier_name as string | null)?.trim() && inv.project_id !== "sandbox";
-  if (canPush) {
-    const r = await pushInvoiceBillToXero(c.env, { ...inv, approved_at: now }, c.req.param("id"));
-    await logInvoice(c.env, c.req.param("id"), r.ok ? "pushed" : "push_failed", c.get("userEmail"),
-      r.ok ? { via: "approval", bill: r.xero_bill_number ?? null } : { via: "approval", error: r.error ?? null });
-    return c.json({ ok: true, approved_at: now, ...(r.ok
-      ? { pushed: true, xero_bill_number: r.xero_bill_number, ...(r.attach_warning ? { attach_warning: r.attach_warning } : {}) }
-      : { pushed: false, xero_error: r.error }) });
-  }
-  return c.json({ ok: true, approved_at: now });
+  // Approval is no longer the release. It used to push straight to Xero from
+  // here, which made matching an invoice and paying it a single act by a single
+  // person. The invoice is now HELD: approved for payment, reconciled, and
+  // waiting on a named release approver to sign it off. Nothing reaches Xero on
+  // this route — see POST /:id/release.
+  const alreadyInXero = inv.status === "pushed" || !!inv.xero_bill_id;
+  await logInvoice(c.env, c.req.param("id"), "held", c.get("userEmail"), { awaiting: "release_approval" });
+  return c.json({
+    ok: true,
+    approved_at: now,
+    // `held` says the approval landed and stopped here, so the UI can say so
+    // rather than reporting a push that no longer happens. Already-pushed rows
+    // (a re-approval of a historic invoice) aren't newly held.
+    held: !alreadyInXero,
+    pushed: false,
+  });
 });
 
 /**
@@ -1579,6 +1593,16 @@ async function pushInvoiceBillToXero(
   const supplierName = (inv.supplier_name as string | null)?.trim();
   if (!supplierName) return { ok: false, error: "Set the supplier before pushing to Xero." };
 
+  // The release gate, enforced here as well as on the routes, so the invariant
+  // "no bill without a sign-off" holds for every caller rather than for the two
+  // that exist today. Returns before the try below, so a refusal never records
+  // itself as a Xero sync failure — nothing is wrong with the invoice, it just
+  // hasn't been signed off. The routes pre-check too, only to answer 403
+  // instead of 502.
+  if (!isReleased(inv)) {
+    return { ok: false, error: "This invoice is held — a nominated release approver has to sign it off before it can go to Xero." };
+  }
+
   const duplicate = await duplicateBillRefusal(env, {
     id, invoiceNumber: inv.invoice_number, supplierId: inv.supplier_id, supplierName,
   });
@@ -1734,45 +1758,152 @@ invoices.post("/:id/mark-collected", async (c) => {
   return c.json({ ok: true, lines: outstanding.length });
 });
 
+/**
+ * Everything that must be true before an invoice may become a bill in Xero.
+ * Returns the refusal message, or null to proceed.
+ *
+ * Shared by the two routes that can create a bill — the release sign-off and
+ * the manual push — because these gates drifted apart once already: the
+ * cross-job check existed on approval for weeks before this route grew its own
+ * copy, and in between, the Push button would post to the wrong job the
+ * approval route had just refused. One list, both callers.
+ *
+ * The release gate is deliberately NOT in here: who may release is a question
+ * about the actor, and this function only judges the invoice.
+ */
+async function prePushRefusal(
+  env: Env,
+  inv: Record<string, unknown>,
+): Promise<string | null> {
+  // A push always CREATES a Xero bill — pushing twice would duplicate it in the
+  // books. Edits made here after a push stay local: amend the draft bill in
+  // Xero (or void it there and clear the link) rather than re-pushing.
+  if (inv.xero_bill_id) {
+    return `Already in Xero as draft bill ${inv.xero_bill_number ?? inv.xero_bill_id}. Edits made here don't update Xero — amend or void the bill in Xero instead.`;
+  }
+  // The sandbox is a walled-off demo project that gets wiped and re-seeded by
+  // the nightly cron. Its invoices are fiction and must never become real
+  // bills. The old auto-push checked this and the manual push never did; both
+  // callers get it now. Every other Xero push path guards the same way.
+  if (isSandboxId(inv.project_id as string | null)) {
+    return "This is a sandbox invoice — sandbox data is never pushed to Xero.";
+  }
+  if (!inv.kind) return "Route this invoice to a Project or Overheads first.";
+  if (inv.kind === "overhead" && !(inv.nominal_code as string | null)?.trim()) {
+    return "Pick an overhead nominal (account code) first.";
+  }
+  // 3-way match gate: a job-costed (project) invoice must be approved for payment
+  // — i.e. reconciled against its PO/deliveries — before it goes to Xero.
+  if (inv.kind === "project" && !inv.approved_at) {
+    return "Approve this invoice for payment (match it to its PO) before pushing to Xero.";
+  }
+  // Same gate as approval. Needed here too: an invoice approved BEFORE that gate
+  // existed still has approved_at set, and this button would push it.
+  if (inv.kind === "project" && inv.matched_po_id && inv.project_id) {
+    const po = await env.DB.prepare(
+      `SELECT po.po_number, p.code AS po_job FROM purchase_orders po
+         LEFT JOIN projects p ON p.id = po.project_id WHERE po.id = ?`,
+    ).bind(inv.matched_po_id).first<{ po_number: string; po_job: string | null }>();
+    const invJob = await env.DB.prepare("SELECT code FROM projects WHERE id = ?")
+      .bind(inv.project_id).first<{ code: string }>();
+    if (po?.po_job && invJob?.code && po.po_job !== invJob.code) {
+      return `This invoice is coded to job ${invJob.code}, but ${po.po_number} is an order on job ${po.po_job}. `
+        + `Fix the order link (or the coding) before pushing — otherwise the cost lands on the wrong job in Xero.`;
+    }
+  }
+  return null;
+}
+
+/**
+ * Final sign-off. This is the ONLY route that releases a held invoice, and the
+ * release is what creates the bill in Xero.
+ *
+ * Restricted by name, not by role: the releasers are some superadmins and not
+ * all of them, and one of them approves invoices at stage one too, so no
+ * permission check separates the stages — `release_approvers` does.
+ */
+invoices.post("/:id/release", async (c) => {
+  // Still needs the base right to be in this workpiece at all; the allowlist
+  // then narrows it further.
+  const denied = requirePermission(c, "commercial.view");
+  if (denied) return denied;
+  const actor = c.get("userEmail");
+  if (!(await isReleaseApprover(c.env, actor))) {
+    return c.json({
+      error: "Only a nominated release approver can send an approved invoice to Xero. "
+        + "The invoice stays held until then.",
+    }, 403);
+  }
+  const inv = await c.env.DB.prepare("SELECT * FROM invoices WHERE id = ?").bind(c.req.param("id")).first<Record<string, unknown>>();
+  if (!inv) return c.json({ error: "not found" }, 404);
+  if (inv.kind === "overhead" && !isAdmin(c)) return c.json({ error: "Forbidden: overheads are admin-only" }, 403);
+
+  // Release signs off an approval — it doesn't stand in for one. Requiring the
+  // first stage keeps the two signatures distinct even when one person could
+  // supply both: whoever matched and approved the invoice is still on record
+  // separately from whoever let it go to Xero.
+  //
+  // Overheads are the exception, because they have no first stage to require:
+  // no PO, no delivery, nothing to 3-way match, and so no approve-for-payment
+  // step in the UI at all. Coding one to a nominal is the work that precedes
+  // sign-off, and prePushRefusal already refuses an uncoded one. Demanding an
+  // approval that cannot be given would make every overhead unpayable.
+  if (needsApprovalBeforeRelease(inv) && !inv.approved_at) {
+    return c.json({ error: "This invoice hasn't been approved for payment yet. It needs approving and matching before it can be released." }, 400);
+  }
+  const refusal = await prePushRefusal(c.env, inv);
+  if (refusal) return c.json({ error: refusal }, 400);
+
+  let body: { note?: string } = {};
+  try { body = await c.req.json(); } catch { /* none */ }
+  const note = (body.note || "").trim();
+  const now = new Date().toISOString();
+  await c.env.DB.prepare("UPDATE invoices SET released_at = ?, released_by = ?, release_note = ? WHERE id = ?")
+    .bind(now, actor, note || null, c.req.param("id")).run();
+  await logInvoice(c.env, c.req.param("id"), "released", actor, {
+    gross: inv.gross_amount ?? null,
+    approved_by: (inv.approved_by as string | null) ?? null,
+    ...(note ? { note } : {}),
+  });
+
+  // The push is best-effort, exactly as it was under the old auto-push: a Xero
+  // failure never rolls back the sign-off, it's recorded on the row, and the
+  // manual push retries it.
+  const r = await pushInvoiceBillToXero(c.env, { ...inv, released_at: now }, c.req.param("id"));
+  await logInvoice(c.env, c.req.param("id"), r.ok ? "pushed" : "push_failed", actor,
+    r.ok ? { via: "release", bill: r.xero_bill_number ?? null } : { via: "release", error: r.error ?? null });
+  return c.json({ ok: true, released_at: now, ...(r.ok
+    ? { pushed: true, xero_bill_id: r.xero_bill_id, xero_bill_number: r.xero_bill_number, ...(r.attach_warning ? { attach_warning: r.attach_warning } : {}) }
+    : { pushed: false, xero_error: r.error }) });
+});
+
 /** Push the invoice to Xero as a DRAFT Bill (ACCPAY) for the accountant to
  *  review. Project invoices code to the default purchase account (+ optional
- *  project tracking); overheads code to the chosen nominal. */
+ *  project tracking); overheads code to the chosen nominal.
+ *
+ *  This is the retry path, not a way around the release gate — it refuses an
+ *  invoice that hasn't been signed off. */
 invoices.post("/:id/push-xero", async (c) => {
   const denied = requirePermission(c, "commercial.edit");
   if (denied) return denied;
   const inv = await c.env.DB.prepare("SELECT * FROM invoices WHERE id = ?").bind(c.req.param("id")).first<Record<string, unknown>>();
   if (!inv) return c.json({ error: "not found" }, 404);
   if (inv.kind === "overhead" && !isAdmin(c)) return c.json({ error: "Forbidden: overheads are admin-only" }, 403);
-  // A push always CREATES a Xero bill — pushing twice would duplicate it in the
-  // books. Edits made here after a push stay local: amend the draft bill in
-  // Xero (or void it there and clear the link) rather than re-pushing.
-  if (inv.xero_bill_id) {
-    return c.json({ error: `Already in Xero as draft bill ${inv.xero_bill_number ?? inv.xero_bill_id}. Edits made here don't update Xero — amend or void the bill in Xero instead.` }, 409);
-  }
-  if (!inv.kind) return c.json({ error: "Route this invoice to a Project or Overheads first." }, 400);
-  if (inv.kind === "overhead" && !(inv.nominal_code as string | null)?.trim()) {
-    return c.json({ error: "Pick an overhead nominal (account code) first." }, 400);
-  }
-  // 3-way match gate: a job-costed (project) invoice must be approved for payment
-  // — i.e. reconciled against its PO/deliveries — before it goes to Xero.
-  if (inv.kind === "project" && !inv.approved_at) {
-    return c.json({ error: "Approve this invoice for payment (match it to its PO) before pushing to Xero." }, 400);
-  }
-  // Same gate as approval. Needed here too: an invoice approved BEFORE that gate
-  // existed still has approved_at set, and this button would push it.
-  if (inv.kind === "project" && inv.matched_po_id && inv.project_id) {
-    const po = await c.env.DB.prepare(
-      `SELECT po.po_number, p.code AS po_job FROM purchase_orders po
-         LEFT JOIN projects p ON p.id = po.project_id WHERE po.id = ?`,
-    ).bind(inv.matched_po_id).first<{ po_number: string; po_job: string | null }>();
-    const invJob = await c.env.DB.prepare("SELECT code FROM projects WHERE id = ?")
-      .bind(inv.project_id).first<{ code: string }>();
-    if (po?.po_job && invJob?.code && po.po_job !== invJob.code) {
-      return c.json({
-        error: `This invoice is coded to job ${invJob.code}, but ${po.po_number} is an order on job ${po.po_job}. `
-          + `Fix the order link (or the coding) before pushing — otherwise the cost lands on the wrong job in Xero.`,
-      }, 400);
-    }
+  // Readiness first, then the release gate — both apply, but this order gets
+  // the accurate message out. An uncoded overhead read as "waiting on a
+  // sign-off" when what it was actually waiting for was its nominal, and an
+  // invoice already in Xero read the same way instead of saying so.
+  const refusal = await prePushRefusal(c.env, inv);
+  if (refusal) return c.json({ error: refusal }, inv.xero_bill_id ? 409 : 400);
+  // The release gate. Without it this route is the whole change undone — the
+  // Push button would still take any approved invoice to Xero, which is what
+  // it did before. Applies to overheads too: they reach Xero by this route
+  // only, so leaving them out would leave a way in.
+  if (!isReleased(inv)) {
+    return c.json({
+      error: "This invoice is held. A nominated release approver has to sign it off before it can go to Xero.",
+      held: true,
+    }, 403);
   }
   const r = await pushInvoiceBillToXero(c.env, inv, c.req.param("id"));
   await logInvoice(c.env, c.req.param("id"), r.ok ? "pushed" : "push_failed", c.get("userEmail"),

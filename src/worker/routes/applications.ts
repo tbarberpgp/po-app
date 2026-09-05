@@ -8,10 +8,10 @@ import Anthropic from "@anthropic-ai/sdk";
 import * as XLSX from "xlsx";
 import { unzipSync, strFromU8 } from "fflate";
 import type { Env, Variables } from "../env";
-import { requirePermission } from "../auth";
+import { isReleaseApprover, requirePermission } from "../auth";
 import { learnAliases, aliasMap, normText } from "../matchMemory";
 import { findSupplier } from "./invoices";
-import { cisLabourBase } from "./xero";
+import { cisLabourBase, pushAfpToXero } from "./xero";
 import { emailAfpCertified } from "../notify";
 import type { AfpCisPreview } from "../../shared/types";
 import { isSandboxId } from "../sandbox";
@@ -3480,7 +3480,18 @@ applications.post("/:id/approve-payment", async (c) => {
   if (!afp) return c.json({ error: "not found" }, 404);
   if (afp.direction !== "incoming_labour") return c.json({ error: "Only labour certificates are approved for payment here." }, 400);
   if (body.unapprove) {
-    await c.env.DB.prepare("UPDATE applications_for_payment SET pay_approved_at = NULL, pay_approved_by = NULL WHERE id = ?").bind(id).run();
+    // Withdrawing the pay approval withdraws the final sign-off with it, or a
+    // re-approval would arrive already released and push on the old one. A
+    // certificate already in Xero is past this point and keeps its release.
+    const inXero = "(xero_po_id IS NOT NULL OR xero_sync_status = 'synced')";
+    await c.env.DB.prepare(
+      `UPDATE applications_for_payment
+          SET pay_approved_at = NULL, pay_approved_by = NULL,
+              pay_released_at  = CASE WHEN ${inXero} THEN pay_released_at  ELSE NULL END,
+              pay_released_by  = CASE WHEN ${inXero} THEN pay_released_by  ELSE NULL END,
+              pay_release_note = CASE WHEN ${inXero} THEN pay_release_note ELSE NULL END
+        WHERE id = ?`,
+    ).bind(id).run();
     return c.json({ ok: true });
   }
   if (afp.status !== "certified" && afp.status !== "paid") {
@@ -3491,6 +3502,70 @@ applications.post("/:id/approve-payment", async (c) => {
     "UPDATE applications_for_payment SET pay_approved_at = ?, pay_approved_by = ?, pay_approval_note = ? WHERE id = ?",
   ).bind(now, c.get("userEmail"), (body.note || "").trim() || null, id).run();
   return c.json({ ok: true, pay_approved_at: now });
+});
+
+/**
+ * Final sign-off on a held labour certificate — the second signature, and the
+ * only route that pushes the bill to Xero.
+ *
+ * Restricted by name, not by role, and by the SAME allowlist as supplier
+ * invoices: the last approval before money leaves the company is one job, and
+ * splitting it per workpiece would mean a person trusted with one route and
+ * not the other, which is not a distinction anyone asked for.
+ */
+applications.post("/:id/release-payment", async (c) => {
+  // Still needs the base right to be in this workpiece; the allowlist narrows
+  // it from there.
+  const denied = requirePermission(c, "commercial.view");
+  if (denied) return denied;
+  const actor = c.get("userEmail");
+  if (!(await isReleaseApprover(c.env, actor))) {
+    return c.json({
+      error: "Only a nominated release approver can send a labour certificate to Xero. "
+        + "The certificate stays held until then.",
+    }, 403);
+  }
+  const id = Number(c.req.param("id"));
+  const afp = await c.env.DB.prepare(
+    "SELECT id, status, direction, pay_approved_at, pay_released_at, xero_po_id, xero_po_number FROM applications_for_payment WHERE id = ?",
+  ).bind(id).first<{
+    id: number; status: string; direction: string; pay_approved_at: string | null;
+    pay_released_at: string | null; xero_po_id: string | null; xero_po_number: string | null;
+  }>();
+  if (!afp) return c.json({ error: "not found" }, 404);
+  if (afp.direction !== "incoming_labour") {
+    return c.json({ error: "Only labour certificates are released for payment here." }, 400);
+  }
+  if (afp.xero_po_id) {
+    return c.json({ error: `This certificate is already in Xero as bill ${afp.xero_po_number ?? afp.xero_po_id}.` }, 409);
+  }
+  // Release signs off an approval — it doesn't stand in for one. Both earlier
+  // stages have to be on record separately: the QS certifying the value, and
+  // whoever approved it for payment.
+  if (afp.status !== "certified" && afp.status !== "paid") {
+    return c.json({ error: "Certify the labour certificate before releasing it." }, 409);
+  }
+  if (!afp.pay_approved_at) {
+    return c.json({ error: "This certificate hasn't been approved for payment yet. It needs approving before it can be released." }, 400);
+  }
+
+  const body = await c.req.json<{ note?: string }>().catch(() => ({} as { note?: string }));
+  const note = (body.note || "").trim();
+  const when = new Date().toISOString();
+  await c.env.DB.prepare(
+    "UPDATE applications_for_payment SET pay_released_at = ?, pay_released_by = ?, pay_release_note = ? WHERE id = ?",
+  ).bind(when, actor, note || null, id).run();
+
+  // Best-effort push, as the invoice release is: a Xero failure never rolls
+  // back the sign-off — it's recorded on the certificate and the Push button
+  // retries it. pushAfpToXero re-reads the row, so it sees the release above.
+  try {
+    const r = await pushAfpToXero(c.env, id);
+    if ("skipped" in r) return c.json({ ok: true, pay_released_at: when, pushed: false, skipped: true, reason: r.reason });
+    return c.json({ ok: true, pay_released_at: when, pushed: true, xero_po_number: r.xero_po_number });
+  } catch (e) {
+    return c.json({ ok: true, pay_released_at: when, pushed: false, xero_error: e instanceof Error ? e.message : String(e) });
+  }
 });
 
 /** Mark as paid. */

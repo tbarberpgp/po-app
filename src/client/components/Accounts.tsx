@@ -7,6 +7,7 @@ import { Topbar } from "./Shell";
 import type { CurrentUser, Invoice, InvoiceMatch, InvoiceMatchLine, MatchSummary, Project } from "../../shared/types";
 import { NON_GOODS_LINE_IDS, PAYMENT_SCHEDULE_LINE_ID, SERVICE_CHARGE_LINE_ID } from "../../shared/line-match";
 import { poStatusHint, poDeliveryLabel } from "../../shared/po-delivery-status";
+import { isHeld } from "../../shared/payment-release";
 
 // Amounts render in the invoice's OWN currency — a $ or € invoice shown with a
 // £ sign misreports what we owe. Falls back to sterling when unknown.
@@ -18,16 +19,19 @@ const curSymbol = (cur: string | null | undefined) => CUR_SYMBOL[(cur || "GBP").
 const qtyFmt = (n: number | null | undefined) =>
   (n == null ? "—" : Number(n).toLocaleString(undefined, { maximumFractionDigits: 2 }));
 
-type Tab = "inbox" | "overheads" | "pushed" | "dismissed";
+type Tab = "inbox" | "held" | "overheads" | "pushed" | "dismissed";
 
-/** Row status for the inbox dot/chip: approved-or-pushed → matched (green);
- *  coded but not yet approved → review (amber); uncoded → new (red). */
-function rowStatus(inv: Invoice): "matched" | "review" | "none" {
+/** Row status for the inbox dot/chip: released/pushed → matched (green); held
+ *  awaiting sign-off → held (blue); coded but not yet approved → review
+ *  (amber); uncoded → new (red). */
+function rowStatus(inv: Invoice): "matched" | "held" | "review" | "none" {
+  if (isHeld(inv)) return "held";
   if (inv.approved_at || inv.status === "pushed") return "matched";
   if ((inv.kind === "project" && inv.project_id) || (inv.kind === "overhead" && inv.nominal_code)) return "review";
   return "none";
 }
-const ST_LABEL: Record<"matched" | "review" | "none", string> = { matched: "Approved", review: "Review", none: "New" };
+const ST_LABEL: Record<"matched" | "held" | "review" | "none", string> =
+  { matched: "Approved", held: "Held", review: "Review", none: "New" };
 
 /** Red when the billed quantity and the ordered quantity disagree at all, in
  *  either direction — grey (the default for this sub-label) when they match or
@@ -104,6 +108,9 @@ function matchTitle(m: MatchSummary, cur?: string | null): string {
 export function Accounts({ me }: { me: CurrentUser | null }) {
   const isAdmin = can(me?.role, "approvers.manage");
   const canEdit = can(me?.role, "commercial.edit");
+  // Not a role check — the release list is by name, because no role draws the
+  // line in the right place (see release_approvers / isReleaseApprover).
+  const canRelease = me?.can_release_payables === true;
   const [tab, setTab] = useState<Tab>("inbox");
   const [rows, setRows] = useState<Invoice[]>([]);
   const [selId, setSelId] = useState<number | null>(null);
@@ -128,9 +135,13 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
     const q = search.trim().toLowerCase();
     return rows.filter((r) => {
       if (tab === "overheads") { if (!(r.kind === "overhead" && r.status !== "dismissed")) return false; }
+      else if (tab === "held") { if (!isHeld(r)) return false; }
       else if (tab === "pushed") { if (r.status !== "pushed") return false; }
       else if (tab === "dismissed") { if (r.status !== "dismissed") return false; }
-      else if (!(r.status === "inbox" || r.status === "ready")) return false; // inbox
+      // Inbox is what still needs coding, matching or approving. A held invoice
+      // has had all three done to it and is waiting on someone else, so it
+      // moves to Held rather than sitting in the queue looking outstanding.
+      else if (!((r.status === "inbox" || r.status === "ready") && !isHeld(r))) return false; // inbox
       if (q) {
         const hay = `${r.supplier_name ?? ""} ${r.matched_supplier_name ?? ""} ${r.invoice_number ?? ""} ${r.project_code ?? ""}`.toLowerCase();
         if (!hay.includes(q)) return false;
@@ -140,7 +151,8 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
   }, [rows, tab, search]);
 
   const sel = rows.find((r) => r.id === selId) ?? null;
-  const inboxCount = rows.filter((r) => r.status === "inbox" || r.status === "ready").length;
+  const inboxCount = rows.filter((r) => (r.status === "inbox" || r.status === "ready") && !isHeld(r)).length;
+  const heldCount = rows.filter((r) => isHeld(r)).length;
 
   async function upload(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0];
@@ -176,14 +188,15 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
     finally { setBusy(false); }
   }
 
-  /** Undo a dismissal. The row leaves this tab either way, so the flash says
-   *  where it went rather than just "restored" — "it's gone" is the wrong
-   *  impression to leave someone who has just un-dismissed an invoice. */
+  /** Undo a dismissal. Which queue it lands back in depends on its coding, so
+   *  the flash names the queue rather than just saying "restored" — the row
+   *  leaves this tab either way, and "it's gone" is the wrong impression. */
   async function undismiss(id: number) {
     setBusy(true); setErr(null); setInfo(null);
     try {
       await api.undismissInvoice(id);
-      setInfo("Restored to Inbox.");
+      const fresh = await api.getInvoice(id);
+      setInfo(`Restored to ${isHeld(fresh) ? "Held" : "Inbox"}.`);
       load(); setSelId(null);
     } catch (e) { setErr(e instanceof Error ? e.message : "restore failed"); }
     finally { setBusy(false); }
@@ -199,8 +212,32 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
     finally { setBusy(false); }
   }
 
+  /** Final sign-off on a held invoice. The release is what sends it to Xero, so
+   *  a Xero failure is reported without pretending the sign-off didn't happen —
+   *  it did, and the Retry button picks it up from there. */
+  async function release(id: number, note?: string) {
+    setBusy(true); setErr(null); setInfo(null);
+    try {
+      const r = await api.releaseInvoice(id, note);
+      if (r.pushed === false && r.xero_error) {
+        // Xero's messages sometimes end in a full stop and sometimes don't, so
+        // trim one rather than printing "Admin → Xero.. Use".
+        const why = r.xero_error.replace(/\.\s*$/, "");
+        setErr(`Signed off — but the Xero push failed: ${why}. Use "Retry Xero push" once it's fixed.`);
+      } else {
+        setInfo(`Released to Xero as draft bill ${r.xero_bill_number ?? ""}.`);
+      }
+      load();
+    } catch (e) { setErr(e instanceof Error ? e.message : "release failed"); }
+    finally { setBusy(false); }
+  }
+
   const TABS: Array<[Tab, string, number | null]> = [
     ["inbox", "Inbox", inboxCount],
+    // Counted for everyone, not just the release approver: the people who
+    // approve invoices need to see the queue they're handing over, and that
+    // nothing has been sitting in it for a fortnight.
+    ["held", canRelease ? "Awaiting my sign-off" : "Held", heldCount],
     ...(isAdmin ? [["overheads", "Overheads", null] as [Tab, string, null]] : []),
     ["pushed", "Pushed", null],
     ["dismissed", "Dismissed", null],
@@ -289,8 +326,10 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
             <section className="detail">
               {!sel
                 ? <div className="a-card a-pad"><div className="muted" style={{ fontSize: 13 }}>Select an invoice to review, code and push to Xero.</div></div>
-                : <InvoiceDetail key={sel.id} inv={sel} projects={projects} accounts={accounts} isAdmin={isAdmin} canEdit={canEdit} busy={busy}
-                    onPatch={(b) => patch(sel.id, b)} onPush={() => push(sel.id)} onReload={() => reloadOne(sel.id)} onReread={() => reread(sel.id)}
+                : <InvoiceDetail key={sel.id} inv={sel} projects={projects} accounts={accounts} isAdmin={isAdmin} canEdit={canEdit}
+                    canRelease={canRelease} busy={busy}
+                    onPatch={(b) => patch(sel.id, b)} onPush={() => push(sel.id)} onRelease={(note) => release(sel.id, note)}
+                    onReload={() => reloadOne(sel.id)} onReread={() => reread(sel.id)}
                     onDismiss={async () => { await api.dismissInvoice(sel.id); load(); setSelId(null); }}
                     onUndismiss={() => undismiss(sel.id)} />}
             </section>
@@ -383,10 +422,11 @@ function InvoiceViewer({ inv }: { inv: Invoice }) {
   );
 }
 
-function InvoiceDetail({ inv, projects, accounts, isAdmin, canEdit, busy, onPatch, onPush, onReload, onReread, onDismiss, onUndismiss }: {
+function InvoiceDetail({ inv, projects, accounts, isAdmin, canEdit, canRelease, busy, onPatch, onPush, onRelease, onReload, onReread, onDismiss, onUndismiss }: {
   inv: Invoice; projects: Project[]; accounts: Array<{ code: string; name: string; type: string }>;
-  isAdmin: boolean; canEdit: boolean; busy: boolean;
-  onPatch: (b: Parameters<typeof api.updateInvoice>[1]) => void; onPush: () => void; onReload: () => void | Promise<void>; onReread: () => void; onDismiss: () => void; onUndismiss: () => void;
+  isAdmin: boolean; canEdit: boolean; canRelease: boolean; busy: boolean;
+  onPatch: (b: Parameters<typeof api.updateInvoice>[1]) => void; onPush: () => void; onRelease: (note?: string) => void;
+  onReload: () => void | Promise<void>; onReread: () => void; onDismiss: () => void; onUndismiss: () => void;
 }) {
   const [f, setF] = useState({
     supplier_name: inv.supplier_name ?? "", invoice_number: inv.invoice_number ?? "",
@@ -399,6 +439,8 @@ function InvoiceDetail({ inv, projects, accounts, isAdmin, canEdit, busy, onPatc
   const dismissed = inv.status === "dismissed";
   const isProject = inv.kind === "project";
   const pushBlockedForApproval = isProject && !inv.approved_at;
+  const held = isHeld(inv);
+  const released = !!inv.released_at;
   const disabled = pushed || !canEdit;
   const initial = (inv.supplier_name || inv.matched_supplier_name || "?").trim().charAt(0) || "?";
 
@@ -496,14 +538,20 @@ function InvoiceDetail({ inv, projects, accounts, isAdmin, canEdit, busy, onPatc
             {inv.xero_sync_error && <div className="flash error" style={{ fontSize: 12, marginTop: 8 }}>Last Xero push failed: {inv.xero_sync_error}</div>}
             {!pushed && canEdit && (
               <div style={{ display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" }}>
-                {/* Project invoices go to Xero automatically when approved — the
-                    push button only remains as the overheads path and as the
-                    retry for an approval whose auto-push failed. */}
-                {inv.kind === "overhead" && (
-                  <button className="accent" disabled={busy} onClick={onPush}>Push to Xero (draft bill)</button>
+                {/* Nothing reaches Xero without a release. The push button is
+                    now only the retry for a sign-off whose push failed — for
+                    both kinds; an overhead used to be pushable straight from
+                    here, and that was a way past the gate. */}
+                {released && (
+                  <button className="accent" disabled={busy} onClick={onPush}
+                    title="The sign-off didn't reach Xero — send it again">Retry Xero push</button>
                 )}
-                {inv.kind !== "overhead" && !!inv.approved_at && (
-                  <button className="accent" disabled={busy} onClick={onPush} title="The approval didn't reach Xero — send it again">Retry Xero push</button>
+                {/* Overheads sign off here: they render no match panel, so the
+                    button that project invoices get alongside their approval
+                    has nowhere else to live. */}
+                {!released && held && canRelease && inv.kind === "overhead" && (
+                  <button className="accent" disabled={busy} onClick={() => onRelease()}
+                    title="Signs off this overhead and sends it to Xero as a draft bill">Sign off &amp; send to Xero</button>
                 )}
                 <button className="ghost" disabled={busy} onClick={onReread} title="Re-read the invoice document (e.g. to pick up the PO number it quotes)">Re-read</button>
                 {/* One or the other: offering "Dismiss" on something already
@@ -515,14 +563,16 @@ function InvoiceDetail({ inv, projects, accounts, isAdmin, canEdit, busy, onPatc
               </div>
             )}
             {!pushed && canEdit && pushBlockedForApproval &&
-              <p className="muted" style={{ fontSize: 11.5, marginTop: 9, lineHeight: 1.5 }}>Approving for payment below sends this invoice to Xero as a draft bill automatically.</p>}
+              <p className="muted" style={{ fontSize: 11.5, marginTop: 9, lineHeight: 1.5 }}>Approving for payment below holds this invoice for final sign-off. It doesn’t go to Xero until then.</p>}
+            {!pushed && held && !canRelease &&
+              <p className="muted" style={{ fontSize: 11.5, marginTop: 9, lineHeight: 1.5 }}>Held for final sign-off. Nothing further is needed here — a release approver sends it to Xero.</p>}
           </div>
         </div>
       </div>
 
       {/* 3-way match (project) or extracted-lines fallback */}
       {isProject && inv.project_id
-        ? <MatchPanel inv={inv} canEdit={canEdit} onReload={onReload} />
+        ? <MatchPanel inv={inv} canEdit={canEdit} canRelease={canRelease} busy={busy} onRelease={onRelease} onReload={onReload} />
         : lines.length > 0 && (
           <div className="a-card a-pad">
             <div className="eyebrow" style={{ marginBottom: 8 }}>Extracted lines ({lines.length})</div>
@@ -555,7 +605,10 @@ function flagChip(f: string) {
  * Variances are flagged but don't block: approving despite a flag needs a
  * written reason (stored on the invoice and shown on the pushed bill's audit).
  */
-function MatchPanel({ inv, canEdit, onReload }: { inv: Invoice; canEdit: boolean; onReload: () => void | Promise<void> }) {
+function MatchPanel({ inv, canEdit, canRelease, busy, onRelease, onReload }: {
+  inv: Invoice; canEdit: boolean; canRelease: boolean; busy: boolean;
+  onRelease: (note?: string) => void; onReload: () => void | Promise<void>;
+}) {
   const [m, setM] = useState<InvoiceMatch | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
@@ -569,21 +622,23 @@ function MatchPanel({ inv, canEdit, onReload }: { inv: Invoice; canEdit: boolean
   // charge against a finished order is rare enough to be one click away
   // rather than clutter the other 90% of invoices that are matching a
   // perfectly ordinary open order.
-  const [includeDelivered, setIncludeDelivered] = useState(false);
+  const [includeClosed, setIncludeClosed] = useState(false);
 
   const pushed = inv.status === "pushed";
   const approved = !!inv.approved_at;
+  const held = isHeld(inv);
+  const [releaseNote, setReleaseNote] = useState("");
   const locked = pushed || approved || !canEdit;
 
   useEffect(() => {
     let alive = true;
     setLoading(true); setErr(null);
-    api.invoiceMatch(inv.id, { includeDelivered })
+    api.invoiceMatch(inv.id, { includeClosed })
       .then((r) => { if (alive) setM(r); })
       .catch((e) => { if (alive) setErr(e instanceof Error ? e.message : "match failed"); })
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
-  }, [inv.id, inv.matched_po_id, includeDelivered]);
+  }, [inv.id, inv.matched_po_id, includeClosed]);
 
   const status = m?.match_status ?? "unmatched";
   const noteRequired = status !== "ok";
@@ -676,8 +731,7 @@ function MatchPanel({ inv, canEdit, onReload }: { inv: Invoice; canEdit: boolean
     setSaving(true); setErr(null);
     try {
       if (m?.matched_po) await api.saveInvoiceMatch(inv.id, { po_id: m.matched_po.id, line_po_ids: m.lines.map((l) => l.po_line_id) });
-      const r = await api.approveInvoice(inv.id, note);
-      if (r.pushed === false && r.xero_error) setErr(`Approved — but the Xero push failed: ${r.xero_error}. Fix and use "Push to Xero" to retry.`);
+      await api.approveInvoice(inv.id, note);
       await onReload();
     } catch (e) { setErr(e instanceof Error ? e.message : "couldn't approve"); }
     finally { setSaving(false); }
@@ -859,11 +913,11 @@ function MatchPanel({ inv, canEdit, onReload }: { inv: Invoice; canEdit: boolean
                 whether the link is RIGHT, and sat green on invoices pointed at an
                 order they don't even quote. Both neutral states now say only how
                 the link was made; a suspect order gets its own red state. */}
-            {(m.closed_omitted > 0 || includeDelivered) && (
+            {(m.closed_omitted > 0 || includeClosed) && (
               <label className="muted" style={{ fontSize: 11.5, display: "flex", alignItems: "center", gap: 5, cursor: "pointer", whiteSpace: "nowrap" }}
                 title="Orders received and billed in full are left out of the list above by default — this invoice's own quoted PO and its current match always stay reachable either way.">
-                <input type="checkbox" checked={includeDelivered} onChange={(e) => setIncludeDelivered(e.target.checked)} />
-                {includeDelivered ? "Showing delivered orders too" : `${m.closed_omitted} delivered order${m.closed_omitted === 1 ? "" : "s"} hidden`}
+                <input type="checkbox" checked={includeClosed} onChange={(e) => setIncludeClosed(e.target.checked)} />
+                {includeClosed ? "Showing orders delivered & billed in full" : `${m.closed_omitted} order${m.closed_omitted === 1 ? "" : "s"} hidden — delivered & billed in full`}
               </label>
             )}
             {m.matched_po && (poIdentityIssues.length
@@ -1131,10 +1185,30 @@ function MatchPanel({ inv, canEdit, onReload }: { inv: Invoice; canEdit: boolean
           {!pushed && (
             <div style={{ marginTop: 16, borderTop: "1px dashed var(--line)", paddingTop: 12 }}>
               {approved ? (
-                <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                  <span className="pill approved">Approved for payment</span>
-                  <span className="muted" style={{ fontSize: 12 }}>by {inv.approved_by ?? "—"} on {(inv.approved_at ?? "").slice(0, 10)}{inv.approval_note ? ` — “${inv.approval_note}”` : ""}</span>
-                  {canEdit && <button className="ghost tiny" disabled={saving} onClick={unapprove} style={{ marginLeft: "auto" }}>Un-approve</button>}
+                <div style={{ display: "grid", gap: 10 }}>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                    <span className={`pill ${held ? "navy" : "approved"}`}>{held ? "Held — awaiting sign-off" : "Approved for payment"}</span>
+                    <span className="muted" style={{ fontSize: 12 }}>by {inv.approved_by ?? "—"} on {(inv.approved_at ?? "").slice(0, 10)}{inv.approval_note ? ` — “${inv.approval_note}”` : ""}</span>
+                    {canEdit && <button className="ghost tiny" disabled={saving} onClick={unapprove} style={{ marginLeft: "auto" }}>Un-approve</button>}
+                  </div>
+                  {/* Stage two. Shown only to a release approver — everyone else
+                      sees the held pill above and has nothing to do here. */}
+                  {held && canRelease && (
+                    <div style={{ display: "grid", gap: 8, borderTop: "1px dashed var(--line)", paddingTop: 10 }}>
+                      <label className="eyebrow" style={{ margin: 0 }}>Final sign-off — this sends the bill to Xero</label>
+                      <textarea value={releaseNote} onChange={(e) => setReleaseNote(e.target.value)} rows={2}
+                        placeholder="Note (optional)" style={{ width: "100%", resize: "vertical" }} />
+                      <button className="accent" style={{ justifySelf: "start", padding: "10px 20px" }} disabled={busy || saving}
+                        onClick={() => onRelease(releaseNote)}
+                        title="Signs off the approval and sends the invoice to Xero as a draft bill">Sign off &amp; send to Xero</button>
+                    </div>
+                  )}
+                  {inv.released_at && (
+                    <div className="muted" style={{ fontSize: 12 }}>
+                      Signed off by {inv.released_by ?? "—"} on {(inv.released_at ?? "").slice(0, 10)}
+                      {inv.release_note ? ` — “${inv.release_note}”` : ""}
+                    </div>
+                  )}
                 </div>
               ) : canEdit ? (
                 <div style={{ display: "grid", gap: 8 }}>
@@ -1143,7 +1217,10 @@ function MatchPanel({ inv, canEdit, onReload }: { inv: Invoice; canEdit: boolean
                     placeholder={noteRequired ? "e.g. part-delivery agreed with supplier; balance to follow. Price uplift approved by QS." : "Optional note"}
                     style={{ width: "100%", resize: "vertical" }} />
                   <button className="accent" style={{ justifySelf: "start", padding: "10px 20px" }} disabled={saving || (noteRequired && !note.trim())}
-                    onClick={approve} title={noteRequired && !note.trim() ? "Add a reason to approve a flagged invoice" : "Approves the invoice and sends it to Xero as a draft bill"}>Approve &amp; send to Xero</button>
+                    onClick={approve} title={noteRequired && !note.trim() ? "Add a reason to approve a flagged invoice" : "Approves the invoice for payment and holds it for final sign-off"}>Approve for payment (hold)</button>
+                  <p className="muted" style={{ fontSize: 11.5, margin: 0, lineHeight: 1.5 }}>
+                    Approving confirms the match and the money. The invoice is then held until a release approver signs it off — that sign-off is what sends it to Xero.
+                  </p>
                 </div>
               ) : <div className="muted" style={{ fontSize: 12 }}>Approval needs commercial edit rights.</div>}
             </div>

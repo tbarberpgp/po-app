@@ -13,6 +13,7 @@ import { generateAfpXlsx } from "../lib/afp-xlsx";
 import { afpDocLabel } from "../../shared/types";
 import { parseMoney, parsePositiveMoney } from "../../shared/money";
 import type { AfpDetail, AfpLine, AfpStatus, CurrentUser, ApplicationForPayment } from "../../shared/types";
+import { isCertHeld } from "../../shared/payment-release";
 
 export function AfpView({ me }: { me: CurrentUser | null }) {
   const { id } = useParams<{ id: string }>();
@@ -25,6 +26,9 @@ export function AfpView({ me }: { me: CurrentUser | null }) {
   // figures behind the number it was asking for, or parse "1,250.00").
   const [certifyOpen, setCertifyOpen] = useState(false);
   const canEdit = can(me?.role, "projects.edit");
+  // Not a role check — the release list is by name, because no role draws the
+  // line in the right place (see release_approvers / isReleaseApprover).
+  const canRelease = me?.can_release_payables === true;
 
   function refresh() {
     if (!Number.isFinite(afpId)) return;
@@ -287,14 +291,21 @@ export function AfpView({ me }: { me: CurrentUser | null }) {
                 <button className="accent" onClick={() => setCertifyOpen(true)} disabled={busy || certifyOpen}>Mark certified</button>
               )
             )}
-            {/* Labour certificates push to Xero as a live bill (ACCPAY) to the subbie. */}
+            {/* Labour certificates push to Xero as a live bill (ACCPAY) to the
+                subbie — but only after the release sign-off, which is what
+                sends them. This button is the retry for a sign-off whose push
+                failed, not a second way in: an unreleased certificate is
+                refused by the worker, so it isn't offered here either. */}
             {canEdit && afp.direction === "incoming_labour" && (afp.status === "certified" || afp.status === "paid") && (
               afp.xero_sync_status === "synced"
                 ? <span className="pill approved" title={`Xero bill ${afp.xero_po_number ?? ""}`} style={{ alignSelf: "center" }}>Xero bill {afp.xero_po_number}</span>
-                : <button className="ghost" onClick={pushXero} disabled={busy || !afp.pay_approved_at}
-                    title={!afp.pay_approved_at ? "Approve this certificate for payment first (below)" : (afp.xero_sync_error ?? "Push to Xero as a draft bill to pay")}>
-                    {afp.xero_sync_status === "failed" ? "Retry Xero push" : "Push to Xero"}
-                  </button>
+                : afp.pay_released_at
+                  ? <button className="ghost" onClick={pushXero} disabled={busy}
+                      title={afp.xero_sync_error ?? "The sign-off didn't reach Xero — send it again"}>Retry Xero push</button>
+                  : <span className="pill navy" style={{ alignSelf: "center" }}
+                      title={afp.pay_approved_at
+                        ? "Approved for payment and held — a release approver signs it off, and that sends it to Xero"
+                        : "Approve this certificate for payment first (below), then it needs a release sign-off"}>Held</span>
             )}
             {/* Certified client applications raise a live ACCREC invoice in Xero. */}
             {canEdit && afp.direction === "outgoing" && (afp.status === "certified" || afp.status === "paid") && (
@@ -416,6 +427,7 @@ export function AfpView({ me }: { me: CurrentUser | null }) {
             claimed={labourClaimed}
             budget={labourBudget}
             canEdit={canEdit}
+            canRelease={canRelease}
             locked={afp.xero_sync_status === "synced"}
             onChanged={refresh}
           />
@@ -584,14 +596,16 @@ export function AfpView({ me }: { me: CurrentUser | null }) {
  * separate from certification — that a labour bill needs before it pushes to
  * Xero as a draft. Over-budget approval requires a written reason.
  */
-function LabourPayApproval({ afp, cis, certified, claimed, budget, canEdit, locked, onChanged }: {
+function LabourPayApproval({ afp, cis, certified, claimed, budget, canEdit, canRelease, locked, onChanged }: {
   afp: AfpDetail["afp"]; cis: AfpDetail["cis"]; certified: number; claimed: number; budget: number;
-  canEdit: boolean; locked: boolean; onChanged: () => void;
+  canEdit: boolean; canRelease: boolean; locked: boolean; onChanged: () => void;
 }) {
   const [note, setNote] = useState(afp.pay_approval_note ?? "");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const approved = !!afp.pay_approved_at;
+  const held = isCertHeld(afp);
+  const [releaseNote, setReleaseNote] = useState("");
   const overBudget = budget > 0 && certified > budget + 0.01;
   const noteRequired = overBudget;
 
@@ -605,6 +619,20 @@ function LabourPayApproval({ afp, cis, certified, claimed, budget, canEdit, lock
     setBusy(true); setErr(null);
     try { await api.unapproveAfpPayment(afp.id); onChanged(); }
     catch (e) { setErr(e instanceof Error ? e.message : "couldn't un-approve"); }
+    finally { setBusy(false); }
+  }
+  /** Final sign-off. The release is what pushes the bill, so a Xero failure is
+   *  reported without pretending the sign-off didn't land — it did. */
+  async function release() {
+    setBusy(true); setErr(null);
+    try {
+      const r = await api.releaseAfpPayment(afp.id, releaseNote);
+      if (r.pushed === false && r.xero_error) {
+        const why = r.xero_error.replace(/\.\s*$/, "");
+        setErr(`Signed off — but the Xero push failed: ${why}. Use "Retry Xero push" once it's fixed.`);
+      }
+      onChanged();
+    } catch (e) { setErr(e instanceof Error ? e.message : "couldn't release"); }
     finally { setBusy(false); }
   }
 
@@ -635,12 +663,36 @@ function LabourPayApproval({ afp, cis, certified, claimed, budget, canEdit, lock
         )}
         {err && <div className="flash error" style={{ marginBottom: 8 }}>{err}</div>}
         {approved ? (
-          <div className="row" style={{ gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-            <span className="pill approved">Approved for payment</span>
-            <span className="muted" style={{ fontSize: 12 }}>
-              by {afp.pay_approved_by ?? "—"} on {fmtDate(afp.pay_approved_at ?? null)}{afp.pay_approval_note ? ` — "${afp.pay_approval_note}"` : ""}
-            </span>
-            {canEdit && !locked && <button className="ghost tiny" onClick={unapprove} disabled={busy} style={{ marginLeft: "auto" }}>Un-approve</button>}
+          <div style={{ display: "grid", gap: 10 }}>
+            <div className="row" style={{ gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+              <span className={`pill ${held ? "navy" : "approved"}`}>{held ? "Held — awaiting sign-off" : "Approved for payment"}</span>
+              <span className="muted" style={{ fontSize: 12 }}>
+                by {afp.pay_approved_by ?? "—"} on {fmtDate(afp.pay_approved_at ?? null)}{afp.pay_approval_note ? ` — "${afp.pay_approval_note}"` : ""}
+              </span>
+              {canEdit && !locked && <button className="ghost tiny" onClick={unapprove} disabled={busy} style={{ marginLeft: "auto" }}>Un-approve</button>}
+            </div>
+            {/* Stage two. Only a release approver sees it; everyone else sees
+                the held pill above and has nothing to do here. */}
+            {held && canRelease && (
+              <div style={{ display: "grid", gap: 8, maxWidth: 560, borderTop: "1px dashed var(--line)", paddingTop: 10 }}>
+                <label style={{ fontSize: 12, margin: 0 }}>Final sign-off — this sends the bill to Xero</label>
+                <textarea value={releaseNote} onChange={(e) => setReleaseNote(e.target.value)} rows={2}
+                  placeholder="Note (optional)" style={{ width: "100%", resize: "vertical" }} />
+                <button className="accent" style={{ justifySelf: "start" }} disabled={busy} onClick={release}
+                  title="Signs off this certificate and sends it to Xero as a draft bill">Sign off &amp; send to Xero</button>
+              </div>
+            )}
+            {held && !canRelease && (
+              <div className="muted" style={{ fontSize: 11.5, lineHeight: 1.5 }}>
+                Held for final sign-off. Nothing further is needed here — a release approver sends it to Xero.
+              </div>
+            )}
+            {afp.pay_released_at && (
+              <div className="muted" style={{ fontSize: 12 }}>
+                Signed off by {afp.pay_released_by ?? "—"} on {fmtDate(afp.pay_released_at ?? null)}
+                {afp.pay_release_note ? ` — "${afp.pay_release_note}"` : ""}
+              </div>
+            )}
           </div>
         ) : canEdit ? (
           <div style={{ display: "grid", gap: 8, maxWidth: 560 }}>
@@ -649,7 +701,7 @@ function LabourPayApproval({ afp, cis, certified, claimed, budget, canEdit, lock
               placeholder={noteRequired ? "e.g. approved variation labour agreed with the subcontractor" : "Optional note"}
               style={{ width: "100%", resize: "vertical" }} />
             <button className="accent" style={{ justifySelf: "start" }} disabled={busy || (noteRequired && !note.trim())} onClick={approve}>Approve for payment</button>
-            <div className="muted" style={{ fontSize: 11 }}>Approving lets this push to Xero as a draft bill — it won't pay automatically.</div>
+            <div className="muted" style={{ fontSize: 11 }}>Approving holds this certificate for final sign-off. It doesn’t go to Xero until a release approver signs it off — and never pays automatically.</div>
           </div>
         ) : <div className="muted" style={{ fontSize: 12 }}>Approval needs commercial edit rights.</div>}
       </div>
