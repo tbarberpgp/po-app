@@ -560,22 +560,73 @@ invoices.post("/upload", async (c) => {
   }
 });
 
+/** The invoice fields a Xero bill is built from — see pushInvoiceBillToXero,
+ *  which maps each of these onto the bill it creates. `status` is one of them
+ *  because clearing it is how an edit would get past both the UI lock and the
+ *  refusal below. Everything else on the invoice (`notes`) is local, and stays
+ *  editable after a push. */
+const XERO_BOUND_FIELDS = ["kind", "project_id", "nominal_code", "supplier_id", "supplier_name",
+  "invoice_number", "invoice_date", "due_date", "net_amount", "vat_amount", "gross_amount", "status"] as const;
+
+/**
+ * Refuse an edit to an invoice that is already a bill in Xero.
+ *
+ * A push CREATES a bill and there is no update path — the Xero client has no
+ * invoice-update call at all (contrast updatePurchaseOrder, which is why a PO
+ * re-push does amend Xero), and pushing again is refused because it would book
+ * the same document twice. So an edit accepted after a push never reaches the
+ * books: the row and the bill simply disagree from then on, silently, with
+ * nothing on either side to show which figure is the right one.
+ *
+ * The detail page already disables these inputs on a pushed invoice, but the
+ * route enforced nothing — so anything that wasn't that form (a direct API
+ * call, a script, a bulk edit added later) could still rewrite the amounts on a
+ * booked invoice. This puts the same rule behind every caller.
+ *
+ * "In Xero" is `status = 'pushed' OR xero_bill_id IS NOT NULL`, the predicate
+ * the release gate and the inbox filter already use: either one alone can be
+ * what survived a part-way push or a hand-edited row.
+ *
+ * Returns the refusal, or null to let the edit through.
+ */
+export function pushedEditRefusal(
+  row: { status?: unknown; xero_bill_id?: unknown; xero_bill_number?: unknown },
+  body: Record<string, unknown>,
+): { error: string } | null {
+  if (row.status !== "pushed" && !row.xero_bill_id) return null;
+  const blocked = XERO_BOUND_FIELDS.filter((k) => k in body);
+  if (!blocked.length) return null;
+  const bill = (row.xero_bill_number as string | null) || (row.xero_bill_id as string | null);
+  return {
+    error: `This invoice is already in Xero${bill ? ` as draft bill ${bill}` : ""}, so `
+      + `${blocked.join(", ")} can't be changed here — the edit would never reach the bill. `
+      + `Amend the draft bill in Xero instead (or void it there if the invoice needs re-doing).`,
+  };
+}
+
 /** Edit / route an invoice: amounts, supplier, project vs overhead + nominal. */
 invoices.patch("/:id", async (c) => {
   const denied = requirePermission(c, "commercial.edit");
   if (denied) return denied;
   const id = c.req.param("id");
   const cur = await c.env.DB.prepare(
-    "SELECT kind, project_id, nominal_code, supplier_name, gross_amount FROM invoices WHERE id = ?",
-  ).bind(id).first<{ kind: string | null; project_id: string | null; nominal_code: string | null; supplier_name: string | null; gross_amount: number | null }>();
+    `SELECT kind, project_id, nominal_code, supplier_name, gross_amount,
+            status, xero_bill_id, xero_bill_number FROM invoices WHERE id = ?`,
+  ).bind(id).first<{
+    kind: string | null; project_id: string | null; nominal_code: string | null;
+    supplier_name: string | null; gross_amount: number | null;
+    status: string | null; xero_bill_id: string | null; xero_bill_number: string | null;
+  }>();
   if (!cur) return c.json({ error: "not found" }, 404);
   const body = await c.req.json<Record<string, unknown>>();
   // Routing an invoice to (or leaving it on) overheads is admin-only.
   if ((body.kind === "overhead" || cur.kind === "overhead") && !isAdmin(c)) {
     return c.json({ error: "Forbidden: overhead coding is admin-only" }, 403);
   }
-  const allowed = ["kind", "project_id", "nominal_code", "supplier_id", "supplier_name",
-    "invoice_number", "invoice_date", "due_date", "net_amount", "vat_amount", "gross_amount", "notes", "status"] as const;
+  // Nothing that shaped the Xero bill can change once it's booked.
+  const refusal = pushedEditRefusal(cur, body);
+  if (refusal) return c.json(refusal, 409);
+  const allowed = [...XERO_BOUND_FIELDS, "notes"] as const;
   const sets: string[] = [];
   const binds: unknown[] = [];
   for (const k of allowed) {
