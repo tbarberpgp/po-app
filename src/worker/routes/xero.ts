@@ -35,7 +35,7 @@ import { isCertInXero, isCertReleased } from "../../shared/payment-release";
 /** Refusal for a certificate that hasn't been signed off. Shared by the push
  *  itself and the route that pre-checks it, so the two can't word it differently. */
 export const CERT_HELD_MESSAGE =
-  "This certificate is held. A nominated release approver has to sign it off before it can go to Xero.";
+  "This certificate is awaiting approval. An approver has to approve it before it can be pushed to Xero.";
 
 export const xero = new Hono<{ Bindings: Env; Variables: Variables }>();
 

@@ -106,7 +106,9 @@ export function Sidebar({ me, approvalsCount, onNavigate }: { me: CurrentUser | 
         {canCommercialView && <NavLink to="/applications"><Icon name="applications" /><span>Applications</span></NavLink>}
         {canCommercialView && <NavLink to="/accounts"><Icon name="pos" /><span>Accounts</span></NavLink>}
         <NavLink to="/pos"><Icon name="pos" /><span>Purchase Orders</span></NavLink>
-        {me?.is_approver && (
+        {/* Two separate authorities land on this page: PO approval tiers, and
+            the invoice release allowlist. Someone can hold either alone. */}
+        {(me?.is_approver || me?.can_release_payables) && (
           <NavLink to="/approvals">
             <Icon name="approvals" /><span>Approvals</span>
             {approvalsCount > 0 && <span className="badge-count">{approvalsCount}</span>}

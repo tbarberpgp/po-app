@@ -2,17 +2,19 @@ import { Fragment, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, fmtDate, fmtMoney } from "../lib/api";
 import { Topbar } from "./Shell";
-import type { CurrentUser, PendingPriceApproval, PendingSubstitution, PoApprovalEvidence, PurchaseOrder } from "../../shared/types";
+import type { CurrentUser, InvoiceQueueRow, PendingPriceApproval, PendingSubstitution, PoApprovalEvidence, PurchaseOrder } from "../../shared/types";
 
 type Row = PurchaseOrder & { project_code: string; project_name: string };
 type Upload = Awaited<ReturnType<typeof api.listPendingUploads>>[number];
-type TabKey = "pos" | "prices" | "subs" | "uploads";
+type TabKey = "pos" | "invoices" | "prices" | "subs" | "uploads";
 
 export function ApprovalsInbox({ me }: { me: CurrentUser | null }) {
   const [rows, setRows] = useState<Row[]>([]);
   const [prices, setPrices] = useState<PendingPriceApproval[]>([]);
   const [subs, setSubs] = useState<PendingSubstitution[]>([]);
   const [uploads, setUploads] = useState<Upload[]>([]);
+  const [invoices, setInvoices] = useState<InvoiceQueueRow[]>([]);
+  const [invBusy, setInvBusy] = useState<number | null>(null);
   const [evidence, setEvidence] = useState<Record<string, PoApprovalEvidence>>({});
   const [openEvidence, setOpenEvidence] = useState<Set<string>>(new Set());
   const [err, setErr] = useState<string | null>(null);
@@ -29,6 +31,7 @@ export function ApprovalsInbox({ me }: { me: CurrentUser | null }) {
     api.listPendingPriceApprovals().then(setPrices).catch(() => setPrices([]));
     api.listPendingSubstitutions().then(setSubs).catch(() => setSubs([]));
     api.listPendingUploads().then(setUploads).catch(() => setUploads([]));
+    api.invoiceQueues().then((q) => setInvoices(q.awaiting)).catch(() => setInvoices([]));
     // Evidence is supporting detail: if it fails the queue still works, it
     // just goes back to saying nothing about the paperwork.
     api.listApprovalEvidence().then(setEvidence).catch(() => setEvidence({}));
@@ -47,6 +50,10 @@ export function ApprovalsInbox({ me }: { me: CurrentUser | null }) {
   // WOULD go through, and offering them would hand out authority this view was
   // never meant to grant.
   const canDecide = !!me?.is_approver;
+  // Invoices are a separate authority from PO tiers: the release allowlist,
+  // by name. Someone can hold one and not the other, so the invoice tab is
+  // gated on its own right rather than on `canDecide`.
+  const canDecideInvoices = me?.can_release_payables === true;
   const minePOs = me ? rows.filter((r) => isSuper || (r.approval_tier && me.approver_tiers.includes(r.approval_tier))) : [];
   const minePrices = me
     ? prices.filter((p) => isSuper || (p.approval_tier && me.approver_tiers.includes(p.approval_tier)))
@@ -57,6 +64,9 @@ export function ApprovalsInbox({ me }: { me: CurrentUser | null }) {
 
   const tabs: Array<{ key: TabKey; label: string; count: number }> = [
     { key: "pos", label: "Purchase orders", count: minePOs.length },
+    ...(canDecideInvoices || invoices.length
+      ? [{ key: "invoices" as TabKey, label: "Invoices", count: invoices.length }]
+      : []),
     { key: "prices", label: "Price approvals", count: minePrices.length },
     { key: "subs", label: "Substitutions", count: mineSubs.length },
     ...(isSuper ? [{ key: "uploads" as TabKey, label: "Pricing uploads", count: uploads.length }] : []),
@@ -67,7 +77,7 @@ export function ApprovalsInbox({ me }: { me: CurrentUser | null }) {
     if (didInit.current) return;
     const first = tabs.find((t) => t.count > 0);
     if (first) { setTab(first.key); didInit.current = true; }
-  }, [minePOs.length, minePrices.length, mineSubs.length, uploads.length]);
+  }, [minePOs.length, invoices.length, minePrices.length, mineSubs.length, uploads.length]);
 
   // Bulk PO approval — tick rows, approve in one go. Sequential so each PO
   // still gets its own audit trail + notification emails.
@@ -119,7 +129,7 @@ export function ApprovalsInbox({ me }: { me: CurrentUser | null }) {
     refresh();
   }
 
-  const totalMine = minePOs.length + minePrices.length + mineSubs.length + uploads.length;
+  const totalMine = minePOs.length + invoices.length + minePrices.length + mineSubs.length + uploads.length;
 
   return (
     <>
@@ -130,7 +140,7 @@ export function ApprovalsInbox({ me }: { me: CurrentUser | null }) {
       />
       <main>
         {err && <div className="flash error">{err}</div>}
-        {!me?.is_approver && !isSuper ? (
+        {!me?.is_approver && !isSuper && !canDecideInvoices ? (
           <div className="empty">You are not configured as an approver.</div>
         ) : (
           <>
@@ -155,6 +165,74 @@ export function ApprovalsInbox({ me }: { me: CurrentUser | null }) {
                 Read-only — you are a superadmin but not a configured approver, so you can review
                 what is waiting but not decide it. Approvers are set in Admin → Approvers.
               </div>
+            )}
+
+            {tab === "invoices" && (
+              invoices.length === 0
+                ? <div className="empty">Nothing waiting for approval.</div>
+                : (
+                  <>
+                    {!canDecideInvoices && (
+                      <div className="flash" style={{ marginBottom: 14 }}>
+                        Read-only — approving an invoice for payment is held by name, and you are not
+                        on that list. This is what Accounts is waiting on.
+                      </div>
+                    )}
+                    <div className="table-wrap">
+                      <table className="tbl">
+                        <thead>
+                          <tr>
+                            <th>Supplier</th><th>Invoice</th><th>Job</th>
+                            <th className="num">Gross</th><th>Committed by</th><th></th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {invoices.map((r) => (
+                            <tr key={r.id}>
+                              <td>{r.supplier_name ?? "—"}</td>
+                              <td>
+                                {/* Straight to the invoice: approving off a row of
+                                    figures alone is how the wrong thing gets approved,
+                                    and the match evidence only lives on the detail. */}
+                                <Link to={`/accounts?invoice=${r.id}`}>{r.invoice_number ?? `#${r.id}`}</Link>
+                                {r.approval_note && (
+                                  <div className="muted" style={{ fontSize: 11 }} title="Reason given when it was committed">
+                                    “{r.approval_note}”
+                                  </div>
+                                )}
+                              </td>
+                              <td>{r.project_code ?? (r.kind === "overhead" ? "Overhead" : "—")}</td>
+                              <td className="num">{fmtMoney(r.gross_amount ?? 0, r.currency || "GBP")}</td>
+                              <td>
+                                {r.approved_by ?? "—"}
+                                <div className="muted" style={{ fontSize: 11 }}>{fmtDate(r.approved_at)}</div>
+                              </td>
+                              <td style={{ textAlign: "right" }}>
+                                {canDecideInvoices && (
+                                  <button className="accent tiny" disabled={invBusy === r.id}
+                                    onClick={async () => {
+                                      setInvBusy(r.id); setErr(null);
+                                      try {
+                                        await api.releaseInvoice(r.id);
+                                        setInvoices((xs) => xs.filter((x) => x.id !== r.id));
+                                      } catch (e) {
+                                        setErr(e instanceof Error ? e.message : "approval failed");
+                                      } finally { setInvBusy(null); }
+                                    }}
+                                    title="Approve for payment. Accounts then pushes it to Xero.">Approve</button>
+                                )}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <p className="muted" style={{ fontSize: 11.5, marginTop: 10, lineHeight: 1.5 }}>
+                      Approving is the decision, not the posting — Accounts sends the bill to Xero afterwards.
+                      Open an invoice to see its PO match and delivery evidence before deciding.
+                    </p>
+                  </>
+                )
             )}
 
             {tab === "pos" && (

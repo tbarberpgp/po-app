@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { PdfHighlightViewer } from "./PdfHighlightViewer";
 import { GroupedCombobox, type ComboGroup, type ComboOption } from "./GroupedCombobox";
 import { api, fmtMoney } from "../lib/api";
@@ -7,7 +8,7 @@ import { Topbar } from "./Shell";
 import type { CurrentUser, Invoice, InvoiceMatch, InvoiceMatchLine, MatchSummary, Project } from "../../shared/types";
 import { NON_GOODS_LINE_IDS, PAYMENT_SCHEDULE_LINE_ID, SERVICE_CHARGE_LINE_ID } from "../../shared/line-match";
 import { poStatusHint, poDeliveryLabel } from "../../shared/po-delivery-status";
-import { isHeld } from "../../shared/payment-release";
+import { isAwaitingApproval, isReadyToPush } from "../../shared/payment-release";
 
 // Amounts render in the invoice's OWN currency — a $ or € invoice shown with a
 // £ sign misreports what we owe. Falls back to sterling when unknown.
@@ -19,19 +20,20 @@ const curSymbol = (cur: string | null | undefined) => CUR_SYMBOL[(cur || "GBP").
 const qtyFmt = (n: number | null | undefined) =>
   (n == null ? "—" : Number(n).toLocaleString(undefined, { maximumFractionDigits: 2 }));
 
-type Tab = "inbox" | "held" | "overheads" | "pushed" | "dismissed";
+type Tab = "inbox" | "held" | "ready" | "overheads" | "pushed" | "dismissed";
 
-/** Row status for the inbox dot/chip: released/pushed → matched (green); held
- *  awaiting sign-off → held (blue); coded but not yet approved → review
- *  (amber); uncoded → new (red). */
-function rowStatus(inv: Invoice): "matched" | "held" | "review" | "none" {
-  if (isHeld(inv)) return "held";
+/** Row status for the inbox dot/chip. The three live states of the flow are
+ *  distinct because they belong to different people: awaiting approval is the
+ *  approver's, ready to push is Accounts', and pushed is done. */
+function rowStatus(inv: Invoice): "matched" | "held" | "ready" | "review" | "none" {
+  if (isAwaitingApproval(inv)) return "held";
+  if (isReadyToPush(inv)) return "ready";
   if (inv.approved_at || inv.status === "pushed") return "matched";
   if ((inv.kind === "project" && inv.project_id) || (inv.kind === "overhead" && inv.nominal_code)) return "review";
   return "none";
 }
-const ST_LABEL: Record<"matched" | "held" | "review" | "none", string> =
-  { matched: "Approved", held: "Held", review: "Review", none: "New" };
+const ST_LABEL: Record<"matched" | "held" | "ready" | "review" | "none", string> =
+  { matched: "Approved", held: "Awaiting approval", ready: "Ready to push", review: "Review", none: "New" };
 
 /** Red when the billed quantity and the ordered quantity disagree at all, in
  *  either direction — grey (the default for this sub-label) when they match or
@@ -125,6 +127,28 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
   function load() {
     api.listInvoices().then(setRows).catch((e) => setErr(e.message));
   }
+
+  // Deep link from the approvals dashboard (/accounts?invoice=123): open that
+  // invoice, and land on the tab it is actually in — arriving on Inbox with
+  // nothing selected is what makes a link from an approval queue useless.
+  const [params, setParams] = useSearchParams();
+  const deepLinked = useRef(false);
+  useEffect(() => {
+    if (deepLinked.current || !rows.length) return;
+    const want = Number(params.get("invoice"));
+    if (!want) return;
+    const inv = rows.find((r) => r.id === want);
+    if (!inv) return;
+    deepLinked.current = true;
+    setSelId(want);
+    setTab(inv.status === "pushed" ? "pushed"
+      : inv.status === "dismissed" ? "dismissed"
+      : isReadyToPush(inv) ? "ready"
+      : isAwaitingApproval(inv) ? "held"
+      : inv.kind === "overhead" ? "overheads" : "inbox");
+    params.delete("invoice");
+    setParams(params, { replace: true });
+  }, [rows, params, setParams]);
   useEffect(() => {
     load();
     api.listProjects().then((r) => setProjects(r as unknown as Project[])).catch(() => {});
@@ -135,13 +159,14 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
     const q = search.trim().toLowerCase();
     return rows.filter((r) => {
       if (tab === "overheads") { if (!(r.kind === "overhead" && r.status !== "dismissed")) return false; }
-      else if (tab === "held") { if (!isHeld(r)) return false; }
+      else if (tab === "held") { if (!isAwaitingApproval(r)) return false; }
+      else if (tab === "ready") { if (!isReadyToPush(r)) return false; }
       else if (tab === "pushed") { if (r.status !== "pushed") return false; }
       else if (tab === "dismissed") { if (r.status !== "dismissed") return false; }
       // Inbox is what still needs coding, matching or approving. A held invoice
       // has had all three done to it and is waiting on someone else, so it
       // moves to Held rather than sitting in the queue looking outstanding.
-      else if (!((r.status === "inbox" || r.status === "ready") && !isHeld(r))) return false; // inbox
+      else if (!((r.status === "inbox" || r.status === "ready") && !isAwaitingApproval(r) && !isReadyToPush(r))) return false; // inbox
       if (q) {
         const hay = `${r.supplier_name ?? ""} ${r.matched_supplier_name ?? ""} ${r.invoice_number ?? ""} ${r.project_code ?? ""}`.toLowerCase();
         if (!hay.includes(q)) return false;
@@ -151,8 +176,9 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
   }, [rows, tab, search]);
 
   const sel = rows.find((r) => r.id === selId) ?? null;
-  const inboxCount = rows.filter((r) => (r.status === "inbox" || r.status === "ready") && !isHeld(r)).length;
-  const heldCount = rows.filter((r) => isHeld(r)).length;
+  const inboxCount = rows.filter((r) => (r.status === "inbox" || r.status === "ready") && !isAwaitingApproval(r) && !isReadyToPush(r)).length;
+  const heldCount = rows.filter((r) => isAwaitingApproval(r)).length;
+  const readyCount = rows.filter((r) => isReadyToPush(r)).length;
 
   async function upload(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0];
@@ -196,7 +222,7 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
     try {
       await api.undismissInvoice(id);
       const fresh = await api.getInvoice(id);
-      setInfo(`Restored to ${isHeld(fresh) ? "Held" : "Inbox"}.`);
+      setInfo(`Restored to ${isAwaitingApproval(fresh) ? "Held" : "Inbox"}.`);
       load(); setSelId(null);
     } catch (e) { setErr(e instanceof Error ? e.message : "restore failed"); }
     finally { setBusy(false); }
@@ -212,32 +238,27 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
     finally { setBusy(false); }
   }
 
-  /** Final sign-off on a held invoice. The release is what sends it to Xero, so
-   *  a Xero failure is reported without pretending the sign-off didn't happen —
-   *  it did, and the Retry button picks it up from there. */
+  /** Approve a committed invoice. The decision only — Accounts pushes it to
+   *  Xero afterwards, so the message says where it went rather than implying a
+   *  bill now exists. */
   async function release(id: number, note?: string) {
     setBusy(true); setErr(null); setInfo(null);
     try {
-      const r = await api.releaseInvoice(id, note);
-      if (r.pushed === false && r.xero_error) {
-        // Xero's messages sometimes end in a full stop and sometimes don't, so
-        // trim one rather than printing "Admin → Xero.. Use".
-        const why = r.xero_error.replace(/\.\s*$/, "");
-        setErr(`Signed off — but the Xero push failed: ${why}. Use "Retry Xero push" once it's fixed.`);
-      } else {
-        setInfo(`Released to Xero as draft bill ${r.xero_bill_number ?? ""}.`);
-      }
+      await api.releaseInvoice(id, note);
+      setInfo("Approved. It's now in Ready to push for Accounts to send to Xero.");
       load();
-    } catch (e) { setErr(e instanceof Error ? e.message : "release failed"); }
+    } catch (e) { setErr(e instanceof Error ? e.message : "approval failed"); }
     finally { setBusy(false); }
   }
 
   const TABS: Array<[Tab, string, number | null]> = [
     ["inbox", "Inbox", inboxCount],
-    // Counted for everyone, not just the release approver: the people who
-    // approve invoices need to see the queue they're handing over, and that
-    // nothing has been sitting in it for a fortnight.
-    ["held", canRelease ? "Awaiting my sign-off" : "Held", heldCount],
+    // Both queues are counted for everyone. Accounts needs to see what it is
+    // waiting on, not just what it can act on — an approval queue that only
+    // approvers can see is how something sits in it for a fortnight.
+    ["held", canRelease ? "To approve" : "Awaiting approval", heldCount],
+    // The queue Accounts works from: approved, not yet posted.
+    ["ready", "Ready to push", readyCount],
     ...(isAdmin ? [["overheads", "Overheads", null] as [Tab, string, null]] : []),
     ["pushed", "Pushed", null],
     ["dismissed", "Dismissed", null],
@@ -439,7 +460,7 @@ function InvoiceDetail({ inv, projects, accounts, isAdmin, canEdit, canRelease, 
   const dismissed = inv.status === "dismissed";
   const isProject = inv.kind === "project";
   const pushBlockedForApproval = isProject && !inv.approved_at;
-  const held = isHeld(inv);
+  const held = isAwaitingApproval(inv);
   const released = !!inv.released_at;
   const disabled = pushed || !canEdit;
   const initial = (inv.supplier_name || inv.matched_supplier_name || "?").trim().charAt(0) || "?";
@@ -538,20 +559,21 @@ function InvoiceDetail({ inv, projects, accounts, isAdmin, canEdit, canRelease, 
             {inv.xero_sync_error && <div className="flash error" style={{ fontSize: 12, marginTop: 8 }}>Last Xero push failed: {inv.xero_sync_error}</div>}
             {!pushed && canEdit && (
               <div style={{ display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" }}>
-                {/* Nothing reaches Xero without a release. The push button is
-                    now only the retry for a sign-off whose push failed — for
-                    both kinds; an overhead used to be pushable straight from
-                    here, and that was a way past the gate. */}
+                {/* Approved: posting the bill is Accounts' job, and this is
+                    where they do it. The worker refuses an unapproved push, so
+                    the button only exists once the decision has been made. */}
                 {released && (
                   <button className="accent" disabled={busy} onClick={onPush}
-                    title="The sign-off didn't reach Xero — send it again">Retry Xero push</button>
+                    title={inv.xero_sync_error ? `Last attempt failed: ${inv.xero_sync_error}` : "Send this approved invoice to Xero as a draft bill"}>
+                    {inv.xero_sync_status === "failed" ? "Retry Xero push" : "Push to Xero"}
+                  </button>
                 )}
-                {/* Overheads sign off here: they render no match panel, so the
-                    button that project invoices get alongside their approval
-                    has nowhere else to live. */}
+                {/* Overheads are approved here: they render no match panel, so
+                    the button project invoices get alongside their match has
+                    nowhere else to live. */}
                 {!released && held && canRelease && inv.kind === "overhead" && (
                   <button className="accent" disabled={busy} onClick={() => onRelease()}
-                    title="Signs off this overhead and sends it to Xero as a draft bill">Sign off &amp; send to Xero</button>
+                    title="Approves this overhead. Accounts then pushes it to Xero.">Approve</button>
                 )}
                 <button className="ghost" disabled={busy} onClick={onReread} title="Re-read the invoice document (e.g. to pick up the PO number it quotes)">Re-read</button>
                 {/* One or the other: offering "Dismiss" on something already
@@ -563,9 +585,9 @@ function InvoiceDetail({ inv, projects, accounts, isAdmin, canEdit, canRelease, 
               </div>
             )}
             {!pushed && canEdit && pushBlockedForApproval &&
-              <p className="muted" style={{ fontSize: 11.5, marginTop: 9, lineHeight: 1.5 }}>Approving for payment below holds this invoice for final sign-off. It doesn’t go to Xero until then.</p>}
+              <p className="muted" style={{ fontSize: 11.5, marginTop: 9, lineHeight: 1.5 }}>Committing this invoice below sends it for approval. It doesn’t go to Xero until an approver has approved it and Accounts pushes it.</p>}
             {!pushed && held && !canRelease &&
-              <p className="muted" style={{ fontSize: 11.5, marginTop: 9, lineHeight: 1.5 }}>Held for final sign-off. Nothing further is needed here — a release approver sends it to Xero.</p>}
+              <p className="muted" style={{ fontSize: 11.5, marginTop: 9, lineHeight: 1.5 }}>Waiting on approval. Once approved it moves to <b>Ready to push</b> and can be sent to Xero from here.</p>}
           </div>
         </div>
       </div>
@@ -626,7 +648,7 @@ function MatchPanel({ inv, canEdit, canRelease, busy, onRelease, onReload }: {
 
   const pushed = inv.status === "pushed";
   const approved = !!inv.approved_at;
-  const held = isHeld(inv);
+  const held = isAwaitingApproval(inv);
   const [releaseNote, setReleaseNote] = useState("");
   const locked = pushed || approved || !canEdit;
 
@@ -1187,26 +1209,33 @@ function MatchPanel({ inv, canEdit, canRelease, busy, onRelease, onReload }: {
               {approved ? (
                 <div style={{ display: "grid", gap: 10 }}>
                   <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                    <span className={`pill ${held ? "navy" : "approved"}`}>{held ? "Held — awaiting sign-off" : "Approved for payment"}</span>
-                    <span className="muted" style={{ fontSize: 12 }}>by {inv.approved_by ?? "—"} on {(inv.approved_at ?? "").slice(0, 10)}{inv.approval_note ? ` — “${inv.approval_note}”` : ""}</span>
-                    {canEdit && <button className="ghost tiny" disabled={saving} onClick={unapprove} style={{ marginLeft: "auto" }}>Un-approve</button>}
+                    <span className={`pill ${held ? "navy" : "approved"}`}>{held ? "Awaiting approval" : "Approved"}</span>
+                    <span className="muted" style={{ fontSize: 12 }}>committed by {inv.approved_by ?? "—"} on {(inv.approved_at ?? "").slice(0, 10)}{inv.approval_note ? ` — “${inv.approval_note}”` : ""}</span>
+                    {canEdit && <button className="ghost tiny" disabled={saving} onClick={unapprove} style={{ marginLeft: "auto" }}
+                      title={held ? "Pull this back out of the approval queue" : "Withdraw the commit and the approval it carries"}>
+                      {held ? "Withdraw" : "Un-approve"}
+                    </button>}
                   </div>
                   {/* Stage two. Shown only to a release approver — everyone else
                       sees the held pill above and has nothing to do here. */}
                   {held && canRelease && (
                     <div style={{ display: "grid", gap: 8, borderTop: "1px dashed var(--line)", paddingTop: 10 }}>
-                      <label className="eyebrow" style={{ margin: 0 }}>Final sign-off — this sends the bill to Xero</label>
+                      <label className="eyebrow" style={{ margin: 0 }}>Approve this invoice for payment</label>
                       <textarea value={releaseNote} onChange={(e) => setReleaseNote(e.target.value)} rows={2}
                         placeholder="Note (optional)" style={{ width: "100%", resize: "vertical" }} />
                       <button className="accent" style={{ justifySelf: "start", padding: "10px 20px" }} disabled={busy || saving}
                         onClick={() => onRelease(releaseNote)}
-                        title="Signs off the approval and sends the invoice to Xero as a draft bill">Sign off &amp; send to Xero</button>
+                        title="Approves the invoice. Accounts then pushes it to Xero.">Approve</button>
+                      <p className="muted" style={{ fontSize: 11.5, margin: 0, lineHeight: 1.5 }}>
+                        Approving is the decision, not the posting. Accounts sends it to Xero afterwards.
+                      </p>
                     </div>
                   )}
                   {inv.released_at && (
                     <div className="muted" style={{ fontSize: 12 }}>
-                      Signed off by {inv.released_by ?? "—"} on {(inv.released_at ?? "").slice(0, 10)}
+                      Approved by {inv.released_by ?? "—"} on {(inv.released_at ?? "").slice(0, 10)}
                       {inv.release_note ? ` — “${inv.release_note}”` : ""}
+                      {!pushed && " — ready for Accounts to push to Xero."}
                     </div>
                   )}
                 </div>
@@ -1217,9 +1246,9 @@ function MatchPanel({ inv, canEdit, canRelease, busy, onRelease, onReload }: {
                     placeholder={noteRequired ? "e.g. part-delivery agreed with supplier; balance to follow. Price uplift approved by QS." : "Optional note"}
                     style={{ width: "100%", resize: "vertical" }} />
                   <button className="accent" style={{ justifySelf: "start", padding: "10px 20px" }} disabled={saving || (noteRequired && !note.trim())}
-                    onClick={approve} title={noteRequired && !note.trim() ? "Add a reason to approve a flagged invoice" : "Approves the invoice for payment and holds it for final sign-off"}>Approve for payment (hold)</button>
+                    onClick={approve} title={noteRequired && !note.trim() ? "Add a reason to commit a flagged invoice" : "Sends this invoice for approval — it does not go to Xero yet"}>Commit for approval</button>
                   <p className="muted" style={{ fontSize: 11.5, margin: 0, lineHeight: 1.5 }}>
-                    Approving confirms the match and the money. The invoice is then held until a release approver signs it off — that sign-off is what sends it to Xero.
+                    Committing confirms the match and the money and sends the invoice for approval. It doesn’t go to Xero — once an approver has approved it, it appears in <b>Ready to push</b> to be sent.
                   </p>
                 </div>
               ) : <div className="muted" style={{ fontSize: 12 }}>Approval needs commercial edit rights.</div>}

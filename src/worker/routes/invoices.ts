@@ -489,6 +489,40 @@ invoices.get("/", async (c) => {
   return c.json(scanned.map((r) => withTermsCheck(r)));
 });
 
+/**
+ * The two queues the new flow creates, slim enough to poll for a nav badge.
+ *
+ * `awaiting` is what approvers decide on; `ready` is what Accounts pushes. The
+ * full invoice list carries lines_json and the extraction blobs on every row —
+ * far too heavy to fetch on every navigation just to count a badge, and the
+ * queues are wanted in two places that don't otherwise load invoices at all.
+ *
+ * Readable by anyone who can see the commercial workspace: knowing what is
+ * waiting is not the same as being able to decide it, and Accounts needs to see
+ * the approval queue to know what it is waiting on.
+ */
+invoices.get("/queues", async (c) => {
+  const denied = requirePermission(c, "commercial.view");
+  if (denied) return denied;
+  const admin = isAdmin(c);
+  const rows = await c.env.DB.prepare(
+    `SELECT i.id, i.kind, i.status, i.supplier_name, i.invoice_number, i.invoice_date,
+            i.currency, i.gross_amount, i.nominal_code,
+            i.approved_at, i.approved_by, i.approval_note,
+            i.released_at, i.released_by, i.xero_bill_id, i.xero_sync_error,
+            p.code AS project_code
+       FROM invoices i LEFT JOIN projects p ON p.id = i.project_id
+      WHERE i.status NOT IN ('dismissed')
+        AND i.xero_bill_id IS NULL AND i.status != 'pushed'
+        AND (i.approved_at IS NOT NULL OR (i.kind = 'overhead' AND TRIM(COALESCE(i.nominal_code,'')) != ''))
+        ${admin ? "" : "AND (i.kind IS NULL OR i.kind != 'overhead')"}
+      ORDER BY i.approved_at ASC, i.id ASC`,
+  ).all<Record<string, unknown>>();
+  const awaiting = rows.results.filter((r) => !r.released_at);
+  const ready = rows.results.filter((r) => !!r.released_at);
+  return c.json({ awaiting, ready });
+});
+
 invoices.get("/:id", async (c) => {
   const denied = requirePermission(c, "commercial.view");
   if (denied) return denied;
@@ -503,6 +537,7 @@ invoices.get("/:id", async (c) => {
   const [scanned] = await withMatchState(c.env, [inv]);
   return c.json(withTermsCheck(scanned));
 });
+
 
 /** Serve the original invoice file from R2. Inline by default (so the preview /
  *  "Open" shows it rather than downloading); ?download=1 forces a save. Either
@@ -1469,8 +1504,8 @@ invoices.post("/:id/approve", async (c) => {
   // Approval is no longer the release. It used to push straight to Xero from
   // here, which made matching an invoice and paying it a single act by a single
   // person. The invoice is now HELD: approved for payment, reconciled, and
-  // waiting on a named release approver to sign it off. Nothing reaches Xero on
-  // this route — see POST /:id/release.
+  // waiting on a named approver. Nothing reaches Xero on this route, and the
+  // approval doesn't post it either — Accounts pushes it after the decision.
   const alreadyInXero = inv.status === "pushed" || !!inv.xero_bill_id;
   await logInvoice(c.env, c.req.param("id"), "held", c.get("userEmail"), { awaiting: "release_approval" });
   return c.json({
@@ -1651,7 +1686,7 @@ async function pushInvoiceBillToXero(
   // hasn't been signed off. The routes pre-check too, only to answer 403
   // instead of 502.
   if (!isReleased(inv)) {
-    return { ok: false, error: "This invoice is held — a nominated release approver has to sign it off before it can go to Xero." };
+    return { ok: false, error: "This invoice hasn't been approved yet — it can't go to Xero until an approver has approved it." };
   }
 
   const duplicate = await duplicateBillRefusal(env, {
@@ -1881,8 +1916,8 @@ invoices.post("/:id/release", async (c) => {
   const actor = c.get("userEmail");
   if (!(await isReleaseApprover(c.env, actor))) {
     return c.json({
-      error: "Only a nominated release approver can send an approved invoice to Xero. "
-        + "The invoice stays held until then.",
+      error: "Only a nominated approver can approve an invoice for payment. "
+        + "It stays awaiting approval until one of them does.",
     }, 403);
   }
   const inv = await c.env.DB.prepare("SELECT * FROM invoices WHERE id = ?").bind(c.req.param("id")).first<Record<string, unknown>>();
@@ -1917,15 +1952,11 @@ invoices.post("/:id/release", async (c) => {
     ...(note ? { note } : {}),
   });
 
-  // The push is best-effort, exactly as it was under the old auto-push: a Xero
-  // failure never rolls back the sign-off, it's recorded on the row, and the
-  // manual push retries it.
-  const r = await pushInvoiceBillToXero(c.env, { ...inv, released_at: now }, c.req.param("id"));
-  await logInvoice(c.env, c.req.param("id"), r.ok ? "pushed" : "push_failed", actor,
-    r.ok ? { via: "release", bill: r.xero_bill_number ?? null } : { via: "release", error: r.error ?? null });
-  return c.json({ ok: true, released_at: now, ...(r.ok
-    ? { pushed: true, xero_bill_id: r.xero_bill_id, xero_bill_number: r.xero_bill_number, ...(r.attach_warning ? { attach_warning: r.attach_warning } : {}) }
-    : { pushed: false, xero_error: r.error }) });
+  // Approving does NOT push. Deciding the money and posting it to the books are
+  // separate jobs held by separate people: the approver says yes, and Accounts
+  // then pushes the bill. Approval only unlocks that push — see /:id/push-xero,
+  // which refuses anything unapproved.
+  return c.json({ ok: true, released_at: now, pushed: false });
 });
 
 /** Push the invoice to Xero as a DRAFT Bill (ACCPAY) for the accountant to
@@ -1952,7 +1983,7 @@ invoices.post("/:id/push-xero", async (c) => {
   // only, so leaving them out would leave a way in.
   if (!isReleased(inv)) {
     return c.json({
-      error: "This invoice is held. A nominated release approver has to sign it off before it can go to Xero.",
+      error: "This invoice is awaiting approval. An approver has to approve it before it can be pushed to Xero.",
       held: true,
     }, 403);
   }

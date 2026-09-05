@@ -755,10 +755,13 @@ export const api = {
    *  here; a release approver signs it off with `releaseInvoice`. */
   approveInvoice: (id: number, note?: string) =>
     jfetch<{ ok: true; approved_at: string; held?: boolean; pushed?: boolean; xero_bill_number?: string | null; xero_error?: string; attach_warning?: string }>(`/api/invoices/${id}/approve`, { method: "POST", body: JSON.stringify({ note: note ?? "" }) }),
-  /** Final sign-off on a held invoice — this is what sends it to Xero.
-   *  403s for anyone not on the release-approver list. */
+  /** Approve a committed invoice. This is the DECISION, not the push — it
+   *  unlocks pushInvoiceXero for Accounts. 403s for anyone not on the
+   *  release-approver list. */
   releaseInvoice: (id: number, note?: string) =>
-    jfetch<{ ok: true; released_at: string; pushed?: boolean; xero_bill_id?: string; xero_bill_number?: string | null; xero_error?: string; attach_warning?: string }>(`/api/invoices/${id}/release`, { method: "POST", body: JSON.stringify({ note: note ?? "" }) }),
+    jfetch<{ ok: true; released_at: string; pushed: false }>(`/api/invoices/${id}/release`, { method: "POST", body: JSON.stringify({ note: note ?? "" }) }),
+  /** The two queues: what approvers must decide, and what Accounts can push. */
+  invoiceQueues: () => jfetch<import("../../shared/types").InvoiceQueues>("/api/invoices/queues"),
   unapproveInvoice: (id: number) =>
     jfetch<{ ok: true }>(`/api/invoices/${id}/approve`, { method: "POST", body: JSON.stringify({ unapprove: true }) }),
   /** Raise a PO retrospectively from an invoice that arrived without one.
@@ -1021,7 +1024,7 @@ export const api = {
   /** Final sign-off on a held labour certificate — this is what pushes the
    *  bill to Xero. 403s for anyone not on the release-approver list. */
   releaseAfpPayment: (id: number, note?: string) =>
-    jfetch<{ ok: true; pay_released_at: string; pushed?: boolean; xero_po_number?: string | null; xero_error?: string; skipped?: boolean; reason?: string }>(
+    jfetch<{ ok: true; pay_released_at: string; pushed: false }>(
       `/api/applications/${id}/release-payment`,
       { method: "POST", body: JSON.stringify({ note: note ?? "" }) },
     ),

@@ -15,6 +15,21 @@
 // released_at; certificates: pay_approved_at / pay_released_at), so the
 // predicates come in pairs rather than one generic function over a union —
 // naming the fields explicitly is what makes a misread field a type error.
+//
+// VOCABULARY — the column names predate the flow and read a stage early, so
+// map them before changing anything here:
+//
+//   approved_at / pay_approved_at   Accounts (hgardner) matched the payable and
+//                                   COMMITTED IT FOR APPROVAL. Not the approval.
+//   released_at / pay_released_at   A release approver (tbarber, adouty)
+//                                   APPROVED it. This is the decision.
+//   status='pushed' / xero_po_id    Accounts then PUSHED it to Xero. Approval
+//                                   only unlocks this; it never performs it.
+//
+// Three acts, and the middle one is the only one that decides anything. The UI
+// says "Commit for approval", "Approve" and "Push to Xero"; a rename of the
+// columns to match would be a swap on a live financial table, so the mapping
+// lives here instead.
 
 /** The fields either side needs to judge where an invoice stands. A subset of
  *  `Invoice` so the worker can pass a raw DB row without shaping it first. */
@@ -52,13 +67,19 @@ export function readyForRelease(inv: ReleasableInvoice): boolean {
 }
 
 /**
- * HELD: everything before the sign-off is done, and the sign-off is what's
- * missing. This is the state approval now ends in — the match is agreed and
- * the money is agreed, but nothing reaches Xero until a release approver
- * signs it off.
+ * AWAITING APPROVAL: Accounts has committed it and an approver hasn't decided
+ * yet. This is the queue tbarber and adouty work from.
  */
-export function isHeld(inv: ReleasableInvoice): boolean {
+export function isAwaitingApproval(inv: ReleasableInvoice): boolean {
   return !isInXero(inv) && !inv.released_at && readyForRelease(inv);
+}
+
+/**
+ * READY TO PUSH: approved, and not yet in Xero. This is the queue Accounts
+ * works from — the only invoices the push button will accept.
+ */
+export function isReadyToPush(inv: ReleasableInvoice): boolean {
+  return !isInXero(inv) && !!inv.released_at;
 }
 
 /** Signed off, so a push (or a retry of a failed one) is permitted. */
@@ -94,11 +115,12 @@ export function isCertReleased(afp: ReleasableLabourCert): boolean {
   return !!afp.pay_released_at;
 }
 
-/**
- * HELD: approved for payment, and waiting on the release sign-off to become a
- * bill. A certificate that hasn't been approved for payment is not held — it
- * is still with the people who agree the money.
- */
-export function isCertHeld(afp: ReleasableLabourCert): boolean {
+/** AWAITING APPROVAL: committed by Accounts, not yet decided by an approver. */
+export function isCertAwaitingApproval(afp: ReleasableLabourCert): boolean {
   return !isCertInXero(afp) && !afp.pay_released_at && !!afp.pay_approved_at;
+}
+
+/** READY TO PUSH: approved, and not yet a bill in Xero. */
+export function isCertReadyToPush(afp: ReleasableLabourCert): boolean {
+  return !isCertInXero(afp) && !!afp.pay_released_at;
 }

@@ -74,7 +74,7 @@ export function App() {
   // refresh per 15s; it still updates immediately when `me` first loads.
   const approvalsFetchedAt = useRef(0);
   useEffect(() => {
-    if (!me?.is_approver) {
+    if (!me?.is_approver && !me?.can_release_payables) {
       setApprovalsCount(0);
       approvalsFetchedAt.current = 0;
       return;
@@ -88,14 +88,17 @@ export function App() {
       api.listPendingPriceApprovals().catch(() => []),
       api.listPendingSubstitutions().catch(() => []),
       api.listPendingUploads().catch(() => []),
+      // Only for the people who can actually decide them — everyone with
+      // commercial.view can read this queue, but a badge is a to-do list.
+      me.can_release_payables ? api.invoiceQueues().then((q) => q.awaiting).catch(() => []) : Promise.resolve([]),
     ])
-      .then(([pos, prices, subs, uploads]) => {
+      .then(([pos, prices, subs, uploads, invoices]) => {
         const isSuper = me.role === "superadmin";
         const minePOs = pos.filter((r) => isSuper || (r.approval_tier && me.approver_tiers.includes(r.approval_tier)));
         const minePrices = prices.filter((p) => isSuper || (p.approval_tier && me.approver_tiers.includes(p.approval_tier)));
         const mineSubs = subs.filter((s) => isSuper || (s.approval_tier && me.approver_tiers.includes(s.approval_tier)));
         // listPendingUploads returns [] for non-superadmins server-side.
-        setApprovalsCount(minePOs.length + minePrices.length + mineSubs.length + uploads.length);
+        setApprovalsCount(minePOs.length + minePrices.length + mineSubs.length + uploads.length + invoices.length);
       })
       .catch(() => setApprovalsCount(0));
   }, [me, location.pathname]);

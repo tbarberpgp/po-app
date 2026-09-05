@@ -1635,6 +1635,34 @@ export type Invoice = {
   created_by: string | null;
 };
 
+/** One row of the approval / push queues — the slim shape behind the approvals
+ *  dashboard and the Accounts "Ready to push" list. Deliberately not an
+ *  Invoice: the queues skip lines_json and the extraction blobs so a nav badge
+ *  can poll them. */
+export type InvoiceQueueRow = {
+  id: number;
+  kind: string | null;
+  status: string;
+  supplier_name: string | null;
+  invoice_number: string | null;
+  invoice_date: string | null;
+  currency: string | null;
+  gross_amount: number | null;
+  nominal_code: string | null;
+  project_code: string | null;
+  /** Committed for approval by Accounts (NOT the approval itself). */
+  approved_at: string | null;
+  approved_by: string | null;
+  approval_note: string | null;
+  /** Approved by a release approver — the decision. */
+  released_at: string | null;
+  released_by: string | null;
+  xero_bill_id: string | null;
+  xero_sync_error: string | null;
+};
+
+export type InvoiceQueues = { awaiting: InvoiceQueueRow[]; ready: InvoiceQueueRow[] };
+
 // The price/quantity reconciliation shapes live with the scan that produces them.
 export type { MatchIssue, MatchSummary };
 

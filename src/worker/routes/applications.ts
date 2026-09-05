@@ -11,7 +11,7 @@ import type { Env, Variables } from "../env";
 import { isReleaseApprover, requirePermission } from "../auth";
 import { learnAliases, aliasMap, normText } from "../matchMemory";
 import { findSupplier } from "./invoices";
-import { cisLabourBase, pushAfpToXero } from "./xero";
+import { cisLabourBase } from "./xero";
 import { emailAfpCertified } from "../notify";
 import type { AfpCisPreview } from "../../shared/types";
 import { isSandboxId } from "../sandbox";
@@ -3521,8 +3521,8 @@ applications.post("/:id/release-payment", async (c) => {
   const actor = c.get("userEmail");
   if (!(await isReleaseApprover(c.env, actor))) {
     return c.json({
-      error: "Only a nominated release approver can send a labour certificate to Xero. "
-        + "The certificate stays held until then.",
+      error: "Only a nominated approver can approve a labour certificate for payment. "
+        + "It stays awaiting approval until one of them does.",
     }, 403);
   }
   const id = Number(c.req.param("id"));
@@ -3556,16 +3556,10 @@ applications.post("/:id/release-payment", async (c) => {
     "UPDATE applications_for_payment SET pay_released_at = ?, pay_released_by = ?, pay_release_note = ? WHERE id = ?",
   ).bind(when, actor, note || null, id).run();
 
-  // Best-effort push, as the invoice release is: a Xero failure never rolls
-  // back the sign-off — it's recorded on the certificate and the Push button
-  // retries it. pushAfpToXero re-reads the row, so it sees the release above.
-  try {
-    const r = await pushAfpToXero(c.env, id);
-    if ("skipped" in r) return c.json({ ok: true, pay_released_at: when, pushed: false, skipped: true, reason: r.reason });
-    return c.json({ ok: true, pay_released_at: when, pushed: true, xero_po_number: r.xero_po_number });
-  } catch (e) {
-    return c.json({ ok: true, pay_released_at: when, pushed: false, xero_error: e instanceof Error ? e.message : String(e) });
-  }
+  // Approving does NOT push, same as the invoice side: the approver decides the
+  // money, Accounts posts it. Approval unlocks the push on /xero/push-afp/:id,
+  // which refuses anything unapproved.
+  return c.json({ ok: true, pay_released_at: when, pushed: false });
 });
 
 /** Mark as paid. */
