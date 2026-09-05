@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, fmtDate, fmtMoney } from "../lib/api";
 import { Topbar } from "./Shell";
-import type { CurrentUser, PendingPriceApproval, PendingSubstitution, PurchaseOrder } from "../../shared/types";
+import type { CurrentUser, PendingPriceApproval, PendingSubstitution, PoApprovalEvidence, PurchaseOrder } from "../../shared/types";
 
 type Row = PurchaseOrder & { project_code: string; project_name: string };
 type Upload = Awaited<ReturnType<typeof api.listPendingUploads>>[number];
@@ -13,6 +13,8 @@ export function ApprovalsInbox({ me }: { me: CurrentUser | null }) {
   const [prices, setPrices] = useState<PendingPriceApproval[]>([]);
   const [subs, setSubs] = useState<PendingSubstitution[]>([]);
   const [uploads, setUploads] = useState<Upload[]>([]);
+  const [evidence, setEvidence] = useState<Record<string, PoApprovalEvidence>>({});
+  const [openEvidence, setOpenEvidence] = useState<Set<string>>(new Set());
   const [err, setErr] = useState<string | null>(null);
   const [tab, setTab] = useState<TabKey>("pos");
   const didInit = useRef(false);
@@ -27,12 +29,24 @@ export function ApprovalsInbox({ me }: { me: CurrentUser | null }) {
     api.listPendingPriceApprovals().then(setPrices).catch(() => setPrices([]));
     api.listPendingSubstitutions().then(setSubs).catch(() => setSubs([]));
     api.listPendingUploads().then(setUploads).catch(() => setUploads([]));
+    // Evidence is supporting detail: if it fails the queue still works, it
+    // just goes back to saying nothing about the paperwork.
+    api.listApprovalEvidence().then(setEvidence).catch(() => setEvidence({}));
   }
   useEffect(refresh, []);
 
   // Superadmins oversee every approval regardless of tier; others see only the
   // tiers they hold.
   const isSuper = me?.role === "superadmin";
+  // Seeing the queue and being able to decide on it are separate things.
+  // Authority to approve is held by the `approvers` table, by email — a role
+  // never confers it, and the PO endpoint enforces exactly that. A superadmin
+  // who is not an approver is here to look, so the decision controls are not
+  // drawn for them: the price and substitution endpoints gate on
+  // `suppliers.manage` rather than on the approvers table, so those buttons
+  // WOULD go through, and offering them would hand out authority this view was
+  // never meant to grant.
+  const canDecide = !!me?.is_approver;
   const minePOs = me ? rows.filter((r) => isSuper || (r.approval_tier && me.approver_tiers.includes(r.approval_tier))) : [];
   const minePrices = me
     ? prices.filter((p) => isSuper || (p.approval_tier && me.approver_tiers.includes(p.approval_tier)))
@@ -116,7 +130,7 @@ export function ApprovalsInbox({ me }: { me: CurrentUser | null }) {
       />
       <main>
         {err && <div className="flash error">{err}</div>}
-        {!me?.is_approver ? (
+        {!me?.is_approver && !isSuper ? (
           <div className="empty">You are not configured as an approver.</div>
         ) : (
           <>
@@ -136,16 +150,25 @@ export function ApprovalsInbox({ me }: { me: CurrentUser | null }) {
               ))}
             </nav>
 
+            {!canDecide && (
+              <div className="flash" style={{ marginBottom: 14 }}>
+                Read-only — you are a superadmin but not a configured approver, so you can review
+                what is waiting but not decide it. Approvers are set in Admin → Approvers.
+              </div>
+            )}
+
             {tab === "pos" && (
               minePOs.length === 0 ? <div className="empty">No purchase orders awaiting your approval.</div> : (
               <div className="card">
                 <div className="card-hd">
                   <span className="muted" style={{ fontSize: 12.5, flex: 1 }}>
-                    {selected.size > 0
-                      ? `${selected.size} of ${minePOs.length} selected · ${fmtMoney(minePOs.filter((r) => selected.has(String(r.id))).reduce((s, r) => s + (r.total_value ?? 0), 0))}`
-                      : "Tick rows to approve several at once — click a PO number to review it first."}
+                    {!canDecide
+                      ? "Click a PO number to review it, or open a row to see the paperwork behind it."
+                      : selected.size > 0
+                        ? `${selected.size} of ${minePOs.length} selected · ${fmtMoney(minePOs.filter((r) => selected.has(String(r.id))).reduce((s, r) => s + (r.total_value ?? 0), 0))}`
+                        : "Tick rows to approve several at once — click a PO number to review it first."}
                   </span>
-                  {selected.size > 0 && (
+                  {canDecide && selected.size > 0 && (
                     <>
                       <button className="ghost tiny" onClick={() => setSelected(new Set())} disabled={bulkBusy}>Clear</button>{" "}
                       <button className="accent" onClick={() => void approveSelected()} disabled={bulkBusy}>
@@ -158,13 +181,15 @@ export function ApprovalsInbox({ me }: { me: CurrentUser | null }) {
                   <thead>
                     <tr>
                       <th style={{ width: 34 }}>
-                        <input
-                          type="checkbox"
-                          style={{ minHeight: 0 }}
-                          checked={selected.size === minePOs.length && minePOs.length > 0}
-                          onChange={(e) => setSelected(e.target.checked ? new Set(minePOs.map((r) => String(r.id))) : new Set())}
-                          title="Select all"
-                        />
+                        {canDecide && (
+                          <input
+                            type="checkbox"
+                            style={{ minHeight: 0 }}
+                            checked={selected.size === minePOs.length && minePOs.length > 0}
+                            onChange={(e) => setSelected(e.target.checked ? new Set(minePOs.map((r) => String(r.id))) : new Set())}
+                            title="Select all"
+                          />
+                        )}
                       </th>
                       <th>PO</th>
                       <th className="center">Project</th>
@@ -172,20 +197,24 @@ export function ApprovalsInbox({ me }: { me: CurrentUser | null }) {
                       <th className="num">Value</th>
                       <th className="center">Tier</th>
                       <th className="center">Reason</th>
+                      <th>Paperwork</th>
                       <th>Raised</th>
                       <th>By</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {minePOs.map((r) => (
-                      <tr key={r.id}>
+                    {minePOs.map((r) => { const ev = evidence[String(r.id)]; const open = openEvidence.has(String(r.id)); return (
+                      <Fragment key={r.id}>
+                      <tr>
                         <td>
-                          <input
-                            type="checkbox"
-                            style={{ minHeight: 0 }}
-                            checked={selected.has(String(r.id))}
-                            onChange={() => toggleSelected(String(r.id))}
-                          />
+                          {canDecide && (
+                            <input
+                              type="checkbox"
+                              style={{ minHeight: 0 }}
+                              checked={selected.has(String(r.id))}
+                              onChange={() => toggleSelected(String(r.id))}
+                            />
+                          )}
                         </td>
                         <td><Link to={`/approvals/${r.id}`}>{r.po_number}</Link></td>
                         <td className="center">{r.project_code}</td>
@@ -193,10 +222,33 @@ export function ApprovalsInbox({ me }: { me: CurrentUser | null }) {
                         <td className="num">{fmtMoney(r.total_value)}</td>
                         <td className="center">{r.approval_tier?.replace("_", " ")}</td>
                         <td className="center">{r.approval_reason?.replace("_", " ")}</td>
+                        <td>
+                          <button
+                            className="ghost tiny"
+                            onClick={() => setOpenEvidence((prev) => {
+                              const next = new Set(prev);
+                              if (next.has(String(r.id))) next.delete(String(r.id)); else next.add(String(r.id));
+                              return next;
+                            })}
+                            title="Show the invoice and delivery notes behind this order"
+                            style={{ display: "inline-flex", gap: 6, alignItems: "center" }}
+                          >
+                            <EvidenceCell ev={ev} />
+                            <span aria-hidden>{open ? "▾" : "▸"}</span>
+                          </button>
+                        </td>
                         <td className="muted">{fmtDate(r.created_at)}</td>
                         <td className="muted">{r.created_by}</td>
                       </tr>
-                    ))}
+                      {open && (
+                        <tr>
+                          <td colSpan={10} style={{ background: "var(--card-2)" }}>
+                            <EvidenceDetail ev={ev} />
+                          </td>
+                        </tr>
+                      )}
+                      </Fragment>
+                    ); })}
                   </tbody>
                 </table>
               </div>
@@ -235,8 +287,10 @@ export function ApprovalsInbox({ me }: { me: CurrentUser | null }) {
                         <td className="num" style={{ color: "var(--danger)" }}>+ {fmtMoney(p.over_amount)}</td>
                         <td className="center">{p.approval_tier?.replace("_", " ")}</td>
                         <td>
-                          <button className="primary tiny" onClick={() => decide(p.id, "approve")}>Approve</button>{" "}
-                          <button className="ghost tiny" onClick={() => decide(p.id, "reject")}>Reject</button>
+                          {canDecide && (<>
+                            <button className="primary tiny" onClick={() => decide(p.id, "approve")}>Approve</button>{" "}
+                            <button className="ghost tiny" onClick={() => decide(p.id, "reject")}>Reject</button>
+                          </>)}
                         </td>
                       </tr>
                     ))}
@@ -286,8 +340,10 @@ export function ApprovalsInbox({ me }: { me: CurrentUser | null }) {
                           </td>
                           <td className="center">{s.approval_tier?.replace("_", " ")}</td>
                           <td>
-                            <button className="primary tiny" onClick={() => decideSub(s.id, "approve")}>Approve</button>{" "}
-                            <button className="ghost tiny" onClick={() => decideSub(s.id, "reject")}>Reject</button>
+                            {canDecide && (<>
+                              <button className="primary tiny" onClick={() => decideSub(s.id, "approve")}>Approve</button>{" "}
+                              <button className="ghost tiny" onClick={() => decideSub(s.id, "reject")}>Reject</button>
+                            </>)}
                           </td>
                         </tr>
                       );
@@ -335,3 +391,159 @@ export function ApprovalsInbox({ me }: { me: CurrentUser | null }) {
   );
 }
 
+
+/* ── The paperwork behind an order awaiting approval ──────────────────────
+   Every order in the queue as this was written had been raised retrospectively
+   to cover an invoice that had already arrived, and most of those invoices had
+   already been pushed to Xero. The list showed a number, a value and a tier —
+   nothing about whether the goods it pays for ever turned up. This is that
+   missing half: the invoice the order was raised against, and the delivery
+   notes linked to it, with the ticket itself one click away. */
+
+/** The ticket as a thumbnail. A PDF has no inline preview, so it says so
+ *  rather than rendering a broken image well. */
+function TicketThumb({ url, type, label }: { url: string; type: string | null; label: string }) {
+  const isPdf = (type ?? "").includes("pdf") || /\.pdf($|\?)/i.test(url);
+  if (isPdf) {
+    return (
+      <a href={url} target="_blank" rel="noreferrer" className="ghost tiny" title={`${label} — open the PDF ticket`}>
+        PDF ↗
+      </a>
+    );
+  }
+  return (
+    <a href={url} target="_blank" rel="noreferrer" title={`${label} — open full size`}>
+      <img
+        src={url}
+        alt={`${label} — delivery note`}
+        style={{ width: 34, height: 34, objectFit: "cover", borderRadius: 3, border: "1px solid var(--line)", display: "block" }}
+      />
+    </a>
+  );
+}
+
+function fmtQ(n: number | null | undefined): string {
+  if (n == null) return "—";
+  return Number.isInteger(n) ? n.toLocaleString("en-GB") : String(Math.round(n * 100) / 100);
+}
+
+/** The one-glance verdict that sits in the row: is there paper behind this. */
+function EvidenceCell({ ev }: { ev: PoApprovalEvidence | undefined }) {
+  if (!ev) return <span className="muted">—</span>;
+  const notes = ev.deliveries.length;
+  const bits: React.ReactNode[] = [];
+  if (notes === 0) {
+    bits.push(
+      <span key="none" className="pill warn" title="Nothing has been booked in against this order — there is no record that the goods arrived">
+        No delivery note
+      </span>,
+    );
+  } else {
+    bits.push(<span key="n">{notes} note{notes === 1 ? "" : "s"}</span>);
+  }
+  if (ev.over_delivered.length > 0) {
+    bits.push(
+      <span key="over" className="pill danger" title="More has arrived than the order asked for">
+        over-delivered
+      </span>,
+    );
+  }
+  if (ev.invoice) bits.push(<span key="inv" className="muted">· inv {ev.invoice.invoice_number ?? `#${ev.invoice.id}`}</span>);
+  return <span style={{ display: "inline-flex", gap: 5, alignItems: "center", flexWrap: "wrap" }}>{bits}</span>;
+}
+
+/** The expanded panel: invoice first (what is being paid), then each note. */
+function EvidenceDetail({ ev }: { ev: PoApprovalEvidence | undefined }) {
+  if (!ev) return <div className="muted">No paperwork found for this order.</div>;
+  return (
+    <div style={{ display: "grid", gap: 10, padding: "4px 2px 8px" }}>
+      {ev.invoice && (
+        <div style={{ display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap" }}>
+          <span className="eyebrow" style={{ margin: 0 }}>Invoice</span>
+          <b>{ev.invoice.invoice_number ?? `#${ev.invoice.id}`}</b>
+          <span className="muted">{fmtDate(ev.invoice.invoice_date)}</span>
+          <span className="num">{ev.invoice.net_amount != null ? fmtMoney(ev.invoice.net_amount) : "—"}</span>
+          {ev.invoice.status === "pushed" && (
+            <span className="pill warn" title="This bill is already in Xero — the money has moved, and approving now records the authority after the fact">
+              already in Xero{ev.invoice.xero_bill_number ? ` · ${ev.invoice.xero_bill_number}` : ""}
+            </span>
+          )}
+          {ev.invoice.file_url && (
+            <a href={ev.invoice.file_url} target="_blank" rel="noreferrer">Open invoice ↗</a>
+          )}
+        </div>
+      )}
+
+      {ev.over_delivered.length > 0 && (
+        <div className="flash error" style={{ margin: 0 }}>
+          More arrived than was ordered:{" "}
+          {ev.over_delivered.map((o, i) => (
+            <span key={o.po_line_id}>
+              {i > 0 ? "; " : ""}
+              {o.description || `line ${o.po_line_id}`} — {fmtQ(o.received_qty)} received against {fmtQ(o.ordered_qty)} ordered
+              {o.unit ? ` ${o.unit}` : ""}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {ev.deliveries.length === 0 ? (
+        <div className="muted">
+          Nothing booked in against this order — no delivery note, no ticket, no signature.
+          {ev.unlinked_supplier_deliveries > 0 && (
+            <>
+              {" "}
+              This supplier has <b>{ev.unlinked_supplier_deliveries}</b> deliver
+              {ev.unlinked_supplier_deliveries === 1 ? "y" : "ies"} on this project matched to no order —
+              {" "}<Link to="/deliveries">check the deliveries inbox</Link> before approving.
+            </>
+          )}
+        </div>
+      ) : (
+        <table style={{ margin: 0 }}>
+          <thead>
+            <tr>
+              <th style={{ width: 46 }}>Ticket</th>
+              <th>Delivery note</th>
+              <th>Received</th>
+              <th>Signed by</th>
+            </tr>
+          </thead>
+          <tbody>
+            {ev.deliveries.map((d) => (
+              <tr key={d.key}>
+                <td>
+                  {d.ticket_url
+                    ? <TicketThumb url={d.ticket_url} type={d.ticket_type} label={d.dn ? `DN ${d.dn}` : "Delivery note"} />
+                    : <span className="muted" style={{ fontSize: 10.5 }} title="Logged with no paperwork behind it">no ticket</span>}
+                </td>
+                <td>
+                  <div>{d.dn ? `DN ${d.dn}` : <span className="muted">No DN number</span>}</div>
+                  <div className="muted" style={{ fontSize: 11 }}>
+                    {fmtDate(d.delivered_at)}
+                    {d.manual && " · logged from memory"}
+                    {d.status && d.status !== "received" ? ` · ${d.status}` : ""}
+                  </div>
+                </td>
+                <td>
+                  {d.items.length === 0
+                    ? <span className="muted">Whole order signed for in one go</span>
+                    : d.items.map((it, i) => (
+                        <div key={i} style={{ fontSize: 12 }}>
+                          {fmtQ(it.qty)}{it.unit ? ` ${it.unit}` : ""}
+                          {it.ordered_qty != null && (
+                            <span className="muted"> of {fmtQ(it.ordered_qty)} ordered</span>
+                          )}
+                          {" — "}{it.description}
+                        </div>
+                      ))}
+                </td>
+                <td className="muted">{d.signed_by ?? "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}

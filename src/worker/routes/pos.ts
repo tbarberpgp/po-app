@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import type { Env, Variables } from "../env";
-import type { CreatePOInput, POLine, PoDeliveryDrop } from "../../shared/types";
+import type { CreatePOInput, POLine, PoApprovalEvidence, PoDeliveryDrop } from "../../shared/types";
 import { loadSettings, tierForApproval } from "../approval";
 import { learnAliases } from "../matchMemory";
 import { normText } from "../../shared/line-match";
@@ -452,6 +452,199 @@ pos.get("/", async (c) => {
       delivery_lines_total: d.lines_total,
     };
   }));
+});
+
+/**
+ * The paperwork behind every order that is waiting to be approved, in one
+ * request — so the approvals list can show WHY it is being asked.
+ *
+ * The approvals dashboard listed a PO number, a value and a tier, and nothing
+ * else. That is thin for a normal order and actively misleading for a
+ * retrospective one: every order sitting in the queue right now was raised to
+ * cover an invoice that had already arrived, and five of them had already been
+ * pushed to Xero. The money is gone. The only question left is whether the
+ * goods ever turned up — and the answer to that is the delivery note, which
+ * the approver had no way to see without opening each order in turn.
+ *
+ * Evidence here means a receipt LINKED to this order — by id, or by the
+ * order's unique number for bookings-in that predate po_id. Deliveries that
+ * merely share a supplier are NOT evidence and are not returned as such: the
+ * whole failure this panel guards against is a delivery being read as proof of
+ * an order it was never matched to. They are counted instead, as a pointer to
+ * the deliveries inbox, under a name that says what the number is.
+ */
+pos.get("/approval-evidence", async (c) => {
+  const pending = (await c.env.DB.prepare(
+    "SELECT id, po_number, supplier, project_id FROM purchase_orders WHERE status = 'pending_approval'",
+  ).all<{ id: string; po_number: string; supplier: string; project_id: string }>()).results;
+  if (pending.length === 0) return c.json({});
+
+  const ids = pending.map((p) => p.id);
+  const numbers = pending.map((p) => p.po_number);
+  const idQ = ids.map(() => "?").join(",");
+  const numQ = numbers.map(() => "?").join(",");
+
+  // Same reach as the order page's own register: by id, or by the unique PO
+  // number for receipts booked in before po_id was captured.
+  const receipts = (await c.env.DB.prepare(
+    `SELECT COALESCE(d.po_id, po.id) AS po_id, d.id, d.po_line_id, d.description, d.po_line_desc,
+            d.received_qty, d.received_unit, d.signed_by, d.status, d.delivered_at,
+            d.ticket_key, d.ticket_type, d.scan_id, d.created_at, d.created_by,
+            s.delivery_note_number AS dn,
+            pl.qty AS ordered_qty, pl.unit AS ordered_unit
+       FROM site_deliveries d
+       LEFT JOIN delivery_ticket_scans s ON s.id = d.scan_id
+       LEFT JOIN purchase_orders po ON po.po_number = d.po_number
+       LEFT JOIN po_lines pl ON pl.id = d.po_line_id
+      WHERE d.po_id IN (${idQ})
+         OR (d.po_id IS NULL AND d.po_number IN (${numQ}))
+      ORDER BY d.delivered_at ASC, d.id ASC`,
+  ).bind(...ids, ...numbers).all<{
+    po_id: string; id: number; po_line_id: number | null; description: string | null;
+    po_line_desc: string | null; received_qty: number | null; received_unit: string | null;
+    signed_by: string | null; status: string | null; delivered_at: string;
+    ticket_key: string | null; ticket_type: string | null; scan_id: number | null;
+    created_at: string; created_by: string | null; dn: string | null;
+    ordered_qty: number | null; ordered_unit: string | null;
+  }>()).results;
+
+  // The invoice the order was raised to cover — the other half of what an
+  // approver is being asked to bless, and the reason a retrospective PO exists
+  // at all. Its Xero state is carried because "already pushed" changes what
+  // approving now actually means.
+  const invoices = (await c.env.DB.prepare(
+    `SELECT matched_po_id AS po_id, id, invoice_number, invoice_date, net_amount, status,
+            file_key, file_type, xero_bill_number
+       FROM invoices WHERE matched_po_id IN (${idQ})`,
+  ).bind(...ids).all<{
+    po_id: string; id: number; invoice_number: string | null; invoice_date: string | null;
+    net_amount: number | null; status: string | null; file_key: string | null;
+    file_type: string | null; xero_bill_number: string | null;
+  }>()).results;
+
+  // Deliveries from the same supplier on the same project that are tied to no
+  // order at all. A pointer, never a match — see the note above.
+  const unlinked = (await c.env.DB.prepare(
+    `SELECT p.id AS po_id, COUNT(d.id) AS n
+       FROM purchase_orders p
+       JOIN site_deliveries d
+         ON d.project_id = p.project_id
+        AND lower(d.supplier) = lower(p.supplier)
+        AND d.po_id IS NULL AND (d.po_number IS NULL OR d.po_number = '')
+      WHERE p.id IN (${idQ})
+      GROUP BY p.id`,
+  ).bind(...ids).all<{ po_id: string; n: number }>()).results;
+
+  const fileUrl = (key: string | null) =>
+    key ? `/api/operations/file?key=${encodeURIComponent(key)}` : null;
+
+  // One note can book in the same order several times over — one row per PO
+  // line it covers — so rows are regrouped into the drops they arrived as,
+  // on the same key the order page groups by. Counting rows would report one
+  // van as nine deliveries.
+  const out: Record<string, PoApprovalEvidence> = {};
+  for (const p of pending) {
+    out[p.id] = {
+      invoice: null,
+      deliveries: [],
+      over_delivered: [],
+      unlinked_supplier_deliveries: unlinked.find((u) => u.po_id === p.id)?.n ?? 0,
+    };
+  }
+  const notes = new Map<string, PoApprovalEvidence["deliveries"][number]>();
+  for (const r of receipts) {
+    const bucket = out[r.po_id];
+    if (!bucket) continue;
+    const key = `${r.po_id}|${deliveryNoteKey(r)}`;
+    let drop = notes.get(key);
+    if (!drop) {
+      drop = {
+        key,
+        dn: r.dn,
+        delivered_at: r.delivered_at,
+        status: r.status ?? "received",
+        signed_by: r.signed_by,
+        // No scan and no ticket file: the goods were logged from memory. On a
+        // retrospective order that is the weakest evidence there is, so it is
+        // said rather than left to be inferred from a missing thumbnail.
+        manual: r.scan_id == null && !r.ticket_key,
+        ticket_url: fileUrl(r.ticket_key),
+        ticket_type: r.ticket_type,
+        items: [],
+      };
+      notes.set(key, drop);
+      bucket.deliveries.push(drop);
+    }
+    // A note photographed twice keeps whichever capture actually held a file.
+    if (!drop.ticket_url && r.ticket_key) {
+      drop.ticket_url = fileUrl(r.ticket_key);
+      drop.ticket_type = r.ticket_type;
+      drop.manual = false;
+    }
+    // A row with no line is the whole order signed for in one go; it has no
+    // item detail to list.
+    if (r.po_line_id != null) {
+      drop.items.push({
+        description: r.description ?? r.po_line_desc ?? "",
+        qty: r.received_qty,
+        unit: r.received_unit,
+        ordered_qty: r.ordered_qty,
+        ordered_unit: r.ordered_unit,
+      });
+    }
+  }
+
+  // Received against ordered, per LINE and across every note on the order.
+  // "Matched" elsewhere in this app means the number printed on a ticket
+  // resolves to an order we hold; it compares no quantities, and it was being
+  // read as though it did — a ticket for 5,000 fasteners sat under a green
+  // Matched pill against an order for 50. On a retrospective order the
+  // quantity is the whole question, so it is counted here rather than implied.
+  //
+  // Over-delivery is reported; under-delivery is not. A part delivery against
+  // an open order is ordinary and says nothing about whether the order should
+  // be approved, whereas more arriving than was ever ordered means the paper
+  // and the order disagree about what is being paid for.
+  for (const [poId, bucket] of Object.entries(out)) {
+    const received = new Map<number, { got: number; ordered: number | null; unit: string | null; desc: string }>();
+    for (const r of receipts) {
+      if (r.po_id !== poId || r.po_line_id == null || r.received_qty == null) continue;
+      const cur = received.get(r.po_line_id);
+      if (cur) cur.got += r.received_qty;
+      else received.set(r.po_line_id, {
+        got: r.received_qty,
+        ordered: r.ordered_qty,
+        unit: r.received_unit ?? r.ordered_unit,
+        desc: r.po_line_desc ?? r.description ?? "",
+      });
+    }
+    for (const [lineId, v] of received) {
+      // Rounding on fractional units (metres, tonnes) is not an overdelivery.
+      if (v.ordered == null || v.got <= v.ordered + 0.001) continue;
+      bucket.over_delivered.push({
+        po_line_id: lineId,
+        description: v.desc,
+        received_qty: v.got,
+        ordered_qty: v.ordered,
+        unit: v.unit,
+      });
+    }
+  }
+  for (const inv of invoices) {
+    const bucket = out[inv.po_id];
+    if (!bucket) continue;
+    bucket.invoice = {
+      id: inv.id,
+      invoice_number: inv.invoice_number,
+      invoice_date: inv.invoice_date,
+      net_amount: inv.net_amount,
+      status: inv.status,
+      file_url: fileUrl(inv.file_key),
+      file_type: inv.file_type,
+      xero_bill_number: inv.xero_bill_number,
+    };
+  }
+  return c.json(out);
 });
 
 pos.get("/:id", async (c) => {
