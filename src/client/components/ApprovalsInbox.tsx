@@ -160,7 +160,11 @@ export function ApprovalsInbox({ me }: { me: CurrentUser | null }) {
               ))}
             </nav>
 
-            {!canDecide && (
+            {/* Scoped to the tab in view. Invoice authority is a different list
+                from the PO tiers, so a blanket banner contradicted the Approve
+                buttons drawn beside it — it read "you cannot decide this" on
+                the one tab the reader could. */}
+            {tab !== "invoices" && !canDecide && (
               <div className="flash" style={{ marginBottom: 14 }}>
                 Read-only — you are a superadmin but not a configured approver, so you can review
                 what is waiting but not decide it. Approvers are set in Admin → Approvers.
