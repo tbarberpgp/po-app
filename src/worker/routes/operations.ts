@@ -1633,6 +1633,28 @@ export async function scanWhatsappTicketBatch(
 }
 
 /**
+ * Read rows for a list of ids, a chunk of ids at a time.
+ *
+ * D1 accepts at most 100 bound parameters in one query, so any read shaped
+ * `WHERE x IN (?, ?, ...)` over a list that grows with the business will start
+ * throwing at some unannounced point. Where these reads sit inside a try/catch
+ * the failure is worse than an error, because the screen simply goes empty.
+ * 90 leaves room for the odd extra bind alongside the list.
+ */
+async function readInChunks<T>(
+  ids: string[],
+  read: (marks: string, chunk: string[]) => Promise<{ results: T[] }>,
+): Promise<T[]> {
+  const out: T[] = [];
+  for (let i = 0; i < ids.length; i += 90) {
+    const chunk = ids.slice(i, i + 90);
+    const { results } = await read(chunk.map(() => "?").join(","), chunk);
+    out.push(...results);
+  }
+  return out;
+}
+
+/**
  * Cross-project deliveries inbox — every pending ticket candidate across all
  * live projects, each row carrying its project so the detail pane can drive
  * the per-project reconcile/check-in endpoints. Plus the KPI strip: deliveries
@@ -1672,9 +1694,18 @@ operations.get("/deliveries-inbox", async (c) => {
       `SELECT po.id, po.po_number, p.code AS project_code FROM purchase_orders po JOIN projects p ON p.id = po.project_id
         WHERE po.status != 'deleted' AND po.order_type != 'framework' AND p.deleted_at IS NULL`,
     ).all<{ id: string; po_number: string; project_code: string }>()).results;
+    // Binding one parameter per live order overflows D1's 100-parameter limit
+    // as soon as the company holds a hundred of them, and the catch around this
+    // whole block turns that into an inbox that reads empty instead of erroring.
+    // The order set is already expressible in SQL, so join to it rather than
+    // handing back a list of ids.
     const guessLines = posForGuess.length ? (await c.env.DB.prepare(
-      `SELECT id, po_id, item, qty, unit FROM po_lines WHERE po_id IN (${posForGuess.map(() => "?").join(",")})`,
-    ).bind(...posForGuess.map((p) => p.id)).all<{ id: number; po_id: string; item: string; qty: number | null; unit: string | null }>()).results : [];
+      `SELECT l.id, l.po_id, l.item, l.qty, l.unit
+         FROM po_lines l
+         JOIN purchase_orders po ON po.id = l.po_id
+         JOIN projects p ON p.id = po.project_id
+        WHERE po.status != 'deleted' AND po.order_type != 'framework' AND p.deleted_at IS NULL`,
+    ).all<{ id: number; po_id: string; item: string; qty: number | null; unit: string | null }>()).results : [];
     const poIndex = posForGuess.map((po) => ({
       id: po.id, po_number: po.po_number, project_code: po.project_code,
       codes: new Set(guessLines.filter((l) => l.po_id === po.id).map((l) => materialCode(l.item))),
@@ -1745,13 +1776,13 @@ operations.get("/deliveries-inbox", async (c) => {
     // routinely scanned twice (15 notes on this book, one of them six times —
     // WhatsApp and email both carry it), so the twin's receipts do the same.
     // A note number is the unit of delivery, and within one PO it identifies it.
-    const priorRows = varPoIds.length ? (await c.env.DB.prepare(
+    const priorRows = await readInChunks(varPoIds, (marks, chunk) => c.env.DB.prepare(
       `SELECT d.po_id, d.po_line_id, d.scan_id, s2.delivery_note_number AS dn, SUM(d.received_qty) AS rq
          FROM site_deliveries d
          LEFT JOIN delivery_ticket_scans s2 ON s2.id = d.scan_id
-        WHERE d.po_id IN (${varPoIds.map(() => "?").join(",")}) AND d.po_line_id IS NOT NULL AND d.received_qty IS NOT NULL
+        WHERE d.po_id IN (${marks}) AND d.po_line_id IS NOT NULL AND d.received_qty IS NOT NULL
         GROUP BY d.po_id, d.po_line_id, d.scan_id, s2.delivery_note_number`,
-    ).bind(...varPoIds).all<{ po_id: string; po_line_id: number; scan_id: number | null; dn: string | null; rq: number | null }>()).results : [];
+    ).bind(...chunk).all<{ po_id: string; po_line_id: number; scan_id: number | null; dn: string | null; rq: number | null }>());
     const linesByPo = new Map<string, VarianceLine[]>();
     for (const l of guessLines) {
       const arr = linesByPo.get(l.po_id) ?? [];
@@ -1773,10 +1804,10 @@ operations.get("/deliveries-inbox", async (c) => {
     // touch. `priorRows` above excludes whole-PO receipts (it filters
     // po_line_id IS NOT NULL, which the variance check needs), so a separate
     // read carries completes_po for the shared rule. Same POs, one more column.
-    const orderDelRows = varPoIds.length ? (await c.env.DB.prepare(
+    const orderDelRows = await readInChunks(varPoIds, (marks, chunk) => c.env.DB.prepare(
       `SELECT d.po_id, ${PO_DELIVERY_NOTE_COLUMNS} FROM site_deliveries d ${PO_DELIVERY_NOTE_JOIN}
-        WHERE d.po_id IN (${varPoIds.map(() => "?").join(",")})`,
-    ).bind(...varPoIds).all<PoDeliveryRow>()).results : [];
+        WHERE d.po_id IN (${marks})`,
+    ).bind(...chunk).all<PoDeliveryRow>());
 
     candidates = varRows.map((x) => {
       const poId = (x.matched_po_id || x.guess_po_id) as string | null;
@@ -1910,9 +1941,15 @@ operations.get("/:projectId/deliveries/ticket-candidates", async (c) => {
       `SELECT po.id, po.po_number, p.code AS project_code FROM purchase_orders po JOIN projects p ON p.id = po.project_id
         WHERE po.project_id IN (${ph}) AND po.status != 'deleted' AND po.order_type != 'framework'`,
     ).bind(...scope.memberIds).all<{ id: string; po_number: string; project_code: string }>()).results;
+    // Same 100-parameter ceiling as the cross-project inbox: one site's order
+    // book is enough to reach it on its own, so join to the orders instead of
+    // binding their ids. Only the site-group members are bound.
     const guessLines = posForGuess.length ? (await c.env.DB.prepare(
-      `SELECT id, po_id, item, qty, unit FROM po_lines WHERE po_id IN (${posForGuess.map(() => "?").join(",")})`,
-    ).bind(...posForGuess.map((p) => p.id)).all<{ id: number; po_id: string; item: string; qty: number | null; unit: string | null }>()).results : [];
+      `SELECT l.id, l.po_id, l.item, l.qty, l.unit
+         FROM po_lines l
+         JOIN purchase_orders po ON po.id = l.po_id
+        WHERE po.project_id IN (${ph}) AND po.status != 'deleted' AND po.order_type != 'framework'`,
+    ).bind(...scope.memberIds).all<{ id: number; po_id: string; item: string; qty: number | null; unit: string | null }>()).results : [];
     const poIndex = posForGuess.map((po) => ({
       id: po.id, po_number: po.po_number, project_code: po.project_code,
       codes: new Set(guessLines.filter((l) => l.po_id === po.id).map((l) => materialCode(l.item))),
@@ -1990,13 +2027,13 @@ operations.get("/:projectId/deliveries/ticket-candidates", async (c) => {
     // routinely scanned twice (15 notes on this book, one of them six times —
     // WhatsApp and email both carry it), so the twin's receipts do the same.
     // A note number is the unit of delivery, and within one PO it identifies it.
-    const priorRows = varPoIds.length ? (await c.env.DB.prepare(
+    const priorRows = await readInChunks(varPoIds, (marks, chunk) => c.env.DB.prepare(
       `SELECT d.po_id, d.po_line_id, d.scan_id, s2.delivery_note_number AS dn, SUM(d.received_qty) AS rq
          FROM site_deliveries d
          LEFT JOIN delivery_ticket_scans s2 ON s2.id = d.scan_id
-        WHERE d.po_id IN (${varPoIds.map(() => "?").join(",")}) AND d.po_line_id IS NOT NULL AND d.received_qty IS NOT NULL
+        WHERE d.po_id IN (${marks}) AND d.po_line_id IS NOT NULL AND d.received_qty IS NOT NULL
         GROUP BY d.po_id, d.po_line_id, d.scan_id, s2.delivery_note_number`,
-    ).bind(...varPoIds).all<{ po_id: string; po_line_id: number; scan_id: number | null; dn: string | null; rq: number | null }>()).results : [];
+    ).bind(...chunk).all<{ po_id: string; po_line_id: number; scan_id: number | null; dn: string | null; rq: number | null }>());
     const linesByPo = new Map<string, VarianceLine[]>();
     for (const l of guessLines) {
       const arr = linesByPo.get(l.po_id) ?? [];
@@ -2018,10 +2055,10 @@ operations.get("/:projectId/deliveries/ticket-candidates", async (c) => {
     // touch. `priorRows` above excludes whole-PO receipts (it filters
     // po_line_id IS NOT NULL, which the variance check needs), so a separate
     // read carries completes_po for the shared rule. Same POs, one more column.
-    const orderDelRows = varPoIds.length ? (await c.env.DB.prepare(
+    const orderDelRows = await readInChunks(varPoIds, (marks, chunk) => c.env.DB.prepare(
       `SELECT d.po_id, ${PO_DELIVERY_NOTE_COLUMNS} FROM site_deliveries d ${PO_DELIVERY_NOTE_JOIN}
-        WHERE d.po_id IN (${varPoIds.map(() => "?").join(",")})`,
-    ).bind(...varPoIds).all<PoDeliveryRow>()).results : [];
+        WHERE d.po_id IN (${marks})`,
+    ).bind(...chunk).all<PoDeliveryRow>());
 
     candidates = varRows.map((x) => {
       const poId = (x.matched_po_id || x.guess_po_id) as string | null;
