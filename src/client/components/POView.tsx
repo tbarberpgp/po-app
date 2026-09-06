@@ -669,10 +669,17 @@ export function POView({ me }: { me: CurrentUser | null }) {
    ticket is still recognisable as which ticket it is. A PDF can't be
    thumbnailed in the page, and an image that fails to load shouldn't leave a
    broken icon behind — both fall back to a plain link. */
-function TicketThumb({ url, type, label, size }: { url: string; type: string | null; label: string; size: number }) {
+function TicketThumb(
+  { url, type, label, size, kind = "ticket" }:
+  { url: string; type: string | null; label: string; size: number; kind?: "ticket" | "invoice" },
+) {
   const [lb, setLb] = useState(false);
   const [broken, setBroken] = useState(false);
   const isPdf = /pdf/i.test(type ?? "") || /\.pdf(\?|$)/i.test(url);
+  // Goods collected from a counter are evidenced by the supplier's invoice, so
+  // the same component shows it — calling it a ticket in the fallback would
+  // name the wrong document.
+  const noun = kind === "invoice" ? "invoice" : "ticket";
 
   useEffect(() => {
     if (!lb) return;
@@ -684,7 +691,7 @@ function TicketThumb({ url, type, label, size }: { url: string; type: string | n
   if (isPdf || broken) {
     return (
       <a className="ghost tiny" href={url} target="_blank" rel="noreferrer" style={{ flex: "0 0 auto" }}>
-        {isPdf ? "Ticket (PDF) ↗" : "Open ticket ↗"}
+        {isPdf ? `${kind === "invoice" ? "Invoice" : "Ticket"} (PDF) ↗` : `Open ${noun} ↗`}
       </a>
     );
   }
@@ -696,7 +703,7 @@ function TicketThumb({ url, type, label, size }: { url: string; type: string | n
     <>
       <img
         src={thumbSrc}
-        alt={`${label} — delivery note`}
+        alt={kind === "invoice" ? `${label} — supplier invoice` : `${label} — delivery note`}
         title={`${label} — click to enlarge`}
         loading="lazy"
         onClick={() => setLb(true)}
@@ -715,7 +722,7 @@ function TicketThumb({ url, type, label, size }: { url: string; type: string | n
             <button className="lb-vbtn" onClick={() => setLb(false)}>Close ✕</button>
           </div>
           <div className="lb-stage" onClick={(e) => { if (e.target === e.currentTarget) setLb(false); }}>
-            <img className="lb-img" src={url} alt={`${label} — delivery note`} />
+            <img className="lb-img" src={url} alt={kind === "invoice" ? `${label} — supplier invoice` : `${label} — delivery note`} />
           </div>
         </div>
       )}
@@ -742,6 +749,45 @@ function NoTicketBox({ size }: { size: number }) {
       }}
     >
       {roomy ? "no ticket" : "—"}
+    </div>
+  );
+}
+
+/** How a collection's invoice is referred to on screen: the supplier's number
+ *  when the paperwork carried one, and our own id when it didn't. */
+function invoiceRef(from: NonNullable<PoDeliveryDrop["collected_from"]>): string {
+  return from.invoice_number || `#${from.invoice_id}`;
+}
+
+/* ── The paperwork behind a collection ────────────────────────────────────
+   Goods collected from a trade counter come with the supplier's invoice and no
+   delivery note, so the invoice IS this receipt's paperwork and takes the
+   ticket's place in the column. The register drew collections as "no ticket"
+   for as long as the link between the two was prose in a notes field — and "no
+   ticket" is this app's phrase for goods logged from memory with nothing behind
+   them at all. Understating evidence that exists misleads as surely as
+   overstating it.
+
+   A reader without commercial access is given the NAME of the document and not
+   the document: this register is read on site, and the invoice is priced. */
+function CollectedEvidence({ from, size }: { from: NonNullable<PoDeliveryDrop["collected_from"]>; size: number }) {
+  if (from.file_url) {
+    return <TicketThumb url={from.file_url} type={from.file_type} label={`Invoice ${invoiceRef(from)}`} size={size} kind="invoice" />;
+  }
+  return (
+    <div
+      title={from.viewable
+        ? `Collected from the supplier and receipted against invoice ${invoiceRef(from)}, which has no stored copy`
+        : `Collected from the supplier and receipted against invoice ${invoiceRef(from)}`}
+      style={{
+        width: size, height: size, flex: "0 0 auto", borderRadius: 6,
+        border: "1px solid var(--line)", background: "var(--card-2)", color: "var(--muted)",
+        display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2,
+        fontSize: 10.5, textAlign: "center", lineHeight: 1.2, padding: 4,
+      }}
+    >
+      <span>collected</span>
+      <span style={{ fontSize: 9.5, opacity: 0.85 }}>on invoice</span>
     </div>
   );
 }
@@ -807,18 +853,29 @@ function DeliveryDropRow({ drop, index, total }: { drop: PoDeliveryDrop; index: 
   // which only repeats what the row already says. A manual check-in appends
   // whatever the person typed AFTER that preamble, so it is stripped rather
   // than used to discard the note — the typed half is the half worth reading.
-  const written = (drop.notes ?? "")
+  const preamble = (drop.notes ?? "")
     .replace(/^MANUAL CHECK-IN\s*—\s*no delivery ticket\.\s*Logged by \S+\.?\s*/i, "")
-    .replace(/^Checked in from [^.]*$/i, "")
-    .trim() || null;
-  const title = drop.dn ? `DN ${drop.dn}` : drop.manual ? "Manual check-in" : "Delivery note";
+    .replace(/^Checked in from [^.]*$/i, "");
+  // A collection's note is the route's own sentence naming the invoice, which
+  // the title and the link beside it now both say. Stripped only when that link
+  // resolved: without it the prose is the sole pointer to the paperwork, and
+  // dropping it would leave the reader with less than they had before.
+  const written = (drop.collected_from
+    ? preamble.replace(/^Collected from supplier\s*—\s*marked from invoice \S+\s*$/i, "")
+    : preamble).trim() || null;
+  const title = drop.dn ? `DN ${drop.dn}`
+    : drop.collected_from ? "Collected from supplier"
+    : drop.manual ? "Manual check-in"
+    : "Delivery note";
 
   return (
     <div style={{ padding: "12px 14px", borderTop: index === 1 ? "none" : "1px solid var(--line)", display: "flex", gap: 12, alignItems: "flex-start" }}>
       {/* The note itself, big enough to recognise across the desk. A note
           photographed twice shows both; drops with no paperwork keep the
           column so the register stays in line. */}
-      {drop.tickets.length === 0
+      {drop.collected_from
+        ? <CollectedEvidence from={drop.collected_from} size={72} />
+        : drop.tickets.length === 0
         ? <NoTicketBox size={72} />
         : (
           <div style={{ display: "flex", flexDirection: "column", gap: 4, flex: "0 0 auto" }}>
@@ -844,6 +901,21 @@ function DeliveryDropRow({ drop, index, total }: { drop: PoDeliveryDrop; index: 
           {drop.supplier ? ` · ${drop.supplier}` : ""}
           {drop.signed_by ? ` · signed by ${drop.signed_by}` : ""}
         </span>
+        {drop.collected_from && (
+          <span className="muted" style={{ fontSize: 12.5 }}>
+            {"· from "}
+            {drop.collected_from.viewable
+              ? (
+                <Link
+                  to={`/accounts?invoice=${drop.collected_from.invoice_id}`}
+                  title="Open the invoice these goods were receipted against"
+                >
+                  invoice {invoiceRef(drop.collected_from)}
+                </Link>
+              )
+              : <>invoice {invoiceRef(drop.collected_from)}</>}
+          </span>
+        )}
         {drop.whole_order && (
           <span className="pill" style={{ fontSize: 10 }} title="Signed for as one drop, with no per-item breakdown">
             whole order

@@ -7,6 +7,7 @@ import { normText } from "../../shared/line-match";
 import { summarisePoDeliveries, deliveryNoteKey, suspectedDuplicateReceipts, PO_DELIVERY_NOTE_COLUMNS, PO_DELIVERY_NOTE_JOIN, type PoLineRef, type PoDeliveryRow } from "../../shared/po-delivery-status";
 import { emailApprovers, emailRequesterDecision, emailFrameworkOverdraw, FRAMEWORK_OVERDRAW_RECIPIENTS } from "../notify";
 import { requirePermission } from "../auth";
+import { can } from "../../shared/permissions";
 import { buildCostCode, derivedProjectNumber } from "../../shared/types";
 import { pushPOToXero } from "./xero";
 import { isSandboxId } from "../sandbox";
@@ -491,9 +492,11 @@ pos.get("/approval-evidence", async (c) => {
             d.received_qty, d.received_unit, d.signed_by, d.status, d.delivered_at,
             d.ticket_key, d.ticket_type, d.scan_id, d.created_at, d.created_by,
             s.delivery_note_number AS dn,
+            d.source_invoice_id, ci.invoice_number AS collected_invoice_number,
             pl.qty AS ordered_qty, pl.unit AS ordered_unit
        FROM site_deliveries d
        LEFT JOIN delivery_ticket_scans s ON s.id = d.scan_id
+       LEFT JOIN invoices ci ON ci.id = d.source_invoice_id
        LEFT JOIN purchase_orders po ON po.po_number = d.po_number
        LEFT JOIN po_lines pl ON pl.id = d.po_line_id
       WHERE d.po_id IN (${idQ})
@@ -505,6 +508,7 @@ pos.get("/approval-evidence", async (c) => {
     signed_by: string | null; status: string | null; delivered_at: string;
     ticket_key: string | null; ticket_type: string | null; scan_id: number | null;
     created_at: string; created_by: string | null; dn: string | null;
+    source_invoice_id: number | null; collected_invoice_number: string | null;
     ordered_qty: number | null; ordered_unit: string | null;
   }>()).results;
 
@@ -538,6 +542,12 @@ pos.get("/approval-evidence", async (c) => {
   const fileUrl = (key: string | null) =>
     key ? `/api/operations/file?key=${encodeURIComponent(key)}` : null;
 
+  // Goods collected from a trade counter are receipted from the supplier's
+  // invoice and never see a delivery ticket. Named by its number, or by our own
+  // id when the paperwork carried none.
+  const collectedInvoice = (r: { source_invoice_id: number | null; collected_invoice_number: string | null }) =>
+    r.source_invoice_id == null ? null : (r.collected_invoice_number || `#${r.source_invoice_id}`);
+
   // One note can book in the same order several times over — one row per PO
   // line it covers — so rows are regrouped into the drops they arrived as,
   // on the same key the order page groups by. Counting rows would report one
@@ -564,10 +574,14 @@ pos.get("/approval-evidence", async (c) => {
         delivered_at: r.delivered_at,
         status: r.status ?? "received",
         signed_by: r.signed_by,
-        // No scan and no ticket file: the goods were logged from memory. On a
-        // retrospective order that is the weakest evidence there is, so it is
-        // said rather than left to be inferred from a missing thumbnail.
-        manual: r.scan_id == null && !r.ticket_key,
+        // No scan, no ticket file and no invoice: the goods were logged from
+        // memory. On a retrospective order that is the weakest evidence there
+        // is, so it is said rather than left to be inferred from a missing
+        // thumbnail. A collection is not this — it has the supplier's invoice
+        // behind it, and telling an approver that priced goods were "logged
+        // from memory" argues against a payment the paperwork supports.
+        manual: r.scan_id == null && !r.ticket_key && r.source_invoice_id == null,
+        collected_invoice: collectedInvoice(r),
         ticket_url: fileUrl(r.ticket_key),
         ticket_type: r.ticket_type,
         items: [],
@@ -579,6 +593,10 @@ pos.get("/approval-evidence", async (c) => {
     if (!drop.ticket_url && r.ticket_key) {
       drop.ticket_url = fileUrl(r.ticket_key);
       drop.ticket_type = r.ticket_type;
+      drop.manual = false;
+    }
+    if (!drop.collected_invoice && r.source_invoice_id != null) {
+      drop.collected_invoice = collectedInvoice(r);
       drop.manual = false;
     }
     // A row with no line is the whole order signed for in one go; it has no
@@ -717,7 +735,7 @@ pos.get("/:id", async (c) => {
   const receipts = await c.env.DB.prepare(
     `SELECT d.id, d.po_id, d.po_line_id, d.po_line_desc, d.description, d.supplier, d.status,
             d.notes, d.signed_by, d.received_qty, d.received_unit, d.completes_po,
-            d.ticket_key, d.ticket_type, d.scan_id, d.delivered_at, d.created_at, d.created_by,
+            d.ticket_key, d.ticket_type, d.scan_id, d.source_invoice_id, d.delivered_at, d.created_at, d.created_by,
             s2.delivery_note_number AS dn
        FROM site_deliveries d
        LEFT JOIN delivery_ticket_scans s2 ON s2.id = d.scan_id
@@ -728,7 +746,8 @@ pos.get("/:id", async (c) => {
     description: string | null; supplier: string | null; status: string | null; notes: string | null;
     signed_by: string | null; received_qty: number | null;
     received_unit: string | null; completes_po: number | null; ticket_key: string | null;
-    ticket_type: string | null; scan_id: number | null; delivered_at: string; created_at: string;
+    ticket_type: string | null; scan_id: number | null; source_invoice_id: number | null;
+    delivered_at: string; created_at: string;
     created_by: string | null; dn: string | null;
   }>();
 
@@ -768,6 +787,53 @@ pos.get("/:id", async (c) => {
     if (!arr.some((t) => t.url === url)) arr.push({ url, type: r.ticket_type });
     ticketsByNote.set(deliveryNoteKey(r), arr);
   }
+
+  // Goods collected from a trade counter come in on an INVOICE, not a note —
+  // "Mark as collected" on an invoice writes these receipts, and since 0120
+  // they record which invoice. Before that link existed the register had no way
+  // to reach the paperwork (the invoice number was prose in `notes`) and drew a
+  // collection as a ticketless check-in: "Manual check-in", "no ticket" — the
+  // app's own words for goods logged from memory with nothing behind them.
+  //
+  // Read in one query rather than per receipt: a collection writes a row per
+  // outstanding PO line, so an order that was collected twice would otherwise
+  // fetch the same two invoices a dozen times over.
+  const invoiceIds = [...new Set(
+    receipts.results.map((r) => r.source_invoice_id).filter((n): n is number => n != null),
+  )];
+  const invoicesById = new Map<number, { id: number; invoice_number: string | null; file_key: string | null; file_type: string | null }>();
+  if (invoiceIds.length) {
+    const invRows = await c.env.DB.prepare(
+      `SELECT id, invoice_number, file_key, file_type FROM invoices WHERE id IN (${invoiceIds.map(() => "?").join(",")})`,
+    ).bind(...invoiceIds).all<{ id: number; invoice_number: string | null; file_key: string | null; file_type: string | null }>();
+    for (const r of invRows.results) invoicesById.set(r.id, r);
+  }
+  // The register is read on site by people with no commercial access, so the
+  // invoice DOCUMENT is offered only to a reader allowed to see invoices — a
+  // thumbnail that can only 403 is worse than plain words saying where the
+  // paperwork is. That the goods were collected against invoice X is not itself
+  // commercial: it is already written on the receipt, in the note everyone can
+  // read, and it is the answer to "what came in on this?".
+  const canSeeInvoices = can(c.get("userRole"), "commercial.view");
+  const collectedFrom = (invoiceId: number | null): PoDeliveryDrop["collected_from"] => {
+    if (invoiceId == null) return null;
+    const inv = invoicesById.get(invoiceId);
+    // The invoice the receipt names is gone. Still a collection, and still not
+    // a check-in with nothing behind it, so it says so without pretending to a
+    // document it can no longer produce.
+    if (!inv) return { invoice_id: invoiceId, invoice_number: null, file_url: null, file_type: null, viewable: false };
+    return {
+      invoice_id: inv.id,
+      invoice_number: inv.invoice_number,
+      // `/api/invoices/:id/file` applies its own rules on top of this one — an
+      // overhead invoice is admin-only there — but an overhead invoice has no
+      // matched PO and so can never reach this register.
+      file_url: canSeeInvoices && inv.file_key ? `/api/invoices/${inv.id}/file` : null,
+      file_type: canSeeInvoices ? inv.file_type : null,
+      viewable: canSeeInvoices,
+    };
+  };
+
   // Each receipt says which note it came in on, because one note can book in
   // the same PO line several times over — a tapered-insulation scheme line on
   // PO-26001-0013 takes nine ticket rows off ONE delivery note. Counting rows
@@ -807,11 +873,14 @@ pos.get("/:id", async (c) => {
         notes: r.notes,
         created_at: r.created_at,
         created_by: r.created_by,
-        // Neither a scan nor a ticket file: someone logged the goods from
-        // memory. Saying so is the point — it's the drop with no paperwork
-        // behind it to go and check.
-        manual: r.scan_id == null && !ticketsByNote.has(key),
+        // Neither a scan, nor a ticket file, nor an invoice behind it: someone
+        // logged the goods from memory. Saying so is the point — it's the drop
+        // with no paperwork to go and check. A collection is NOT this: it has
+        // an invoice, which is what a trade counter gives you instead of a
+        // note, so it must not be drawn as the weakest evidence in the app.
+        manual: r.scan_id == null && !ticketsByNote.has(key) && r.source_invoice_id == null,
         tickets: ticketsByNote.get(key) ?? [],
+        collected_from: collectedFrom(r.source_invoice_id),
         linked_by: r.po_id ? "po_id" : "po_number",
         whole_order: false,
         duplicates: 0,
@@ -824,6 +893,12 @@ pos.get("/:id", async (c) => {
     // Counted for the whole note, so a duplicated whole-order receipt — which
     // has no item row to carry a badge — still says so.
     if (duplicateIds.has(r.id)) drop.duplicates += 1;
+    // The row that happens to head the group isn't necessarily the one carrying
+    // the link — same reason the note's ticket is gathered across all its rows.
+    if (!drop.collected_from && r.source_invoice_id != null) {
+      drop.collected_from = collectedFrom(r.source_invoice_id);
+      drop.manual = false;
+    }
     if (r.po_line_id == null) drop.whole_order = true;
     else {
       drop.items.push({

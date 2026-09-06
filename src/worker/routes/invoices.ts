@@ -1832,14 +1832,18 @@ invoices.post("/:id/mark-collected", async (c) => {
   const when = (inv.invoice_date as string | null) || now.slice(0, 10);
   const actor = c.get("userEmail");
   const note = `Collected from supplier — marked from invoice ${inv.invoice_number ?? `#${inv.id}`}`;
+  // The invoice is the paperwork behind these goods, so the receipt carries the
+  // invoice's ID and not just its number in prose: the register shows the
+  // invoice in the thumbnail column where a delivery ticket would go, rather
+  // than a dashed "no ticket" box that says the goods came in on nothing.
   await c.env.DB.batch(outstanding.map((l) =>
     c.env.DB.prepare(
       `INSERT INTO site_deliveries
          (project_id, supplier, description, po_number, po_id, po_line_id, po_line_desc, received_qty, received_unit,
-          status, notes, delivered_at, contract_project_id, completes_po, created_at, created_by)
-       VALUES (?,?,?,?,?,?,?,?,?,'received',?,?,?,1,?,?)`,
+          status, notes, delivered_at, contract_project_id, completes_po, source_invoice_id, created_at, created_by)
+       VALUES (?,?,?,?,?,?,?,?,?,'received',?,?,?,1,?,?,?)`,
     ).bind(scope.baseId, po.supplier, l.item, po.po_number, po.id, l.id, l.item,
-      Math.round(l.remaining * 100) / 100, l.unit ?? null, note, when, contract, now, actor),
+      Math.round(l.remaining * 100) / 100, l.unit ?? null, note, when, contract, Number(inv.id), now, actor),
   ));
   return c.json({ ok: true, lines: outstanding.length });
 });

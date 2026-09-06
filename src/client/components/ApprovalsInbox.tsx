@@ -597,13 +597,30 @@ function EvidenceDetail({ ev }: { ev: PoApprovalEvidence | undefined }) {
                 <td>
                   {d.ticket_url
                     ? <TicketThumb url={d.ticket_url} type={d.ticket_type} label={d.dn ? `DN ${d.dn}` : "Delivery note"} />
-                    : <span className="muted" style={{ fontSize: 10.5 }} title="Logged with no paperwork behind it">no ticket</span>}
+                    : d.collected_invoice
+                      ? (
+                        <span
+                          className="muted"
+                          style={{ fontSize: 10.5 }}
+                          title={`Collected from the supplier and receipted against invoice ${d.collected_invoice} — a trade counter issues an invoice, not a delivery ticket`}
+                        >
+                          collected
+                        </span>
+                      )
+                      : <span className="muted" style={{ fontSize: 10.5 }} title="Logged with no paperwork behind it">no ticket</span>}
                 </td>
                 <td>
-                  <div>{d.dn ? `DN ${d.dn}` : <span className="muted">No DN number</span>}</div>
+                  <div>
+                    {d.dn
+                      ? `DN ${d.dn}`
+                      : d.collected_invoice
+                        ? <span className="muted">Collected from supplier</span>
+                        : <span className="muted">No DN number</span>}
+                  </div>
                   <div className="muted" style={{ fontSize: 11 }}>
                     {fmtDate(d.delivered_at)}
                     {d.manual && " · logged from memory"}
+                    {d.collected_invoice && ` · invoice ${d.collected_invoice}`}
                     {d.status && d.status !== "received" ? ` · ${d.status}` : ""}
                   </div>
                 </td>

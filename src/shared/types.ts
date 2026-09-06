@@ -372,6 +372,23 @@ export type PoDeliveryDrop = {
   /** The note's paperwork: usually one image or PDF, occasionally two when the
    *  same note was photographed twice and both captures were checked in. */
   tickets: Array<{ url: string; type: string | null }>;
+  /** Not a delivery at all: the goods were collected from the merchant, and the
+   *  receipt was logged from their invoice. A trade counter hands over an
+   *  invoice rather than a delivery note, so THAT is the paperwork behind these
+   *  goods — the register shows it where a ticket would go. Null for every
+   *  receipt that arrived on a van. */
+  collected_from: {
+    invoice_id: number;
+    invoice_number: string | null;
+    /** The invoice document itself. Null when the invoice kept no file, or when
+     *  the reader may not see invoices: the register is read by site staff with
+     *  no commercial access, and a thumbnail that can only 403 is worse than
+     *  saying plainly where the paperwork is. */
+    file_url: string | null;
+    file_type: string | null;
+    /** Whether this reader may follow the link through to the invoice. */
+    viewable: boolean;
+  } | null;
   /** Whether the receipt names this order by id or only by its PO number —
    *  the latter is a pre-`po_id` booking-in, matched on the unique number. */
   linked_by: "po_id" | "po_number";
@@ -427,8 +444,14 @@ export type PoApprovalEvidence = {
     delivered_at: string;
     status: string;
     signed_by: string | null;
-    /** No scan and no ticket file: logged from memory, with no paper behind it. */
+    /** No scan, no ticket file and no invoice: logged from memory, with no paper
+     *  behind it at all. */
     manual: boolean;
+    /** Collected from the merchant and receipted from their invoice, named by
+     *  its number (or `#id` where the paperwork carried none). There is no
+     *  ticket to show because a trade counter never issues one — the invoice is
+     *  the paper behind these goods. Null for a receipt that came in on a van. */
+    collected_invoice: string | null;
     ticket_url: string | null;
     ticket_type: string | null;
     items: Array<{
