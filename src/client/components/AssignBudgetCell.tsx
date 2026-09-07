@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { api, fmtQty } from "../lib/api";
+import { api } from "../lib/api";
+import { budgetMoneyHint } from "../lib/commercials";
 import { GroupedCombobox } from "./GroupedCombobox";
 import type { MaterialWithCommitment } from "../../shared/types";
 
@@ -61,24 +62,14 @@ export function AssignBudgetCell({ poId, lineId, mats, suggestId, suggestItem, o
   }
   const groups = [...byGroup.entries()].map(([label, ms]) => ({
     label,
-    options: ms.map((m) => {
-      // The decision aid here is headroom, not the element code (the group
-      // header already says where you are): budgeted qty + how much is left.
-      // Budget reads in the measured unit (m²/lm); remaining is tracked in
-      // pack units (how POs are raised), so it carries its own unit label.
-      const budget = m.total_qty != null
-        ? (m.total_qty > 0 ? `${fmtQty(m.total_qty)}${m.rate_unit ? ` ${m.rate_unit}` : ""} budgeted` : "no budgeted qty")
-        : null;
-      const packUnit = m.total_units_unit ? ` ${m.total_units_unit}` : "";
-      const left = m.remaining_qty != null
-        ? (m.remaining_qty < 0 ? `${fmtQty(-m.remaining_qty)}${packUnit} over` : `${fmtQty(m.remaining_qty)}${packUnit} left`)
-        : null;
-      return {
-        value: String(m.id),
-        label: m.item?.trim() || [m.element_code, m.type].filter(Boolean).join(" · ") || "(unnamed budget line)",
-        hint: [budget, left].filter(Boolean).join(" · ") || undefined,
-      };
-    }),
+    // The decision aid here is money headroom, not the element code (the group
+    // header already says where you are): what the line is worth and how much
+    // of it is still unspent — the same pair the PO page's picker shows.
+    options: ms.map((m) => ({
+      value: String(m.id),
+      label: m.item?.trim() || [m.element_code, m.type].filter(Boolean).join(" · ") || "(unnamed budget line)",
+      hint: budgetMoneyHint(m).join(" · ") || undefined,
+    })),
   }));
 
   async function assign(v: string) {
