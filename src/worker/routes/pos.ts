@@ -808,16 +808,27 @@ pos.get("/:id", async (c) => {
   // Pull product → element joins so we can derive the PRJ.ELE.RES cost code
   // for any line whose material links to a master product — and the names
   // behind its segments, because "6003.30.M" on its own tells the reader
-  // nothing about which budget the cost landed in. The element name is read
-  // off whichever code the displayed cost code was built from (the product's),
-  // falling back to the material's own element so a line coded to the budget
-  // without a product link still says what package it belongs to.
+  // nothing about which budget the cost landed in.
+  //
+  // ELE comes from the PROJECT's own priced workbook (materials.element_code,
+  // col B) in preference to the product's, because the element describes how
+  // the material is used, not what it is: the same liner/insulation/outer
+  // sheet build-up is a wall (32) on one job and a roof (22) on another, and
+  // one catalogue row can't be right for both. The product's element is the
+  // fallback, and it is used ALONE for the code's existence — no product link
+  // still means no cost code, since RES only exists on the product and
+  // defaulting it to 'M' would invent a resource type on 231 coded lines.
+  //
+  // The workbook code only wins when it resolves to a real element: col B also
+  // carries codes never seeded into `elements` (25 torch-on felt, 81
+  // deliveries) and outright parse junk (429, 6560, 8274, from workbooks whose
+  // columns shifted), none of which belongs in a cost code.
   const lines = await c.env.DB.prepare(
     `SELECT pl.*,
             m.product_id          AS link_product_id,
             m.item                AS link_budget_item,
             m.material_total_cost AS link_budget_value,
-            pr.element_code       AS link_element_code,
+            CASE WHEN pr.id IS NOT NULL THEN COALESCE(wb.code, pr.element_code) END AS link_element_code,
             pr.default_resource   AS link_default_resource,
             el.name               AS link_element_name,
             el.notes              AS link_element_notes,
@@ -826,7 +837,8 @@ pos.get("/:id", async (c) => {
      FROM po_lines pl
      LEFT JOIN materials m  ON m.id = pl.material_id
      LEFT JOIN products  pr ON pr.id = m.product_id
-     LEFT JOIN elements  el ON el.code = COALESCE(pr.element_code, m.element_code)
+     LEFT JOIN elements  wb ON wb.code = m.element_code
+     LEFT JOIN elements  el ON el.code = COALESCE(wb.code, pr.element_code)
      LEFT JOIN resource_types rt ON rt.code = COALESCE(pr.default_resource, 'M')
      WHERE pl.po_id = ?
      ORDER BY pl.id`,
