@@ -460,7 +460,15 @@ export function POView({ me }: { me: CurrentUser | null }) {
                                   {l.cost_code && (
                                     <span
                                       style={{ fontFamily: "ui-monospace, monospace" }}
-                                      title={`Cost code ${l.cost_code} — ${describeCostCode(l.cost_code, { element: l.element_name, resource: l.resource_name })}`}
+                                      title={`Cost code ${l.cost_code} — ${describeCostCode(l.cost_code, {
+                                        // PRJ is the last four digits of the
+                                        // project code, so "6003" is job
+                                        // 26003 — name it, or the segment
+                                        // just restates itself.
+                                        project: [po.project_code, po.project_name].filter(Boolean).join(" "),
+                                        element: l.element_name,
+                                        resource: l.resource_name,
+                                      })}`}
                                     >
                                       {l.cost_code}
                                     </span>

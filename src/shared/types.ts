@@ -647,18 +647,20 @@ export function buildCostCode(project_number: string | number, element_code: str
 /**
  * Read a PRJ.ELE.RES code back out in words, for anyone who doesn't hold the
  * coding sheet in their head:
- *   "6003.30.M" → "project 6003 · element 30 (Wall cladding - Composite panel)
- *                  · resource M (Materials)"
+ *   "6003.30.M" → "project 6003 (26003 Dallas Rd Block D Roofing) · element 30
+ *                  (Wall cladding - Composite panel) · resource M (Materials)"
  * The names are optional — a code whose element has since been renamed out of
- * the table still reads out its own segments.
+ * the table still reads out its own segments. Naming the project matters most
+ * of the three: PRJ is only the last four digits of the project code
+ * (derivedProjectNumber), so "6003" is job 26003 and nothing on the row says so.
  */
 export function describeCostCode(
   code: string,
-  names?: { element?: string | null; resource?: string | null },
+  names?: { project?: string | null; element?: string | null; resource?: string | null },
 ): string {
   const [prj, ele, res] = code.split(".");
   return [
-    prj ? `project ${prj}` : null,
+    prj ? `project ${prj}${names?.project ? ` (${names.project})` : ""}` : null,
     ele ? `element ${ele}${names?.element ? ` (${names.element})` : ""}` : null,
     res ? `resource ${res}${names?.resource ? ` (${names.resource})` : ""}` : null,
   ].filter(Boolean).join(" · ");
