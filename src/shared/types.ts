@@ -251,7 +251,11 @@ export type POLine = {
   is_over_budget: boolean;
   priced_qty_at_order: number | null;
   committed_before: number | null;
-  // Derived at query time: PRJ.ELE.RES if the material links to a master product.
+  // Derived at query time: PRJ.ELE.RES if the material links to a master
+  // product. ELE is the project's own priced-workbook element where that
+  // resolves to a real one, else the product's catalogue element — an element
+  // describes how a material is used, and the same build-up is a wall on one
+  // job and a roof on another.
   cost_code?: string | null;
   /** The budget line this cost is coded to (materials.item), and that line's
    *  priced material budget. Set whenever material_id is — a retro PO's own
