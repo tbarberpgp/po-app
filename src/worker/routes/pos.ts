@@ -480,10 +480,22 @@ pos.get("/approval-evidence", async (c) => {
   ).all<{ id: string; po_number: string; supplier: string; project_id: string }>()).results;
   if (pending.length === 0) return c.json({});
 
-  const ids = pending.map((p) => p.id);
-  const numbers = pending.map((p) => p.po_number);
-  const idQ = ids.map(() => "?").join(",");
-  const numQ = numbers.map(() => "?").join(",");
+  // The three evidence reads below used to list the pending orders as bound
+  // parameters — the ids once, and for the receipt read the ids AND the numbers,
+  // so 2 parameters per order. D1 accepts 100 bound parameters in a query, so
+  // this panel had a hard ceiling at 50 pending orders, and the failure is
+  // silent: the throw lands in the catch the client wraps this call in, which
+  // sets the evidence to {}. Every row would read "no delivery note, no invoice"
+  // with the paperwork sitting in the table. 23 orders were queued when this was
+  // written, and the deliveries inbox hit the same wall at 97 orders.
+  //
+  // The pending set is a WHERE clause, not a list that has to be carried in, so
+  // it is derived in SQL and nothing scales with the queue. These two must stay
+  // in step with the `pending` read above: drift that widens them returns
+  // evidence for orders the panel never draws (the loops below skip those), and
+  // drift that narrows them would hide paperwork for an order it does draw.
+  const PENDING_IDS = "SELECT id FROM purchase_orders WHERE status = 'pending_approval'";
+  const PENDING_NUMBERS = "SELECT po_number FROM purchase_orders WHERE status = 'pending_approval'";
 
   // Same reach as the order page's own register: by id, or by the unique PO
   // number for receipts booked in before po_id was captured.
@@ -499,10 +511,10 @@ pos.get("/approval-evidence", async (c) => {
        LEFT JOIN invoices ci ON ci.id = d.source_invoice_id
        LEFT JOIN purchase_orders po ON po.po_number = d.po_number
        LEFT JOIN po_lines pl ON pl.id = d.po_line_id
-      WHERE d.po_id IN (${idQ})
-         OR (d.po_id IS NULL AND d.po_number IN (${numQ}))
+      WHERE d.po_id IN (${PENDING_IDS})
+         OR (d.po_id IS NULL AND d.po_number IN (${PENDING_NUMBERS}))
       ORDER BY d.delivered_at ASC, d.id ASC`,
-  ).bind(...ids, ...numbers).all<{
+  ).all<{
     po_id: string; id: number; po_line_id: number | null; description: string | null;
     po_line_desc: string | null; received_qty: number | null; received_unit: string | null;
     signed_by: string | null; status: string | null; delivered_at: string;
@@ -519,9 +531,9 @@ pos.get("/approval-evidence", async (c) => {
   const invoices = (await c.env.DB.prepare(
     `SELECT matched_po_id AS po_id, id, invoice_number, invoice_date, net_amount, status,
             file_key, file_type, xero_bill_number
-       FROM invoices WHERE matched_po_id IN (${idQ})
+       FROM invoices WHERE matched_po_id IN (${PENDING_IDS})
       ORDER BY invoice_date DESC, id DESC`,
-  ).bind(...ids).all<{
+  ).all<{
     po_id: string; id: number; invoice_number: string | null; invoice_date: string | null;
     net_amount: number | null; status: string | null; file_key: string | null;
     file_type: string | null; xero_bill_number: string | null;
@@ -536,9 +548,9 @@ pos.get("/approval-evidence", async (c) => {
          ON d.project_id = p.project_id
         AND lower(d.supplier) = lower(p.supplier)
         AND d.po_id IS NULL AND (d.po_number IS NULL OR d.po_number = '')
-      WHERE p.id IN (${idQ})
+      WHERE p.status = 'pending_approval'
       GROUP BY p.id`,
-  ).bind(...ids).all<{ po_id: string; n: number }>()).results;
+  ).all<{ po_id: string; n: number }>()).results;
 
   // Delivery tickets ONLY. That endpoint whitelists the operations prefixes
   // (deliveries/, rams/, progress/) and answers "bad key" to anything else, so
