@@ -253,6 +253,16 @@ export type POLine = {
   committed_before: number | null;
   // Derived at query time: PRJ.ELE.RES if the material links to a master product.
   cost_code?: string | null;
+  /** The budget line this cost is coded to (materials.item), and that line's
+   *  priced material budget. Set whenever material_id is — a retro PO's own
+   *  wording is often an invoice reference, so the budget line's descriptor is
+   *  the only thing on the row that says what was actually bought. */
+  budget_item?: string | null;
+  budget_value?: number | null;
+  /** What the cost code's segments stand for: the package element (ELE) and
+   *  the resource type (RES). resource_name is set only alongside cost_code. */
+  element_name?: string | null;
+  resource_name?: string | null;
   // Framework orders only: how much of this line its live call-offs have drawn
   // down, and what's left — on qty and on cost (a call-off can stay within
   // qty but still overspend on a higher unit cost). Set by GET /api/pos/:id
@@ -632,6 +642,26 @@ export function buildProductCode(element_code: string, item_no: number, variant:
 export function buildCostCode(project_number: string | number, element_code: string, resource: string): string {
   const prj = String(project_number).padStart(4, "0");
   return `${prj}.${element_code}.${resource}`;
+}
+
+/**
+ * Read a PRJ.ELE.RES code back out in words, for anyone who doesn't hold the
+ * coding sheet in their head:
+ *   "6003.30.M" → "project 6003 · element 30 (Wall cladding - Composite panel)
+ *                  · resource M (Materials)"
+ * The names are optional — a code whose element has since been renamed out of
+ * the table still reads out its own segments.
+ */
+export function describeCostCode(
+  code: string,
+  names?: { element?: string | null; resource?: string | null },
+): string {
+  const [prj, ele, res] = code.split(".");
+  return [
+    prj ? `project ${prj}` : null,
+    ele ? `element ${ele}${names?.element ? ` (${names.element})` : ""}` : null,
+    res ? `resource ${res}${names?.resource ? ` (${names.resource})` : ""}` : null,
+  ].filter(Boolean).join(" · ");
 }
 
 /**

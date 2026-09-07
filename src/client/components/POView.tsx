@@ -5,6 +5,7 @@ import { downloadPdf, generatePoPdf } from "../lib/po-pdf";
 import { Topbar } from "./Shell";
 import { GroupedCombobox } from "./GroupedCombobox";
 import { can } from "../../shared/permissions";
+import { describeCostCode } from "../../shared/types";
 import type { CurrentUser, PoDeliveryDrop, PurchaseOrder, Supplier } from "../../shared/types";
 import { poDeliveryLabel } from "../../shared/po-delivery-status";
 
@@ -128,13 +129,14 @@ export function POView({ me }: { me: CurrentUser | null }) {
   const supplierRecord = approvedSuppliers.find((s) => s.name.toLowerCase() === po.supplier.trim().toLowerCase()) ?? null;
 
   // Line search runs over the lines already loaded — no round-trip per
-  // keystroke. Match on item wording, manufacturer, cost code and budget type,
+  // keystroke. Match on everything the row shows — item wording, manufacturer,
+  // cost code, budget type, and the budget line and element it's coded to —
   // and require every term to hit somewhere, so "alumasc bracket" narrows
   // rather than widens.
   const lineTerms = lineQ.trim().toLowerCase().split(/\s+/).filter(Boolean);
   const lineFilterActive = lineTerms.length > 0;
   const shownLines = !lineFilterActive ? po.lines : po.lines.filter((l) => {
-    const hay = `${l.item ?? ""} ${l.manufacturer ?? ""} ${l.cost_code ?? ""} ${l.type ?? ""}`.toLowerCase();
+    const hay = `${l.item ?? ""} ${l.manufacturer ?? ""} ${l.cost_code ?? ""} ${l.type ?? ""} ${l.budget_item ?? ""} ${l.element_name ?? ""}`.toLowerCase();
     return lineTerms.every((t) => hay.includes(t));
   });
   const shownLinesTotal = shownLines.reduce((s, l) => s + (Number(l.line_total) || 0), 0);
@@ -438,11 +440,46 @@ export function POView({ me }: { me: CurrentUser | null }) {
                     <tr key={l.id}>
                       <td>
                         {l.item}
-                        {l.cost_code && (
-                          <div className="muted" style={{ fontSize: 11, fontFamily: "ui-monospace, monospace", marginTop: 2 }}>
-                            {l.cost_code}
-                          </div>
-                        )}
+                        {(l.cost_code || l.budget_item) && (() => {
+                          // The code on its own ("6003.30.M") means nothing to
+                          // anyone not holding the coding sheet, so it reads
+                          // out its element and resource in words.
+                          const words = [l.element_name, l.resource_name].filter(Boolean).join(" · ");
+                          // A line's wording is usually the budget line's own
+                          // descriptor; on a retro PO raised off an invoice
+                          // it's a supplier reference ("… — invoice SI559354")
+                          // and then the descriptor is the only thing on the
+                          // row that says what the money was actually spent
+                          // on. Named only when it adds something.
+                          const budgetItem = (l.budget_item ?? "").trim();
+                          const namesTheBudget = budgetItem && budgetItem.toLowerCase() !== (l.item ?? "").trim().toLowerCase();
+                          return (
+                            <div className="muted" style={{ fontSize: 11, marginTop: 2, display: "grid", gap: 1 }}>
+                              {(l.cost_code || words) && (
+                                <div>
+                                  {l.cost_code && (
+                                    <span
+                                      style={{ fontFamily: "ui-monospace, monospace" }}
+                                      title={`Cost code ${l.cost_code} — ${describeCostCode(l.cost_code, { element: l.element_name, resource: l.resource_name })}`}
+                                    >
+                                      {l.cost_code}
+                                    </span>
+                                  )}
+                                  {words && (l.cost_code ? ` · ${words}` : words)}
+                                </div>
+                              )}
+                              {namesTheBudget && (
+                                // Trimmed in JS rather than line-clamped in
+                                // CSS so the budgeted figure at the end can't
+                                // be the part that gets clipped.
+                                <div title={`Budget line: ${budgetItem}${l.budget_value ? ` — ${fmtMoney(l.budget_value)} budgeted on that line` : ""}. This cost counts against it.`}>
+                                  Budget line: {shortDescriptor(budgetItem)}
+                                  {l.budget_value ? ` · ${fmtMoney(l.budget_value)} budgeted` : ""}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()}
                         {(l.is_unpriced || l.is_over_budget || frameworkOver) && (
                           <div style={{ marginTop: 4, display: "flex", gap: 6 }}>
                             {l.is_unpriced && (l.material_id != null
@@ -1177,6 +1214,18 @@ function tryParseQuote(details: string): string | null {
     const o = JSON.parse(details);
     return o.reason ?? null;
   } catch { return null; }
+}
+
+/** Enough of a BOQ descriptor to identify the budget line inside a table cell.
+ *  They run to a couple of hundred characters — part code, spec, then finish
+ *  and colour options — so this cuts on a word boundary and leaves the tail to
+ *  the hover title. */
+function shortDescriptor(s: string, max = 80): string {
+  if (s.length <= max) return s;
+  const cut = s.slice(0, max);
+  const space = cut.lastIndexOf(" ");
+  const kept = space > max * 0.6 ? cut.slice(0, space) : cut;
+  return `${kept.replace(/[\s.,;:·—-]+$/, "")}…`;
 }
 
 function initials(email: string): string {
