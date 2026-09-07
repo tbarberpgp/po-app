@@ -500,6 +500,19 @@ export type ApprovedPo = {
   issued_at: string | null;
   project_code: string;
   project_name: string;
+  /** The invoice(s) this order was raised to cover — the paperwork behind the
+   *  decision, reachable from the record rather than only from the queue.
+   *
+   *  An array because 18 orders already carry more than one matched invoice;
+   *  empty for an order that never had one. */
+  invoices: Array<{
+    id: number;
+    invoice_number: string | null;
+    /** The document itself. Null when the invoice kept no file, or when the
+     *  reader may not see invoices — a link that could only 403 is worse than
+     *  the number on its own. */
+    file_url: string | null;
+  }>;
 };
 
 export type Approver = {
