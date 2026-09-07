@@ -260,9 +260,13 @@ export type POLine = {
   budget_item?: string | null;
   budget_value?: number | null;
   /** What the cost code's segments stand for: the package element (ELE) and
-   *  the resource type (RES). resource_name is set only alongside cost_code. */
+   *  the resource type (RES), each with the coding sheet's own one-line gloss
+   *  (elements.notes / resource_types.usage) for the breakdown panel. The
+   *  resource fields are set only alongside cost_code. */
   element_name?: string | null;
+  element_notes?: string | null;
   resource_name?: string | null;
+  resource_usage?: string | null;
   // Framework orders only: how much of this line its live call-offs have drawn
   // down, and what's left — on qty and on cost (a call-off can stay within
   // qty but still overspend on a higher unit cost). Set by GET /api/pos/:id

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, fmtDate, fmtMoney, fmtQty } from "../lib/api";
 import { downloadPdf, generatePoPdf } from "../lib/po-pdf";
@@ -6,7 +6,7 @@ import { Topbar } from "./Shell";
 import { GroupedCombobox } from "./GroupedCombobox";
 import { can } from "../../shared/permissions";
 import { describeCostCode } from "../../shared/types";
-import type { CurrentUser, PoDeliveryDrop, PurchaseOrder, Supplier } from "../../shared/types";
+import type { CurrentUser, POLine, PoDeliveryDrop, PurchaseOrder, Supplier } from "../../shared/types";
 import { poDeliveryLabel } from "../../shared/po-delivery-status";
 
 type Row = PurchaseOrder & {
@@ -42,6 +42,17 @@ export function POView({ me }: { me: CurrentUser | null }) {
   const [openDeliveries, setOpenDeliveries] = useState<Set<number>>(new Set());
   function toggleDeliveries(lineId: number) {
     setOpenDeliveries((s) => {
+      const next = new Set(s);
+      next.has(lineId) ? next.delete(lineId) : next.add(lineId);
+      return next;
+    });
+  }
+  // Which lines have their cost code broken down — clicking "6003.30.M"
+  // explains its three segments in place, since nothing in the digits says
+  // which job, package or resource type they stand for.
+  const [openCostCodes, setOpenCostCodes] = useState<Set<number>>(new Set());
+  function toggleCostCode(lineId: number) {
+    setOpenCostCodes((s) => {
       const next = new Set(s);
       next.has(lineId) ? next.delete(lineId) : next.add(lineId);
       return next;
@@ -453,39 +464,52 @@ export function POView({ me }: { me: CurrentUser | null }) {
                           // on. Named only when it adds something.
                           const budgetItem = (l.budget_item ?? "").trim();
                           const namesTheBudget = budgetItem && budgetItem.toLowerCase() !== (l.item ?? "").trim().toLowerCase();
+                          const codeOpen = l.id != null && openCostCodes.has(l.id);
                           return (
+                            <>
                             <div className="muted" style={{ fontSize: 11, marginTop: 2, display: "grid", gap: 1 }}>
                               {(l.cost_code || words) && (
                                 <div>
-                                  {l.cost_code && (
-                                    <span
-                                      style={{ fontFamily: "ui-monospace, monospace" }}
-                                      title={`Cost code ${l.cost_code} — ${describeCostCode(l.cost_code, {
-                                        // PRJ is the last four digits of the
-                                        // project code, so "6003" is job
-                                        // 26003 — name it, or the segment
-                                        // just restates itself.
-                                        project: [po.project_code, po.project_name].filter(Boolean).join(" "),
-                                        element: l.element_name,
-                                        resource: l.resource_name,
-                                      })}`}
-                                    >
-                                      {l.cost_code}
-                                    </span>
-                                  )}
+                                  {l.cost_code && (l.id != null
+                                    // The code is its own explainer: clicking
+                                    // it opens the segment-by-segment
+                                    // breakdown below.
+                                    ? <button
+                                        type="button"
+                                        className="cost-code"
+                                        aria-expanded={codeOpen}
+                                        title={`Cost code ${l.cost_code} — ${describeCostCode(l.cost_code, {
+                                          // PRJ is the last four digits of the
+                                          // project code, so "6003" is job
+                                          // 26003 — name it, or the segment
+                                          // just restates itself.
+                                          project: [po.project_code, po.project_name].filter(Boolean).join(" "),
+                                          element: l.element_name,
+                                          resource: l.resource_name,
+                                        })}. Click to break it down.`}
+                                        onClick={() => toggleCostCode(l.id!)}
+                                      >
+                                        {l.cost_code}
+                                      </button>
+                                    : <span style={{ fontFamily: "ui-monospace, monospace" }}>{l.cost_code}</span>)}
                                   {words && (l.cost_code ? ` · ${words}` : words)}
                                 </div>
                               )}
                               {namesTheBudget && (
                                 // Trimmed in JS rather than line-clamped in
                                 // CSS so the budgeted figure at the end can't
-                                // be the part that gets clipped.
+                                // be the part that gets clipped. The whole
+                                // descriptor is in the breakdown panel.
                                 <div title={`Budget line: ${budgetItem}${l.budget_value ? ` — ${fmtMoney(l.budget_value)} budgeted on that line` : ""}. This cost counts against it.`}>
                                   Budget line: {shortDescriptor(budgetItem)}
                                   {l.budget_value ? ` · ${fmtMoney(l.budget_value)} budgeted` : ""}
                                 </div>
                               )}
                             </div>
+                            {codeOpen && l.cost_code && (
+                              <CostCodeBreakdown line={l} projectCode={po.project_code} projectName={po.project_name} />
+                            )}
+                            </>
                           );
                         })()}
                         {(l.is_unpriced || l.is_over_budget || frameworkOver) && (
@@ -1222,6 +1246,58 @@ function tryParseQuote(details: string): string | null {
     const o = JSON.parse(details);
     return o.reason ?? null;
   } catch { return null; }
+}
+
+/**
+ * What "6003.30.M" actually is, opened from the code itself on a PO line.
+ * The code is three lookups stitched together at read time (buildCostCode),
+ * and not one of them is legible from the digits: PRJ is the last four of the
+ * project code, ELE a package element carried by the linked master product,
+ * RES a resource type. So each segment gets its value, what it stands for,
+ * and the coding sheet's own gloss on it.
+ */
+function CostCodeBreakdown({ line, projectCode, projectName }: {
+  line: POLine; projectCode: string; projectName: string;
+}) {
+  const [prj, ele, res] = (line.cost_code ?? "").split(".");
+  // PRJ keeps only the trailing four digits, so on a five-digit code (26003)
+  // the segment isn't the number anyone quotes. Say so, but only when digits
+  // actually went missing.
+  const digits = (projectCode ?? "").replace(/\D/g, "");
+  const budgetItem = (line.budget_item ?? "").trim();
+  const segments: Array<{ value: string; label: string; name: string | null; gloss: string | null }> = [
+    { value: prj ?? "", label: "Project", name: [projectCode, projectName].filter(Boolean).join(" ") || null,
+      gloss: prj && digits && digits !== prj ? `The last four digits of project code ${projectCode}` : null },
+    { value: ele ?? "", label: "Element", name: line.element_name ?? null, gloss: line.element_notes ?? null },
+    { value: res ?? "", label: "Resource", name: line.resource_name ?? null, gloss: line.resource_usage ?? null },
+  ];
+  return (
+    <div className="cc-panel" style={{ fontSize: 11.5 }}>
+      <div className="cc-hd">
+        <span className="eyebrow" style={{ fontSize: 10 }}>Cost code</span>
+        <span className="cc-fmt">PRJ.ELE.RES</span>
+      </div>
+      {/* One grid for all three segments — a grid per row would size its own
+          value column and the labels wouldn't line up. */}
+      <div className="cc-seg">
+        {segments.filter((sg) => sg.value).map((sg) => (
+          <Fragment key={sg.label}>
+            <span className="cc-val">{sg.value}</span>
+            <span className="cc-what"><b>{sg.label}</b>{sg.name ? ` — ${sg.name}` : ""}</span>
+            {sg.gloss && <span className="cc-gloss">{sg.gloss}</span>}
+          </Fragment>
+        ))}
+      </div>
+      {budgetItem && (
+        // The full descriptor, untruncated — the row above only has room for
+        // the first eighty characters of it.
+        <div className="cc-budget">
+          <b>Budget line</b> — {budgetItem}
+          {line.budget_value ? ` · ${fmtMoney(line.budget_value)} budgeted on that line` : ""}
+        </div>
+      )}
+    </div>
+  );
 }
 
 /** Enough of a BOQ descriptor to identify the budget line inside a table cell.

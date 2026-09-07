@@ -762,7 +762,9 @@ pos.get("/:id", async (c) => {
             pr.element_code       AS link_element_code,
             pr.default_resource   AS link_default_resource,
             el.name               AS link_element_name,
-            rt.name               AS link_resource_name
+            el.notes              AS link_element_notes,
+            rt.name               AS link_resource_name,
+            rt.usage              AS link_resource_usage
      FROM po_lines pl
      LEFT JOIN materials m  ON m.id = pl.material_id
      LEFT JOIN products  pr ON pr.id = m.product_id
@@ -778,7 +780,9 @@ pos.get("/:id", async (c) => {
       link_element_code: string | null;
       link_default_resource: string | null;
       link_element_name: string | null;
+      link_element_notes: string | null;
       link_resource_name: string | null;
+      link_resource_usage: string | null;
     }>();
 
   const projectCode = po.project_code as string;
@@ -1021,7 +1025,9 @@ pos.get("/:id", async (c) => {
       budget_item: l.link_budget_item ?? null,
       budget_value: l.link_budget_value ?? null,
       element_name: l.link_element_name ?? null,
+      element_notes: l.link_element_notes ?? null,
       resource_name: cost_code ? l.link_resource_name ?? null : null,
+      resource_usage: cost_code ? l.link_resource_usage ?? null : null,
       deliveries, received_qty: deliveries.reduce((s, d) => s + d.qty, 0),
     };
     if (drawByItem) {

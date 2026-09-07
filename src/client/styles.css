@@ -2178,3 +2178,21 @@ body.rd-printing .rd-linedel, body.rd-printing .rd-addline, body.rd-printing .rd
 .doc-preview table { margin: 10px 0; }
 .doc-preview td, .doc-preview th { white-space: normal; }
 .doc-preview img { max-width: 100%; }
+
+/* ── Cost code breakdown (PO line items) ─────────────────────────────────────
+   The code itself is the control — dotted underline, because a bare mono
+   "6003.30.M" gives no hint that clicking it explains anything. */
+.cost-code { font: inherit; font-family: ui-monospace, monospace; background: none; border: 0; padding: 0;
+  color: var(--muted); border-bottom: 1px dotted var(--line-strong); cursor: pointer; min-height: 0; }
+.cost-code:hover, .cost-code[aria-expanded="true"] { color: var(--ink); border-bottom-color: var(--accent); }
+.cc-panel { margin-top: 5px; padding: 8px 10px; background: var(--card-2); border: 1px solid var(--line);
+  border-radius: var(--radius-md); display: grid; gap: 6px; max-width: 460px; }
+.cc-panel .cc-hd { display: flex; gap: 8px; align-items: baseline; }
+.cc-panel .cc-fmt { font-family: ui-monospace, monospace; color: var(--ink-2); }
+.cc-seg { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; align-items: baseline; }
+.cc-seg > .cc-val { font-family: ui-monospace, monospace; font-weight: 600; color: var(--ink); text-align: right; }
+.cc-seg > .cc-what { color: var(--ink-2); }
+.cc-seg > .cc-what b { font-weight: 600; color: var(--ink); }
+.cc-seg > .cc-gloss { grid-column: 2; color: var(--muted); font-size: 11px; }
+.cc-panel .cc-budget { border-top: 1px solid var(--line); padding-top: 6px; color: var(--ink-2); }
+.cc-panel .cc-budget b { font-weight: 600; color: var(--ink); }
