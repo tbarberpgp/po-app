@@ -631,7 +631,18 @@ function EvidenceCell({ ev }: { ev: PoApprovalEvidence | undefined }) {
       </span>,
     );
   }
-  if (ev.invoice) bits.push(<span key="inv" className="muted">· inv {ev.invoice.invoice_number ?? `#${ev.invoice.id}`}</span>);
+  if (ev.invoices.length > 0) {
+    const refs = ev.invoices.map((i) => i.invoice_number ?? `#${i.id}`).join(", ");
+    bits.push(
+      <span
+        key="inv"
+        className="muted"
+        title={ev.invoices.length > 1 ? `This order was raised to cover ${ev.invoices.length} invoices` : undefined}
+      >
+        · {ev.invoices.length > 1 ? "invs" : "inv"} {refs}
+      </span>,
+    );
+  }
   return <span style={{ display: "inline-flex", gap: 5, alignItems: "center", flexWrap: "wrap" }}>{bits}</span>;
 }
 
@@ -640,22 +651,25 @@ function EvidenceDetail({ ev }: { ev: PoApprovalEvidence | undefined }) {
   if (!ev) return <div className="muted">No paperwork found for this order.</div>;
   return (
     <div style={{ display: "grid", gap: 10, padding: "4px 2px 8px" }}>
-      {ev.invoice && (
-        <div style={{ display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap" }}>
+      {/* One line per invoice. An order raised to cover two of them was showing
+          one, which is the worst version of this panel: it reads as the whole
+          story of what is being paid. */}
+      {ev.invoices.map((inv) => (
+        <div key={inv.id} style={{ display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap" }}>
           <span className="eyebrow" style={{ margin: 0 }}>Invoice</span>
-          <b>{ev.invoice.invoice_number ?? `#${ev.invoice.id}`}</b>
-          <span className="muted">{fmtDate(ev.invoice.invoice_date)}</span>
-          <span className="num">{ev.invoice.net_amount != null ? fmtMoney(ev.invoice.net_amount) : "—"}</span>
-          {ev.invoice.status === "pushed" && (
+          <b>{inv.invoice_number ?? `#${inv.id}`}</b>
+          <span className="muted">{fmtDate(inv.invoice_date)}</span>
+          <span className="num">{inv.net_amount != null ? fmtMoney(inv.net_amount) : "—"}</span>
+          {inv.status === "pushed" && (
             <span className="pill warn" title="This bill is already in Xero — the money has moved, and approving now records the authority after the fact">
-              already in Xero{ev.invoice.xero_bill_number ? ` · ${ev.invoice.xero_bill_number}` : ""}
+              already in Xero{inv.xero_bill_number ? ` · ${inv.xero_bill_number}` : ""}
             </span>
           )}
-          {ev.invoice.file_url && (
-            <a href={ev.invoice.file_url} target="_blank" rel="noreferrer">Open invoice ↗</a>
+          {inv.file_url && (
+            <a href={inv.file_url} target="_blank" rel="noreferrer">Open invoice ↗</a>
           )}
         </div>
-      )}
+      ))}
 
       {ev.over_delivered.length > 0 && (
         <div className="flash error" style={{ margin: 0 }}>
