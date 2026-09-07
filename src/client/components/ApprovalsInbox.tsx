@@ -492,7 +492,8 @@ export function ApprovalsInbox({ me }: { me: CurrentUser | null }) {
               <div className="card">
                 <div className="card-hd">
                   <span className="muted" style={{ fontSize: 12.5, flex: 1 }}>
-                    Already signed off, most recent first — click a PO number to open it.
+                    Already signed off, most recent first — click a PO number to open it,
+                    or an invoice number to open the invoice itself.
                     {approved.length >= APPROVED_LIMIT && ` Showing the ${APPROVED_LIMIT} most recent decisions.`}
                   </span>
                 </div>
@@ -504,6 +505,7 @@ export function ApprovalsInbox({ me }: { me: CurrentUser | null }) {
                       <th>Supplier</th>
                       <th className="num">Value</th>
                       <th className="center">Tier</th>
+                      <th>Invoice</th>
                       <th className="center">Sent</th>
                       <th>Approved</th>
                       <th>By</th>
@@ -518,6 +520,26 @@ export function ApprovalsInbox({ me }: { me: CurrentUser | null }) {
                         <td>{r.supplier}</td>
                         <td className="num">{fmtMoney(r.total_value)}</td>
                         <td className="center">{r.approval_tier?.replace("_", " ") ?? "—"}</td>
+                        {/* The paperwork the order was raised to cover. Several
+                            invoices can hang off one order, so all of them are
+                            listed rather than the first one standing in for the
+                            rest. A number with no link is an invoice this reader
+                            may not open, or one that kept no document. */}
+                        <td>
+                          {r.invoices.length === 0
+                            ? <span className="muted">—</span>
+                            : r.invoices.map((inv, i) => {
+                                const ref = inv.invoice_number ?? `#${inv.id}`;
+                                return (
+                                  <Fragment key={inv.id}>
+                                    {i > 0 && <span className="muted"> · </span>}
+                                    {inv.file_url
+                                      ? <a href={inv.file_url} target="_blank" rel="noreferrer" title={`Open invoice ${ref}`}>{ref} ↗</a>
+                                      : <span title="No document stored for this invoice">{ref}</span>}
+                                  </Fragment>
+                                );
+                              })}
+                        </td>
                         {/* Approved and sent to the supplier are two different
                             states, and the gap between them is someone's job —
                             so an approved order still sitting unsent says so. */}

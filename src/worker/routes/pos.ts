@@ -700,20 +700,65 @@ pos.get("/approved", async (c) => {
   // rather than returned whole.
   const asked = Number(c.req.query("limit"));
   const limit = Number.isFinite(asked) && asked > 0 ? Math.min(asked, 500) : 100;
-  const rows = await c.env.DB.prepare(
-    `SELECT po.id, po.po_number, po.supplier, po.total_value, po.status,
-            po.approval_tier, po.approval_reason, po.approved_at, po.approved_by,
-            po.created_by, po.issued_at,
-            p.code AS project_code, p.name AS project_name
-       FROM purchase_orders po
-       JOIN projects p ON p.id = po.project_id
-      WHERE po.approved_at IS NOT NULL
-        AND po.status IN ('approved', 'issued')
-        AND p.deleted_at IS NULL
-      ORDER BY po.approved_at DESC
-      LIMIT ?`,
-  ).bind(limit).all<ApprovedPo>();
-  return c.json(rows.results);
+
+  // The invoice each order was raised to cover comes back in the SAME query,
+  // joined off a CTE rather than fetched by a second pass over the ids.
+  //
+  // Binding one parameter per order is what this shape avoids: D1 accepts 100
+  // bound parameters and the cap here goes to 500, so an `IN (?,?,…)` over the
+  // page would throw on any sizeable list. Only the limit is bound.
+  //
+  // A LEFT JOIN, and grouped below rather than trusted to be one row per order:
+  // 18 orders already carry more than one matched invoice, so joining straight
+  // into the row list would silently duplicate those orders.
+  const rows = (await c.env.DB.prepare(
+    `WITH approved AS (
+       SELECT po.id, po.po_number, po.supplier, po.total_value, po.status,
+              po.approval_tier, po.approval_reason, po.approved_at, po.approved_by,
+              po.created_by, po.issued_at,
+              p.code AS project_code, p.name AS project_name
+         FROM purchase_orders po
+         JOIN projects p ON p.id = po.project_id
+        WHERE po.approved_at IS NOT NULL
+          AND po.status IN ('approved', 'issued')
+          AND p.deleted_at IS NULL
+        ORDER BY po.approved_at DESC
+        LIMIT ?
+     )
+     SELECT a.*,
+            i.id AS invoice_id, i.invoice_number, i.file_key AS invoice_file_key
+       FROM approved a
+       LEFT JOIN invoices i ON i.matched_po_id = a.id
+      ORDER BY a.approved_at DESC, i.invoice_date DESC, i.id DESC`,
+  ).bind(limit).all<Omit<ApprovedPo, "invoices"> & {
+    invoice_id: number | null;
+    invoice_number: string | null;
+    invoice_file_key: string | null;
+  }>()).results;
+
+  // The document is offered only to a reader allowed to see invoices — the same
+  // call the delivery register and the pending queue make. `/api/invoices/:id/file`
+  // re-checks it anyway; withholding the link keeps one that could only 403 off
+  // the page.
+  const canSeeInvoices = can(c.get("userRole"), "commercial.view");
+
+  const byId = new Map<string, ApprovedPo>();
+  for (const r of rows) {
+    const { invoice_id, invoice_number, invoice_file_key, ...po } = r;
+    let out = byId.get(po.id);
+    if (!out) {
+      out = { ...po, invoices: [] };
+      byId.set(po.id, out);
+    }
+    if (invoice_id != null) {
+      out.invoices.push({
+        id: invoice_id,
+        invoice_number,
+        file_url: canSeeInvoices && invoice_file_key ? `/api/invoices/${invoice_id}/file` : null,
+      });
+    }
+  }
+  return c.json([...byId.values()]);
 });
 
 pos.get("/:id", async (c) => {
