@@ -426,7 +426,15 @@ export type PoDeliveryDrop = {
  * `unlinked_supplier_deliveries` and never presented as evidence.
  */
 export type PoApprovalEvidence = {
-  invoice: {
+  /** The invoice(s) the order was raised to cover, newest first.
+   *
+   *  An array because one order genuinely covers several: 18 of the orders
+   *  signed off so far carry more than one matched invoice. This was a single
+   *  field, assigned in a loop, so the last invoice read silently stood in for
+   *  the rest and an approver saw one piece of paper where there were two.
+   *
+   *  Empty for an order with no invoice behind it. */
+  invoices: Array<{
     id: number;
     invoice_number: string | null;
     invoice_date: string | null;
@@ -436,7 +444,7 @@ export type PoApprovalEvidence = {
     file_url: string | null;
     file_type: string | null;
     xero_bill_number: string | null;
-  } | null;
+  }>;
   /** One entry per delivery NOTE, oldest first — not per receipt row. */
   deliveries: Array<{
     key: string;

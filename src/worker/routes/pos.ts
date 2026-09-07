@@ -519,7 +519,8 @@ pos.get("/approval-evidence", async (c) => {
   const invoices = (await c.env.DB.prepare(
     `SELECT matched_po_id AS po_id, id, invoice_number, invoice_date, net_amount, status,
             file_key, file_type, xero_bill_number
-       FROM invoices WHERE matched_po_id IN (${idQ})`,
+       FROM invoices WHERE matched_po_id IN (${idQ})
+      ORDER BY invoice_date DESC, id DESC`,
   ).bind(...ids).all<{
     po_id: string; id: number; invoice_number: string | null; invoice_date: string | null;
     net_amount: number | null; status: string | null; file_key: string | null;
@@ -565,7 +566,7 @@ pos.get("/approval-evidence", async (c) => {
   const out: Record<string, PoApprovalEvidence> = {};
   for (const p of pending) {
     out[p.id] = {
-      invoice: null,
+      invoices: [],
       deliveries: [],
       over_delivered: [],
       unlinked_supplier_deliveries: unlinked.find((u) => u.po_id === p.id)?.n ?? 0,
@@ -661,7 +662,7 @@ pos.get("/approval-evidence", async (c) => {
   for (const inv of invoices) {
     const bucket = out[inv.po_id];
     if (!bucket) continue;
-    bucket.invoice = {
+    bucket.invoices.push({
       id: inv.id,
       invoice_number: inv.invoice_number,
       invoice_date: inv.invoice_date,
@@ -673,7 +674,7 @@ pos.get("/approval-evidence", async (c) => {
       file_url: canSeeInvoices && inv.file_key ? `/api/invoices/${inv.id}/file` : null,
       file_type: inv.file_type,
       xero_bill_number: inv.xero_bill_number,
-    };
+    });
   }
   return c.json(out);
 });
