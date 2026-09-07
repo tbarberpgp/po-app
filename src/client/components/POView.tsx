@@ -368,11 +368,27 @@ export function POView({ me }: { me: CurrentUser | null }) {
                   { label: "", options: [{ value: "", label: "— Not coded to the budget —" }] },
                   ...[...byGroup.entries()].map(([label, ms]) => ({
                     label,
-                    options: ms.map((m) => ({
-                      value: String(m.id),
-                      label: m.item,
-                      hint: [m.element_code, m.total_qty != null ? `${m.total_qty}${m.rate_unit ? ` ${m.rate_unit}` : ""} budgeted` : null].filter(Boolean).join(" · ") || undefined,
-                    })),
+                    options: ms.map((m) => {
+                      // Same decision aid as the Unexpected-spend picker
+                      // (AssignBudgetCell): budgeted qty, then how much of it
+                      // is left. Budget reads in the measured unit (m²/lm);
+                      // remaining is tracked in pack units (how POs are
+                      // raised), so it carries its own unit label. Both go
+                      // through fmtQty — the raw values carry float noise
+                      // (1591.0669565217393 ea) from coverage/waste maths.
+                      const budget = m.total_qty != null
+                        ? (m.total_qty > 0 ? `${fmtQty(m.total_qty)}${m.rate_unit ? ` ${m.rate_unit}` : ""} budgeted` : "no budgeted qty")
+                        : null;
+                      const packUnit = m.total_units_unit ? ` ${m.total_units_unit}` : "";
+                      const left = m.remaining_qty != null
+                        ? (m.remaining_qty < 0 ? `${fmtQty(-m.remaining_qty)}${packUnit} over` : `${fmtQty(m.remaining_qty)}${packUnit} left`)
+                        : null;
+                      return {
+                        value: String(m.id),
+                        label: m.item,
+                        hint: [m.element_code, budget, left].filter(Boolean).join(" · ") || undefined,
+                      };
+                    }),
                   })),
                 ];
                 return (
