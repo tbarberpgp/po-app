@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import type { Env, Variables } from "../env";
-import type { CreatePOInput, POLine, PoApprovalEvidence, PoDeliveryDrop } from "../../shared/types";
+import type { ApprovedPo, CreatePOInput, POLine, PoApprovalEvidence, PoDeliveryDrop } from "../../shared/types";
 import { loadSettings, tierForApproval } from "../approval";
 import { learnAliases } from "../matchMemory";
 import { normText } from "../../shared/line-match";
@@ -676,6 +676,44 @@ pos.get("/approval-evidence", async (c) => {
     };
   }
   return c.json(out);
+});
+
+/**
+ * Orders that have already been signed off — the record behind the queue.
+ *
+ * The dashboard only ever showed what was still waiting, so "did that get
+ * approved, and by whom?" meant opening orders one at a time.
+ *
+ * Keyed on `approved_at`, NOT on status alone. An order under the approval
+ * threshold is issued without ever being approved, and listing it here would
+ * claim a decision nobody made. Status is narrowed as well so an approval that
+ * was later overturned stops reading as approved: rejecting leaves
+ * `approved_at` exactly where it was, and only the approve path clears the
+ * rejection columns. Deleted orders drop out with it — 28 of them are already
+ * once-approved, and they are hidden everywhere else too.
+ *
+ * Registered above `/:id` — Hono matches in registration order, and the
+ * parameter route would otherwise swallow this path.
+ */
+pos.get("/approved", async (c) => {
+  // This list only grows — 103 orders are signed off already — so it is capped
+  // rather than returned whole.
+  const asked = Number(c.req.query("limit"));
+  const limit = Number.isFinite(asked) && asked > 0 ? Math.min(asked, 500) : 100;
+  const rows = await c.env.DB.prepare(
+    `SELECT po.id, po.po_number, po.supplier, po.total_value, po.status,
+            po.approval_tier, po.approval_reason, po.approved_at, po.approved_by,
+            po.created_by, po.issued_at,
+            p.code AS project_code, p.name AS project_name
+       FROM purchase_orders po
+       JOIN projects p ON p.id = po.project_id
+      WHERE po.approved_at IS NOT NULL
+        AND po.status IN ('approved', 'issued')
+        AND p.deleted_at IS NULL
+      ORDER BY po.approved_at DESC
+      LIMIT ?`,
+  ).bind(limit).all<ApprovedPo>();
+  return c.json(rows.results);
 });
 
 pos.get("/:id", async (c) => {

@@ -2,11 +2,18 @@ import { Fragment, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, fmtDate, fmtMoney } from "../lib/api";
 import { Topbar } from "./Shell";
-import type { CurrentUser, InvoiceQueueRow, PendingPriceApproval, PendingSubstitution, PoApprovalEvidence, PurchaseOrder } from "../../shared/types";
+import type { ApprovedPo, CurrentUser, InvoiceQueueRow, PendingPriceApproval, PendingSubstitution, PoApprovalEvidence, PurchaseOrder } from "../../shared/types";
 
 type Row = PurchaseOrder & { project_code: string; project_name: string };
 type Upload = Awaited<ReturnType<typeof api.listPendingUploads>>[number];
-type TabKey = "pos" | "invoices" | "prices" | "subs" | "uploads";
+type TabKey = "pos" | "invoices" | "prices" | "subs" | "uploads" | "approved";
+
+// How much of the approval record to pull. Past decisions only accumulate —
+// the company is at 103 signed off already — so the tab shows a recent window
+// and says so when it is one. Note the server caps BEFORE the tier filter
+// below, so an approver holding a single tier sees their share of the last
+// APPROVED_LIMIT decisions, not their last APPROVED_LIMIT.
+const APPROVED_LIMIT = 200;
 
 export function ApprovalsInbox({ me }: { me: CurrentUser | null }) {
   const [rows, setRows] = useState<Row[]>([]);
@@ -14,6 +21,7 @@ export function ApprovalsInbox({ me }: { me: CurrentUser | null }) {
   const [subs, setSubs] = useState<PendingSubstitution[]>([]);
   const [uploads, setUploads] = useState<Upload[]>([]);
   const [invoices, setInvoices] = useState<InvoiceQueueRow[]>([]);
+  const [approved, setApproved] = useState<ApprovedPo[]>([]);
   const [invBusy, setInvBusy] = useState<number | null>(null);
   const [evidence, setEvidence] = useState<Record<string, PoApprovalEvidence>>({});
   const [openEvidence, setOpenEvidence] = useState<Set<string>>(new Set());
@@ -32,6 +40,9 @@ export function ApprovalsInbox({ me }: { me: CurrentUser | null }) {
     api.listPendingSubstitutions().then(setSubs).catch(() => setSubs([]));
     api.listPendingUploads().then(setUploads).catch(() => setUploads([]));
     api.invoiceQueues().then((q) => setInvoices(q.awaiting)).catch(() => setInvoices([]));
+    // The record of past decisions. Independent of the queue — if it fails it
+    // must not take the pending list down with it.
+    api.listApprovedPOs(APPROVED_LIMIT).then(setApproved).catch(() => setApproved([]));
     // Evidence is supporting detail: if it fails the queue still works, it
     // just goes back to saying nothing about the paperwork.
     api.listApprovalEvidence().then(setEvidence).catch(() => setEvidence({}));
@@ -61,6 +72,11 @@ export function ApprovalsInbox({ me }: { me: CurrentUser | null }) {
   const mineSubs = me
     ? subs.filter((s) => isSuper || (s.approval_tier && me.approver_tiers.includes(s.approval_tier)))
     : [];
+  // Scoped like the pending tabs: you see decisions at the tiers you hold, and
+  // a superadmin oversees every one of them.
+  const mineApproved = me
+    ? approved.filter((r) => isSuper || (r.approval_tier && me.approver_tiers.includes(r.approval_tier)))
+    : [];
 
   const tabs: Array<{ key: TabKey; label: string; count: number }> = [
     { key: "pos", label: "Purchase orders", count: minePOs.length },
@@ -70,6 +86,10 @@ export function ApprovalsInbox({ me }: { me: CurrentUser | null }) {
     { key: "prices", label: "Price approvals", count: minePrices.length },
     { key: "subs", label: "Substitutions", count: mineSubs.length },
     ...(isSuper ? [{ key: "uploads" as TabKey, label: "Pricing uploads", count: uploads.length }] : []),
+    // A record, not a to-do: deliberately no count, so it neither competes with
+    // the tabs that are asking for a decision nor gets picked as the landing
+    // tab by the effect below.
+    { key: "approved" as TabKey, label: "Approved", count: 0 },
   ];
 
   // On first data arrival, land on the first tab that actually has something.
@@ -164,7 +184,7 @@ export function ApprovalsInbox({ me }: { me: CurrentUser | null }) {
                 from the PO tiers, so a blanket banner contradicted the Approve
                 buttons drawn beside it — it read "you cannot decide this" on
                 the one tab the reader could. */}
-            {tab !== "invoices" && !canDecide && (
+            {tab !== "invoices" && tab !== "approved" && !canDecide && (
               <div className="flash" style={{ marginBottom: 14 }}>
                 Read-only — you are a superadmin but not a configured approver, so you can review
                 what is waiting but not decide it. Approvers are set in Admin → Approvers.
@@ -459,6 +479,65 @@ export function ApprovalsInbox({ me }: { me: CurrentUser | null }) {
                         <td className="muted">{fmtDate(u.uploaded_at)}</td>
                         <td className="muted">{u.uploaded_by}</td>
                         <td><Link to={`/projects/${u.project_id}`}>Review →</Link></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              )
+            )}
+
+            {tab === "approved" && (
+              mineApproved.length === 0 ? <div className="empty">Nothing has been approved yet.</div> : (
+              <div className="card">
+                <div className="card-hd">
+                  <span className="muted" style={{ fontSize: 12.5, flex: 1 }}>
+                    Already signed off, most recent first — click a PO number to open it.
+                    {approved.length >= APPROVED_LIMIT && ` Showing the ${APPROVED_LIMIT} most recent decisions.`}
+                  </span>
+                </div>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>PO</th>
+                      <th className="center">Project</th>
+                      <th>Supplier</th>
+                      <th className="num">Value</th>
+                      <th className="center">Tier</th>
+                      <th className="center">Sent</th>
+                      <th>Approved</th>
+                      <th>By</th>
+                      <th>Raised by</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {mineApproved.map((r) => (
+                      <tr key={r.id}>
+                        <td><Link to={`/approvals/${r.id}`}>{r.po_number}</Link></td>
+                        <td className="center">{r.project_code}</td>
+                        <td>{r.supplier}</td>
+                        <td className="num">{fmtMoney(r.total_value)}</td>
+                        <td className="center">{r.approval_tier?.replace("_", " ") ?? "—"}</td>
+                        {/* Approved and sent to the supplier are two different
+                            states, and the gap between them is someone's job —
+                            so an approved order still sitting unsent says so. */}
+                        <td className="center">
+                          {r.status === "issued" ? (
+                            <span
+                              className="pill issued"
+                              title={r.issued_at ? `Sent to the supplier on ${fmtDate(r.issued_at)}` : "Sent to the supplier"}
+                            >
+                              issued
+                            </span>
+                          ) : (
+                            <span className="pill pending" title="Approved, but not yet sent to the supplier">
+                              not issued
+                            </span>
+                          )}
+                        </td>
+                        <td className="muted">{fmtDate(r.approved_at)}</td>
+                        <td className="muted">{r.approved_by ?? "—"}</td>
+                        <td className="muted">{r.created_by}</td>
                       </tr>
                     ))}
                   </tbody>
