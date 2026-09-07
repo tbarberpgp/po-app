@@ -480,6 +480,28 @@ export type PoApprovalEvidence = {
   unlinked_supplier_deliveries: number;
 };
 
+/** One order that has already been signed off — the Approvals dashboard's
+ *  record of decisions, as opposed to its queue of pending ones.
+ *
+ *  `status` rides along because "approved" and "sent to the supplier" are not
+ *  the same state, and an approver looking back at what they blessed wants to
+ *  know which of the two a row is in. */
+export type ApprovedPo = {
+  id: string;
+  po_number: string;
+  supplier: string;
+  total_value: number;
+  status: POStatus;
+  approval_tier: ApprovalTier | null;
+  approval_reason: ApprovalReason | null;
+  approved_at: string;
+  approved_by: string | null;
+  created_by: string;
+  issued_at: string | null;
+  project_code: string;
+  project_name: string;
+};
+
 export type Approver = {
   id: number;
   project_id: string | null;

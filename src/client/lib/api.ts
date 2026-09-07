@@ -373,6 +373,12 @@ export const api = {
    *  by PO id. One request for the whole list, not one per row. */
   listApprovalEvidence: () =>
     jfetch<Record<string, PoApprovalEvidence>>("/api/pos/approval-evidence"),
+  /** Orders already signed off, newest decision first — the Approvals
+   *  dashboard's record tab. Capped server-side; ask for more with `limit`. */
+  listApprovedPOs: (limit?: number) =>
+    jfetch<import("../../shared/types").ApprovedPo[]>(
+      `/api/pos/approved${limit ? `?limit=${limit}` : ""}`,
+    ),
   getPO: (id: string) =>
     jfetch<PurchaseOrder & {
       project_code: string; project_name: string;
