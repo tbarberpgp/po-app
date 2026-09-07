@@ -156,6 +156,31 @@ export function netUnits(m: MaterialWithCommitment): number {
   return Math.max(0, (m.total_units ?? 0) - (m.omitted_qty ?? 0));
 }
 
+/** What a budget line is worth and how much of that is still unspent — the pair
+ *  the budget pickers show under each option ("£8,340.00 budgeted · £1,120.00
+ *  left"). Money is the decision those dropdowns actually serve: can this line
+ *  absorb the cost being coded to it. The budgeted *quantity* they used to show
+ *  answered a question nobody asks at that moment.
+ *
+ *  Both figures come off the same definitions the Materials tab and the forecast
+ *  use — net budgeted units × BOQ cost, less committed re-valued at the buy rate
+ *  (live quote → substitution blend → BOQ cost) — so a picker can't quote
+ *  headroom the tab it codes into disagrees with. A lump-sum line (Mansafe,
+ *  smoke-vent kits: priced as one figure, no units) has nothing to multiply, so
+ *  it falls back to the workbook's own total for the line; a line whose units
+ *  were omitted keeps the omission's £0 rather than resurrecting that total. */
+export function budgetMoneyHint(m: MaterialWithCommitment): string[] {
+  const units = netUnits(m);
+  const budget = units > 0 || m.omitted_qty ? units * (m.cost ?? 0) : (m.material_total_cost ?? 0);
+  if (!(budget > 0)) return ["no priced budget"];
+  const left = budget - (m.committed_qty ?? 0) * effectiveSpendRate(m);
+  return [
+    `${fmtMoney(budget)} budgeted`,
+    // Half a penny of float noise is not an over-run.
+    left < -0.005 ? `${fmtMoney(-left)} over` : `${fmtMoney(left)} left`,
+  ];
+}
+
 /** Wording reduced to its words alone, so spacing, punctuation and case can't
  *  split one material into two. Same normalisation the combined Materials
  *  table merges rows on. */

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  accumulateMaterials, materialOverspendOf, summariseMaterials, oneScope,
+  accumulateMaterials, materialOverspendOf, summariseMaterials, oneScope, budgetMoneyHint,
   unexpectedSpendDrill, combinedUnexpectedSpendDrill, withCombinedOverspend,
   computeForecast, contractTotals, totalChange,
   type UnpricedLine, type Forecast,
@@ -91,6 +91,52 @@ test("omitted lines are out of the job entirely", () => {
 test("a partial omission reduces the budget the over-run is measured against", () => {
   // 100 budgeted, 40 omitted → 60 units of budget; 70 committed → 10 units over.
   assert.equal(materialOverspendOf(oneScope([mat({ item: "Fixings", cost: 10, total_units: 100, omitted_qty: 40, committed_qty: 70 })])), 100);
+});
+
+// ── What the budget pickers put under each line ─────────────────────────────
+
+test("a budget line offers its price and what is left of it", () => {
+  assert.deepEqual(
+    budgetMoneyHint(mat({ item: "Fixings", cost: 10, total_units: 100, committed_qty: 30 })),
+    ["£1,000.00 budgeted", "£700.00 left"],
+  );
+});
+
+test("headroom prices committed at the buy rate, not the BOQ rate", () => {
+  // 120 bought against 100 budgeted, but at £8 on a £10 budget — £40 still left.
+  assert.deepEqual(
+    budgetMoneyHint(mat({ item: "Butyl Tape", cost: 10, total_units: 100, committed_qty: 120, live_unit_price: 8 })),
+    ["£1,000.00 budgeted", "£40.00 left"],
+  );
+});
+
+test("a line bought past its budget reads as over, not as negative headroom", () => {
+  assert.deepEqual(
+    budgetMoneyHint(mat({ item: "Fixings", cost: 10, total_units: 100, committed_qty: 150 })),
+    ["£1,000.00 budgeted", "£500.00 over"],
+  );
+});
+
+test("a lump-sum line falls back to the workbook's own total", () => {
+  // Mansafe/smoke-vent kits: priced as one figure, no units to multiply.
+  assert.deepEqual(
+    budgetMoneyHint(mat({ item: "PPE (Mansafe)", cost: 3081, total_units: 0, committed_qty: 0, material_total_cost: 3081 })),
+    ["£3,081.00 budgeted", "£3,081.00 left"],
+  );
+});
+
+test("an omitted quantity is not resurrected by the workbook total", () => {
+  assert.deepEqual(
+    budgetMoneyHint(mat({ item: "Top Hat", cost: 10, total_units: 40, omitted_qty: 40, committed_qty: 0, material_total_cost: 400 })),
+    ["no priced budget"],
+  );
+});
+
+test("a line carrying only a unit rate says so rather than quoting £0", () => {
+  assert.deepEqual(
+    budgetMoneyHint(mat({ item: "Eurobond S5 Wall Panel", cost: 155, total_units: 0, committed_qty: 0 })),
+    ["no priced budget"],
+  );
 });
 
 // ── The drills ──────────────────────────────────────────────────────────────

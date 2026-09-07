@@ -5,6 +5,7 @@ import { downloadPdf, generatePoPdf } from "../lib/po-pdf";
 import { Topbar } from "./Shell";
 import { GroupedCombobox } from "./GroupedCombobox";
 import { can } from "../../shared/permissions";
+import { budgetMoneyHint } from "../lib/commercials";
 import { describeCostCode } from "../../shared/types";
 import type { CurrentUser, POLine, PoDeliveryDrop, PurchaseOrder, Supplier } from "../../shared/types";
 import { poDeliveryLabel } from "../../shared/po-delivery-status";
@@ -381,27 +382,16 @@ export function POView({ me }: { me: CurrentUser | null }) {
                   { label: "", options: [{ value: "", label: "— Not coded to the budget —" }] },
                   ...[...byGroup.entries()].map(([label, ms]) => ({
                     label,
-                    options: ms.map((m) => {
-                      // Same decision aid as the Unexpected-spend picker
-                      // (AssignBudgetCell): budgeted qty, then how much of it
-                      // is left. Budget reads in the measured unit (m²/lm);
-                      // remaining is tracked in pack units (how POs are
-                      // raised), so it carries its own unit label. Both go
-                      // through fmtQty — the raw values carry float noise
-                      // (1591.0669565217393 ea) from coverage/waste maths.
-                      const budget = m.total_qty != null
-                        ? (m.total_qty > 0 ? `${fmtQty(m.total_qty)}${m.rate_unit ? ` ${m.rate_unit}` : ""} budgeted` : "no budgeted qty")
-                        : null;
-                      const packUnit = m.total_units_unit ? ` ${m.total_units_unit}` : "";
-                      const left = m.remaining_qty != null
-                        ? (m.remaining_qty < 0 ? `${fmtQty(-m.remaining_qty)}${packUnit} over` : `${fmtQty(m.remaining_qty)}${packUnit} left`)
-                        : null;
-                      return {
-                        value: String(m.id),
-                        label: m.item,
-                        hint: [m.element_code, budget, left].filter(Boolean).join(" · ") || undefined,
-                      };
-                    }),
+                    // Same decision aid as the Unexpected-spend picker
+                    // (AssignBudgetCell): what the line is worth and how much
+                    // of that is unspent. The budgeted quantity used to sit
+                    // here, but the question being answered at this dropdown
+                    // is whether the line has the money to take this cost.
+                    options: ms.map((m) => ({
+                      value: String(m.id),
+                      label: m.item,
+                      hint: [m.element_code, ...budgetMoneyHint(m)].filter(Boolean).join(" · ") || undefined,
+                    })),
                   })),
                 ];
                 return (
