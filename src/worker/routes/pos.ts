@@ -794,22 +794,41 @@ pos.get("/:id", async (c) => {
   }
 
   // Pull product → element joins so we can derive the PRJ.ELE.RES cost code
-  // for any line whose material links to a master product.
+  // for any line whose material links to a master product — and the names
+  // behind its segments, because "6003.30.M" on its own tells the reader
+  // nothing about which budget the cost landed in. The element name is read
+  // off whichever code the displayed cost code was built from (the product's),
+  // falling back to the material's own element so a line coded to the budget
+  // without a product link still says what package it belongs to.
   const lines = await c.env.DB.prepare(
     `SELECT pl.*,
-            m.product_id        AS link_product_id,
-            pr.element_code     AS link_element_code,
-            pr.default_resource AS link_default_resource
+            m.product_id          AS link_product_id,
+            m.item                AS link_budget_item,
+            m.material_total_cost AS link_budget_value,
+            pr.element_code       AS link_element_code,
+            pr.default_resource   AS link_default_resource,
+            el.name               AS link_element_name,
+            el.notes              AS link_element_notes,
+            rt.name               AS link_resource_name,
+            rt.usage              AS link_resource_usage
      FROM po_lines pl
      LEFT JOIN materials m  ON m.id = pl.material_id
      LEFT JOIN products  pr ON pr.id = m.product_id
+     LEFT JOIN elements  el ON el.code = COALESCE(pr.element_code, m.element_code)
+     LEFT JOIN resource_types rt ON rt.code = COALESCE(pr.default_resource, 'M')
      WHERE pl.po_id = ?
      ORDER BY pl.id`,
   )
     .bind(id)
     .all<Record<string, unknown> & {
+      link_budget_item: string | null;
+      link_budget_value: number | null;
       link_element_code: string | null;
       link_default_resource: string | null;
+      link_element_name: string | null;
+      link_element_notes: string | null;
+      link_resource_name: string | null;
+      link_resource_usage: string | null;
     }>();
 
   const projectCode = po.project_code as string;
@@ -1046,6 +1065,15 @@ pos.get("/:id", async (c) => {
     const deliveries = deliveriesByLine.get(Number(l.id)) ?? [];
     const base = {
       ...l, cost_code, is_unpriced: !!l.is_unpriced, is_over_budget: !!l.is_over_budget,
+      // Which budget line the cost was coded to, and what the code's segments
+      // stand for. The resource name only travels with a cost code, since the
+      // RES segment is part of that code and nothing else shows it.
+      budget_item: l.link_budget_item ?? null,
+      budget_value: l.link_budget_value ?? null,
+      element_name: l.link_element_name ?? null,
+      element_notes: l.link_element_notes ?? null,
+      resource_name: cost_code ? l.link_resource_name ?? null : null,
+      resource_usage: cost_code ? l.link_resource_usage ?? null : null,
       deliveries, received_qty: deliveries.reduce((s, d) => s + d.qty, 0),
     };
     if (drawByItem) {
