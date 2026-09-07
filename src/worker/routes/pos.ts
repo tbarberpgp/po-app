@@ -539,8 +539,18 @@ pos.get("/approval-evidence", async (c) => {
       GROUP BY p.id`,
   ).bind(...ids).all<{ po_id: string; n: number }>()).results;
 
-  const fileUrl = (key: string | null) =>
+  // Delivery tickets ONLY. That endpoint whitelists the operations prefixes
+  // (deliveries/, rams/, progress/) and answers "bad key" to anything else, so
+  // an invoice — stored under invoices/ — cannot be served through here. It has
+  // its own route; see the invoice block below.
+  const ticketUrl = (key: string | null) =>
     key ? `/api/operations/file?key=${encodeURIComponent(key)}` : null;
+
+  // The invoice document is offered only to a reader allowed to see invoices.
+  // Approval rights come from the `approvers` table, not from the role, so an
+  // approver can be a PM — who holds no commercial.view — and a link that could
+  // only 403 is worse than no link at all. Same call as the delivery register.
+  const canSeeInvoices = can(c.get("userRole"), "commercial.view");
 
   // Goods collected from a trade counter are receipted from the supplier's
   // invoice and never see a delivery ticket. Named by its number, or by our own
@@ -582,7 +592,7 @@ pos.get("/approval-evidence", async (c) => {
         // from memory" argues against a payment the paperwork supports.
         manual: r.scan_id == null && !r.ticket_key && r.source_invoice_id == null,
         collected_invoice: collectedInvoice(r),
-        ticket_url: fileUrl(r.ticket_key),
+        ticket_url: ticketUrl(r.ticket_key),
         ticket_type: r.ticket_type,
         items: [],
       };
@@ -591,7 +601,7 @@ pos.get("/approval-evidence", async (c) => {
     }
     // A note photographed twice keeps whichever capture actually held a file.
     if (!drop.ticket_url && r.ticket_key) {
-      drop.ticket_url = fileUrl(r.ticket_key);
+      drop.ticket_url = ticketUrl(r.ticket_key);
       drop.ticket_type = r.ticket_type;
       drop.manual = false;
     }
@@ -657,7 +667,10 @@ pos.get("/approval-evidence", async (c) => {
       invoice_date: inv.invoice_date,
       net_amount: inv.net_amount,
       status: inv.status,
-      file_url: fileUrl(inv.file_key),
+      // The invoice's own route, which sets a real content-type so a PDF renders
+      // inline instead of downloading, and re-checks commercial.view (plus
+      // admin, for an overhead invoice) on the way through.
+      file_url: canSeeInvoices && inv.file_key ? `/api/invoices/${inv.id}/file` : null,
       file_type: inv.file_type,
       xero_bill_number: inv.xero_bill_number,
     };
