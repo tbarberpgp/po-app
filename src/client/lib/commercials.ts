@@ -68,11 +68,13 @@ export type UnpricedLine = {
  *  purchase order rather than the pricing workbook. */
 export type MatRow = MaterialWithCommitment & { off_boq?: OffBoqMaterial };
 
-/** Dress an off-BOQ PO item as a materials row so it sits in the same table —
- *  and the same filter, sort and Excel export — as the priced BOQ lines. It has
- *  no budget, so priced/remaining stay null and the usage bar reads as spend
- *  with nothing behind it. The id is negative because there is no material
- *  record to act on: every row action keys off `off_boq` instead. */
+/** Dress a PO-added item as a materials row so it sits in the same table — and
+ *  the same filter, sort and Excel export — as the priced BOQ lines. Budget
+ *  fields stay null either way: an uncoded buy has no budget at all, and a
+ *  coded one draws on a budget that belongs to the BOQ row it was coded to (see
+ *  `off_boq.coded_to_item`), never to this row — which is also why nothing may
+ *  total these rows alongside the BOQ. The id is negative because there is no
+ *  material record to act on: every row action keys off `off_boq` instead. */
 export function offBoqRow(o: OffBoqMaterial, idx: number): MatRow {
   return {
     id: -(idx + 1), snapshot_id: 0,

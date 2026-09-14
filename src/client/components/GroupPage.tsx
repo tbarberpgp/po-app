@@ -294,6 +294,12 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
       // row as the same material priced on another.
       for (const row of [...d.mats, ...d.offBoq.map((o, i) => offBoqRow(o, i))] as MatRow[]) {
         if (row.omitted) continue; // omitted from the job — not procurement
+        // A coded buy is listed by /off-boq so the per-block Materials tab can
+        // show WHAT was bought, but its £ is already inside the committed spend
+        // on the budget line it was coded to — which is in d.mats, right above.
+        // This view sums money across blocks, so taking both would bill the job
+        // twice for one order.
+        if (row.off_boq?.coded_to_item) continue;
         const norm = normName(row.sub_item || row.item || "");
         // An off-BOQ row that no block prices keeps its supplier in the key.
         // Nothing vouches for these but the wording someone typed, and the

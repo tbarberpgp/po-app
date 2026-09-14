@@ -1074,12 +1074,21 @@ materials.get("/:projectId", async (c) => {
  * This is that missing half: the same items, aggregated per item so repeat
  * orders read as one material rather than one row per PO line.
  *
- * A line is off-BOQ when NEITHER its printed wording NOR the budget line it's
- * coded to matches an active-snapshot item (or that item's active
- * substitution's replacement wording) — precisely the lines the committed /
- * coded subqueries above cannot fold into a budget row, so nothing is counted
- * in both places. With no workbook uploaded the BOQ is empty and every ordered
- * item lands here, which is what makes the tab useful before pricing arrives.
+ * A line lands here when its printed wording isn't an active-snapshot item (or
+ * that item's active substitution's replacement wording) that it is actually
+ * linked to. With no workbook uploaded the BOQ is empty and every ordered item
+ * lands here, which is what makes the tab useful before pricing arrives.
+ *
+ * That INCLUDES lines coded to a budget line, which used to be dropped so that
+ * no money was counted in two places. The money was right and the list was
+ * wrong: coding never mints a row under the supplier's wording, it only adds £
+ * to a budget row wearing the bill's wording, so a coded item existed nowhere
+ * on the Materials tab and only the PO could say what had been bought. Such a
+ * row now carries coded_to_material_id / coded_to_item, and the rule moves
+ * from "leave it out" to "list it, and say whose money it is": its committed £
+ * is ALREADY reported on that budget line, so every rollup over these rows must
+ * skip the coded ones (see summariseMaterials, which is fed the BOQ rows only,
+ * and GroupPage's merge, which skips them explicitly).
  *
  * Prelim POs are left out: they spend the Preliminaries budget, which has its
  * own tab. Quantities mirror the BOQ rows — committed excludes call-offs (a
@@ -1111,9 +1120,21 @@ materials.get("/:projectId/off-boq", async (c) => {
             COALESCE(po.order_type, 'standard') AS order_type,
             pl.id AS line_id, pl.item AS item, pl.type AS type,
             pl.manufacturer AS manufacturer, pl.qty AS qty, pl.unit AS unit,
-            pl.unit_cost AS unit_cost, COALESCE(pl.line_total, 0) AS line_total
+            pl.unit_cost AS unit_cost, COALESCE(pl.line_total, 0) AS line_total,
+            cm.id AS coded_to_material_id, cm.item AS coded_to_item
        FROM po_lines pl
        JOIN purchase_orders po ON po.id = pl.po_id
+       -- The budget line this was coded to, when that line is in the LIVE
+       -- snapshot. A coded line used to be dropped from this list entirely,
+       -- which meant the only trace of what was actually bought was £ added to
+       -- a budget row carrying the bill's wording — order a spray primer
+       -- against "Impertene Primer 20 Lts" and the spray primer appeared
+       -- nowhere on the job. It is listed now, carrying the coding so the row
+       -- can say where its money went: the £ is ALREADY reported on that budget
+       -- line, so anything summing these rows must skip the coded ones.
+       LEFT JOIN materials cm
+              ON cm.id = pl.material_id
+             AND lower(cm.item) IN (SELECT name FROM boq)
       WHERE po.project_id = ?2
         AND po.status IN ('approved', 'issued', 'pending_approval')
         AND COALESCE(po.category, 'materials') != 'prelims'
@@ -1124,9 +1145,6 @@ materials.get("/:projectId/off-boq", async (c) => {
         -- money in Unpriced spend with no row anywhere to explain it. Short
         -- wordings like "Carriage" are exactly where this bites.
         AND NOT (pl.is_unpriced = 0 AND lower(pl.item) IN (SELECT name FROM boq))
-        AND NOT EXISTS (
-              SELECT 1 FROM materials am
-               WHERE am.id = pl.material_id AND lower(am.item) IN (SELECT name FROM boq))
       ORDER BY po.created_at DESC, pl.id DESC`,
   )
     .bind(snapshotId, projectId)
@@ -1135,6 +1153,7 @@ materials.get("/:projectId/off-boq", async (c) => {
       created_at: string; order_type: string; line_id: number; item: string;
       type: string | null; manufacturer: string | null; qty: number | null;
       unit: string | null; unit_cost: number | null; line_total: number;
+      coded_to_material_id: number | null; coded_to_item: string | null;
     }>();
 
   // Aggregate per item AND supplier. Rows arrive newest-first, so the first line
@@ -1152,9 +1171,12 @@ materials.get("/:projectId/off-boq", async (c) => {
     const name = (r.item ?? "").trim().toLowerCase();
     if (!name) continue;
     const supplier = (r.manufacturer?.trim() || r.supplier?.trim() || "").toLowerCase();
-    // \u0000 can't occur in either half, so the two can't run together and
-    // collide (e.g. "a b" + "c" vs "a" + "b c").
-    const key = `${name}\u0000${supplier}`;
+    // \u0000 can't occur in any part, so they can't run together and collide
+    // (e.g. "a b" + "c" vs "a" + "b c"). The coding is part of the key too: the
+    // same wording bought once against a budget line and once as a loose extra
+    // is two different stories about the money, and merging them would leave
+    // one row that is neither — half its \u00a3 already counted on a budget line.
+    const key = `${name}\u0000${supplier}\u0000${r.coded_to_material_id ?? ""}`;
     let row = byItem.get(key);
     if (!row) {
       row = {
@@ -1162,6 +1184,8 @@ materials.get("/:projectId/off-boq", async (c) => {
         item: (r.item ?? "").trim(),
         type: r.type,
         manufacturer: r.manufacturer?.trim() || r.supplier?.trim() || null,
+        coded_to_material_id: r.coded_to_material_id,
+        coded_to_item: r.coded_to_item,
         unit: r.unit,
         unit_cost: 0,
         committed_qty: 0,

@@ -70,7 +70,7 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
   const [filter, setFilter] = useState("");
   const [typeFilter, setTypeFilter] = useState("");
   const [supplierFilter, setSupplierFilter] = useState("");
-  const [orderFilter, setOrderFilter] = useState<"" | "framework" | "calloff" | "omitted" | "offboq">(""); // framework/call-off/off-BOQ/omitted filter
+  const [orderFilter, setOrderFilter] = useState<"" | "framework" | "calloff" | "omitted" | "offboq" | "unbudgeted">(""); // framework/call-off/PO-added/unbudgeted/omitted filter
   // Whether the materials table's quantity column shows committed (incl. framework
   // reservation) or only what's actually been called off against frameworks.
   const [qtyMode, setQtyMode] = useState<"committed" | "calledoff">("committed");
@@ -167,6 +167,9 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
   // not the workbook knows about them. They carry no `omitted` flag, so the
   // filter below drops them from the Omitted view on its own.
   const offBoqRows = useMemo(() => offBoq.map((o, i) => offBoqRow(o, i)), [offBoq]);
+  // Of those, the ones no budget line is paying for — the count that matters
+  // commercially, now that the list also carries buys coded to a budget.
+  const unbudgetedCount = useMemo(() => offBoq.filter((o) => !o.coded_to_item).length, [offBoq]);
   const baseList: MatRow[] = [
     ...(showAll ? mats : mats.filter((m) => (m.total_units ?? 0) > 0)),
     ...offBoqRows,
@@ -178,6 +181,10 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
     .filter((m) => !supplierFilter || (matSupplier(m) || "—") === supplierFilter)
     .filter((m) => !orderFilter || orderFilter === "omitted"
       || (orderFilter === "offboq" ? !!m.off_boq
+        // The subset that is genuinely unbudgeted. Now that coded buys are
+        // listed too, "came from a PO" and "nothing is paying for it" are no
+        // longer the same question, and the second is the one that costs money.
+        : orderFilter === "unbudgeted" ? (!!m.off_boq && !m.off_boq.coded_to_item)
         : orderFilter === "calloff" ? (m.called_off_qty ?? 0) > 0.0001
         : (m.framework_reserved_qty ?? 0) > 0.0001))
     .filter((m) => !filter || (m.item + (m.sub_item ?? "") + matSupplier(m)).toLowerCase().includes(filter.toLowerCase()));
@@ -654,11 +661,12 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
                     <option value="">All types</option>
                     {types.map((t) => <option key={t} value={t}>{t}</option>)}
                   </select>
-                  <select value={orderFilter} onChange={(e) => setOrderFilter(e.target.value as "" | "framework" | "calloff" | "omitted" | "offboq")} title="Filter by framework call-off status, or show only what was bought outside the bill">
+                  <select value={orderFilter} onChange={(e) => setOrderFilter(e.target.value as "" | "framework" | "calloff" | "omitted" | "offboq" | "unbudgeted")} title="Filter by framework call-off status, or show only what was bought outside the bill">
                     <option value="">All orders</option>
                     <option value="framework">On a framework</option>
                     <option value="calloff">Called off to date</option>
-                    {offBoqRows.length > 0 && <option value="offboq">Off-BOQ ({offBoqRows.length})</option>}
+                    {offBoqRows.length > 0 && <option value="offboq">Added on POs ({offBoqRows.length})</option>}
+                    {unbudgetedCount > 0 && <option value="unbudgeted">Off-BOQ, no budget line ({unbudgetedCount})</option>}
                     {omittedCount > 0 && <option value="omitted">Omitted ({omittedCount})</option>}
                   </select>
                   <select
@@ -747,10 +755,22 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
                               <>
                                 <div>{m.item}</div>
                                 <div style={{ marginTop: 3 }}>
-                                  <span className="pill warn" style={{ fontSize: 10 }}
-                                    title="Added on a purchase order, not in the priced BOQ. Its cost sits under Unpriced spend until someone assigns the PO line to a budget item.">
-                                    off-BOQ
-                                  </span>
+                                  {/* Two different stories, and the pill has to tell them
+                                      apart: unbudgeted spend nobody has placed yet, vs a
+                                      buy that HAS been placed against a budget line and is
+                                      listed here only so the job can see what was actually
+                                      bought under the bill's wording. */}
+                                  {m.off_boq.coded_to_item ? (
+                                    <span className="pill" style={{ fontSize: 10 }}
+                                      title={`Bought against the budget line "${m.off_boq.coded_to_item}". Its cost is already counted there — it is listed here so the item itself can be seen, not added on top.`}>
+                                      coded → {m.off_boq.coded_to_item}
+                                    </span>
+                                  ) : (
+                                    <span className="pill warn" style={{ fontSize: 10 }}
+                                      title="Added on a purchase order, not in the priced BOQ. Its cost sits under Unpriced spend until someone assigns the PO line to a budget item.">
+                                      off-BOQ
+                                    </span>
+                                  )}
                                   {/* The row totals the quantity, so each order stays listed
                                       underneath with its date and its own qty — otherwise a
                                       repeat buy reads as one big order nobody can place. */}
@@ -825,8 +845,12 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
                           <td className="center">{isSubbed ? (m.sub_unit ?? unit) : unit}</td>
                           <td className="num">
                             {priced ? fmtQty(priced)
-                              : <span className="muted" title={m.off_boq ? "Bought outside the priced BOQ — there's no budgeted quantity to draw against" : undefined}>
-                                  {m.off_boq ? "no budget" : "not priced"}
+                              : <span className="muted" title={m.off_boq
+                                  ? (m.off_boq.coded_to_item
+                                      ? `Drawn against "${m.off_boq.coded_to_item}" — the budgeted quantity sits on that row, not this one`
+                                      : "Bought outside the priced BOQ — there's no budgeted quantity to draw against")
+                                  : undefined}>
+                                  {m.off_boq ? (m.off_boq.coded_to_item ? "on budget line" : "no budget") : "not priced"}
                                 </span>}
                             {omittedQty > 0 && !m.omitted && (
                               <div className="muted" style={{ fontSize: 10 }} title={`BOQ ${fmtQty(m.total_units ?? 0)} less ${fmtQty(omittedQty)} omitted`}>
@@ -849,8 +873,13 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
                               </>
                             )}
                             {m.off_boq && (
-                              <div style={{ fontSize: 10, color: "var(--danger)" }}
-                                title="Ordered on POs outside the priced BOQ. This money is already counted in the project's Unpriced spend and forecast final cost.">
+                              // Coded spend isn't unbudgeted, so it doesn't wear the danger
+                              // colour — it is already inside its budget line's committed £
+                              // and shown here so the spend has a product beside it.
+                              <div style={{ fontSize: 10, color: m.off_boq.coded_to_item ? "var(--muted)" : "var(--danger)" }}
+                                title={m.off_boq.coded_to_item
+                                  ? `Ordered on POs and coded to "${m.off_boq.coded_to_item}". This money is already counted in that budget line's committed spend — don't add it on top.`
+                                  : "Ordered on POs outside the priced BOQ. This money is already counted in the project's Unpriced spend and forecast final cost."}>
                                 {fmtMoney(qtyMode === "calledoff" ? m.off_boq.called_off_value : m.off_boq.committed_value)} spent
                               </div>
                             )}
