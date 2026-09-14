@@ -178,11 +178,15 @@ export type MaterialWithCommitment = Material & {
 };
 
 /** A material that exists only on this project's purchase orders — ordered
- *  against the job but absent from the priced BOQ, so the pricing-snapshot
- *  list can't show it. Aggregated per item across every live PO, which is why
- *  it carries its own quantities rather than reusing MaterialWithCommitment:
- *  there is no budget line behind it, and its £ is already reported once as
- *  the project's unpriced spend. */
+ *  against the job under wording the priced BOQ doesn't carry, so the
+ *  pricing-snapshot list can't show it. Aggregated per item across every live
+ *  PO, which is why it carries its own quantities rather than reusing
+ *  MaterialWithCommitment: the snapshot has no row for it.
+ *
+ *  Its £ is already reported once elsewhere — as the project's unpriced spend
+ *  when it is uncoded, or inside a budget line's committed spend when
+ *  `coded_to_material_id` is set — so these rows are read for WHAT was bought,
+ *  never summed for how much. */
 export type OffBoqMaterial = {
   /** Lowercased item wording + supplier, NUL-separated — what the rows are
    *  grouped by, and a stable key. The supplier is part of it because an item
@@ -193,6 +197,15 @@ export type OffBoqMaterial = {
   type: string | null;
   /** The PO line's manufacturer, falling back to the PO's supplier. */
   manufacturer: string | null;
+  /** Set when the PO line was coded to a budget line in the live snapshot —
+   *  the id and wording of that line. The row is listed so the job can see what
+   *  was actually bought (coding otherwise files the spend under the bill's
+   *  wording and the product itself appears nowhere), but its committed £ is
+   *  ALREADY counted in that material's committed spend. Anything that sums
+   *  these rows into a total must skip the ones carrying a coding, or the same
+   *  money is reported twice. Null → genuinely unbudgeted spend. */
+  coded_to_material_id: number | null;
+  coded_to_item: string | null;
   unit: string | null;
   /** Rate actually paid, weighted across the orders below. */
   unit_cost: number;
