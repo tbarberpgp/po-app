@@ -315,8 +315,20 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
         // the same word by every supplier while being entirely different money.
         // Pooled on wording alone they became a single "Mixed suppliers" line
         // whose £/unit was an average of unrelated charges.
+        //
+        // The coding target belongs in the key too, for the same reason: one
+        // block can code "SF-RS-5.8 x 85 SureFast fastener" to Gutter Fixings
+        // while another codes the identical wording to Fixings Tubes and
+        // Fixing, and a third leaves some of it uncoded entirely — three
+        // different stories about where the money is accounted for, wearing
+        // one wording. Pooled on wording+supplier alone they merged into one
+        // row that could only display ONE target (last block processed
+        // wins), silently mislabelling the others' money and, worse, letting
+        // a genuinely-uncoded line hide inside a row tagged "coded" once any
+        // sibling order under the same wording happened to be coded.
+        const codedTarget = row.off_boq?.coded_to_item ? normName(row.off_boq.coded_to_item) : "";
         const key = row.off_boq && !pricedNames.has(norm)
-          ? (norm ? `n:${norm}\u0000${matSupplier(row).toLowerCase()}` : "")
+          ? (norm ? `n:${norm}\u0000${matSupplier(row).toLowerCase()}\u0000${codedTarget}` : "")
           : row.product_id != null ? `p:${row.product_id}` : (productByName.get(norm) ?? (norm ? `n:${norm}` : ""));
         if (!key || key === "p:") continue;
         const cur: Row = by.get(key) ?? { key, item: row.sub_item || row.item, type: row.type ?? "", unit: row.total_units_unit ?? row.sub_unit ?? row.cost_unit ?? null, supplier: new Set<string>(), boqQty: 0, committedQty: 0, calledOffQty: 0, deliveredQty: 0, budget: 0, committed: 0, calledOff: 0, effVal: 0, priced: false, offBoq: false, codedToItem: null, lastOrdered: null, addedAt: null, modifiedAt: null, blocks: new Map<string, Blk>(), mats: [], statuses: new Set<MatStatus>(), names: new Map<string, number>() };
