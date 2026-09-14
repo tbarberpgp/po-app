@@ -7,7 +7,7 @@ import { normText } from "../../shared/line-match";
 import { pricedBudget, overBudgetBy, type PricedBudgetInput } from "../../shared/budget";
 import { summarisePoDeliveries, deliveryNoteKey, suspectedDuplicateReceipts, PO_DELIVERY_NOTE_COLUMNS, PO_DELIVERY_NOTE_JOIN, type PoLineRef, type PoDeliveryRow } from "../../shared/po-delivery-status";
 import { emailApprovers, emailRequesterDecision, emailFrameworkOverdraw, FRAMEWORK_OVERDRAW_RECIPIENTS } from "../notify";
-import { requirePermission } from "../auth";
+import { requirePermission, subjectOf } from "../auth";
 import { can } from "../../shared/permissions";
 import { buildCostCode, derivedProjectNumber } from "../../shared/types";
 import { pushPOToXero } from "./xero";
@@ -159,6 +159,29 @@ async function alertFrameworkOverdraw(
  * is the framework a call-off draws against — its lines gate on the framework's
  * actual remaining instead of the project BOQ allowance (see below).
  */
+/** Is this raiser flagged so that everything they raise goes for sign-off?
+ *
+ *  Fails OPEN (to false) on a database without migration 0115, matching the
+ *  grants loader: the flag is set on almost nobody, and taking PO creation down
+ *  for the whole team because one column is missing is the worse failure. The
+ *  order-level gates (unpriced, over budget, prelim overspend) are unaffected
+ *  and still catch what they always caught. */
+async function raiserAlwaysNeedsApproval(db: D1Database, email: string): Promise<boolean> {
+  try {
+    const row = await db.prepare(
+      "SELECT po_requires_approval FROM users WHERE lower(email) = ?",
+    )
+      .bind(email.toLowerCase())
+      .first<{ po_requires_approval: number | null }>();
+    return !!row?.po_requires_approval;
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (!/no such column: po_requires_approval/i.test(msg)) throw e;
+    console.warn("users.po_requires_approval missing — raiser gate ignored. Apply migration 0115.");
+    return false;
+  }
+}
+
 /** A `materials` row as the over-budget gate needs it: identity, plus the three
  *  workbook columns a priced budget is read off and any partial omission. */
 type MatBudgetRow = PricedBudgetInput & {
@@ -600,7 +623,7 @@ pos.get("/approval-evidence", async (c) => {
   // Approval rights come from the `approvers` table, not from the role, so an
   // approver can be a PM — who holds no commercial.view — and a link that could
   // only 403 is worse than no link at all. Same call as the delivery register.
-  const canSeeInvoices = can(c.get("userRole"), "commercial.view");
+  const canSeeInvoices = can(subjectOf(c), "commercial.view");
 
   // Goods collected from a trade counter are receipted from the supplier's
   // invoice and never see a delivery ticket. Named by its number, or by our own
@@ -790,7 +813,7 @@ pos.get("/approved", async (c) => {
   // call the delivery register and the pending queue make. `/api/invoices/:id/file`
   // re-checks it anyway; withholding the link keeps one that could only 403 off
   // the page.
-  const canSeeInvoices = can(c.get("userRole"), "commercial.view");
+  const canSeeInvoices = can(subjectOf(c), "commercial.view");
 
   const byId = new Map<string, ApprovedPo>();
   for (const r of rows) {
@@ -998,7 +1021,7 @@ pos.get("/:id", async (c) => {
   // paperwork is. That the goods were collected against invoice X is not itself
   // commercial: it is already written on the receipt, in the note everyone can
   // read, and it is the answer to "what came in on this?".
-  const canSeeInvoices = can(c.get("userRole"), "commercial.view");
+  const canSeeInvoices = can(subjectOf(c), "commercial.view");
   const collectedFrom = (invoiceId: number | null): PoDeliveryDrop["collected_from"] => {
     if (invoiceId == null) return null;
     const inv = invoicesById.get(invoiceId);
@@ -1344,18 +1367,31 @@ pos.post("/", async (c) => {
   // Prelim POs are gated on prelim-heading overspend (budgeted, within-budget
   // prelim spend auto-approves); material POs gate on unpriced / over-budget.
   const isPrelim = body.category === "prelims";
-  const requiresApproval = isPrelim ? prelimNeedsApproval : (hasUnpriced || hasOverBudget);
+  // A raiser can also be flagged so that everything they raise goes for
+  // sign-off, whatever it contains — a new starter, or someone buying on a job
+  // they don't run. The gate reads the ORDER, so without this the only way to
+  // put a person's orders in front of someone was to take pos.create away and
+  // block them entirely.
+  const raiserNeedsApproval = await raiserAlwaysNeedsApproval(c.env.DB, c.get("userEmail"));
+  const orderNeedsApproval = isPrelim ? prelimNeedsApproval : (hasUnpriced || hasOverBudget);
+  const requiresApproval = orderNeedsApproval || raiserNeedsApproval;
   const settings = await loadSettings(c.env.DB);
   const tier = requiresApproval ? tierForApproval(total, isPrelim ? false : hasUnpriced, settings) : null;
   const reason = !requiresApproval
     ? null
-    : isPrelim
-      ? "over_budget"
-      : hasUnpriced && hasOverBudget
-        ? "both"
-        : hasUnpriced
-          ? "unpriced"
-          : "over_budget";
+    // What the ORDER did comes first: when a flagged raiser also happens to go
+    // over budget, the approver needs to be told about the money, not about who
+    // typed it. "raiser" is only the reason when nothing about the order itself
+    // asked for a signature.
+    : !orderNeedsApproval
+      ? "raiser"
+      : isPrelim
+        ? "over_budget"
+        : hasUnpriced && hasOverBudget
+          ? "both"
+          : hasUnpriced
+            ? "unpriced"
+            : "over_budget";
 
   const status = requiresApproval ? "pending_approval" : "approved";
   const now = new Date().toISOString();

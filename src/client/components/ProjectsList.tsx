@@ -17,8 +17,8 @@ export function ProjectsList({ me }: { me: CurrentUser | null }) {
   const [error, setError] = useState<string | null>(null);
   const [pos, setPos] = useState<Awaited<ReturnType<typeof api.listPOs>>>([]);
   const [sites, setSites] = useState<OpsSite[]>([]);
-  const canCreate = can(me?.role, "projects.create");
-  const canCheckin = can(me?.role, "delivery.edit");
+  const canCreate = can(me, "projects.create");
+  const canCheckin = can(me, "delivery.edit");
 
   function refresh() {
     api.listProjects().then(setRows).catch((e) => setError(e.message));

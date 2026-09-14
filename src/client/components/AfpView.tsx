@@ -25,7 +25,7 @@ export function AfpView({ me }: { me: CurrentUser | null }) {
   // The certify decision panel (replaces a window.prompt that couldn't show the
   // figures behind the number it was asking for, or parse "1,250.00").
   const [certifyOpen, setCertifyOpen] = useState(false);
-  const canEdit = can(me?.role, "projects.edit");
+  const canEdit = can(me, "projects.edit");
   // Not a role check — the release list is by name, because no role draws the
   // line in the right place (see release_approvers / isReleaseApprover).
   const canRelease = me?.can_release_payables === true;

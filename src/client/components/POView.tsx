@@ -84,10 +84,10 @@ export function POView({ me }: { me: CurrentUser | null }) {
     finally { setAssignBusy(false); }
   }
   const [notice, setNotice] = useState<string | null>(null);
-  const canDelete = can(me?.role, "pos.delete");
-  const canEditPO = can(me?.role, "pos.edit"); // admin / superadmin only
-  const canCreatePO = can(me?.role, "pos.create");
-  const canManualCheckin = can(me?.role, "delivery.checkin_manual"); // admin / superadmin only
+  const canDelete = can(me, "pos.delete");
+  const canEditPO = can(me, "pos.edit"); // admin / superadmin only
+  const canCreatePO = can(me, "pos.create");
+  const canManualCheckin = can(me, "delivery.checkin_manual"); // admin / superadmin only
   const [showCheckin, setShowCheckin] = useState(false);
   const calledOff = (po?.call_offs ?? []).reduce((s, k) => s + (k.total_value || 0), 0);
   const isFramework = po?.order_type === "framework";
@@ -135,7 +135,7 @@ export function POView({ me }: { me: CurrentUser | null }) {
     (po.status === "pending_approval" || wasRejected) &&
     me?.is_approver &&
     holdsTier;
-  const canIssue = po.status === "approved" && me?.email === po.created_by && can(me?.role, "pos.issue");
+  const canIssue = po.status === "approved" && me?.email === po.created_by && can(me, "pos.issue");
   const isDeleted = po.status === "deleted";
   // Approved-supplier register status for this PO's supplier (same banners as New PO).
   const supplierRecord = approvedSuppliers.find((s) => s.name.toLowerCase() === po.supplier.trim().toLowerCase()) ?? null;

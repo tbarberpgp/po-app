@@ -69,10 +69,13 @@ export type Env = {
   MS_GRAPH_MAILBOXES?: string;
 };
 
-import type { Role } from "../shared/permissions";
+import type { Role, Permission } from "../shared/permissions";
 
 export type Variables = {
   userEmail: string;
   userRole: Role;
   userName: string | null;
+  /** Permissions granted to this user individually, on top of their role.
+   *  Empty for almost everyone; see `loadGrants` in auth.ts. */
+  userGrants: Permission[];
 };

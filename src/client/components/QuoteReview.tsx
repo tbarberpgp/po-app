@@ -23,7 +23,7 @@ export function QuoteReview({ me }: { me: CurrentUser | null }) {
   const [err, setErr] = useState<string | null>(null);
   const [applyResult, setApplyResult] = useState<Awaited<ReturnType<typeof api.applyQuote>> | null>(null);
 
-  const canManage = can(me?.role, "suppliers.manage");
+  const canManage = can(me, "suppliers.manage");
 
   function refresh() {
     if (!Number.isFinite(id)) return;

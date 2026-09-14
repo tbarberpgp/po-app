@@ -43,7 +43,7 @@ import type {
   SupplierQuoteLine,
   SupplierStatus,
 } from "../../shared/types";
-import type { Role } from "../../shared/permissions";
+import type { Role, Permission } from "../../shared/permissions";
 import type { RamsDoc } from "../../shared/rams";
 
 /** Programme rows from an upload: PDFs go through the worker's Claude
@@ -456,10 +456,20 @@ export const api = {
   listUsers: () => jfetch<AppUser[]>("/api/users"),
   addUser: (input: { email: string; name?: string; role: Role }) =>
     jfetch<{ email: string }>("/api/users", { method: "POST", body: JSON.stringify(input) }),
-  updateUser: (email: string, input: { name?: string; role?: Role; active?: boolean }) =>
+  updateUser: (
+    email: string,
+    input: { name?: string; role?: Role; active?: boolean; po_requires_approval?: boolean },
+  ) =>
     jfetch<{ ok: true }>(`/api/users/${encodeURIComponent(email)}`, {
       method: "PUT",
       body: JSON.stringify(input),
+    }),
+  /** Replaces the user's whole grant set — always send the full list, never a
+   *  delta, or the omitted permissions are revoked. */
+  setUserGrants: (email: string, grants: Permission[]) =>
+    jfetch<{ ok: true; grants: Permission[] }>(`/api/users/${encodeURIComponent(email)}/grants`, {
+      method: "PUT",
+      body: JSON.stringify({ grants }),
     }),
   removeUser: (email: string) =>
     jfetch<{ ok: true }>(`/api/users/${encodeURIComponent(email)}`, { method: "DELETE" }),

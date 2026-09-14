@@ -1,7 +1,7 @@
 import type { Context, Next } from "hono";
 import type { Env, Variables } from "./env";
 import type { Role } from "../shared/permissions";
-import { can, normalizeRole, type Permission } from "../shared/permissions";
+import { can, normalizeRole, type Permission, type PermissionSubject } from "../shared/permissions";
 
 /**
  * Authentication: Cloudflare Access injects the verified email in the
@@ -81,7 +81,35 @@ export async function authMiddleware(
   // rest of the app only ever sees the current Role union.
   c.set("userRole", normalizeRole(user.role));
   c.set("userName", user.name);
+  c.set("userGrants", await loadGrants(c.env, user.email));
   await next();
+}
+
+/**
+ * Permissions granted to this user individually, on top of their role.
+ *
+ * Fails OPEN — to an empty list — where the release gate fails closed, and the
+ * difference is which way the mistake cuts. A grant can only ever ADD a
+ * permission, so losing the list costs its holder the extra capability and
+ * hands nobody anything they shouldn't have; an empty list is exactly the
+ * answer for the overwhelming majority of users, who have no grants at all.
+ * Refusing the request instead would take the whole app down for everyone on a
+ * database that had simply not had migration 0116 applied yet.
+ */
+export async function loadGrants(env: Env, email: string): Promise<Permission[]> {
+  try {
+    const rows = await env.DB.prepare(
+      "SELECT permission FROM user_permission_grants WHERE lower(email) = ?",
+    )
+      .bind(email.toLowerCase())
+      .all<{ permission: string }>();
+    return rows.results.map((r) => r.permission as Permission);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (!/no such table: user_permission_grants/i.test(msg)) throw e;
+    console.warn("user_permission_grants missing — per-user grants ignored. Apply migration 0116.");
+    return [];
+  }
 }
 
 /**
@@ -131,6 +159,7 @@ export async function loadCurrentUser(c: Context<{ Bindings: Env; Variables: Var
     email,
     name: c.get("userName") ?? null,
     role: c.get("userRole"),
+    grants: c.get("userGrants") ?? [],
     active: true,
     is_approver: tiers.length > 0,
     approver_tiers: tiers as Array<"line_manager" | "commercial_manager" | "director">,
@@ -143,8 +172,15 @@ export function requirePermission(
   c: Context<{ Bindings: Env; Variables: Variables }>,
   permission: Permission,
 ): Response | null {
-  if (!can(c.get("userRole"), permission)) {
+  if (!can(subjectOf(c), permission)) {
     return c.json({ error: `Forbidden: requires ${permission}` }, 403);
   }
   return null;
+}
+
+/** The signed-in user as an authorization decision sees them. Every permission
+ *  check goes through this rather than the bare role, or a granted permission
+ *  would pass in the UI and 403 on the route that serves it. */
+export function subjectOf(c: Context<{ Bindings: Env; Variables: Variables }>): PermissionSubject {
+  return { role: c.get("userRole"), grants: c.get("userGrants") ?? [] };
 }

@@ -238,7 +238,14 @@ export type PendingSubstitution = {
   project_code: string;
   project_name: string;
 };
-export type ApprovalReason = "over_budget" | "unpriced" | "both";
+/** Why a PO went for sign-off.
+ *
+ *  The first three are things the ORDER did. "raiser" is the one that isn't:
+ *  the person who raised it is flagged so everything they raise is looked at,
+ *  whatever it contains. "retrospective" is written by the retro-PO path that
+ *  raises an order from an invoice already received — it predates this union
+ *  and 57 production rows carry it, so leaving it out made the type a lie. */
+export type ApprovalReason = "over_budget" | "unpriced" | "both" | "raiser" | "retrospective";
 // "deleted" is the soft-delete state: hidden from lists, but the detail view
 // still renders it (with a banner) via direct link.
 export type POStatus = "draft" | "pending_approval" | "approved" | "rejected" | "issued" | "deleted";
@@ -573,12 +580,15 @@ export type Approver = {
   name: string | null;
 };
 
-import type { Role } from "./permissions";
+import type { Role, Permission } from "./permissions";
 
 export type CurrentUser = {
   email: string;
   name: string | null;
   role: Role;
+  /** Permissions granted to this user individually. Passed to `can()` alongside
+   *  the role so the UI shows exactly what the worker will allow. */
+  grants?: Permission[];
   active: boolean;
   is_approver: boolean;
   approver_tiers: ApprovalTier[];
@@ -597,6 +607,13 @@ export type AppUser = {
   active: boolean;
   created_at: string;
   created_by: string | null;
+  /** Permissions granted to this user individually, on top of their role —
+   *  empty for almost everyone. The list route always returns the FULL set,
+   *  because the editor submits it back whole and a partial list revokes the
+   *  rest. */
+  grants?: Permission[];
+  /** Every PO this user raises goes for approval, whatever it contains. */
+  po_requires_approval?: boolean;
 };
 
 export type Element = {

@@ -1,0 +1,13 @@
+-- Force every PO a given user raises through approval, whatever it contains.
+--
+-- The approval gate reads the ORDER (over budget, off-BOQ, value band). That
+-- leaves no way to say "this person's orders always get looked at" — a new
+-- starter, or someone buying on a job they don't run — short of removing
+-- pos.create and blocking them entirely.
+--
+-- Applied to production on 2026-09-09, ahead of this file existing: the number
+-- is out of sequence (the repo was already on 0120) because it is recorded in
+-- prod's d1_migrations under exactly this name. Renaming it to 0121 would read
+-- as a new migration and try to add a column that is already there, so the name
+-- stays as applied. D1 tracks migrations by name, not by number.
+ALTER TABLE users ADD COLUMN po_requires_approval INTEGER NOT NULL DEFAULT 0;
