@@ -30,9 +30,13 @@ type BlockData = {
   contractItems: ContractItem[];
   afps: ApplicationForPayment[];
   mats: MaterialWithCommitment[];
-  /** Materials ordered on this block's POs that aren't in its BOQ. Held apart
-   *  from `mats` so only the materials TABLE picks them up — the forecast and
-   *  the KPI rollups already count them once, as unpriced spend. */
+  /** Materials ordered on this block's POs under wording that isn't in its
+   *  BOQ — including ones coded to a budget line, tagged with which one. Held
+   *  apart from `mats` so only the materials TABLE picks them up: the forecast
+   *  and KPI rollups read `mats` (+ unpricedSpend) alone and never this array,
+   *  so nothing here is double-counted at that level regardless of coding.
+   *  Inside the table itself (combinedMaterials), a coded item still gets its
+   *  own row so what was bought is visible — see `codedToItem` there. */
   offBoq: OffBoqMaterial[];
   contingency: number;
   unpricedLines: UnpricedLine[];
@@ -244,8 +248,18 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
       item: string; type: string; unit: string | null; supplier: Set<string>;
       boqQty: number; committedQty: number; calledOffQty: number; deliveredQty: number;
       budget: number; committed: number; calledOff: number; effVal: number; priced: boolean; blocks: Map<string, Blk>; mats: MatRow[];
-      /** True when some block only knows this item from a PO, not its BOQ. */
+      /** True when some block only knows this item from a PO, not its BOQ, AND
+       *  nothing is paying for it. False for a row that's off-BOQ wording but
+       *  coded to a budget line — see `codedToItem`, which is the other case. */
       offBoq: boolean;
+      /** Set when this row is a PO-added item coded to a budget line, to the
+       *  wording of that line. Mutually exclusive with `offBoq`: the money is
+       *  already inside THAT row's committed spend (via that block's `mats`,
+       *  which folds coded costs in server-side), so this row exists only to
+       *  show what was actually bought — the "Off-BOQ" chip and count must
+       *  keep meaning "nothing budgets this", which is why coding sets this
+       *  instead of `offBoq`. */
+      codedToItem: string | null;
       /** Newest off-BOQ order date across the blocks — this row totals several
        *  orders, so it has to say when it was last bought. */
       lastOrdered: string | null;
@@ -294,12 +308,6 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
       // row as the same material priced on another.
       for (const row of [...d.mats, ...d.offBoq.map((o, i) => offBoqRow(o, i))] as MatRow[]) {
         if (row.omitted) continue; // omitted from the job — not procurement
-        // A coded buy is listed by /off-boq so the per-block Materials tab can
-        // show WHAT was bought, but its £ is already inside the committed spend
-        // on the budget line it was coded to — which is in d.mats, right above.
-        // This view sums money across blocks, so taking both would bill the job
-        // twice for one order.
-        if (row.off_boq?.coded_to_item) continue;
         const norm = normName(row.sub_item || row.item || "");
         // An off-BOQ row that no block prices keeps its supplier in the key.
         // Nothing vouches for these but the wording someone typed, and the
@@ -311,7 +319,7 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
           ? (norm ? `n:${norm}\u0000${matSupplier(row).toLowerCase()}` : "")
           : row.product_id != null ? `p:${row.product_id}` : (productByName.get(norm) ?? (norm ? `n:${norm}` : ""));
         if (!key || key === "p:") continue;
-        const cur: Row = by.get(key) ?? { key, item: row.sub_item || row.item, type: row.type ?? "", unit: row.total_units_unit ?? row.sub_unit ?? row.cost_unit ?? null, supplier: new Set<string>(), boqQty: 0, committedQty: 0, calledOffQty: 0, deliveredQty: 0, budget: 0, committed: 0, calledOff: 0, effVal: 0, priced: false, offBoq: false, lastOrdered: null, addedAt: null, modifiedAt: null, blocks: new Map<string, Blk>(), mats: [], statuses: new Set<MatStatus>(), names: new Map<string, number>() };
+        const cur: Row = by.get(key) ?? { key, item: row.sub_item || row.item, type: row.type ?? "", unit: row.total_units_unit ?? row.sub_unit ?? row.cost_unit ?? null, supplier: new Set<string>(), boqQty: 0, committedQty: 0, calledOffQty: 0, deliveredQty: 0, budget: 0, committed: 0, calledOff: 0, effVal: 0, priced: false, offBoq: false, codedToItem: null, lastOrdered: null, addedAt: null, modifiedAt: null, blocks: new Map<string, Blk>(), mats: [], statuses: new Set<MatStatus>(), names: new Map<string, number>() };
         const effName = (row.sub_item || row.item || "").trim();
         if (effName) cur.names.set(effName, (cur.names.get(effName) ?? 0) + 1);
         const boq = netUnits(row); // budget qty net of any partial omission
@@ -328,9 +336,15 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
         cur.budget += bud; cur.committed += comm; cur.calledOff += co; cur.effVal += boq * effectiveSpendRate(row); cur.mats.push(row);
         if (rowPriced) cur.priced = true;
         if (row.off_boq) {
-          cur.offBoq = true;
           const at = row.off_boq.last_ordered_at;
           if (at && (cur.lastOrdered == null || at > cur.lastOrdered)) cur.lastOrdered = at;
+          // Coded → the money already has a home (that budget line's own row,
+          // via this block's `mats`), so this row is "off-BOQ" only in the
+          // sense of wording, not of money. Keeping `offBoq` for the genuinely
+          // unbudgeted case only is what keeps that chip's count meaning
+          // "nothing budgets this" rather than "any PO-added wording".
+          if (row.off_boq.coded_to_item) cur.codedToItem = row.off_boq.coded_to_item;
+          else cur.offBoq = true;
         }
         // Earliest signal that this material reached the job, latest signal that
         // anything happened to it. A merged row spans blocks, so both are taken
@@ -835,10 +849,20 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
                                     <div style={{ minWidth: 0 }}>
                                       <div style={{ fontWeight: 600 }}>
                                         {m.item}
+                                        {/* Two different stories: unbudgeted spend nobody has
+                                            placed against anything yet, vs a buy that HAS a
+                                            budget line behind it and is shown here only so the
+                                            item itself is visible under its own wording. */}
                                         {m.offBoq && (
                                           <span className="pill warn" style={{ fontSize: 10, marginLeft: 6, verticalAlign: "middle" }}
                                             title={`Added on a purchase order, not in the priced BOQ — there's no budget line behind it until the PO line is assigned to one${m.lastOrdered ? `. Last ordered ${fmtDate(m.lastOrdered)}` : ""}`}>
                                             off-BOQ
+                                          </span>
+                                        )}
+                                        {m.codedToItem && (
+                                          <span className="pill" style={{ fontSize: 10, marginLeft: 6, verticalAlign: "middle" }}
+                                            title={`Bought against the budget line "${m.codedToItem}". Its cost is already counted in that row's Committed figure — the Committed £ shown here is the SAME money, not additional spend.${m.lastOrdered ? ` Last ordered ${fmtDate(m.lastOrdered)}.` : ""}`}>
+                                            coded → {m.codedToItem}
                                           </span>
                                         )}
                                       </div>
