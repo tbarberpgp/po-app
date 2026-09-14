@@ -474,7 +474,7 @@ export const api = {
   removeUser: (email: string) =>
     jfetch<{ ok: true }>(`/api/users/${encodeURIComponent(email)}`, { method: "DELETE" }),
 
-  // Soft delete a PO (superadmin only).
+  // Soft delete a PO — needs `pos.delete`.
   deletePO: (id: string, reason: string) =>
     jfetch<{ ok: true }>(`/api/pos/${id}`, {
       method: "DELETE",

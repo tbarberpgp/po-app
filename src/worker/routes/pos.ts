@@ -394,12 +394,32 @@ async function enrichPOLines(
   return { enriched, total, hasUnpriced, hasOverBudget, prelimNeedsApproval, frameworkOverdraws };
 }
 
+/**
+ * Is this list deliberately asking for soft-deleted orders? `?status=deleted`
+ * is the PO dashboard's "Deleted" filter; `?include_deleted=1` mixes them in
+ * alongside the live ones. Everything else hides them, which is what every
+ * other caller wants — a deleted PO stops counting against committed budget
+ * and must not come back in a picker.
+ *
+ * Its own function because the two clauses used to fight: the guard below said
+ * `status != 'deleted'` unconditionally, so `?status=deleted` asked for the
+ * deleted orders and the guard filtered every one of them back out, returning
+ * an empty list rather than an error.
+ */
+export function listShowsDeleted(status: string | undefined, includeDeleted: boolean): boolean {
+  return includeDeleted || status === "deleted";
+}
+
 pos.get("/", async (c) => {
   const projectId = c.req.query("project_id");
   const status = c.req.query("status");
-  const includeDeleted = c.req.query("include_deleted") === "1";
-  // Deleted POs are hidden by default everywhere; superadmins can pass
-  // ?include_deleted=1 if we ever build a "Deleted POs" view.
+  const showDeleted = listShowsDeleted(status, c.req.query("include_deleted") === "1");
+  // Reading what was deleted is the other half of being allowed to delete it,
+  // so it takes the same permission, `pos.delete`.
+  if (showDeleted) {
+    const denied = requirePermission(c, "pos.delete");
+    if (denied) return denied;
+  }
   const where: string[] = [];
   const binds: unknown[] = [];
   if (projectId) {
@@ -410,7 +430,7 @@ pos.get("/", async (c) => {
     where.push("po.status = ?");
     binds.push(status);
   }
-  if (!includeDeleted) where.push("po.status != 'deleted'");
+  if (!showDeleted) where.push("po.status != 'deleted'");
   // POs of deleted projects also vanish from every list.
   where.push("p.deleted_at IS NULL");
   const sql = `WITH overdrawn_items AS (
@@ -2091,7 +2111,8 @@ pos.post("/:id/issue", async (c) => {
 });
 
 /**
- * Soft delete — superadmin only. Sets status='deleted' and records who,
+ * Soft delete — takes `pos.delete` (superadmin, commercial, or an individual
+ * grant). Sets status='deleted' and records who,
  * when, and why. The PO row stays so the audit trail is preserved, but it
  * disappears from every list query (which all filter
  * status IN ('approved','issued','pending_approval', ...)) and stops
