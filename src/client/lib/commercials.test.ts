@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  accumulateMaterials, materialOverspendOf, summariseMaterials, oneScope, budgetMoneyHint,
+  accumulateMaterials, materialOverspendOf, summariseMaterials, oneScope, budgetMoneyHint, pickUnit,
   unexpectedSpendDrill, combinedUnexpectedSpendDrill, withCombinedOverspend,
   computeForecast, contractTotals, totalChange,
   type UnpricedLine, type Forecast,
@@ -237,4 +237,26 @@ for (const [name, opts] of [
 
 test("a contingency comes off the change in profit, pound for pound", () => {
   assert.equal(totalChange(forecastWith({})) - totalChange(forecastWith({ contingency: 5_000 })), 5_000);
+});
+
+// ── pickUnit ──────────────────────────────────────────────────────────────
+// The unit columns hold "" far more often than NULL (166 of 565 po_lines, with
+// no nulls at all), so the `a ?? b ?? "ea"` chains these replaced never reached
+// their default — a picker prefilled from a previous order came up blank.
+
+test("a blank unit is skipped, not treated as an answer", () => {
+  assert.equal(pickUnit("", "ea"), "ea");
+  assert.equal(pickUnit("   ", "ea"), "ea");
+  assert.equal(pickUnit(null, undefined, "", "ea"), "ea");
+});
+
+test("the first unit that says something wins, and is trimmed", () => {
+  assert.equal(pickUnit("Roll", "ea"), "Roll");
+  assert.equal(pickUnit("  drum  ", "ea"), "drum");
+  assert.equal(pickUnit(null, "m2", "ea"), "m2");
+});
+
+test("with nothing to go on it returns empty, so callers keep their own default", () => {
+  assert.equal(pickUnit(), "");
+  assert.equal(pickUnit(null, undefined, ""), "");
 });

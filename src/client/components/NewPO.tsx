@@ -6,7 +6,7 @@ import { SupplierCombobox, compareSuppliers, type SupplierOption } from "./Suppl
 import { SubstituteAction } from "./MaterialSubstitute";
 import { can } from "../../shared/permissions";
 import type { CurrentUser, MaterialWithCommitment, OffBoqMaterial, Supplier, SupplierStatus, Variation } from "../../shared/types";
-import { offBoqRow, type MatRow } from "../lib/commercials";
+import { offBoqRow, pickUnit, type MatRow } from "../lib/commercials";
 import { pricedBudget, overBudgetBy } from "../../shared/budget";
 
 // Item is "priced for this job" iff total_units > 0 in the Materials sheet (col V).
@@ -366,7 +366,7 @@ export function NewPO() {
       type: m.type,
       manufacturer: m.manufacturer,
       qty: cleanQty(defQty),
-      unit: m.total_units_unit ?? m.pack_unit ?? "ea",
+      unit: pickUnit(m.total_units_unit, m.pack_unit, "ea"),
       unit_cost: m.cost ?? 0,
     }]);
   }
@@ -461,7 +461,7 @@ export function NewPO() {
         type: m.type ?? "",
         item: m.item,
         manufacturer: m.manufacturer ?? effectiveSupplier,
-        unit: m.total_units_unit ?? "ea",
+        unit: pickUnit(m.total_units_unit, m.pack_unit, "ea"),
         unit_cost: m.live_unit_price ?? 0,
         priced: false,
       });
@@ -478,7 +478,7 @@ export function NewPO() {
       type: m.type ?? "",
       item: subbed ? (m.sub_item ?? m.item) : m.item,
       manufacturer: subbed ? (m.sub_manufacturer ?? m.sub_supplier ?? m.manufacturer ?? "") : (m.manufacturer ?? ""),
-      unit: subbed ? (m.sub_unit ?? m.total_units_unit ?? m.pack_unit ?? "ea") : (m.total_units_unit ?? m.pack_unit ?? "ea"),
+      unit: subbed ? pickUnit(m.sub_unit, m.total_units_unit, m.pack_unit, "ea") : pickUnit(m.total_units_unit, m.pack_unit, "ea"),
       unit_cost: effectiveCost(m),
       priced: isPriced(m),
     });
@@ -615,8 +615,8 @@ export function NewPO() {
               : m.manufacturer,
             qty: r.qty,
             unit: subbed
-              ? (m.sub_unit ?? m.total_units_unit ?? m.pack_unit ?? "ea")
-              : (m.total_units_unit ?? m.pack_unit ?? "ea"),
+              ? pickUnit(m.sub_unit, m.total_units_unit, m.pack_unit, "ea")
+              : pickUnit(m.total_units_unit, m.pack_unit, "ea"),
             unit_cost: effectiveCost(m),
           };
         }),
@@ -1028,7 +1028,7 @@ export function NewPO() {
                     const displayItem = subbed ? (m.sub_item ?? m.item) : m.item;
                     // The price the PO will use: substitution / applied-quote price, else BOQ.
                     const displayCost = effectiveCost(m);
-                    const unit = (subbed ? m.sub_unit : null) ?? m.total_units_unit ?? m.pack_unit ?? "ea";
+                    const unit = pickUnit(subbed ? m.sub_unit : null, m.total_units_unit, m.pack_unit, "ea");
                     const priced = m.total_units ?? 0;
                     const committed = m.committed_qty ?? 0;
                     const remaining = priced - committed;
@@ -1324,7 +1324,7 @@ function AdditionalRowEditor({
       if (!item || seen.has(k)) continue;
       seen.add(k);
       const rate = m.live_unit_price ?? m.cost ?? null;
-      const unit = m.total_units_unit ?? m.pack_unit ?? "";
+      const unit = pickUnit(m.total_units_unit, m.pack_unit);
       out.push({
         id: String(m.id),
         item,
