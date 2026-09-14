@@ -451,11 +451,14 @@ export function NewPO() {
     const m = libraryUnpriced.find((mm) => String(mm.id) === materialIdStr);
     if (!m) return;
     if (m.off_boq) {
-      // Nothing in the BOQ to point at, so this is still an unpriced extra —
-      // but prefilled from the last order instead of typed from memory.
+      // No BOQ row of its own, so this stays an unpriced extra — but prefilled
+      // from the last order instead of typed from memory, and if that order was
+      // coded to a budget line the repeat lands on the same line rather than
+      // starting again as spend nothing is paying for.
       updateAdditional(key, {
         source: "custom",
-        material_id: null,
+        material_id: m.off_boq.coded_to_material_id ?? null,
+        type: m.type ?? "",
         item: m.item,
         manufacturer: m.manufacturer ?? effectiveSupplier,
         unit: m.total_units_unit ?? "ea",
@@ -470,6 +473,9 @@ export function NewPO() {
     updateAdditional(key, {
       source: "library",
       material_id: m.id,
+      // Carried from the material now that the Type box no longer gates the
+      // picker — otherwise picking by name alone would file the line untyped.
+      type: m.type ?? "",
       item: subbed ? (m.sub_item ?? m.item) : m.item,
       manufacturer: subbed ? (m.sub_manufacturer ?? m.sub_supplier ?? m.manufacturer ?? "") : (m.manufacturer ?? ""),
       unit: subbed ? (m.sub_unit ?? m.total_units_unit ?? m.pack_unit ?? "ea") : (m.total_units_unit ?? m.pack_unit ?? "ea"),
@@ -1304,11 +1310,41 @@ function AdditionalRowEditor({
   onPick: (materialIdStr: string) => void;
   onRemove: () => void;
 }) {
-  const itemsInType = useMemo(
-    () => library.filter((m) => !row.type || m.type === row.type),
-    [library, row.type],
-  );
   const autoFilled = row.source === "library" && row.material_id != null;
+  const itemsListId = `po-add-items-${row.key}`;
+  /** The wording a pick will leave in the box — matching on the same string the
+   *  option offers, so the row doesn't flip back to custom on the next render. */
+  const nameOf = (m: MatRow) => ((isFullSub(m) ? (m.sub_item ?? m.item) : m.item) ?? "").trim();
+  const suggestions = useMemo(() => {
+    const seen = new Set<string>();
+    const out: Array<{ id: string; item: string; hint: string }> = [];
+    for (const m of library) {
+      const item = nameOf(m);
+      const k = item.toLowerCase();
+      if (!item || seen.has(k)) continue;
+      seen.add(k);
+      const rate = m.live_unit_price ?? m.cost ?? null;
+      const unit = m.total_units_unit ?? m.pack_unit ?? "";
+      out.push({
+        id: String(m.id),
+        item,
+        hint: [
+          rate ? `${fmtMoney(rate)}${unit ? `/${unit}` : ""}` : null,
+          effectiveMfr(m) || null,
+          m.off_boq ? (m.off_boq.coded_to_item ? `ordered before · coded → ${m.off_boq.coded_to_item}` : "ordered before (off-BOQ)") : null,
+        ].filter(Boolean).join(" · "),
+      });
+    }
+    return out;
+  }, [library]); // eslint-disable-line react-hooks/exhaustive-deps
+  /** Typing in the Item box. An exact hit adopts that material (price, unit,
+   *  type and — the point of it — its budget line); anything else is a genuine
+   *  extra, so it reverts to a custom line rather than keeping a stale link. */
+  function onItemText(value: string) {
+    const hit = suggestions.find((s) => s.item.toLowerCase() === value.trim().toLowerCase());
+    if (hit) { onPick(hit.id); return; }
+    onChange({ source: "custom", material_id: null, item: value, priced: false });
+  }
 
   return (
     <div
@@ -1325,16 +1361,11 @@ function AdditionalRowEditor({
             <label>{prelimMode ? "Prelim type" : "Type"}</label>
             <select
               value={row.type}
-              onChange={(e) =>
-                onChange({
-                  type: e.target.value,
-                  material_id: null,
-                  item: row.source === "library" ? "" : row.item,
-                })
-              }
-              // In prelim mode the type drives the prelim category, so it stays
-              // editable even though the item itself is a free-text description.
-              disabled={!prelimMode && row.source === "custom"}
+              // Just a label now: the Item box searches the whole library, so
+              // changing the type no longer narrows it and must not wipe a
+              // wording already chosen. Editable on a custom line too, so an
+              // extra typed by hand can still be filed under something.
+              onChange={(e) => onChange({ type: e.target.value })}
             >
               <option value="">— select —</option>
               {(prelimMode ? prelimTypes : libraryTypes).map((t) => <option key={t} value={t}>{t}</option>)}
@@ -1342,26 +1373,34 @@ function AdditionalRowEditor({
           </div>
           <div>
             <label>Item</label>
-            {row.source === "custom" ? (
+            {prelimMode ? (
+              // A prelim is a description, not a material — nothing to pick.
               <input
                 value={row.item}
                 onChange={(e) => onChange({ item: e.target.value })}
                 placeholder="Custom item description"
               />
             ) : (
-              <select
-                value={row.material_id ?? ""}
-                onChange={(e) => onPick(e.target.value)}
-                disabled={!row.type}
-              >
-                <option value="">{row.type ? "— select item —" : "Choose type first"}</option>
-                {itemsInType.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.off_boq ? `${m.item} — ordered before (off-BOQ)` : m.item}
-                  </option>
-                ))}
-                <option value="__custom__">+ Custom item (not in database)…</option>
-              </select>
+              <>
+                {/* One box for both jobs: start typing to find what this supplier
+                    can supply, or type straight past the list for a genuine
+                    extra. Picking a suggestion is what sets the budget line. */}
+                <input
+                  value={row.item}
+                  list={itemsListId}
+                  onChange={(e) => onItemText(e.target.value)}
+                  placeholder={suggestions.length > 0 ? "Pick a material, or type a description" : "Custom item description"}
+                />
+                <datalist id={itemsListId}>
+                  {suggestions.map((s) => <option key={s.id} value={s.item}>{s.hint}</option>)}
+                </datalist>
+                {row.material_id != null && (
+                  <div className="muted" style={{ fontSize: 10.5, marginTop: 2 }}
+                    title="Picked from this job's materials, so its cost counts against that budget line instead of landing in unpriced spend.">
+                    ✓ counts against the budget line
+                  </div>
+                )}
+              </>
             )}
           </div>
           <div>
