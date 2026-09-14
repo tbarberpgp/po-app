@@ -7,6 +7,7 @@ import { SubstituteAction } from "./MaterialSubstitute";
 import { can } from "../../shared/permissions";
 import type { CurrentUser, MaterialWithCommitment, OffBoqMaterial, Supplier, SupplierStatus, Variation } from "../../shared/types";
 import { offBoqRow, type MatRow } from "../lib/commercials";
+import { pricedBudget, overBudgetBy } from "../../shared/budget";
 
 // Item is "priced for this job" iff total_units > 0 in the Materials sheet (col V).
 const isPriced = (m: MaterialWithCommitment) => (m.total_units ?? 0) > 0;
@@ -503,10 +504,12 @@ export function NewPO() {
   // budget). Skip the over-budget check for call-offs — mirrors the server,
   // which skips the BOQ gate for call-offs — so a legitimate call-off isn't
   // wrongly flagged "over committed" just because the framework reserved the item.
-  const overBudget = isCallOff ? [] : pricedSelected.filter((r) => {
-    const rem = (r.material.total_units ?? 0) - (r.material.committed_qty ?? 0);
-    return r.qty - rem > 1e-4;   // tolerance so a full-allowance line isn't flagged on float noise
-  });
+  const overBudget = isCallOff ? [] : pricedSelected.filter((r) =>
+    // Money, matching the server's gate (shared/budget.ts): can this budget
+    // line take this spend. The pack-units test this replaced disagreed with
+    // the decision the server was about to take — it passed an order that blew
+    // the budget at a higher rate, and warned about one that came in cheaper.
+    overBudgetBy(pricedBudget(r.material), (r.material.committed_value ?? 0) + r.qty * effectiveCost(r.material)) > 0);
 
   const selectedFw = frameworkOptions.find((f) => f.id === manualFrameworkId) ?? null;
   const filteredFw = frameworkOptions.filter((f) =>
@@ -529,7 +532,7 @@ export function NewPO() {
     if (!a.priced || a.material_id == null) return false;
     const m = mats.find((mm) => mm.id === a.material_id);
     if (!m) return false;
-    return a.qty - ((m.total_units ?? 0) - (m.committed_qty ?? 0)) > 1e-4;
+    return overBudgetBy(pricedBudget(m), (m.committed_value ?? 0) + a.qty * a.unit_cost) > 0;
   });
   const needsApproval = hasOver || hasUnpricedAdditional || additionalOver;
 
@@ -1024,7 +1027,11 @@ export function NewPO() {
                     const committed = m.committed_qty ?? 0;
                     const remaining = priced - committed;
                     const lineTotal = row ? row.qty * displayCost : 0;
-                    const isOver = row && row.qty - remaining > 1e-4;
+                    // Money, as the server's gate decides it — the qty columns
+                    // beside this still show pack units, but whether the line
+                    // can take the spend is a question about £.
+                    const overBy = row ? overBudgetBy(pricedBudget(m), (m.committed_value ?? 0) + lineTotal) : 0;
+                    const isOver = overBy > 0;
                     return (
                       <tr key={m.id} style={row ? { background: "var(--accent-soft)" } : undefined}>
                         <td><input type="checkbox" checked={!!row} onChange={() => toggleRow(m)} /></td>
@@ -1062,7 +1069,17 @@ export function NewPO() {
                           {row ? (
                             <>
                               {fmtMoney(lineTotal)}
-                              {isOver && <div><span className="badge over" style={{ marginTop: 4 }}>over</span></div>}
+                              {isOver && (
+                                <div>
+                                  <span
+                                    className="badge over"
+                                    style={{ marginTop: 4 }}
+                                    title={`${fmtMoney(pricedBudget(m))} budgeted on this line · ${fmtMoney(m.committed_value ?? 0)} already committed · this order ${fmtMoney(lineTotal)}`}
+                                  >
+                                    over by {fmtMoney(overBy)}
+                                  </span>
+                                </div>
+                              )}
                             </>
                           ) : <span className="muted">—</span>}
                         </td>

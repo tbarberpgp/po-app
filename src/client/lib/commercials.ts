@@ -8,6 +8,7 @@
 import type {
   MaterialWithCommitment, OffBoqMaterial, ProjectCommercial, Variation, ContractItem, ApplicationForPayment,
 } from "../../shared/types";
+import { netBudgetUnits, pricedBudget } from "../../shared/budget";
 import { fmtMoney } from "./api";
 import type { DrillColumn } from "../components/DrillPanel";
 
@@ -153,7 +154,7 @@ export function effectiveSpendRate(m: MaterialWithCommitment): number {
  *  filtered out separately (m.omitted); this handles the "we only need 150 of
  *  the 400" case, so every budget figure prices the reduced quantity. */
 export function netUnits(m: MaterialWithCommitment): number {
-  return Math.max(0, (m.total_units ?? 0) - (m.omitted_qty ?? 0));
+  return netBudgetUnits(m);
 }
 
 /** What a budget line is worth and how much of that is still unspent — the pair
@@ -170,8 +171,7 @@ export function netUnits(m: MaterialWithCommitment): number {
  *  it falls back to the workbook's own total for the line; a line whose units
  *  were omitted keeps the omission's £0 rather than resurrecting that total. */
 export function budgetMoneyHint(m: MaterialWithCommitment): string[] {
-  const units = netUnits(m);
-  const budget = units > 0 || m.omitted_qty ? units * (m.cost ?? 0) : (m.material_total_cost ?? 0);
+  const budget = pricedBudget(m);
   if (!(budget > 0)) return ["no priced budget"];
   const left = budget - (m.committed_qty ?? 0) * effectiveSpendRate(m);
   return [

@@ -437,6 +437,11 @@ export function POView({ me }: { me: CurrentUser | null }) {
                     const qtyOver = isFramework && co - ordered > 1e-4;
                     const valueOver = isFramework && spentValue - frameworkValue > 0.005;
                     const frameworkOver = qtyOver || valueOver;
+                    // How far past its budget this line's budget line stands
+                    // today, in £ — recomputed by the API against the current
+                    // budget, so it catches a line that has gone over since the
+                    // order was raised as well as one raised over.
+                    const overBy = l.budget_over_by ?? 0;
                     return (
                     <tr key={l.id}>
                       <td>
@@ -502,12 +507,40 @@ export function POView({ me }: { me: CurrentUser | null }) {
                             </>
                           );
                         })()}
-                        {(l.is_unpriced || l.is_over_budget || frameworkOver) && (
+                        {(l.is_unpriced || l.is_over_budget || overBy > 0 || frameworkOver) && (
                           <div style={{ marginTop: 4, display: "flex", gap: 6 }}>
                             {l.is_unpriced && (l.material_id != null
                               ? <span className="badge" title="Off-BOQ wording, but coded to a budget line — it counts against that budget">coded ✓</span>
                               : <span className="badge unpriced">unpriced</span>)}
-                            {l.is_over_budget && <span className="badge over">over</span>}
+                            {overBy > 0
+                              // "over" alone left the approver to go and work
+                              // out how bad it was. The figure is recomputed
+                              // against today's budget, so it also answers the
+                              // question the stored order-time flag can't: how
+                              // far over the line stands NOW.
+                              ? <span
+                                  className="badge over"
+                                  title={`${fmtMoney(l.budget_priced ?? 0)} budgeted on this budget line · ${fmtMoney(l.budget_committed ?? 0)} committed against it across live orders, this one included → ${fmtMoney(overBy)} over`}
+                                >
+                                  over by {fmtMoney(overBy)}
+                                </span>
+                              // Flagged when it was raised, but today's budget
+                              // covers it — the workbook was re-priced, an
+                              // order alongside it was cancelled, or the line
+                              // was recoded. Say so rather than showing a bare
+                              // "over" the figures beside it contradict.
+                              : l.is_over_budget && (
+                                <span
+                                  className="badge"
+                                  title={
+                                    l.budget_priced != null
+                                      ? `Flagged over budget when this order was raised. Against today's budget it is within it: ${fmtMoney(l.budget_priced)} budgeted · ${fmtMoney(l.budget_committed ?? 0)} committed.`
+                                      : "Flagged over budget when this order was raised. This line is no longer coded to a priced budget line, so there is nothing to measure it against now."
+                                  }
+                                >
+                                  over at order
+                                </span>
+                              )}
                             {frameworkOver && (
                               <span
                                 className="badge over"
@@ -1169,14 +1202,32 @@ function ApprovalRouteCard({ po }: { po: PurchaseOrder }) {
 
 function ReasonExplainer({ po }: { po: PurchaseOrder }) {
   const unpriced = po.lines.filter((l) => l.is_unpriced);
-  const over = po.lines.filter((l) => l.is_over_budget);
+  // Flagged when raised, or over today — an approver deciding now needs to see
+  // a line that has gone over since as much as one that was raised over.
+  const over = po.lines.filter((l) => l.is_over_budget || (l.budget_over_by ?? 0) > 0);
+  const overTotal = over.reduce((s, l) => s + (l.budget_over_by ?? 0), 0);
   return (
     <>
       {over.length > 0 && (
         <div style={{ marginBottom: 10 }}>
-          <div className="eyebrow">Over priced allowance</div>
+          <div className="eyebrow">
+            Over priced allowance{overTotal > 0 ? ` — ${fmtMoney(overTotal)} over` : ""}
+          </div>
           <ul style={{ margin: "4px 0 0 18px", padding: 0, fontSize: 13 }}>
-            {over.map((l) => <li key={l.id}>{l.item}</li>)}
+            {over.map((l) => {
+              const by = l.budget_over_by ?? 0;
+              return (
+                <li key={l.id}>
+                  {l.item}
+                  {by > 0
+                    ? <span className="muted"> — {fmtMoney(by)} over {fmtMoney(l.budget_priced ?? 0)} budgeted</span>
+                    // Flagged at order time, but within budget as it stands —
+                    // the workbook was re-priced, an order alongside it went
+                    // away, or the line was recoded since.
+                    : <span className="muted"> — within budget as it stands now</span>}
+                </li>
+              );
+            })}
           </ul>
         </div>
       )}

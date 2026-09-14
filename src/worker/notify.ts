@@ -58,16 +58,18 @@ function lineItemsTable(po: PurchaseOrder): string {
     if (l.is_unpriced) tags.push('<span style="display:inline-block;background:#fdecd2;color:#8a5a10;font-size:11px;padding:1px 6px;border-radius:9px;margin-left:6px">outside the priced BOQ</span>');
     if (l.is_over_budget) tags.push('<span style="display:inline-block;background:#fbe4e0;color:#a3382a;font-size:11px;padding:1px 6px;border-radius:9px;margin-left:6px">over priced allowance</span>');
 
-    // The allowance this line eats into. Only meaningful on a priced line that
-    // went over — that is precisely the number the approver is being asked about.
+    // The budget this line eats into. Only meaningful on a priced line that
+    // went over — that is precisely the number the approver is being asked
+    // about. Money, not pack units: the approver is signing off a spend, and
+    // the allowance this used to quote ("Allowance 25 Roll · 0 Roll already
+    // committed") said nothing about whether the money was there.
     let budget = "";
-    if (l.is_over_budget && l.priced_qty_at_order != null) {
-      const before = l.committed_before ?? 0;
-      const over = before + l.qty - l.priced_qty_at_order;
-      const unit = l.unit ? ` ${escapeHtml(l.unit)}` : "";
+    if (l.is_over_budget && l.priced_budget_at_order != null) {
+      const before = l.committed_value_before ?? 0;
+      const over = before + l.line_total - l.priced_budget_at_order;
       budget = `<div style="font-size:12px;color:#a3382a;margin-top:3px">`
-        + `Allowance ${qty(l.priced_qty_at_order)}${unit} · ${qty(before)}${unit} already committed · this order ${qty(l.qty)}${unit}`
-        + (over > 0 ? ` → <b>${qty(over)}${unit} over</b>` : "")
+        + `Budget ${money(l.priced_budget_at_order)} · ${money(before)} already committed · this order ${money(l.line_total)}`
+        + (over > 0 ? ` → <b>${money(over)} over</b>` : "")
         + `</div>`;
     }
 

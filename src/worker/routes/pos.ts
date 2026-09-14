@@ -4,6 +4,7 @@ import type { ApprovedPo, CreatePOInput, POLine, PoApprovalEvidence, PoDeliveryD
 import { loadSettings, tierForApproval } from "../approval";
 import { learnAliases } from "../matchMemory";
 import { normText } from "../../shared/line-match";
+import { pricedBudget, overBudgetBy, type PricedBudgetInput } from "../../shared/budget";
 import { summarisePoDeliveries, deliveryNoteKey, suspectedDuplicateReceipts, PO_DELIVERY_NOTE_COLUMNS, PO_DELIVERY_NOTE_JOIN, type PoLineRef, type PoDeliveryRow } from "../../shared/po-delivery-status";
 import { emailApprovers, emailRequesterDecision, emailFrameworkOverdraw, FRAMEWORK_OVERDRAW_RECIPIENTS } from "../notify";
 import { requirePermission } from "../auth";
@@ -158,6 +159,12 @@ async function alertFrameworkOverdraw(
  * is the framework a call-off draws against — its lines gate on the framework's
  * actual remaining instead of the project BOQ allowance (see below).
  */
+/** A `materials` row as the over-budget gate needs it: identity, plus the three
+ *  workbook columns a priced budget is read off and any partial omission. */
+type MatBudgetRow = PricedBudgetInput & {
+  id: number; item: string; type: string; manufacturer: string | null;
+};
+
 async function enrichPOLines(
   db: D1Database,
   project: { id: string; code: string },
@@ -195,6 +202,12 @@ async function enrichPOLines(
     let isOverBudget = false;
     let pricedQty: number | null = null;
     let committedBefore: number | null = null;
+    // The money the over-budget decision is actually made on (see shared/budget):
+    // what the budget line is priced at, and what was already committed against
+    // it before this order. Carried on the line so the approval email can show
+    // the approver the sum it was judged against.
+    let pricedBudgetValue: number | null = null;
+    let committedValueBefore: number | null = null;
     let manufacturer = ln.manufacturer ?? null;
     let type = ln.type ?? null;
     // The material id we'll actually store: re-pointed to the active snapshot's
@@ -202,20 +215,28 @@ async function enrichPOLines(
     let resolvedMaterialId = ln.material_id;
 
     if (ln.material_id != null && snap) {
+      // `cost` and `material_total_cost` come along for the priced budget: the
+      // over-budget test is money, so the workbook's per-pack cost (col F) and
+      // its own total for the line (col X, for a lump-sum with no units) are
+      // both needed. `omitted_qty` reduces the budget for a partial omission,
+      // exactly as it does on the Materials tab.
+      const MAT_COLS = `id, item, type, manufacturer, total_units, cost, material_total_cost,
+              (SELECT mo.omit_qty FROM material_omissions mo
+                WHERE mo.project_id = ? AND mo.item_key = lower(materials.item)) AS omitted_qty`;
       let mat = await db.prepare(
-        "SELECT id, item, type, manufacturer, total_units FROM materials WHERE id = ? AND snapshot_id = ?",
+        `SELECT ${MAT_COLS} FROM materials WHERE id = ? AND snapshot_id = ?`,
       )
-        .bind(ln.material_id, snap.id)
-        .first<{ id: number; item: string; type: string; manufacturer: string | null; total_units: number | null }>();
+        .bind(project.id, ln.material_id, snap.id)
+        .first<MatBudgetRow>();
       // The id may belong to a superseded snapshot (the pricing workbook was
       // re-uploaded, re-minting material ids). Re-match by item name in the
       // active snapshot so the line still prices rather than blocking the edit.
       if (!mat && ln.item) {
         mat = await db.prepare(
-          "SELECT id, item, type, manufacturer, total_units FROM materials WHERE snapshot_id = ? AND lower(item) = lower(?) LIMIT 1",
+          `SELECT ${MAT_COLS} FROM materials WHERE snapshot_id = ? AND lower(item) = lower(?) LIMIT 1`,
         )
-          .bind(snap.id, ln.item)
-          .first<{ id: number; item: string; type: string; manufacturer: string | null; total_units: number | null }>();
+          .bind(project.id, snap.id, ln.item)
+          .first<MatBudgetRow>();
       }
       if (!mat) {
         // No match even by name — treat as a historical/unpriced line (priced by
@@ -228,27 +249,39 @@ async function enrichPOLines(
         manufacturer = manufacturer ?? mat.manufacturer;
         type = type ?? mat.type;
         // Allowance is in pack units (col V) — same dimension as the PO qty.
-        pricedQty = mat.total_units;
+        pricedQty = mat.total_units ?? null;
 
-        // Other live POs' committed qty for this item; an edited PO excludes its
-        // own existing lines so they aren't double-counted. Call-offs are excluded
-        // too — a framework reserves the allowance and its call-offs draw within it.
+        // Other live POs' committed spend for this item — money and quantity in
+        // one pass. An edited PO excludes its own existing lines so they aren't
+        // double-counted. Call-offs are excluded too — a framework reserves the
+        // allowance and its call-offs draw within it.
         const committedRow = await db.prepare(
-          `SELECT COALESCE(SUM(pl.qty), 0) AS q
+          `SELECT COALESCE(SUM(pl.qty), 0) AS q, COALESCE(SUM(pl.line_total), 0) AS v
              FROM po_lines pl JOIN purchase_orders po ON po.id = pl.po_id
             WHERE po.project_id = ? AND po.status IN ('approved','issued','pending_approval')
               AND COALESCE(po.order_type, 'standard') != 'call_off'
               AND lower(pl.item) = lower(?) AND pl.is_unpriced = 0${excludePoId ? " AND po.id != ?" : ""}`,
         )
           .bind(...(excludePoId ? [project.id, mat.item, excludePoId] : [project.id, mat.item]))
-          .first<{ q: number }>();
+          .first<{ q: number; v: number }>();
         committedBefore = committedRow?.q ?? 0;
+        committedValueBefore = committedRow?.v ?? 0;
+        pricedBudgetValue = pricedBudget(mat);
 
+        // The gate is MONEY, not quantity. A line can have pack units to spare
+        // while its money is long gone, and an order buying exactly the budgeted
+        // quantity at a keener-than-priced rate is not an over-run at all — the
+        // quantity gate this replaced got both backwards. `pricedBudget` returns
+        // 0 for a line carrying no priced budget (a bare unit rate), which is
+        // what "unpriced" has always meant: nothing to measure against. A
+        // lump-sum line (priced as one figure with no units) now reads as priced
+        // rather than unpriced, because col X does give it a budget to test.
+        //
         // A call-off draws within its framework's existing reservation, so it never
         // trips the BOQ over-budget gate — its ceiling is the framework's remaining
         // (validated against the parent on create), not the materials allowance.
-        if (pricedQty == null || pricedQty === 0) isUnpriced = true;
-        else if (!isCallOff && committedBefore + ln.qty > pricedQty + 1e-4) isOverBudget = true;
+        if (!(pricedBudgetValue > 0)) isUnpriced = true;
+        else if (!isCallOff && overBudgetBy(pricedBudgetValue, committedValueBefore + lineTotal) > 0) isOverBudget = true;
       }
     }
 
@@ -291,6 +324,10 @@ async function enrichPOLines(
       qty: ln.qty, unit: ln.unit, unit_cost: ln.unit_cost, line_total: lineTotal,
       is_unpriced: isUnpriced, is_over_budget: isOverBudget,
       priced_qty_at_order: pricedQty, committed_before: committedBefore,
+      // Not persisted — the approval email is sent from these in-memory lines,
+      // and every later reader recomputes the money against today's budget in
+      // GET /api/pos/:id rather than trusting an order-time snapshot.
+      priced_budget_at_order: pricedBudgetValue, committed_value_before: committedValueBefore,
     });
   }
 
@@ -828,6 +865,10 @@ pos.get("/:id", async (c) => {
             m.product_id          AS link_product_id,
             m.item                AS link_budget_item,
             m.material_total_cost AS link_budget_value,
+            m.total_units         AS link_total_units,
+            m.cost                AS link_unit_cost,
+            (SELECT mo.omit_qty FROM material_omissions mo
+              WHERE mo.project_id = ? AND mo.item_key = lower(m.item)) AS link_omitted_qty,
             CASE WHEN pr.id IS NOT NULL THEN COALESCE(wb.code, pr.element_code) END AS link_element_code,
             pr.default_resource   AS link_default_resource,
             el.name               AS link_element_name,
@@ -843,10 +884,13 @@ pos.get("/:id", async (c) => {
      WHERE pl.po_id = ?
      ORDER BY pl.id`,
   )
-    .bind(id)
+    .bind(po.project_id as string, id)
     .all<Record<string, unknown> & {
       link_budget_item: string | null;
       link_budget_value: number | null;
+      link_total_units: number | null;
+      link_unit_cost: number | null;
+      link_omitted_qty: number | null;
       link_element_code: string | null;
       link_default_resource: string | null;
       link_element_name: string | null;
@@ -1079,6 +1123,48 @@ pos.get("/:id", async (c) => {
     drawByItem = new Map(draw.results.map((r) => [r.item_key, { qty: r.called_off_qty ?? 0, value: r.called_off_value ?? 0 }]));
   }
 
+  // ── What each line's budget looks like today ───────────────────────────────
+  // The stored is_over_budget is the decision taken when the order was raised;
+  // it carries no amount, and "over" with no figure tells an approver nothing
+  // about whether to sign. So the money is recomputed here against the current
+  // budget: the same definitions the coding dropdown quotes beside each option
+  // (shared/budget.ts), so the badge can't contradict the hint that was showing
+  // when the line was coded.
+  //
+  // Committed is other live orders' money for the item, plus this order's own
+  // lines — so the figure answers "where does this budget line stand with this
+  // PO on it", whatever state the PO is in. Excluding this PO from the query
+  // and adding its lines back keeps that true for a draft (not yet counted) and
+  // for a live PO (counted once, not twice).
+  //
+  // A call-off is skipped throughout: its ceiling is the framework's remaining,
+  // not the BOQ allowance, and it is already shown as `overdrawn` on its own
+  // terms. Call-offs are excluded from the committed tally for the same reason
+  // — the framework reserved that budget once already.
+  const isCallOffPo = String(po.order_type ?? "standard") === "call_off";
+  const committedByItem = new Map<string, number>();
+  if (!isCallOffPo) {
+    const spend = await c.env.DB.prepare(
+      `SELECT lower(pl.item) AS item_key, COALESCE(SUM(pl.line_total), 0) AS committed
+         FROM po_lines pl JOIN purchase_orders po ON po.id = pl.po_id
+        WHERE po.project_id = ?
+          AND po.status IN ('approved','issued','pending_approval')
+          AND COALESCE(po.order_type, 'standard') != 'call_off'
+          AND pl.is_unpriced = 0
+          AND po.id != ?
+          AND lower(pl.item) IN (SELECT lower(own.item) FROM po_lines own WHERE own.po_id = ?)
+        GROUP BY lower(pl.item)`,
+    ).bind(po.project_id as string, id, id).all<{ item_key: string; committed: number }>();
+    for (const r of spend.results) committedByItem.set(r.item_key, r.committed ?? 0);
+    // This order's own lines. Grouped, because one order can carry the same
+    // item on two lines and both draw on the one budget.
+    for (const l of lines.results) {
+      if (Number(l.is_unpriced)) continue;
+      const key = String(l.item ?? "").toLowerCase();
+      committedByItem.set(key, (committedByItem.get(key) ?? 0) + (Number(l.line_total) || 0));
+    }
+  }
+
   const enriched = lines.results.map((l) => {
     const cost_code =
       l.link_element_code
@@ -1087,8 +1173,20 @@ pos.get("/:id", async (c) => {
     // SQLite stores these as 0/1 — surface real booleans so the client doesn't
     // render a stray "0" via `{flag && …}`.
     const deliveries = deliveriesByLine.get(Number(l.id)) ?? [];
+    // Only a line coded to a budget line that carries a priced budget has a
+    // figure to report: an uncoded or lump-rate line has nothing to be over.
+    const priced = l.material_id != null && !isCallOffPo
+      ? pricedBudget({
+          total_units: l.link_total_units, cost: l.link_unit_cost,
+          material_total_cost: l.link_budget_value, omitted_qty: l.link_omitted_qty,
+        })
+      : 0;
+    const committed = priced > 0 ? committedByItem.get(String(l.item ?? "").toLowerCase()) ?? 0 : 0;
     const base = {
       ...l, cost_code, is_unpriced: !!l.is_unpriced, is_over_budget: !!l.is_over_budget,
+      budget_priced: priced > 0 ? round2(priced) : null,
+      budget_committed: priced > 0 ? round2(committed) : null,
+      budget_over_by: priced > 0 ? round2(overBudgetBy(priced, committed)) : null,
       // Which budget line the cost was coded to, and what the code's segments
       // stand for. The resource name only travels with a cost code, since the
       // RES segment is part of that code and nothing else shows it.
