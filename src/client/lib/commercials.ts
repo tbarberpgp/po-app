@@ -125,6 +125,26 @@ export function materialModifiedAt(m: MatRow): string | null {
   ].reduce<string | null>((best, at) => (at && (best == null || at > best) ? at : best), null);
 }
 
+/** The first unit that actually says something, falling back through however
+ *  many candidates the caller has.
+ *
+ *  Every unit chain used to be written `a ?? b ?? "ea"`, which is wrong for this
+ *  data: `??` only steps over null and undefined, and the unit columns hold the
+ *  EMPTY STRING far more often than null — 166 of 565 po_lines, with not a
+ *  single null among them. So the chain stopped at the first blank and handed
+ *  back "" instead of the default, and a picker prefilled from a previous order
+ *  came up with an empty Unit box.
+ *
+ *  Pass the default last (`pickUnit(a, b, "ea")`) to keep it visible at the call
+ *  site rather than buried in here. */
+export function pickUnit(...candidates: Array<string | null | undefined>): string {
+  for (const c of candidates) {
+    const v = c?.trim();
+    if (v) return v;
+  }
+  return "";
+}
+
 /** Supplier a material is bought from — the substitution's supplier/manufacturer
  *  once one is active, else the original BOQ manufacturer. */
 export function matSupplier(m: MaterialWithCommitment): string {

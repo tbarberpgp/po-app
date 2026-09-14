@@ -5,7 +5,7 @@ import { downloadPdf, generatePoPdf } from "../lib/po-pdf";
 import { Topbar } from "./Shell";
 import { GroupedCombobox } from "./GroupedCombobox";
 import { can } from "../../shared/permissions";
-import { budgetMoneyHint, effectiveSpendRate, matSupplier } from "../lib/commercials";
+import { budgetMoneyHint, effectiveSpendRate, matSupplier, pickUnit } from "../lib/commercials";
 import { describeCostCode } from "../../shared/types";
 import type { CurrentUser, MaterialWithCommitment, OffBoqMaterial, POLine, PoDeliveryDrop, PurchaseOrder, Supplier } from "../../shared/types";
 import { poDeliveryLabel } from "../../shared/po-delivery-status";
@@ -1444,10 +1444,10 @@ function POEditModal({
       if (m.omitted) continue; // not being bought on this job
       const name = (m.sub_item || m.item || "").trim();
       const rate = effectiveSpendRate(m);
-      const unit = m.total_units_unit ?? m.pack_unit ?? m.cost_unit ?? "";
+      const unit = pickUnit(m.total_units_unit, m.pack_unit, m.cost_unit);
       const mfr = matSupplier(m);
       add({
-        item: name, unit: unit ?? "", unit_cost: rate > 0 ? rate : null,
+        item: name, unit, unit_cost: rate > 0 ? rate : null,
         material_id: m.id, type: m.type ?? null, manufacturer: mfr || null,
         hint: [rate > 0 ? `${fmtMoney(rate)}${unit ? `/${unit}` : ""}` : null, mfr || null].filter(Boolean).join(" · "),
       }, !!sup && mfr.toLowerCase() === sup);
@@ -1455,7 +1455,7 @@ function POEditModal({
     for (const o of libOffBoq) {
       const mfr = (o.manufacturer ?? "").trim();
       add({
-        item: (o.item ?? "").trim(), unit: o.unit ?? "", unit_cost: o.unit_cost || null,
+        item: (o.item ?? "").trim(), unit: pickUnit(o.unit), unit_cost: o.unit_cost || null,
         // Re-ordering something bought off-BOQ before keeps whatever budget line
         // it was coded to, so the repeat buy lands where the first one did.
         material_id: o.coded_to_material_id ?? null, type: o.type ?? null,
@@ -1487,7 +1487,7 @@ function POEditModal({
         material_id: hit.material_id,
         type: hit.type ?? l.type,
         manufacturer: hit.manufacturer ?? l.manufacturer,
-        unit: l.unit.trim() === "" ? (hit.unit ?? "") : l.unit,
+        unit: l.unit.trim() === "" ? pickUnit(hit.unit, "ea") : l.unit,
         unit_cost: l.unit_cost.trim() === "" && hit.unit_cost != null ? String(hit.unit_cost) : l.unit_cost,
       };
     }));

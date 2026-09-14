@@ -6,6 +6,7 @@
 
 import { useEffect, useState } from "react";
 import { api, fmtMoney, fmtQty } from "../lib/api";
+import { pickUnit } from "../lib/commercials";
 import type { MaterialWithCommitment } from "../../shared/types";
 
 export function SubBadge({ kind, reason, by, at, part }: {
@@ -82,7 +83,7 @@ export function SubstituteModal({
   const [manufacturer, setManufacturer] = useState(material.sub_manufacturer ?? "");
   const [supplier, setSupplier] = useState(material.sub_supplier ?? "");
   const [cost, setCost] = useState<string>(material.sub_cost != null ? String(material.sub_cost) : "");
-  const [unit, setUnit] = useState(material.sub_unit ?? material.total_units_unit ?? material.pack_unit ?? "");
+  const [unit, setUnit] = useState(pickUnit(material.sub_unit, material.total_units_unit, material.pack_unit));
   const [reason, setReason] = useState(material.sub_reason ?? "");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -94,7 +95,7 @@ export function SubstituteModal({
   const partNum = partQty.trim() === "" ? null : Number(partQty);
   const isPart = partNum != null && Number.isFinite(partNum) && partNum > 0 && totalUnits != null && partNum < totalUnits;
   const remainder = isPart && totalUnits != null ? totalUnits - (partNum as number) : null;
-  const qtyUnit = material.total_units_unit ?? material.pack_unit ?? "";
+  const qtyUnit = pickUnit(material.total_units_unit, material.pack_unit);
 
   // Approved-supplier names back the Manufacturer / Supplier pickers so swaps
   // stay on the known register (typing is still allowed for a one-off).
