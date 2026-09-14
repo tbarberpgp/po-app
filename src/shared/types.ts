@@ -111,6 +111,12 @@ export type MaterialActiveSubstitution = {
 
 export type MaterialWithCommitment = Material & {
   committed_qty: number;          // reserved: frameworks + standard POs (excludes call-offs) + unit-equivalent of coded costs (£ / rate)
+  /** The same orders as committed_qty, in £ — what they actually cost. This is
+   *  what the over-budget gate measures against (shared/budget.ts), so the New
+   *  PO screen can preview the decision the server will take. Distinct from
+   *  committed_qty × a rate: an order placed above the priced rate shows its
+   *  real cost here and is re-valued back down to the priced rate there. */
+  committed_value?: number;
   /** Raw £ of PO lines coded to this budget line after the fact (retro POs)
    *  under different wording. Informational — its unit-equivalent is already
    *  folded into committed_qty. */
@@ -249,8 +255,26 @@ export type POLine = {
   line_total: number;
   is_unpriced: boolean;
   is_over_budget: boolean;
+  /** The BOQ allowance and committed quantity at order time, in pack units.
+   *  Kept as a record of what the line looked like when it was raised; the
+   *  over-budget decision is no longer made on them (see the money pair below). */
   priced_qty_at_order: number | null;
   committed_before: number | null;
+  /** The money the over-budget decision was made on when the order was raised:
+   *  what the budget line was priced at, and what was already committed against
+   *  it. Set by PO create/edit and carried to the approval email only — they
+   *  are not stored, because every later reader recomputes against today's
+   *  budget rather than trusting an order-time snapshot. */
+  priced_budget_at_order?: number | null;
+  committed_value_before?: number | null;
+  /** What this line's budget looks like NOW, recomputed by GET /api/pos/:id:
+   *  the budget line's priced value, the £ committed against it across live
+   *  orders (this one included), and how far past the budget that runs — 0
+   *  unless genuinely over, so it doubles as the test and the amount. Set only
+   *  where the line is coded to a budget line that carries a priced budget. */
+  budget_priced?: number | null;
+  budget_committed?: number | null;
+  budget_over_by?: number | null;
   // Derived at query time: PRJ.ELE.RES if the material links to a master
   // product. ELE is the project's own priced-workbook element where that
   // resolves to a real one, else the product's catalogue element — an element

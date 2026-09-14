@@ -793,6 +793,23 @@ materials.get("/:projectId", async (c) => {
                 AND pl.material_id IS NOT NULL
                 AND EXISTS (SELECT 1 FROM materials am WHERE am.id = pl.material_id AND lower(am.item) = lower(m.item))
             ), 0) AS assigned_committed_value,
+            -- The committed spend as MONEY — what the orders against this line
+            -- actually cost, not a quantity re-valued at a rate nobody paid.
+            -- This is what the over-budget gate on a PO measures against
+            -- (shared/budget.ts), so the New PO screen can preview the same
+            -- decision the server is about to take. Matched exactly as
+            -- committed_qty is, so the pair describe the same set of orders.
+            COALESCE((
+              SELECT SUM(pl.line_total)
+              FROM po_lines pl
+              JOIN purchase_orders po ON po.id = pl.po_id
+              WHERE po.project_id = ?
+                AND po.status IN ('approved', 'issued', 'pending_approval')
+                AND COALESCE(po.order_type, 'standard') != 'call_off'
+                AND (lower(pl.item) = lower(m.item)
+                     OR (sub.replacement_item IS NOT NULL AND lower(pl.item) = lower(sub.replacement_item)))
+                AND pl.is_unpriced = 0
+            ), 0) AS committed_value,
             -- Of that reserved amount, how much has actually been called off (the
             -- solid fill inside the lighter reserved band on the usage bars).
             -- Matched by name or the substitution's name…
@@ -951,8 +968,8 @@ materials.get("/:projectId", async (c) => {
      WHERE m.snapshot_id = ?
      ORDER BY COALESCE(m.element_code, m.type), m.item`,
   )
-    .bind(projectId, projectId, projectId, projectId, projectId, projectId, projectId, projectId, projectId, projectId, projectId, snap.id)
-    .all<Record<string, unknown> & { committed_qty: number; called_off_qty: number; framework_reserved_qty: number; total_units: number | null }>();
+    .bind(projectId, projectId, projectId, projectId, projectId, projectId, projectId, projectId, projectId, projectId, projectId, projectId, snap.id)
+    .all<Record<string, unknown> & { committed_qty: number; committed_value: number; called_off_qty: number; framework_reserved_qty: number; total_units: number | null }>();
 
   // Delivered-to-date per item. A delivery's received qty is attributed to the PO
   // LINE its note best matches (word overlap) — e.g. "19 packs of Kingspan…" lands
