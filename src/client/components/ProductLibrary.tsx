@@ -55,7 +55,7 @@ export function ProductLibrary({ me }: { me: CurrentUser | null }) {
   const [err, setErr] = useState<string | null>(null);
   const [showAdd, setShowAdd] = useState(false);
 
-  const canManage = can(me?.role, "approvers.manage"); // admin+
+  const canManage = can(me, "approvers.manage"); // admin+
 
   function refresh() {
     api.listProducts().then(setProducts).catch((e) => setErr(e.message));

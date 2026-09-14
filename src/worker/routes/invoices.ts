@@ -5,7 +5,7 @@
 import { Hono } from "hono";
 import Anthropic from "@anthropic-ai/sdk";
 import type { Env, Variables } from "../env";
-import { isReleaseApprover, requirePermission } from "../auth";
+import { isReleaseApprover, requirePermission, subjectOf } from "../auth";
 import { isReleased, needsApprovalBeforeRelease } from "../../shared/payment-release";
 import { can } from "../../shared/permissions";
 import {
@@ -53,7 +53,7 @@ export const invoices = new Hono<{ Bindings: Env; Variables: Variables }>();
 /** Overhead invoices reveal the company cost base, so viewing/routing them is
  *  admin-only (approvers.manage = admin + superadmin). */
 function isAdmin(c: Parameters<typeof requirePermission>[0]): boolean {
-  return can(c.get("userRole"), "approvers.manage");
+  return can(subjectOf(c), "approvers.manage");
 }
 
 /* ── Extraction ──────────────────────────────────────────────────────── */

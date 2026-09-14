@@ -36,7 +36,7 @@ function downloadCsv(filename: string, content: string): void {
 
 export function OperativesBulkUpload({ me }: { me: CurrentUser | null }) {
   const navigate = useNavigate();
-  const canEdit = can(me?.role, "delivery.edit");
+  const canEdit = can(me, "delivery.edit");
 
   // Validation context, loaded once: approved-supplier names + existing mobiles.
   const [companies, setCompanies] = useState<Set<string> | null>(null);

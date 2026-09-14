@@ -191,7 +191,7 @@ export function NewPO() {
   // Substituting a material is a procurement change — same gate as the Materials
   // tab (materials.upload). Shown per priced line so a swap can be made right here
   // when raising the PO, including for a grouped-site block.
-  const canSubstitute = can(me?.role, "materials.upload");
+  const canSubstitute = can(me, "materials.upload");
   const reloadMats = () => { if (projectId) api.listMaterials(projectId).then(setMats).catch(() => {}); };
 
   useEffect(() => {

@@ -29,8 +29,8 @@ export function QitpDashboard({ me, embedded }: { me: CurrentUser | null; embedd
 
   // Client quality-dashboard share link (public, read-only). Viewable by anyone
   // who runs quality (delivery.edit); publishing a new link needs projects.edit.
-  const canViewLink = !!me && can(me.role, "delivery.edit");
-  const canPublishLink = !!me && can(me.role, "projects.edit");
+  const canViewLink = !!me && can(me, "delivery.edit");
+  const canPublishLink = !!me && can(me, "projects.edit");
   const [linkOpen, setLinkOpen] = useState(false);
   const [clientToken, setClientToken] = useState<string | null>(null);
   const [linkBusy, setLinkBusy] = useState(false);

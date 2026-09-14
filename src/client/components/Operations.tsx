@@ -243,7 +243,7 @@ export function ProjectOperations({ projectId, canEdit, project, autoOpenDeliver
 
 export function OperationsSite({ me }: { me: CurrentUser | null }) {
   const { projectId = "" } = useParams<{ projectId: string }>();
-  const canEdit = can(me?.role, "delivery.edit");
+  const canEdit = can(me, "delivery.edit");
   const [project, setProject] = useState<Project | null>(null);
   const [err, setErr] = useState<string | null>(null);
 

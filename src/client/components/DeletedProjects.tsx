@@ -12,7 +12,7 @@ export function DeletedProjects({ me }: { me: CurrentUser | null }) {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [restoredInfo, setRestoredInfo] = useState<string | null>(null);
 
-  const canRestore = can(me?.role, "projects.delete");
+  const canRestore = can(me, "projects.delete");
 
   function refresh() {
     api.listDeletedProjects().then(setRows).catch((e) => setErr(e.message));

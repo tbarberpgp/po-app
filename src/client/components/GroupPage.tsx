@@ -92,9 +92,9 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
   const [members, setMembers] = useState<Member[]>([]);
   const [baseProject, setBaseProject] = useState<Project | null>(null);
   const [data, setData] = useState<Record<string, BlockData>>({});
-  const canViewCommercial = can(me?.role, "commercial.view");
-  const canEditCommercial = can(me?.role, "commercial.edit");
-  const canEditProject = can(me?.role, "projects.edit");
+  const canViewCommercial = can(me, "commercial.view");
+  const canEditCommercial = can(me, "commercial.edit");
+  const canEditProject = can(me, "projects.edit");
   const isDirector = !!(me?.is_approver && me.approver_tiers.includes("director"));
   const [tab, setTab] = useState<GTab>("overview");
   const nav = useNavigate();
@@ -120,9 +120,9 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
   const [drill, setDrill] = useState<DrillData | null>(null);
   const [sites, setSites] = useState<OpsSite[]>([]);
   const [err, setErr] = useState<string | null>(null);
-  const canEdit = can(me?.role, "delivery.edit");
-  const canRaisePO = can(me?.role, "pos.create");
-  const canUploadMaterials = can(me?.role, "materials.upload");
+  const canEdit = can(me, "delivery.edit");
+  const canRaisePO = can(me, "pos.create");
+  const canUploadMaterials = can(me, "materials.upload");
 
   const load = useCallback(() => {
     api.listProjects().then((rows: Member[]) => {
@@ -431,7 +431,7 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
       // Off-BOQ rows can be coded to a budget item in place — the options come
       // from the row's own block's materials list. Over-budget rows can span
       // blocks and carry no PO line, so they get no control.
-      if (can(me?.role, "pos.edit")) {
+      if (can(me, "pos.edit")) {
         const matsByBlock = new Map(scopeMembers.filter((m) => data[m.id]).map((m) => [m.code, data[m.id].mats]));
         body.columns = [...body.columns, {
           key: "__assign", label: "",
@@ -459,7 +459,7 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
     const body = combined(fn, value);
     // Any drill whose rows carry PO/line refs (e.g. Unpriced spend) gets the
     // in-place assign-to-budget picker, options scoped to the row's block.
-    if (can(me?.role, "pos.edit") && body.rows.some((r) => r.__line_id != null)) {
+    if (can(me, "pos.edit") && body.rows.some((r) => r.__line_id != null)) {
       const matsByBlock = new Map(scopeMembers.filter((m) => data[m.id]).map((m) => [m.code, data[m.id].mats]));
       body.columns = [...body.columns, {
         key: "__assign", label: "",

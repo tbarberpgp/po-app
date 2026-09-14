@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import type { Env, Variables } from "../env";
-import { requirePermission } from "../auth";
+import { requirePermission, subjectOf } from "../auth";
 import { can } from "../../shared/permissions";
 import {
   buildAuthorizeUrl,
@@ -116,7 +116,7 @@ xero.get("/status", async (c) => {
   ).first();
   // Only admins (approvers.manage) see tenant / scopes / connected-by detail;
   // every signed-in user still gets the configured/connected booleans the UI needs.
-  const canSeeDetail = can(c.get("userRole"), "approvers.manage");
+  const canSeeDetail = can(subjectOf(c), "approvers.manage");
   return c.json({
     configured: !!config,
     connected: !!conn,

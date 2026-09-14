@@ -11,7 +11,7 @@ const statusPill = (s?: string) => (s === "expired" ? "danger" : s === "expiring
 const statusLabel = (s?: string) => (s === "expired" ? "Test expired" : s === "expiring" ? "Retest due soon" : s === "valid" ? "In test" : "No test");
 
 export function OwnedPlantPage({ me }: { me: CurrentUser | null }) {
-  const canEdit = can(me?.role, "delivery.edit");
+  const canEdit = can(me, "delivery.edit");
   const [rows, setRows] = useState<OwnedPlantItem[]>([]);
   const [projects, setProjects] = useState<ProjectOpt[]>([]);
   const [err, setErr] = useState<string | null>(null);

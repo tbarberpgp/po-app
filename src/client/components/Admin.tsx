@@ -2,7 +2,10 @@ import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../lib/api";
 import { Topbar } from "./Shell";
-import { can, outranks, ROLE_LABELS, ROLES, type Role } from "../../shared/permissions";
+import {
+  can, outranks, ROLE_LABELS, ROLES, GRANTABLE_PERMISSIONS, PERMISSION_LABELS,
+  type Role, type Permission,
+} from "../../shared/permissions";
 import type { AppUser, CurrentUser, Settings, SiteGroup } from "../../shared/types";
 
 type ApproverItem = { id: number; project_id: string | null; tier: string; email: string; name: string | null };
@@ -15,8 +18,8 @@ export function Admin({ me }: { me: CurrentUser | null }) {
   const [err, setErr] = useState<string | null>(null);
   const [approverForm, setApproverForm] = useState({ project_id: "", tier: "line_manager", email: "", name: "" });
 
-  const canManageUsers = can(me?.role, "users.write");
-  const canManageApprovers = can(me?.role, "approvers.manage");
+  const canManageUsers = can(me, "users.write");
+  const canManageApprovers = can(me, "approvers.manage");
 
   function refresh() {
     api.settings().then(setSettings).catch((e) => setErr(e.message));
@@ -59,7 +62,7 @@ export function Admin({ me }: { me: CurrentUser | null }) {
 
         {canManageApprovers && <SitesSection projects={projects} />}
 
-        {can(me?.role, "projects.delete") && <SandboxSection />}
+        {can(me, "projects.delete") && <SandboxSection />}
 
         {canManageApprovers && <CompanyInductionSection />}
 
@@ -588,7 +591,7 @@ function UsersSection({
     }
   }
 
-  const canPromoteSuper = can(me?.role, "users.promote_superadmin");
+  const canPromoteSuper = can(me, "users.promote_superadmin");
 
   return (
     <div className="card card-padded">
@@ -658,6 +661,8 @@ function UserRow({
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(user.name ?? "");
   const [role, setRole] = useState<Role>(user.role);
+  const [grants, setGrants] = useState<Permission[]>(user.grants ?? []);
+  const [poApproval, setPoApproval] = useState(!!user.po_requires_approval);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -665,13 +670,37 @@ function UserRow({
   const isSelf = me?.email === user.email;
   const isProtected = me ? outranks(user.role, me.role) : true;
   const canEdit = !isProtected;
-  const canPromoteSuper = can(me?.role, "users.promote_superadmin");
+  const canPromoteSuper = can(me, "users.promote_superadmin");
   const allowedRoles = ROLES.filter((r) => r !== "superadmin" || canPromoteSuper || user.role === "superadmin");
+
+  // Only the permissions this row's role doesn't already carry are worth
+  // offering: ticking one the role grants anyway would store a row that changes
+  // nothing and read as though it were doing something.
+  const roleCarries = (p: Permission) => can(role, p);
+  const grantable = GRANTABLE_PERMISSIONS.filter((p) => !roleCarries(p));
+  // You can't hand out what you don't hold yourself — the worker refuses it, so
+  // don't offer it. Checked against the actor's own grants too, not just their
+  // role: a granted permission is passed on the same as a role's.
+  const canGrant = (p: Permission) => can({ role: me?.role, grants: me?.grants }, p);
+
+  function toggleGrant(p: Permission) {
+    setGrants((g) => (g.includes(p) ? g.filter((x) => x !== p) : [...g, p]));
+  }
 
   async function save() {
     setBusy(true); setErr(null);
     try {
-      await api.updateUser(user.email, { name: name.trim() || undefined, role });
+      await api.updateUser(user.email, {
+        name: name.trim() || undefined,
+        role,
+        po_requires_approval: poApproval,
+      });
+      // Grants go in a second call because they replace a set rather than patch
+      // fields. Skipped when nothing changed, so an ordinary rename doesn't
+      // rewrite a grant set it never touched.
+      const before = [...(user.grants ?? [])].sort().join(",");
+      const after = [...grants].sort().join(",");
+      if (before !== after) await api.setUserGrants(user.email, grants);
       setEditing(false);
       onChanged();
     } catch (e) {
@@ -702,12 +731,45 @@ function UserRow({
           <select value={role} onChange={(e) => setRole(e.target.value as Role)} disabled={isSelf}>
             {allowedRoles.map((r) => <option key={r} value={r}>{ROLE_LABELS[r]}</option>)}
           </select>
+          <label className="muted" style={{ display: "block", fontSize: 11, marginTop: 6 }}>
+            <input type="checkbox" checked={poApproval} onChange={(e) => setPoApproval(e.target.checked)} />{" "}
+            Every PO they raise needs approval
+          </label>
+          {/* Extra permissions on top of the role. The role's own permissions
+              are filtered out above, so this list only ever shows what ticking
+              would actually change. */}
+          <div style={{ marginTop: 8 }}>
+            <div className="eyebrow" style={{ fontSize: 10 }}>Extra permissions</div>
+            <div style={{ display: "grid", gap: 2, marginTop: 3, maxHeight: 190, overflowY: "auto" }}>
+              {grantable.length === 0
+                ? <span className="muted" style={{ fontSize: 11 }}>This role already carries everything that can be granted.</span>
+                : grantable.map((p) => {
+                  const allowed = canGrant(p);
+                  return (
+                    <label
+                      key={p}
+                      className="muted"
+                      style={{ fontSize: 11, opacity: allowed ? 1 : 0.45 }}
+                      title={allowed ? p : `You don't hold ${p} yourself, so you can't grant it`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={grants.includes(p)}
+                        disabled={!allowed}
+                        onChange={() => toggleGrant(p)}
+                      />{" "}
+                      {PERMISSION_LABELS[p]}
+                    </label>
+                  );
+                })}
+            </div>
+          </div>
           {err && <div className="muted" style={{ fontSize: 11, color: "var(--danger)", marginTop: 4 }}>{err}</div>}
         </td>
         <td className="center"><span className={`pill ${user.active ? "approved" : "draft"}`}>{user.active ? "active" : "deactivated"}</span></td>
         <td>
           <button className="primary tiny" onClick={save} disabled={busy}>Save</button>{" "}
-          <button className="ghost tiny" onClick={() => { setEditing(false); setName(user.name ?? ""); setRole(user.role); }}>Cancel</button>
+          <button className="ghost tiny" onClick={() => { setEditing(false); setName(user.name ?? ""); setRole(user.role); setGrants(user.grants ?? []); setPoApproval(!!user.po_requires_approval); }}>Cancel</button>
         </td>
       </tr>
     );
@@ -717,7 +779,23 @@ function UserRow({
     <tr>
       <td>{user.name ?? <span className="muted">—</span>}</td>
       <td className="muted">{user.email}{isSelf && " (you)"}</td>
-      <td className="center"><span className={`pill ${user.role === "superadmin" ? "role-su" : user.role === "viewer" ? "" : "role"}`}>{ROLE_LABELS[user.role]}</span></td>
+      <td className="center">
+        <span className={`pill ${user.role === "superadmin" ? "role-su" : user.role === "viewer" ? "" : "role"}`}>{ROLE_LABELS[user.role]}</span>
+        {user.po_requires_approval && (
+          <div className="muted" style={{ fontSize: 10, marginTop: 3 }} title="Every PO this user raises goes for approval, whatever it contains">
+            POs need approval
+          </div>
+        )}
+        {(user.grants?.length ?? 0) > 0 && (
+          <div
+            className="muted"
+            style={{ fontSize: 10, marginTop: 3 }}
+            title={user.grants!.map((p) => PERMISSION_LABELS[p] ?? p).join(", ")}
+          >
+            +{user.grants!.length} extra permission{user.grants!.length === 1 ? "" : "s"}
+          </div>
+        )}
+      </td>
       <td className="center"><span className={`pill ${user.active ? "ok dot" : "draft"}`}>{user.active ? "active" : "deactivated"}</span></td>
       <td>
         {canEdit && <button className="ghost tiny" onClick={() => setEditing(true)}>Edit</button>}{" "}

@@ -47,8 +47,8 @@ export function SuppliersPage({ me }: { me: CurrentUser | null }) {
 
   // Managing the register (add / edit / delete suppliers) is suppliers.manage —
   // which Commercial holds — not approvers.manage (that's PO sign-off).
-  const canManage = can(me?.role, "suppliers.manage");
-  const canUploadQuotes = can(me?.role, "suppliers.manage");
+  const canManage = can(me, "suppliers.manage");
+  const canUploadQuotes = can(me, "suppliers.manage");
 
   async function handleUpload(file: File, supplierId?: number) {
     setUploading(true); setErr(null);

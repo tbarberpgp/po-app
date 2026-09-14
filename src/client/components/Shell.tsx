@@ -59,18 +59,21 @@ function NavSection({ id, label, onNavigate, children }: { id: string; label: st
 }
 
 export function Sidebar({ me, approvalsCount, onNavigate }: { me: CurrentUser | null; approvalsCount: number; onNavigate?: () => void }) {
+  // Permission checks take the whole user, not just the role: a per-user grant
+  // has to reach the nav, or a page someone was granted stays hidden from them.
+  // `isAdmin` below is a genuine question about rank, so it keeps the role.
   const role = me?.role;
-  const canDeliveryEdit = can(role, "delivery.edit");
-  const canCommercialView = can(role, "commercial.view");
-  const canManageData = can(role, "users.read") || can(role, "approvers.manage");
+  const canDeliveryEdit = can(me, "delivery.edit");
+  const canCommercialView = can(me, "commercial.view");
+  const canManageData = can(me, "users.read") || can(me, "approvers.manage");
   const isAdmin = role === "admin" || role === "superadmin";
 
   // Master data + Admin share one section; the header names whichever halves
   // the user can actually see (so a Site user sees just "Master data").
-  const canViewMasterData = can(role, "masterdata.read"); // everyone — read-only reference lists
-  const showDashboard = isAdmin && can(role, "users.read");
+  const canViewMasterData = can(me, "masterdata.read"); // everyone — read-only reference lists
+  const showDashboard = isAdmin && can(me, "users.read");
   const showAdmin = isAdmin && canManageData;
-  const showDeleted = isAdmin && can(role, "projects.delete");
+  const showDeleted = isAdmin && can(me, "projects.delete");
   const hasMaster = canViewMasterData;
   const hasAdmin = showDashboard || showAdmin || showDeleted;
   const dataLabel = [hasMaster && "Master data", hasAdmin && "Admin"].filter(Boolean).join(" · ");

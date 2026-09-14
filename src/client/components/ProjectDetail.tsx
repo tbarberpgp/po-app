@@ -31,13 +31,13 @@ type ProjectPORow = PurchaseOrder & { project_code: string; project_name: string
 
 export function ProjectDetail({ me }: { me: CurrentUser | null }) {
   const nav = useNavigate();
-  const canRaisePO = can(me?.role, "pos.create");
-  const canUploadMaterials = can(me?.role, "materials.upload");
-  const canEditProject = can(me?.role, "projects.edit");
-  const canEditDelivery = can(me?.role, "delivery.edit");
-  const canEditCommercial = can(me?.role, "commercial.edit");
-  const canViewCommercial = can(me?.role, "commercial.view");
-  const canDeleteProject = can(me?.role, "projects.delete");
+  const canRaisePO = can(me, "pos.create");
+  const canUploadMaterials = can(me, "materials.upload");
+  const canEditProject = can(me, "projects.edit");
+  const canEditDelivery = can(me, "delivery.edit");
+  const canEditCommercial = can(me, "commercial.edit");
+  const canViewCommercial = can(me, "commercial.view");
+  const canDeleteProject = can(me, "projects.delete");
   // Director-tier approvers sign off a variation's new budget for expenditure.
   const isDirector = !!(me?.is_approver && me.approver_tiers.includes("director"));
   const isSuperadmin = me?.role === "superadmin";
@@ -259,7 +259,7 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
       case "unexpected": {
         const body = unexpectedSpendDrill(poSummary?.unpriced_lines ?? [], mats);
         // Off-BOQ rows can be coded to a budget item right from the drill.
-        if (can(me?.role, "pos.edit")) {
+        if (can(me, "pos.edit")) {
           body.columns = [...body.columns, {
             key: "__assign", label: "",
             fmt: (_v, row) => (row.__line_id != null
@@ -395,7 +395,7 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
           >
             Overview
           </button>
-          {(commercials.length > 0 || labour.length > 0) && can(me?.role, "commercial.view") && (
+          {(commercials.length > 0 || labour.length > 0) && can(me, "commercial.view") && (
             <button
               type="button"
               role="tab"
@@ -569,7 +569,7 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
                 onOpen={() => {
                   const body = unpricedDrill(poSummary?.unpriced_lines ?? []);
                   // Same in-place "assign to a budget item" as the unexpected-spend drill.
-                  if (can(me?.role, "pos.edit")) {
+                  if (can(me, "pos.edit")) {
                     body.columns = [...body.columns, {
                       key: "__assign", label: "",
                       fmt: (_v, row) => (row.__line_id != null

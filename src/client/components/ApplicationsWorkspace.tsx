@@ -31,7 +31,7 @@ type Space = "labour" | "client";
 type StatusFilter = "all" | AfpStatus;
 
 export function ApplicationsWorkspace({ me }: { me: CurrentUser | null }) {
-  const canEdit = can(me?.role, "commercial.edit");
+  const canEdit = can(me, "commercial.edit");
   const navigate = useNavigate();
   const [rows, setRows] = useState<ApplicationListItem[]>([]);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);

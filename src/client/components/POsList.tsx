@@ -31,7 +31,7 @@ export function POsList({ me }: { me: CurrentUser | null }) {
   const [rows, setRows] = useState<Row[]>([]);
   const [status, setStatus] = useState<string>("");
   const [err, setErr] = useState<string | null>(null);
-  const canCreate = can(me?.role, "pos.create");
+  const canCreate = can(me, "pos.create");
   const nav = useNavigate();
   const [projects, setProjects] = useState<PickProject[]>([]);
   const [picking, setPicking] = useState(false);

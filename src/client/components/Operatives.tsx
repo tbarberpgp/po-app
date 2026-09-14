@@ -41,7 +41,7 @@ function siteOptionsFrom(projects: ProjList, groups: GroupList): { value: string
 }
 
 export function Operatives({ me }: { me: CurrentUser | null }) {
-  const canEdit = can(me?.role, "delivery.edit");
+  const canEdit = can(me, "delivery.edit");
   const [rows, setRows] = useState<OperativeRow[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   // The detail opens in a non-modal right-hand slide-over. `shownId` is what the

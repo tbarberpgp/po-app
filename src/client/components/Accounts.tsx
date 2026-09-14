@@ -108,8 +108,8 @@ function matchTitle(m: MatchSummary, cur?: string | null): string {
  * (admin-only) Overheads and pushed to Xero as a draft Bill after a 3-way match.
  */
 export function Accounts({ me }: { me: CurrentUser | null }) {
-  const isAdmin = can(me?.role, "approvers.manage");
-  const canEdit = can(me?.role, "commercial.edit");
+  const isAdmin = can(me, "approvers.manage");
+  const canEdit = can(me, "commercial.edit");
   // Not a role check — the release list is by name, because no role draws the
   // line in the right place (see release_approvers / isReleaseApprover).
   const canRelease = me?.can_release_payables === true;
