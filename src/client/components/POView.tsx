@@ -1,13 +1,13 @@
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, fmtDate, fmtMoney, fmtQty } from "../lib/api";
 import { downloadPdf, generatePoPdf } from "../lib/po-pdf";
 import { Topbar } from "./Shell";
 import { GroupedCombobox } from "./GroupedCombobox";
 import { can } from "../../shared/permissions";
-import { budgetMoneyHint } from "../lib/commercials";
+import { budgetMoneyHint, effectiveSpendRate, matSupplier } from "../lib/commercials";
 import { describeCostCode } from "../../shared/types";
-import type { CurrentUser, POLine, PoDeliveryDrop, PurchaseOrder, Supplier } from "../../shared/types";
+import type { CurrentUser, MaterialWithCommitment, OffBoqMaterial, POLine, PoDeliveryDrop, PurchaseOrder, Supplier } from "../../shared/types";
 import { poDeliveryLabel } from "../../shared/po-delivery-status";
 
 type Row = PurchaseOrder & {
@@ -1399,9 +1399,99 @@ function POEditModal({
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const listId = `po-edit-suppliers-${po.id}`;
+  const itemsListId = `po-edit-items-${po.id}`;
+
+  // The job's own materials, so a line added here can be PICKED rather than
+  // retyped. Typing was the only option before, and a hand-typed wording is a
+  // new item as far as every rollup is concerned — which is how one budget line
+  // ended up carrying five spellings of the same primer across five orders.
+  const [libMats, setLibMats] = useState<MaterialWithCommitment[] | null>(null);
+  const [libOffBoq, setLibOffBoq] = useState<OffBoqMaterial[]>([]);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const [mats, offBoq] = await Promise.all([
+        api.listMaterials(po.project_id).catch(() => [] as MaterialWithCommitment[]),
+        api.listOffBoqMaterials(po.project_id).catch(() => [] as OffBoqMaterial[]),
+      ]);
+      if (!alive) return;
+      setLibMats(mats);
+      setLibOffBoq(offBoq);
+    })();
+    return () => { alive = false; };
+  }, [po.project_id]);
+
+  /** What picking a suggestion fills in. `material_id` is the important half:
+   *  it codes the line to a budget line at the moment it's added, instead of
+   *  leaving someone to find it later under "Recode budget line". */
+  type ItemSuggestion = {
+    item: string; unit: string; unit_cost: number | null;
+    material_id: number | null; type: string | null; manufacturer: string | null;
+    hint: string;
+  };
+  const suggestions = useMemo<ItemSuggestion[]>(() => {
+    const sup = supplier.trim().toLowerCase();
+    const mine: ItemSuggestion[] = [];
+    const rest: ItemSuggestion[] = [];
+    const seen = new Set<string>();
+    const add = (s: ItemSuggestion, isSuppliers: boolean) => {
+      const key = s.item.trim().toLowerCase();
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      (isSuppliers ? mine : rest).push(s);
+    };
+    for (const m of libMats ?? []) {
+      if (m.omitted) continue; // not being bought on this job
+      const name = (m.sub_item || m.item || "").trim();
+      const rate = effectiveSpendRate(m);
+      const unit = m.total_units_unit ?? m.pack_unit ?? m.cost_unit ?? "";
+      const mfr = matSupplier(m);
+      add({
+        item: name, unit: unit ?? "", unit_cost: rate > 0 ? rate : null,
+        material_id: m.id, type: m.type ?? null, manufacturer: mfr || null,
+        hint: [rate > 0 ? `${fmtMoney(rate)}${unit ? `/${unit}` : ""}` : null, mfr || null].filter(Boolean).join(" · "),
+      }, !!sup && mfr.toLowerCase() === sup);
+    }
+    for (const o of libOffBoq) {
+      const mfr = (o.manufacturer ?? "").trim();
+      add({
+        item: (o.item ?? "").trim(), unit: o.unit ?? "", unit_cost: o.unit_cost || null,
+        // Re-ordering something bought off-BOQ before keeps whatever budget line
+        // it was coded to, so the repeat buy lands where the first one did.
+        material_id: o.coded_to_material_id ?? null, type: o.type ?? null,
+        manufacturer: mfr || null,
+        hint: [o.unit_cost ? `${fmtMoney(o.unit_cost)}${o.unit ? `/${o.unit}` : ""}` : null,
+          mfr || null, o.coded_to_item ? `coded → ${o.coded_to_item}` : "off-BOQ"].filter(Boolean).join(" · "),
+      }, !!sup && mfr.toLowerCase() === sup);
+    }
+    // The supplier's own items first; everything else on the job stays reachable
+    // underneath, because a blank manufacturer is common enough that scoping
+    // hard to the supplier would hide the very line someone is looking for.
+    return [...mine, ...rest];
+  }, [libMats, libOffBoq, supplier]);
 
   const setLine = (i: number, patch: Partial<EditLine>) =>
     setLines((ls) => ls.map((l, idx) => (idx === i ? { ...l, ...patch } : l)));
+  /** Typing or picking an item wording. An exact hit on a known material adopts
+   *  its identity (and its price/unit while those are still blank); anything
+   *  else is a genuine free-text extra, so any previous coding is dropped
+   *  rather than left pointing at a line the wording no longer describes. */
+  const setLineItem = (i: number, value: string) => {
+    const hit = suggestions.find((s) => s.item.toLowerCase() === value.trim().toLowerCase());
+    setLines((ls) => ls.map((l, idx) => {
+      if (idx !== i) return l;
+      if (!hit) return { ...l, item: value, material_id: null };
+      return {
+        ...l,
+        item: value,
+        material_id: hit.material_id,
+        type: hit.type ?? l.type,
+        manufacturer: hit.manufacturer ?? l.manufacturer,
+        unit: l.unit.trim() === "" ? (hit.unit ?? "") : l.unit,
+        unit_cost: l.unit_cost.trim() === "" && hit.unit_cost != null ? String(hit.unit_cost) : l.unit_cost,
+      };
+    }));
+  };
   const addLine = () =>
     setLines((ls) => [...ls, { material_id: null, item: "", type: null, manufacturer: null, qty: "", unit: "", unit_cost: "" }]);
   const removeLine = (i: number) => setLines((ls) => ls.filter((_, idx) => idx !== i));
@@ -1488,7 +1578,21 @@ function POEditModal({
             <tbody>
               {lines.map((l, i) => (
                 <tr key={i}>
-                  <td><input value={l.item} onChange={(e) => setLine(i, { item: e.target.value })} placeholder="Description" style={{ width: "100%" }} /></td>
+                  <td>
+                    <input
+                      value={l.item}
+                      onChange={(e) => setLineItem(i, e.target.value)}
+                      list={itemsListId}
+                      placeholder={libMats == null ? "Loading the job's materials…" : "Pick a material, or type a description"}
+                      style={{ width: "100%" }}
+                    />
+                    {l.material_id != null && (
+                      <div className="muted" style={{ fontSize: 10.5, marginTop: 2 }}
+                        title="Picked from this job's materials, so its cost counts against that budget line instead of landing in unpriced spend.">
+                        ✓ counts against the budget line
+                      </div>
+                    )}
+                  </td>
                   <td className="num"><input type="number" step="any" value={l.qty} onChange={(e) => setLine(i, { qty: e.target.value })} style={{ width: 76, textAlign: "right" }} /></td>
                   <td><input value={l.unit} onChange={(e) => setLine(i, { unit: e.target.value })} placeholder="ea" style={{ width: 64 }} /></td>
                   <td className="num"><input type="number" step="any" value={l.unit_cost} onChange={(e) => setLine(i, { unit_cost: e.target.value })} style={{ width: 90, textAlign: "right" }} /></td>
@@ -1498,7 +1602,20 @@ function POEditModal({
               ))}
             </tbody>
           </table>
+          {/* One list for every Item box. The supplier's own materials sort
+              first; the hint carries the buy rate and, for something bought
+              off-BOQ before, the budget line it was coded to. */}
+          <datalist id={itemsListId}>
+            {suggestions.map((s) => <option key={s.item} value={s.item}>{s.hint}</option>)}
+          </datalist>
           <button className="ghost tiny" onClick={addLine} style={{ marginTop: 8 }}>+ Add line</button>
+          {libMats != null && (
+            <span className="muted" style={{ fontSize: 11, marginLeft: 8 }}>
+              {suggestions.length > 0
+                ? `${suggestions.length} material${suggestions.length === 1 ? "" : "s"} on this job to pick from — start typing in an Item box`
+                : "No materials priced on this job yet — type the description"}
+            </span>
+          )}
 
           <div className="row" style={{ justifyContent: "flex-end", marginTop: 12, fontWeight: 700 }}>
             Total {fmtMoney(total)}<span className="muted" style={{ fontWeight: 400, fontSize: 12, marginLeft: 6 }}>ex VAT</span>
