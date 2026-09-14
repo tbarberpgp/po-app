@@ -31,7 +31,14 @@ export function POsList({ me }: { me: CurrentUser | null }) {
   const [rows, setRows] = useState<Row[]>([]);
   const [status, setStatus] = useState<string>("");
   const [err, setErr] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const canCreate = can(me, "pos.create");
+  const canDelete = can(me, "pos.delete");
+  // The order the delete dialog is open for — null when it's closed.
+  const [deleting, setDeleting] = useState<Row | null>(null);
+  // Deleted orders are only ever fetched when they're asked for by name, so
+  // the columns that explain the deletion earn their space only on that view.
+  const showingDeleted = status === "deleted";
   const nav = useNavigate();
   const [projects, setProjects] = useState<PickProject[]>([]);
   const [picking, setPicking] = useState(false);
@@ -103,6 +110,7 @@ export function POsList({ me }: { me: CurrentUser | null }) {
       />
       <main>
         {err && <div className="flash error">{err}</div>}
+        {notice && <div className="flash info">{notice}</div>}
 
         {overdrawn.length > 0 && (
           <div className="card card-padded" style={{ marginBottom: 16, borderColor: "var(--danger)" }}>
@@ -158,6 +166,10 @@ export function POsList({ me }: { me: CurrentUser | null }) {
               <option value="approved">Approved</option>
               <option value="issued">Issued</option>
               <option value="rejected">Rejected</option>
+              {/* Deleted orders are hidden from every other view; this is the
+                  one place they can be read back, and it takes the same
+                  permission as deleting one. */}
+              {canDelete && <option value="deleted">Deleted</option>}
             </select>
           </div>
           {shown.length === 0 ? (
@@ -177,6 +189,9 @@ export function POsList({ me }: { me: CurrentUser | null }) {
                   <th className="center">Xero</th>
                   <SortTh k="created_at" label="Raised" />
                   <SortTh k="created_by" label="By" />
+                  {showingDeleted && <th>Deleted</th>}
+                  {showingDeleted && <th>Reason</th>}
+                  {canDelete && !showingDeleted && <th style={{ width: 80 }}></th>}
                 </tr>
               </thead>
               <tbody>
@@ -187,7 +202,14 @@ export function POsList({ me }: { me: CurrentUser | null }) {
                     <td>{r.supplier}</td>
                     <td className="num">{fmtMoney(r.total_value)}</td>
                     <td className="center">
-                      <span className={`pill ${r.status}`}>{r.status.replace("_", " ")}</span>
+                      <span
+                        className={`pill ${r.status}`}
+                        title={r.status === "deleted" && r.deleted_by
+                          ? `Deleted by ${r.deleted_by} on ${fmtDate(r.deleted_at)}${r.deletion_reason ? ` — “${r.deletion_reason}”` : ""}`
+                          : undefined}
+                      >
+                        {r.status.replace("_", " ")}
+                      </span>
                       {r.order_type === "framework" && <span className="pill info" style={{ fontSize: 10, marginLeft: 4 }}>framework</span>}
                       {r.order_type === "call_off" && <span className="pill neutral" style={{ fontSize: 10, marginLeft: 4 }}>call-off</span>}
                       {r.category === "prelims" && <span className="pill warn" style={{ fontSize: 10, marginLeft: 4 }}>prelim</span>}
@@ -248,13 +270,114 @@ export function POsList({ me }: { me: CurrentUser | null }) {
                     </td>
                     <td className="muted">{fmtDate(r.created_at)}</td>
                     <td className="muted">{r.created_by}</td>
+                    {showingDeleted && (
+                      <td className="muted">{fmtDate(r.deleted_at)}<br />{r.deleted_by}</td>
+                    )}
+                    {showingDeleted && (
+                      <td className="muted" style={{ maxWidth: 280, whiteSpace: "normal" }}>
+                        {r.deletion_reason ?? "—"}
+                      </td>
+                    )}
+                    {canDelete && !showingDeleted && (
+                      <td>
+                        <button
+                          className="ghost tiny"
+                          title={`Delete ${r.po_number}`}
+                          onClick={() => { setErr(null); setNotice(null); setDeleting(r); }}
+                        >
+                          Delete
+                        </button>
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>
             </table>
           )}
         </div>
+
+        {deleting && (
+          <DeletePOModal
+            po={deleting}
+            onCancel={() => setDeleting(null)}
+            onDone={(msg) => { setDeleting(null); setNotice(msg); refresh(); }}
+          />
+        )}
       </main>
     </>
+  );
+}
+
+/**
+ * Delete one order, straight from the list. A soft delete: the row keeps its
+ * audit trail and turns up again under the "Deleted" filter, which is why the
+ * reason is mandatory — it is the only record of WHY, and the person reading
+ * it back will not be the person who typed it.
+ */
+function DeletePOModal({ po, onCancel, onDone }: {
+  po: Row;
+  onCancel: () => void;
+  onDone: (message: string) => void;
+}) {
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function confirm() {
+    const r = reason.trim();
+    if (!r) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await api.deletePO(po.id, r);
+      onDone(`${po.po_number} deleted — find it under the “Deleted” filter.`);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "couldn't delete that PO");
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div
+      style={{ position: "fixed", inset: 0, background: "rgba(15,17,48,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1400 }}
+      onClick={() => !busy && onCancel()}
+    >
+      <div className="card" style={{ maxWidth: 520, width: "calc(100% - 32px)", maxHeight: "calc(100vh - 64px)", overflow: "auto" }}
+        onClick={(e) => e.stopPropagation()}>
+        <div className="card-hd"><h3 style={{ flex: 1 }}>Delete {po.po_number}</h3></div>
+        <div className="card-bd">
+          {err && <div className="flash error" style={{ marginBottom: 10 }}>{err}</div>}
+          <p className="muted" style={{ fontSize: 12.5, marginTop: 0 }}>
+            {po.project_code} · {po.supplier} · {fmtMoney(po.total_value)}
+          </p>
+          <p className="muted" style={{ fontSize: 12.5 }}>
+            This soft-deletes the order: it leaves every list and stops counting against the
+            project's committed budget, but the record and its audit trail stay — it reappears
+            under the <b>Deleted</b> filter.
+          </p>
+          {po.order_type === "framework" && (
+            <p className="muted" style={{ fontSize: 12.5 }}>
+              <b>This is a framework order.</b> Call-offs already drawn against it are not
+              deleted with it, and will be left pointing at a deleted parent.
+            </p>
+          )}
+          <label>Reason (required)</label>
+          <textarea
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            rows={3}
+            autoFocus
+            placeholder="e.g. raised in error, duplicate of PO-XXX, supplier cancelled"
+            style={{ resize: "vertical" }}
+          />
+          <div className="row" style={{ marginTop: 12 }}>
+            <button className="danger" disabled={busy || !reason.trim()} onClick={confirm}>
+              {busy ? "Deleting…" : "Confirm delete"}
+            </button>
+            <button className="ghost" disabled={busy} onClick={onCancel}>Cancel</button>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }

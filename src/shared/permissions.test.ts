@@ -55,8 +55,16 @@ describe("can() with per-user grants", () => {
   });
 
   test("a grant adds only what it names", () => {
-    assert.equal(can({ ...jtong, grants: [...jtong.grants] }, "pos.delete"), false);
+    // Neither is named in the grants above, and neither is carried by
+    // `commercial` — unlike pos.delete, which the role now holds outright.
+    assert.equal(can({ ...jtong, grants: [...jtong.grants] }, "projects.delete"), false);
     assert.equal(can({ ...jtong, grants: [...jtong.grants] }, "users.write"), false);
+  });
+
+  test("the role deletes POs outright, without a grant for it", () => {
+    // A QS raises the orders, so a QS takes back the ones raised in error.
+    assert.equal(can({ role: "commercial", grants: [] }, "pos.delete"), true);
+    assert.equal(can("commercial", "pos.delete"), true);
   });
 
   test("grants never subtract — an empty list leaves the role intact", () => {

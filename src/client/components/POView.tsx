@@ -297,8 +297,8 @@ export function POView({ me }: { me: CurrentUser | null }) {
             <div className="card-bd">
               <p className="muted" style={{ marginTop: 0 }}>
                 This soft-deletes the PO. It disappears from lists and stops counting against
-                the project's committed budget, but the audit trail is preserved. Only a
-                Superadmin can do this.
+                the project's committed budget, but the audit trail is preserved — it can be
+                read back under the "Deleted" filter on the purchase orders dashboard.
               </p>
               <label>Reason (required)</label>
               <textarea
