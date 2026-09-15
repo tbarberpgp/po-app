@@ -5,7 +5,7 @@ import { downloadPdf, generatePoPdf } from "../lib/po-pdf";
 import { Topbar } from "./Shell";
 import { GroupedCombobox, type ComboGroup } from "./GroupedCombobox";
 import { can } from "../../shared/permissions";
-import { budgetMoneyHint, effectiveSpendRate, matSupplier, pickUnit } from "../lib/commercials";
+import { budgetMoneyHint, effectiveSpendRate, matSupplier, pickUnit, poLineBudgetMoney } from "../lib/commercials";
 import { describeCostCode } from "../../shared/types";
 import type { CurrentUser, MaterialWithCommitment, OffBoqMaterial, POLine, PoDeliveryDrop, PurchaseOrder, Supplier } from "../../shared/types";
 import { poDeliveryLabel } from "../../shared/po-delivery-status";
@@ -490,16 +490,42 @@ export function POView({ me }: { me: CurrentUser | null }) {
                                   {words && (l.cost_code ? ` · ${words}` : words)}
                                 </div>
                               )}
-                              {namesTheBudget && (
+                              {namesTheBudget && (() => {
+                                // What the budget line is priced at was only
+                                // half the answer: an approver reading
+                                // "£32,192.16 budgeted" still had to leave the
+                                // order and find the project's Materials tab to
+                                // learn whether any of it was still there. The
+                                // pair the coding picker puts under every
+                                // option now reads on the row too, and off the
+                                // same tally the "over by" badge quotes, so the
+                                // row, the picker above it and the badge beside
+                                // it cannot say three different things.
+                                //
+                                // It is the BUDGET LINE's headroom, not this
+                                // line's share of it: committed counts every
+                                // live order drawing on it, this one included.
+                                const money = poLineBudgetMoney(l);
+                                const words = money
+                                  ? money.words
+                                  // Nothing priced to draw on (or a call-off,
+                                  // which draws on its framework instead):
+                                  // keep the bare workbook figure.
+                                  : l.budget_value ? [`${fmtMoney(l.budget_value)} budgeted`] : [];
+                                const title = money
+                                  ? `Budget line: ${budgetItem} — ${money.words[0]}, ${fmtMoney(money.committed)} committed against it across every live order (this one included), ${money.words[1]}.`
+                                  : `Budget line: ${budgetItem}${l.budget_value ? ` — ${fmtMoney(l.budget_value)} budgeted on that line` : ""}. This cost counts against it.`;
+                                return (
                                 // Trimmed in JS rather than line-clamped in
-                                // CSS so the budgeted figure at the end can't
-                                // be the part that gets clipped. The whole
-                                // descriptor is in the breakdown panel.
-                                <div title={`Budget line: ${budgetItem}${l.budget_value ? ` — ${fmtMoney(l.budget_value)} budgeted on that line` : ""}. This cost counts against it.`}>
+                                // CSS so the money at the end can't be the part
+                                // that gets clipped. The whole descriptor is in
+                                // the breakdown panel.
+                                <div title={title}>
                                   Budget line: {shortDescriptor(budgetItem)}
-                                  {l.budget_value ? ` · ${fmtMoney(l.budget_value)} budgeted` : ""}
+                                  {words.length ? ` · ${words.join(" · ")}` : ""}
                                 </div>
-                              )}
+                                );
+                              })()}
                             </div>
                             {codeOpen && l.cost_code && (
                               <CostCodeBreakdown line={l} projectCode={po.project_code} projectName={po.project_name} />
@@ -1306,6 +1332,7 @@ function CostCodeBreakdown({ line, projectCode, projectName }: {
   // actually went missing.
   const digits = (projectCode ?? "").replace(/\D/g, "");
   const budgetItem = (line.budget_item ?? "").trim();
+  const money = poLineBudgetMoney(line);
   const segments: Array<{ value: string; label: string; name: string | null; gloss: string | null }> = [
     { value: prj ?? "", label: "Project", name: [projectCode, projectName].filter(Boolean).join(" ") || null,
       gloss: prj && digits && digits !== prj ? `The last four digits of project code ${projectCode}` : null },
@@ -1331,10 +1358,15 @@ function CostCodeBreakdown({ line, projectCode, projectName }: {
       </div>
       {budgetItem && (
         // The full descriptor, untruncated — the row above only has room for
-        // the first eighty characters of it.
+        // the first eighty characters of it. The money goes a step further than
+        // the row too: the row gives budgeted and left, this gives the
+        // committed figure standing between them, so the subtraction can be
+        // followed rather than taken on trust.
         <div className="cc-budget">
           <b>Budget line</b> — {budgetItem}
-          {line.budget_value ? ` · ${fmtMoney(line.budget_value)} budgeted on that line` : ""}
+          {money
+            ? ` · ${money.words[0]} · ${fmtMoney(money.committed)} committed across every live order, this one included · ${money.words[1]}`
+            : line.budget_value ? ` · ${fmtMoney(line.budget_value)} budgeted on that line` : ""}
         </div>
       )}
     </div>

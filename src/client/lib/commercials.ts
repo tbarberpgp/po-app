@@ -6,9 +6,9 @@
 // verbatim from ProjectDetail's old inline `summarise`/`forecast`.
 
 import type {
-  MaterialWithCommitment, OffBoqMaterial, ProjectCommercial, Variation, ContractItem, ApplicationForPayment,
+  MaterialWithCommitment, OffBoqMaterial, POLine, ProjectCommercial, Variation, ContractItem, ApplicationForPayment,
 } from "../../shared/types";
-import { netBudgetUnits, pricedBudget } from "../../shared/budget";
+import { MONEY_EPSILON, netBudgetUnits, pricedBudget } from "../../shared/budget";
 import { fmtMoney } from "./api";
 import type { DrillColumn } from "../components/DrillPanel";
 
@@ -193,14 +193,73 @@ export function netUnits(m: MaterialWithCommitment): number {
  *  it falls back to the workbook's own total for the line; a line whose units
  *  were omitted keeps the omission's £0 rather than resurrecting that total. */
 export function budgetMoneyHint(m: MaterialWithCommitment): string[] {
+  return budgetMoney(m)?.words ?? ["no priced budget"];
+}
+
+/** The same answer with the figures still as numbers, and the committed total
+ *  that stands between them — for callers with room to show the subtraction
+ *  rather than only its result. Null wherever `budgetMoneyHint` says "no priced
+ *  budget": there is nothing to take a remainder of. */
+export type BudgetMoney = {
+  /** What the budget line is priced at, in £. */
+  budget: number;
+  /** £ committed against it across every live order — not just the one the
+   *  reader happens to be looking at. */
+  committed: number;
+  /** Headroom. Negative means the line is over. */
+  left: number;
+  /** ["£32,192.16 budgeted", "£13,228.90 left" | "£240.00 over"]. */
+  words: [string, string];
+};
+
+/** Budgeted and what is left of it, worded in one place. Every reader of a
+ *  budget line says it the same way, whether the tally reached them as a
+ *  materials row to price or as a figure the API had already totalled. */
+function moneyPair(budget: number, committed: number): BudgetMoney {
+  const left = budget - committed;
+  return {
+    budget, committed, left,
+    words: [
+      `${fmtMoney(budget)} budgeted`,
+      left < -MONEY_EPSILON
+        ? `${fmtMoney(-left)} over`
+        // Half a penny of float noise is not an over-run — and a line
+        // committed to the penny reads "£0.00 left", never "-£0.00 left".
+        : `${fmtMoney(Math.max(0, left))} left`,
+    ],
+  };
+}
+
+export function budgetMoney(m: MaterialWithCommitment): BudgetMoney | null {
   const budget = pricedBudget(m);
-  if (!(budget > 0)) return ["no priced budget"];
-  const left = budget - (m.committed_qty ?? 0) * effectiveSpendRate(m);
-  return [
-    `${fmtMoney(budget)} budgeted`,
-    // Half a penny of float noise is not an over-run.
-    left < -0.005 ? `${fmtMoney(-left)} over` : `${fmtMoney(left)} left`,
-  ];
+  if (!(budget > 0)) return null;
+  return moneyPair(budget, (m.committed_qty ?? 0) * effectiveSpendRate(m));
+}
+
+/** The same pair for a PO line, whose money GET /api/pos/:id has already
+ *  totalled against the budget line the cost is coded to — `budget_priced` and
+ *  `budget_committed`, recomputed there against today's budget by the rule in
+ *  shared/committed-spend.ts. So there is no materials row to price here, and
+ *  no second fetch to make: the figures travel with the order.
+ *
+ *  They are the BUDGET LINE's, not this line's share of it — committed counts
+ *  every live order drawing on it, this one included — so two lines of one
+ *  order coded to the same budget line quote one figure between them. Null
+ *  where the API sends none: a line coded to nothing, a lump-rate line, or any
+ *  line on a call-off, whose ceiling is its framework's remaining and not the
+ *  BOQ allowance.
+ *
+ *  Against `budgetMoney` on the same budget line this can differ by pennies —
+ *  20p at worst across the live order book, and not a disagreement about what
+ *  is committed. The materials route folds coded £ back into a QUANTITY at the
+ *  buy rate, rounded to 3dp, which the picker then re-multiplies; this figure
+ *  is the orders' own £, never re-valued, which is what the over-budget test
+ *  requires (shared/budget.ts). A picker listing every budget line on the job
+ *  has no PO to read, so it keeps pricing materials rows itself. */
+export function poLineBudgetMoney(l: POLine): BudgetMoney | null {
+  const budget = l.budget_priced ?? 0;
+  if (!(budget > 0)) return null;
+  return moneyPair(budget, l.budget_committed ?? 0);
 }
 
 /** Wording reduced to its words alone, so spacing, punctuation and case can't

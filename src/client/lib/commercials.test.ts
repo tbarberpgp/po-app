@@ -2,11 +2,12 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   accumulateMaterials, materialOverspendOf, summariseMaterials, oneScope, budgetMoneyHint, pickUnit,
+  budgetMoney, poLineBudgetMoney,
   unexpectedSpendDrill, combinedUnexpectedSpendDrill, withCombinedOverspend,
   computeForecast, contractTotals, totalChange,
   type UnpricedLine, type Forecast,
 } from "./commercials";
-import type { MaterialWithCommitment, ProjectCommercial } from "../../shared/types";
+import type { MaterialWithCommitment, POLine, ProjectCommercial } from "../../shared/types";
 
 /** A priced BOQ row — only the fields the commercial maths reads. */
 function mat(o: Partial<MaterialWithCommitment> & { item: string; cost: number; total_units: number; committed_qty: number }): MaterialWithCommitment {
@@ -136,6 +137,63 @@ test("a line carrying only a unit rate says so rather than quoting £0", () => {
   assert.deepEqual(
     budgetMoneyHint(mat({ item: "Eurobond S5 Wall Panel", cost: 155, total_units: 0, committed_qty: 0 })),
     ["no priced budget"],
+  );
+});
+
+// ── What a PO line says about the budget line it is coded to ────────────────
+//
+// A PO line's figures arrive already totalled by GET /api/pos/:id, against the
+// BUDGET LINE the cost is coded to (shared/committed-spend.ts) — so the row
+// quotes the same money the picker beside it quotes, and two lines of one order
+// coded to one budget line quote one figure between them rather than a private
+// share each. The live case: Dallas Rd's cavity barriers, ordered under two
+// descriptions against one £32,192.16 line.
+
+/** A PO line as the API hands it over — only the budget money. */
+function poLine(o: Partial<POLine>): POLine {
+  return { id: 1, item: "", qty: 1, unit: "nr", unit_cost: 0, line_total: 0, ...o } as POLine;
+}
+
+test("a coded line reports what its budget line has left", () => {
+  assert.deepEqual(
+    poLineBudgetMoney(poLine({ budget_priced: 32192.16, budget_committed: 18963.26 }))?.words,
+    ["£32,192.16 budgeted", "£13,228.90 left"],
+  );
+});
+
+test("two lines on one budget line quote one figure between them", () => {
+  // Both carry the budget line's whole tally, not their own line's share.
+  const a = poLineBudgetMoney(poLine({ budget_priced: 32192.16, budget_committed: 18963.26, line_total: 3568.32 }));
+  const b = poLineBudgetMoney(poLine({ budget_priced: 32192.16, budget_committed: 18963.26, line_total: 5342.90 }));
+  assert.deepEqual(a?.words, b?.words);
+});
+
+test("a budget line spent past reads as over, not as negative headroom", () => {
+  assert.deepEqual(
+    poLineBudgetMoney(poLine({ budget_priced: 594, budget_committed: 3200.44 }))?.words,
+    ["£594.00 budgeted", "£2,606.44 over"],
+  );
+});
+
+test("float noise on a fully committed budget line is not an over-run", () => {
+  assert.equal(poLineBudgetMoney(poLine({ budget_priced: 1000, budget_committed: 1000.004 }))?.words[1], "£0.00 left");
+});
+
+test("a line the API sends no budget for offers no figures to quote", () => {
+  // Coded to nothing, lump-rate, or any line on a call-off — the row keeps the
+  // bare workbook figure rather than inventing headroom.
+  assert.equal(poLineBudgetMoney(poLine({ budget_priced: null, budget_committed: null })), null);
+  assert.equal(poLineBudgetMoney(poLine({})), null);
+});
+
+test("both readers of a budget line word the answer the same way", () => {
+  // One from a materials row it prices itself, one from a tally the API did.
+  // Same budget, same committed, so the wording must not differ.
+  const m = mat({ item: "Fixings", cost: 10, total_units: 100, committed_qty: 30 });
+  assert.deepEqual(budgetMoneyHint(m), budgetMoney(m)?.words);
+  assert.deepEqual(
+    poLineBudgetMoney(poLine({ budget_priced: 1000, budget_committed: 300 }))?.words,
+    budgetMoney(m)?.words,
   );
 });
 
