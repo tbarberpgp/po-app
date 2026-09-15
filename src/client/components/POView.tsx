@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, fmtDate, fmtMoney, fmtQty } from "../lib/api";
 import { downloadPdf, generatePoPdf } from "../lib/po-pdf";
@@ -37,6 +37,13 @@ export function POView({ me }: { me: CurrentUser | null }) {
   // After-the-fact budget coding (retro POs): which line's picker is open, and
   // the project's live materials list (loaded on first use).
   const [assignLineId, setAssignLineId] = useState<number | null>(null);
+  // The picker always renders above the lines table, not next to the row that
+  // opened it — on a long PO that's off-screen, so opening it for a line
+  // scrolled past the fold looked like the button did nothing.
+  const assignPanelRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (assignLineId != null) assignPanelRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [assignLineId]);
   // Which lines' delivery history is expanded — "93 received" on its own
   // doesn't say whether that's one drop or five, or let anyone go check the
   // paperwork behind any of them.
@@ -395,7 +402,7 @@ export function POView({ me }: { me: CurrentUser | null }) {
                   })),
                 ];
                 return (
-                  <div style={{ padding: "8px 14px", display: "grid", gap: 6, maxWidth: 480, borderBottom: "1px solid var(--line)" }}>
+                  <div ref={assignPanelRef} style={{ padding: "8px 14px", display: "grid", gap: 6, maxWidth: 480, borderBottom: "1px solid var(--line)" }}>
                     <div className="eyebrow" style={{ fontSize: 11 }}>
                       {target ? <>Coding “{target.item}” to the budget</> : "Coding the whole order to one budget line"}
                     </div>
