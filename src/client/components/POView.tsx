@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, fmtDate, fmtMoney, fmtQty } from "../lib/api";
 import { downloadPdf, generatePoPdf } from "../lib/po-pdf";
 import { Topbar } from "./Shell";
-import { GroupedCombobox } from "./GroupedCombobox";
+import { GroupedCombobox, type ComboGroup } from "./GroupedCombobox";
 import { can } from "../../shared/permissions";
 import { budgetMoneyHint, effectiveSpendRate, matSupplier, pickUnit } from "../lib/commercials";
 import { describeCostCode } from "../../shared/types";
@@ -1399,7 +1399,6 @@ function POEditModal({
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const listId = `po-edit-suppliers-${po.id}`;
-  const itemsListId = `po-edit-items-${po.id}`;
 
   // The job's own materials, so a line added here can be PICKED rather than
   // retyped. Typing was the only option before, and a hand-typed wording is a
@@ -1469,6 +1468,22 @@ function POEditModal({
     // hard to the supplier would hide the very line someone is looking for.
     return [...mine, ...rest];
   }, [libMats, libOffBoq, supplier]);
+
+  /** The same suggestions under section headers, for the picker. Splitting them
+   *  is what lets "everything else on the job" sit below the supplier's own
+   *  without the two reading as one undifferentiated list. */
+  const itemGroups = useMemo<ComboGroup[]>(() => {
+    const sup = supplier.trim();
+    const supLc = sup.toLowerCase();
+    const isMine = (s: ItemSuggestion) => !!supLc && (s.manufacturer ?? "").trim().toLowerCase() === supLc;
+    const mine = suggestions.filter(isMine);
+    const rest = suggestions.filter((s) => !isMine(s));
+    const toOpt = (s: ItemSuggestion) => ({ value: s.item, label: s.item, hint: s.hint || undefined });
+    return [
+      ...(mine.length > 0 ? [{ label: sup || "This supplier", options: mine.map(toOpt) }] : []),
+      ...(rest.length > 0 ? [{ label: mine.length > 0 ? "Elsewhere on this job" : "On this job", options: rest.map(toOpt) }] : []),
+    ];
+  }, [suggestions, supplier]);
 
   const setLine = (i: number, patch: Partial<EditLine>) =>
     setLines((ls) => ls.map((l, idx) => (idx === i ? { ...l, ...patch } : l)));
@@ -1579,12 +1594,20 @@ function POEditModal({
               {lines.map((l, i) => (
                 <tr key={i}>
                   <td>
-                    <input
+                    {/* The app's own combobox rather than a native <datalist>:
+                        Chrome renders datalist suggestions at its own font size
+                        and ignores page CSS, so the list came up far larger than
+                        everything around it. This one is styled with the rest of
+                        the app, groups the supplier's items under a header, and
+                        still takes free text via allowCustom. */}
+                    <GroupedCombobox
+                      groups={itemGroups}
                       value={l.item}
-                      onChange={(e) => setLineItem(i, e.target.value)}
-                      list={itemsListId}
+                      onChange={(v) => setLineItem(i, v)}
+                      allowCustom
                       placeholder={libMats == null ? "Loading the job's materials…" : "Pick a material, or type a description"}
-                      style={{ width: "100%" }}
+                      searchPlaceholder="Search this job's materials…"
+                      ariaLabel="Line item"
                     />
                     {l.material_id != null && (
                       <div className="muted" style={{ fontSize: 10.5, marginTop: 2 }}
@@ -1602,12 +1625,6 @@ function POEditModal({
               ))}
             </tbody>
           </table>
-          {/* One list for every Item box. The supplier's own materials sort
-              first; the hint carries the buy rate and, for something bought
-              off-BOQ before, the budget line it was coded to. */}
-          <datalist id={itemsListId}>
-            {suggestions.map((s) => <option key={s.item} value={s.item}>{s.hint}</option>)}
-          </datalist>
           <button className="ghost tiny" onClick={addLine} style={{ marginTop: 8 }}>+ Add line</button>
           {libMats != null && (
             <span className="muted" style={{ fontSize: 11, marginLeft: 8 }}>

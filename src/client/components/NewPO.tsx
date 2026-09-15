@@ -7,6 +7,7 @@ import { SubstituteAction } from "./MaterialSubstitute";
 import { can } from "../../shared/permissions";
 import type { CurrentUser, MaterialWithCommitment, OffBoqMaterial, Supplier, SupplierStatus, Variation } from "../../shared/types";
 import { offBoqRow, pickUnit, type MatRow } from "../lib/commercials";
+import { GroupedCombobox, type ComboGroup } from "./GroupedCombobox";
 import { pricedBudget, overBudgetBy } from "../../shared/budget";
 
 // Item is "priced for this job" iff total_units > 0 in the Materials sheet (col V).
@@ -1311,13 +1312,12 @@ function AdditionalRowEditor({
   onRemove: () => void;
 }) {
   const autoFilled = row.source === "library" && row.material_id != null;
-  const itemsListId = `po-add-items-${row.key}`;
   /** The wording a pick will leave in the box — matching on the same string the
    *  option offers, so the row doesn't flip back to custom on the next render. */
   const nameOf = (m: MatRow) => ((isFullSub(m) ? (m.sub_item ?? m.item) : m.item) ?? "").trim();
   const suggestions = useMemo(() => {
     const seen = new Set<string>();
-    const out: Array<{ id: string; item: string; hint: string }> = [];
+    const out: Array<{ id: string; item: string; hint: string; offBoq: boolean }> = [];
     for (const m of library) {
       const item = nameOf(m);
       const k = item.toLowerCase();
@@ -1328,6 +1328,7 @@ function AdditionalRowEditor({
       out.push({
         id: String(m.id),
         item,
+        offBoq: !!m.off_boq,
         hint: [
           rate ? `${fmtMoney(rate)}${unit ? `/${unit}` : ""}` : null,
           effectiveMfr(m) || null,
@@ -1337,9 +1338,22 @@ function AdditionalRowEditor({
     }
     return out;
   }, [library]); // eslint-disable-line react-hooks/exhaustive-deps
-  /** Typing in the Item box. An exact hit adopts that material (price, unit,
-   *  type and — the point of it — its budget line); anything else is a genuine
-   *  extra, so it reverts to a custom line rather than keeping a stale link. */
+  /** The same suggestions under section headers. What the bill already prices
+   *  for this supplier and what has merely been bought from them before are
+   *  different things, and the picker should not blur them. */
+  const itemGroups = useMemo<ComboGroup[]>(() => {
+    const bill = suggestions.filter((s) => !s.offBoq);
+    const before = suggestions.filter((s) => s.offBoq);
+    const toOpt = (s: { item: string; hint: string }) => ({ value: s.item, label: s.item, hint: s.hint || undefined });
+    return [
+      ...(bill.length > 0 ? [{ label: "In this job's bill", options: bill.map(toOpt) }] : []),
+      ...(before.length > 0 ? [{ label: "Ordered before (off-BOQ)", options: before.map(toOpt) }] : []),
+    ];
+  }, [suggestions]);
+  /** Picking or typing in the Item box. An exact hit adopts that material (price,
+   *  unit, type and — the point of it — its budget line); anything else is a
+   *  genuine extra, so it reverts to a custom line rather than keeping a stale
+   *  link. */
   function onItemText(value: string) {
     const hit = suggestions.find((s) => s.item.toLowerCase() === value.trim().toLowerCase());
     if (hit) { onPick(hit.id); return; }
@@ -1382,18 +1396,21 @@ function AdditionalRowEditor({
               />
             ) : (
               <>
-                {/* One box for both jobs: start typing to find what this supplier
-                    can supply, or type straight past the list for a genuine
-                    extra. Picking a suggestion is what sets the budget line. */}
-                <input
+                {/* One box for both jobs: search what this supplier can supply,
+                    or type straight past the list for a genuine extra. Picking a
+                    suggestion is what sets the budget line. The app's own
+                    combobox, not a native <datalist> — Chrome renders those at
+                    its own font size and ignores page CSS, so the list came up
+                    far larger than everything around it. */}
+                <GroupedCombobox
+                  groups={itemGroups}
                   value={row.item}
-                  list={itemsListId}
-                  onChange={(e) => onItemText(e.target.value)}
+                  onChange={onItemText}
+                  allowCustom
                   placeholder={suggestions.length > 0 ? "Pick a material, or type a description" : "Custom item description"}
+                  searchPlaceholder="Search this supplier's materials…"
+                  ariaLabel="Item"
                 />
-                <datalist id={itemsListId}>
-                  {suggestions.map((s) => <option key={s.id} value={s.item}>{s.hint}</option>)}
-                </datalist>
                 {row.material_id != null && (
                   <div className="muted" style={{ fontSize: 10.5, marginTop: 2 }}
                     title="Picked from this job's materials, so its cost counts against that budget line instead of landing in unpriced spend.">
