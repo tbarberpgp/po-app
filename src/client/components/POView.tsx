@@ -85,7 +85,7 @@ export function POView({ me }: { me: CurrentUser | null }) {
   }
   const [notice, setNotice] = useState<string | null>(null);
   const canDelete = can(me, "pos.delete");
-  const canEditPO = can(me, "pos.edit"); // admin / superadmin only
+  const canEditPO = can(me, "pos.edit"); // admin / superadmin / commercial, or a per-user grant
   const canCreatePO = can(me, "pos.create");
   const canManualCheckin = can(me, "delivery.checkin_manual"); // admin / superadmin only
   const [showCheckin, setShowCheckin] = useState(false);
@@ -172,7 +172,7 @@ export function POView({ me }: { me: CurrentUser | null }) {
           <>
             <button className="ghost" onClick={onDownloadPdf} disabled={busy}>Download PDF</button>
             {canEditPO && !isDeleted && (
-              <button className="ghost" onClick={() => setShowEdit(true)} disabled={busy} title="Amend this purchase order (admin)">Edit</button>
+              <button className="ghost" onClick={() => setShowEdit(true)} disabled={busy} title="Amend this purchase order — supplier, dates, notes and lines">Edit</button>
             )}
             {canCreatePO && !isDeleted && po.order_type !== "framework" && (
               <button className="ghost" disabled={busy} title="Ordered whole but the supplier is delivering it piecemeal — flags the order so partial receipts read as expected"
@@ -1544,7 +1544,7 @@ function POEditModal({
         <div className="card-bd">
           {err && <div className="flash error" style={{ marginBottom: 8 }}>{err}</div>}
           <div className="muted" style={{ fontSize: 12, marginBottom: 12 }}>
-            Admin edit — {po.project_code} {po.project_name}. The project and any framework/call-off link stay as they are, and the PO keeps its current status.
+            Amending {po.project_code} {po.project_name}. The project and any framework/call-off link stay as they are, and the PO keeps its current status.
             {po.xero_sync_status === "synced" && <> Saving will also update the linked Xero draft.</>}
           </div>
 
