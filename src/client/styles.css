@@ -323,6 +323,11 @@ button, .btn {
   align-items: center;
   gap: 6px;
   transition: background var(--motion-fast), border-color var(--motion-fast), transform 60ms;
+  /* Without this, the least bit of pointer drift between mousedown and
+     mouseup (routine on a trackpad) selects the label text instead of
+     clicking — and a click that ends as a text selection never fires. */
+  user-select: none;
+  -webkit-user-select: none;
 }
 button:hover, .btn:hover { background: var(--line); }
 button:active, .btn:active { transform: translateY(0.5px); }
