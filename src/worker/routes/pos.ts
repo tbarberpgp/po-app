@@ -5,6 +5,7 @@ import { loadSettings, tierForApproval } from "../approval";
 import { learnAliases } from "../matchMemory";
 import { normText } from "../../shared/line-match";
 import { pricedBudget, overBudgetBy, type PricedBudgetInput } from "../../shared/budget";
+import { committedAgainstBudgetLine, type SpendLine } from "../../shared/committed-spend";
 import { summarisePoDeliveries, deliveryNoteKey, suspectedDuplicateReceipts, PO_DELIVERY_NOTE_COLUMNS, PO_DELIVERY_NOTE_JOIN, type PoLineRef, type PoDeliveryRow } from "../../shared/po-delivery-status";
 import { emailApprovers, emailRequesterDecision, emailFrameworkOverdraw, FRAMEWORK_OVERDRAW_RECIPIENTS } from "../notify";
 import { requirePermission, subjectOf } from "../auth";
@@ -908,6 +909,8 @@ pos.get("/:id", async (c) => {
             m.product_id          AS link_product_id,
             m.item                AS link_budget_item,
             m.material_total_cost AS link_budget_value,
+            (SELECT ms.replacement_item FROM material_substitutions ms
+              WHERE ms.material_id = m.id AND ms.active = 1) AS link_sub_item,
             m.total_units         AS link_total_units,
             m.cost                AS link_unit_cost,
             (SELECT mo.omit_qty FROM material_omissions mo
@@ -931,6 +934,7 @@ pos.get("/:id", async (c) => {
     .all<Record<string, unknown> & {
       link_budget_item: string | null;
       link_budget_value: number | null;
+      link_sub_item: string | null;
       link_total_units: number | null;
       link_unit_cost: number | null;
       link_omitted_qty: number | null;
@@ -1174,37 +1178,75 @@ pos.get("/:id", async (c) => {
   // (shared/budget.ts), so the badge can't contradict the hint that was showing
   // when the line was coded.
   //
-  // Committed is other live orders' money for the item, plus this order's own
-  // lines — so the figure answers "where does this budget line stand with this
-  // PO on it", whatever state the PO is in. Excluding this PO from the query
-  // and adding its lines back keeps that true for a draft (not yet counted) and
-  // for a live PO (counted once, not twice).
+  // Committed is measured against the BUDGET LINE, not against this line's
+  // wording. It used to be keyed on `lower(pl.item)`, which reported a budget
+  // line as untouched whenever its spend had been coded to it under other
+  // wording — every retro PO raised off an invoice. PO-26003-0034's three lines
+  // each came back with £0 committed against "Fixings Tubes and Fixing" while
+  // £3,200.44 stood against its £594.00. The rule for what draws on a budget
+  // line is shared/committed-spend.ts, which is the materials route's own rule
+  // restated, so this figure and the Materials tab's cannot say different
+  // things about one budget line.
+  //
+  // Committed is other live orders' money, plus this order's own lines — so the
+  // figure answers "where does this budget line stand with this PO on it",
+  // whatever state the PO is in. Excluding this PO from the query and adding
+  // its lines back keeps that true for a draft (not yet counted) and for a live
+  // PO (counted once, not twice).
   //
   // A call-off is skipped throughout: its ceiling is the framework's remaining,
   // not the BOQ allowance, and it is already shown as `overdrawn` on its own
   // terms. Call-offs are excluded from the committed tally for the same reason
   // — the framework reserved that budget once already.
   const isCallOffPo = String(po.order_type ?? "standard") === "call_off";
-  const committedByItem = new Map<string, number>();
+  const committedByBudgetLine = new Map<string, number>();
   if (!isCallOffPo) {
+    // Every live line on the job bar this order's own — a couple of hundred at
+    // most on the busiest project, so the tally is done here rather than as SQL
+    // that would be a second spelling of the rule.
     const spend = await c.env.DB.prepare(
-      `SELECT lower(pl.item) AS item_key, COALESCE(SUM(pl.line_total), 0) AS committed
-         FROM po_lines pl JOIN purchase_orders po ON po.id = pl.po_id
+      `SELECT lower(pl.item) AS item, lower(bm.item) AS coded_to,
+              pl.is_unpriced, COALESCE(pl.line_total, 0) AS line_total
+         FROM po_lines pl
+         JOIN purchase_orders po ON po.id = pl.po_id
+         LEFT JOIN materials bm ON bm.id = pl.material_id
         WHERE po.project_id = ?
           AND po.status IN ('approved','issued','pending_approval')
           AND COALESCE(po.order_type, 'standard') != 'call_off'
-          AND pl.is_unpriced = 0
-          AND po.id != ?
-          AND lower(pl.item) IN (SELECT lower(own.item) FROM po_lines own WHERE own.po_id = ?)
-        GROUP BY lower(pl.item)`,
-    ).bind(po.project_id as string, id, id).all<{ item_key: string; committed: number }>();
-    for (const r of spend.results) committedByItem.set(r.item_key, r.committed ?? 0);
-    // This order's own lines. Grouped, because one order can carry the same
-    // item on two lines and both draw on the one budget.
+          AND po.id != ?`,
+    ).bind(po.project_id as string, id).all<{
+      item: string | null; coded_to: string | null; is_unpriced: number; line_total: number;
+    }>();
+    const asSpendLine = (r: {
+      item: string | null; coded_to: string | null; is_unpriced: number | boolean | null; line_total: number | null;
+    }): SpendLine => ({
+      item: String(r.item ?? "").toLowerCase(),
+      codedTo: r.coded_to != null ? String(r.coded_to).toLowerCase() : null,
+      isUnpriced: !!r.is_unpriced,
+      lineTotal: Number(r.line_total) || 0,
+    });
+    const projectSpend: SpendLine[] = [
+      ...spend.results.map(asSpendLine),
+      // This order's own lines, judged by the same rule — so a line of this PO
+      // counts against the budget line exactly as the same line on any other
+      // order would.
+      ...lines.results.map((l) => asSpendLine({
+        item: (l.item as string | null) ?? null,
+        coded_to: l.link_budget_item,
+        is_unpriced: l.is_unpriced as number,
+        line_total: l.line_total as number,
+      })),
+    ];
+    // One tally per budget line this order touches, not one per line: two lines
+    // coded to the same budget line share its money and must report one figure
+    // between them.
     for (const l of lines.results) {
-      if (Number(l.is_unpriced)) continue;
-      const key = String(l.item ?? "").toLowerCase();
-      committedByItem.set(key, (committedByItem.get(key) ?? 0) + (Number(l.line_total) || 0));
+      const name = (l.link_budget_item ?? "").toLowerCase();
+      if (!name || committedByBudgetLine.has(name)) continue;
+      committedByBudgetLine.set(name, committedAgainstBudgetLine(projectSpend, {
+        name,
+        replacement: l.link_sub_item != null ? String(l.link_sub_item).toLowerCase() : null,
+      }));
     }
   }
 
@@ -1224,7 +1266,7 @@ pos.get("/:id", async (c) => {
           material_total_cost: l.link_budget_value, omitted_qty: l.link_omitted_qty,
         })
       : 0;
-    const committed = priced > 0 ? committedByItem.get(String(l.item ?? "").toLowerCase()) ?? 0 : 0;
+    const committed = priced > 0 ? committedByBudgetLine.get((l.link_budget_item ?? "").toLowerCase()) ?? 0 : 0;
     const base = {
       ...l, cost_code, is_unpriced: !!l.is_unpriced, is_over_budget: !!l.is_over_budget,
       budget_priced: priced > 0 ? round2(priced) : null,
