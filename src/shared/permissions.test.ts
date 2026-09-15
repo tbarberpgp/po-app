@@ -20,7 +20,8 @@ import {
 describe("can() with a bare role", () => {
   test("the role matrix still answers", () => {
     assert.equal(can("commercial", "pos.create"), true);
-    assert.equal(can("commercial", "pos.edit"), false);
+    assert.equal(can("commercial", "pos.edit"), true);
+    assert.equal(can("commercial", "delivery.edit"), false);
   });
 
   test("no role is no permission", () => {
@@ -41,12 +42,13 @@ describe("can() with a bare role", () => {
 });
 
 describe("can() with per-user grants", () => {
-  // jtong, the worked example: a QS who needs to amend POs and run site ops,
-  // neither of which `commercial` carries.
-  const jtong = { role: "commercial" as const, grants: ["pos.edit", "delivery.edit"] as const };
+  // jtong, the worked example: a QS who also runs site ops, which `commercial`
+  // does not carry. (Amending POs was granted this way too until the role took
+  // it on outright — the grant row is harmless, just redundant.)
+  const jtong = { role: "commercial" as const, grants: ["delivery.edit"] as const };
 
   test("a grant adds what the role lacks", () => {
-    assert.equal(can({ ...jtong, grants: [...jtong.grants] }, "pos.edit"), true);
+    assert.equal(can({ role: "commercial", grants: [] }, "delivery.edit"), false);
     assert.equal(can({ ...jtong, grants: [...jtong.grants] }, "delivery.edit"), true);
   });
 
@@ -61,8 +63,10 @@ describe("can() with per-user grants", () => {
     assert.equal(can({ ...jtong, grants: [...jtong.grants] }, "users.write"), false);
   });
 
-  test("the role deletes POs outright, without a grant for it", () => {
-    // A QS raises the orders, so a QS takes back the ones raised in error.
+  test("the role amends and deletes POs outright, without a grant for either", () => {
+    // A QS raises the orders, so a QS corrects them and takes back the ones
+    // raised in error.
+    assert.equal(can({ role: "commercial", grants: [] }, "pos.edit"), true);
     assert.equal(can({ role: "commercial", grants: [] }, "pos.delete"), true);
     assert.equal(can("commercial", "pos.delete"), true);
   });
@@ -88,7 +92,9 @@ describe("can() with per-user grants", () => {
   });
 
   test("a null grant list behaves as no grants", () => {
-    assert.equal(can({ role: "commercial", grants: null }, "pos.edit"), false);
+    assert.equal(can({ role: "commercial", grants: null }, "delivery.edit"), false);
+    // …and leaves what the role does carry alone.
+    assert.equal(can({ role: "commercial", grants: null }, "pos.edit"), true);
   });
 });
 

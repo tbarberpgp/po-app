@@ -60,7 +60,7 @@ export type Permission =
   | "materials.upload"     // pricing workbooks + labour-rate schedules
   | "pos.create"
   | "pos.issue"
-  | "pos.edit"             // amend an existing PO (header + lines) — admin/superadmin only
+  | "pos.edit"             // amend an existing PO (header + lines)
   | "pos.delete"
   | "pos.push_to_xero"
   | "approvers.manage"
@@ -88,17 +88,20 @@ const MATRIX: Record<Role, Set<Permission>> = {
     "suppliers.manage",
   ]),
   // QS / commercial manager: owns the commercial workspace, uploads pricing and
-  // labour-rate workbooks, raises + pushes POs, manages the supplier register.
-  // Deleting is paired with raising on purpose: whoever raised an order in
-  // error is the one who needs to take it back out, and the delete is soft —
-  // it demands a reason, keeps the audit trail and can be read back under the
-  // dashboard's "Deleted" filter.
+  // labour-rate workbooks, raises + amends + pushes POs, manages the supplier
+  // register.
+  // Amending and deleting are paired with raising on purpose: whoever raised an
+  // order is the one who corrects it or takes it back out. Withholding the
+  // amend only pushed the work sideways — a QS who could delete an order and
+  // raise it again, or hand-code the line afterwards, but not fix a typo on it.
+  // The delete is soft: it demands a reason, keeps the audit trail and can be
+  // read back under the dashboard's "Deleted" filter.
   // No delivery-ops editing (site reports, operatives, plant).
   commercial: new Set<Permission>([
     "projects.edit",
     "commercial.view", "commercial.edit",
     "materials.upload",
-    "pos.create", "pos.issue", "pos.delete", "pos.push_to_xero",
+    "pos.create", "pos.issue", "pos.edit", "pos.delete", "pos.push_to_xero",
     "suppliers.manage",
   ]),
   // Project Manager: runs delivery (operations, quality, programme, materials,
