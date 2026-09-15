@@ -305,6 +305,9 @@ function cabinPdfHtml(d: {
   td.sp { width: 108px; text-align: right; font-size: 7.6pt; letter-spacing: .09em; }
 
   table.note th { width: 130px; background: #f0f0f0; -webkit-print-color-adjust: exact; font-size: 8.2pt; }
+  /* Notes are typed as laid-out text — stage headings, indented readings. HTML
+     would collapse that into one paragraph, so keep the author's line breaks. */
+  table.note td { white-space: pre-wrap; }
   table.sign td { height: 34pt; }
   table.sign td.sigcell { padding: 1pt 5pt; }
   img.sig { height: 30pt; width: auto; max-width: 100%; display: block; }
