@@ -105,6 +105,13 @@ function lineItemsTable(po: PurchaseOrder): string {
     <p style="margin:6px 0 0;font-size:12px;color:#777">Figures are ex VAT.</p>`;
 }
 
+/** People who should see a Commercial Manager approval request for
+ *  visibility only. Deliberately not in the `approvers` table — that table
+ *  also grants sign-off authority (checked by email+tier in pos.ts), and
+ *  Angela only needs to know it's pending and who it's waiting on, not the
+ *  power to action it herself. Requested after PO-26001-0068. */
+const COMMERCIAL_MANAGER_APPROVAL_OBSERVERS = ["adouty@powergridprojects.net"];
+
 export async function emailApprovers(
   env: Env,
   po: PurchaseOrder,
@@ -144,8 +151,8 @@ export async function emailApprovers(
   const subject = `[${tier} approval] ${po.po_number} — ${projectSubject} · ${money(po.total_value)}`;
   const kv = 'style="padding:3px 14px 3px 0;font-size:14px;color:#555;white-space:nowrap"';
   const kvV = 'style="padding:3px 0;font-size:14px"';
-  const html = `
-    <p style="font-size:15px">A purchase order needs your approval.</p>
+  const renderEmail = (intro: string, cta: string) => `
+    <p style="font-size:15px">${intro}</p>
     <table style="border-collapse:collapse">
       <tr><td ${kv}><b>PO number</b></td><td ${kvV}>${escapeHtml(po.po_number)}</td></tr>
       <tr><td ${kv}><b>Project</b></td><td ${kvV}>${escapeHtml(projectLabel)}</td></tr>
@@ -157,7 +164,7 @@ export async function emailApprovers(
     </table>
     ${po.notes ? `<p style="margin:14px 0 0;font-size:14px"><b>Note from ${escapeHtml(po.created_by)}:</b> ${escapeHtml(po.notes)}</p>` : ""}
     ${lineItemsTable(po)}
-    <p style="margin:22px 0 0"><a href="${link}" style="font-size:15px">Review and approve →</a></p>
+    <p style="margin:22px 0 0"><a href="${link}" style="font-size:15px">${cta}</a></p>
   `;
 
   await fetch("https://api.resend.com/emails", {
@@ -170,9 +177,25 @@ export async function emailApprovers(
       from: resendFrom(env),
       to: approvers.map((a) => a.email),
       subject,
-      html,
+      html: renderEmail("A purchase order needs your approval.", "Review and approve →"),
     }),
   }).catch((err) => console.error("Resend error", err));
+
+  if (po.approval_tier === "commercial_manager" && COMMERCIAL_MANAGER_APPROVAL_OBSERVERS.length > 0) {
+    await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${env.RESEND_API_KEY}`,
+      },
+      body: JSON.stringify({
+        from: resendFrom(env),
+        to: COMMERCIAL_MANAGER_APPROVAL_OBSERVERS,
+        subject: `[FYI] ${subject}`,
+        html: renderEmail(`A purchase order needs the ${tier}'s approval.`, "View PO →"),
+      }),
+    }).catch((err) => console.error("Resend error (observer copy)", err));
+  }
 }
 
 /** Remind the PM + commercial manager that hired plant is due to be off-hired. */
