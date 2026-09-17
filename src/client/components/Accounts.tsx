@@ -645,6 +645,8 @@ function MatchPanel({ inv, canEdit, canRelease, busy, onRelease, onReload }: {
   // rather than clutter the other 90% of invoices that are matching a
   // perfectly ordinary open order.
   const [includeClosed, setIncludeClosed] = useState(false);
+  // Bumped by the retry in the failed-match state, to re-run the fetch below.
+  const [reloadKey, setReloadKey] = useState(0);
 
   const pushed = inv.status === "pushed";
   const approved = !!inv.approved_at;
@@ -660,7 +662,7 @@ function MatchPanel({ inv, canEdit, canRelease, busy, onRelease, onReload }: {
       .catch((e) => { if (alive) setErr(e instanceof Error ? e.message : "match failed"); })
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
-  }, [inv.id, inv.matched_po_id, includeClosed]);
+  }, [inv.id, inv.matched_po_id, includeClosed, reloadKey]);
 
   const status = m?.match_status ?? "unmatched";
   const noteRequired = status !== "ok";
@@ -851,7 +853,20 @@ function MatchPanel({ inv, canEdit, canRelease, busy, onRelease, onReload }: {
           : <span className="pill" style={{ fontSize: 10, background: "transparent", border: "1px solid var(--warn)", color: "var(--warn)" }} title="This PO number is printed on the invoice but isn't one of ours — it may never have been raised.">quotes {m.po_ref.quoted} · not one of our orders</span>)}
       </div>
 
-      {loading ? <div className="muted" style={{ fontSize: 12 }}>Checking the PO and deliveries…</div> : !m ? null : (
+      {/* A match that fails to load used to render as nothing: the error state
+          sat inside the `m` branch below, so the card kept its heading and lost
+          its whole body — picker, line table and the button that raises a
+          missing PO — with no hint that anything had gone wrong. That is how a
+          D1 parameter overflow in computeInvoiceMatch read as "the Create PO
+          button was removed" rather than as a broken screen. Say it plainly and
+          offer the retry. */}
+      {loading ? <div className="muted" style={{ fontSize: 12 }}>Checking the PO and deliveries…</div> : !m ? (
+        <div className="flash error" style={{ fontSize: 12, lineHeight: 1.5 }}>
+          Couldn't check this invoice against the order book{err ? <> — {err}</> : "."} The purchase-order
+          picker and the rest of the match are unavailable until it loads, so nothing here can be approved yet.
+          {" "}<button className="ghost tiny" onClick={() => setReloadKey((k) => k + 1)} disabled={loading}>Try again</button>
+        </div>
+      ) : (
         <>
           {err && <div className="flash error" style={{ fontSize: 12, marginBottom: 10 }}>{err}</div>}
 

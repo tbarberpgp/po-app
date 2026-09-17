@@ -978,9 +978,16 @@ async function withMatchState(env: Env, rows: Record<string, unknown>[]): Promis
  *   ok      → all three legs agree (PO matched, lines linked, delivered, priced)
  * Shared by the GET endpoint and the approval gate.
  */
-async function computeInvoiceMatch(env: Env, inv: Record<string, unknown>, opts: { includeClosed?: boolean } = {}) {
+export async function computeInvoiceMatch(env: Env, inv: Record<string, unknown>, opts: { includeClosed?: boolean } = {}) {
   let invLines: InvLine[] = [];
   try { invLines = inv.lines_json ? JSON.parse(String(inv.lines_json)) : []; } catch { /* none */ }
+
+  // The live-order set, as a join any read can hang off. Every read keyed on
+  // "all candidate orders" must mirror this WHERE rather than list the ids it
+  // returns — see the bound-parameter note on the po_lines read below.
+  const poScope = `JOIN purchase_orders po ON po.id = %s
+       JOIN projects p ON p.id = po.project_id
+      WHERE po.status != 'deleted' AND po.order_type != 'framework' AND p.deleted_at IS NULL`;
 
   // Candidate POs across live projects (not deleted, not framework) with lines.
   const pos = (await env.DB.prepare(
@@ -1001,9 +1008,21 @@ async function computeInvoiceMatch(env: Env, inv: Record<string, unknown>, opts:
       WHERE po.status != 'deleted' AND po.order_type = 'framework' AND p.deleted_at IS NULL`,
   ).all<{ id: string; po_number: string; project_id: string; project_code: string }>()).results;
   const poIds = pos.map((p) => p.id);
+  // The candidate pool is every live order in the book, so it is never safe to
+  // list its ids as bound parameters: D1 takes 100 per query and the company
+  // passed that on 11 Sep 2026 with PO-26001-0067, the 101st live order. The
+  // throw propagates out of this function and the match route answers 500, at
+  // which point the panel in Accounts renders nothing at all — the PO picker,
+  // the line table and the button that raises a missing PO all disappear
+  // together, on every project invoice, with no error to say why.
+  //
+  // The order set is already expressed in SQL above, so join to it instead and
+  // bind nothing that grows. Two reads further down already do this through
+  // `poScope`, which is why they kept working; this one was missed.
   const allLines = poIds.length ? (await env.DB.prepare(
-    `SELECT id, po_id, item, qty, unit, unit_cost FROM po_lines WHERE po_id IN (${poIds.map(() => "?").join(",")})`,
-  ).bind(...poIds).all<{ id: number; po_id: string; item: string; qty: number; unit: string; unit_cost: number }>()).results : [];
+    `SELECT l.id, l.po_id, l.item, l.qty, l.unit, l.unit_cost
+       FROM po_lines l ${poScope.replace("%s", "l.po_id")}`,
+  ).all<{ id: number; po_id: string; item: string; qty: number; unit: string; unit_cost: number }>()).results : [];
 
   // Which job the order should be on. The invoice's own coding first — a human
   // set or confirmed it — else the job of a framework the invoice quotes.
@@ -1146,12 +1165,9 @@ async function computeInvoiceMatch(env: Env, inv: Record<string, unknown>, opts:
   // away, because a credit note or a late carriage charge still has to be able
   // to reach its order.
   //
-  // Both reads mirror the candidate query's WHERE through a join instead of
+  // Both reads mirror the candidate query's WHERE through `poScope` instead of
   // binding the ids: the pool is every live order in the book, and an
   // `IN (?,?,…)` over it would sit on D1's bound-parameter ceiling.
-  const poScope = `JOIN purchase_orders po ON po.id = %s
-       JOIN projects p ON p.id = po.project_id
-      WHERE po.status != 'deleted' AND po.order_type != 'framework' AND p.deleted_at IS NULL`;
   const delRows = (await env.DB.prepare(
     `SELECT d.po_id, ${PO_DELIVERY_NOTE_COLUMNS}
        FROM site_deliveries d ${PO_DELIVERY_NOTE_JOIN} ${poScope.replace("%s", "d.po_id")}`,
