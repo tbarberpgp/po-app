@@ -88,22 +88,31 @@ async function getToken(env: Env): Promise<string> {
   return j.access_token;
 }
 
-type GraphMsg = { id: string; subject: string; from: string; internetMessageId: string };
+type GraphMsg = {
+  id: string; subject: string; from: string; internetMessageId: string; receivedDateTime: string;
+};
 
+/** Exchange rejects $filter combined with $orderby on a mail folder
+ *  ("InefficientFilter", 400), so the page is sorted here instead — oldest
+ *  first, so the longest-waiting invoices go in first when a backlog is
+ *  bigger than $top. ISO timestamps sort lexicographically. */
 async function listMessages(token: string, mailbox: string, folder: string): Promise<GraphMsg[]> {
   const filter = encodeURIComponent("hasAttachments eq true and isRead eq false");
   const url =
     `${GRAPH}/users/${encodeURIComponent(mailbox)}/mailFolders/${encodeURIComponent(folder)}/messages` +
-    `?$filter=${filter}&$select=id,subject,from,internetMessageId&$top=20&$orderby=receivedDateTime asc`;
+    `?$filter=${filter}&$select=id,subject,from,internetMessageId,receivedDateTime&$top=20`;
   const res = await fetch(url, { headers: { authorization: `Bearer ${token}` } });
   if (!res.ok) throw new Error(`list ${res.status}: ${(await res.text()).slice(0, 200)}`);
   const j = (await res.json()) as { value?: Array<Record<string, unknown>> };
-  return (j.value ?? []).map((m) => ({
-    id: String(m.id ?? ""),
-    subject: String(m.subject ?? ""),
-    from: String((m.from as { emailAddress?: { address?: string } })?.emailAddress?.address ?? ""),
-    internetMessageId: String(m.internetMessageId ?? m.id ?? ""),
-  }));
+  return (j.value ?? [])
+    .map((m) => ({
+      id: String(m.id ?? ""),
+      subject: String(m.subject ?? ""),
+      from: String((m.from as { emailAddress?: { address?: string } })?.emailAddress?.address ?? ""),
+      internetMessageId: String(m.internetMessageId ?? m.id ?? ""),
+      receivedDateTime: String(m.receivedDateTime ?? ""),
+    }))
+    .sort((a, b) => a.receivedDateTime.localeCompare(b.receivedDateTime));
 }
 
 /** The message's raw RFC822 MIME — fed straight into postal-mime downstream. */
