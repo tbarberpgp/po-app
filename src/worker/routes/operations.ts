@@ -1655,6 +1655,28 @@ async function readInChunks<T>(
 }
 
 /**
+ * A site's order set, as a join any read can hang off.
+ *
+ * Same 100-parameter ceiling as `readInChunks` guards, but this shape is worse
+ * because it looks bounded: a site's order book is "just one site". One site
+ * group is already at 93 of the 100, and these reads bind one parameter per
+ * order in it, so the next handful of orders on that site takes the ticket
+ * matcher and the delivery burn-down out — and the catches around them turn
+ * that into a screen that reads empty rather than one that errors.
+ *
+ * The order set is expressible in SQL, so join to it and bind only the site's
+ * member project ids (three at most today). `col` is the column holding the PO
+ * id on the table being read; `statusCond` is that route's own status filter.
+ * Emits its own WHERE, so anything further must be appended with AND — and
+ * bound AFTER the member ids.
+ */
+function sitePoScope(col: string, marks: string, statusCond: string) {
+  return `JOIN purchase_orders po ON po.id = ${col}
+       JOIN projects p ON p.id = po.project_id
+      WHERE po.project_id IN (${marks}) AND ${statusCond} AND po.order_type != 'framework'`;
+}
+
+/**
  * Cross-project deliveries inbox — every pending ticket candidate across all
  * live projects, each row carrying its project so the detail pane can drive
  * the per-project reconcile/check-in endpoints. Plus the KPI strip: deliveries
@@ -2109,11 +2131,10 @@ operations.get("/:projectId/deliveries/ticket-candidates/:id/suggest", async (c)
   ).bind(...scope.memberIds).all<{ id: string; po_number: string; supplier: string | null; order_type: string | null; project_id: string; project_code: string }>();
   if (!pos.results.length) return c.json({ suggested_po_id: null, ranked: [] });
 
-  const poIds = pos.results.map((p) => p.id);
-  const lph = poIds.map(() => "?").join(",");
   const lines = (await c.env.DB.prepare(
-    `SELECT po_id, item FROM po_lines WHERE po_id IN (${lph})`,
-  ).bind(...poIds).all<{ po_id: string; item: string }>()).results;
+    `SELECT l.po_id, l.item
+       FROM po_lines l ${sitePoScope("l.po_id", ph, "po.status != 'deleted'")}`,
+  ).bind(...scope.memberIds).all<{ po_id: string; item: string }>()).results;
 
   const ranked = pos.results.map((po) => {
     const poCodes = new Set(lines.filter((l) => l.po_id === po.id).map((l) => materialCode(l.item)));
@@ -2160,8 +2181,10 @@ operations.get("/:projectId/deliveries/ticket-candidates/:id/reconcile", async (
       ORDER BY po.created_at DESC`,
   ).bind(...scope.memberIds).all<{ id: string; po_number: string; supplier: string | null; order_type: string | null; project_id: string; project_code: string }>()).results;
   const allLines = pos.length ? (await c.env.DB.prepare(
-    `SELECT id, po_id, item, qty, unit, unit_cost FROM po_lines WHERE po_id IN (${pos.map(() => "?").join(",")}) ORDER BY id`,
-  ).bind(...pos.map((p) => p.id)).all<{ id: number; po_id: string; item: string; qty: number; unit: string; unit_cost: number }>()).results : [];
+    `SELECT l.id, l.po_id, l.item, l.qty, l.unit, l.unit_cost
+       FROM po_lines l ${sitePoScope("l.po_id", ph, "po.status != 'deleted'")}
+      ORDER BY l.id`,
+  ).bind(...scope.memberIds).all<{ id: number; po_id: string; item: string; qty: number; unit: string; unit_cost: number }>()).results : [];
 
   // Rank POs by how many of the ticket's item codes appear on them (inference).
   const codes = new Set(items.map((i) => materialCode(i.description)).filter((x) => x.length >= 3));
@@ -2642,17 +2665,19 @@ operations.get("/:projectId/deliveries/po-status", async (c) => {
   ).bind(...scope.memberIds).all<{ id: string; po_number: string; supplier: string | null; order_type: string | null; project_id: string; project_code: string }>();
   if (!pos.results.length) return c.json([]);
 
-  const poIds = pos.results.map((p) => p.id);
-  const lph = poIds.map(() => "?").join(",");
+  const OPEN_PO = "po.status IN ('approved','issued')";
   const lines = (await c.env.DB.prepare(
-    `SELECT id, po_id, item, qty, unit FROM po_lines WHERE po_id IN (${lph}) ORDER BY id`,
-  ).bind(...poIds).all<{ id: number; po_id: string; item: string; qty: number; unit: string }>()).results;
-  // Deliveries logged against these POs (on the base project).
+    `SELECT l.id, l.po_id, l.item, l.qty, l.unit
+       FROM po_lines l ${sitePoScope("l.po_id", ph, OPEN_PO)}
+      ORDER BY l.id`,
+  ).bind(...scope.memberIds).all<{ id: number; po_id: string; item: string; qty: number; unit: string }>()).results;
+  // Deliveries logged against these POs (on the base project). The base id is
+  // bound after the member ids, because the scope emits the WHERE this extends.
   const dels = (await c.env.DB.prepare(
     `SELECT d.po_id, ${PO_DELIVERY_NOTE_COLUMNS}, d.received_qty, d.received_unit
        FROM site_deliveries d ${PO_DELIVERY_NOTE_JOIN}
-      WHERE d.project_id = ? AND d.po_id IN (${lph})`,
-  ).bind(base, ...poIds).all<PoDeliveryRow & { received_qty: number | null; received_unit: string | null }>()).results;
+       ${sitePoScope("d.po_id", ph, OPEN_PO)} AND d.project_id = ?`,
+  ).bind(...scope.memberIds, base).all<PoDeliveryRow & { received_qty: number | null; received_unit: string | null }>()).results;
 
   const out = pos.results.map((po) => {
     const poDels = dels.filter((d) => d.po_id === po.id);
