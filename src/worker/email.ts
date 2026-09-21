@@ -23,6 +23,7 @@ import PostalMime from "postal-mime";
 import type { Env } from "./env";
 import { extractLabourLines, extractCertificateLines, createAfpFromLines, applyClientCertificate, putLabourSourceFile, setAfpSourceFile, setAfpCertFile, sha256Hex, findDuplicateSourceDoc, extractCombinedLabourByProject, resolveCombinedGroupBase, createCombinedClientAfpFromLines } from "./routes/applications";
 import { ingestInvoice } from "./routes/invoices";
+import { isSpreadsheetFile } from "../shared/file-kind";
 import type { ExtractedLabourLine } from "./routes/applications";
 import { handleReportReply } from "./routes/site-reports";
 
@@ -234,6 +235,10 @@ export async function handleInboundEmail(
   if (/^invoices?$/i.test(recipientLocal)) {
     const invoiceFiles = (parsed.attachments ?? []).filter((a) => {
       const n = (a.filename ?? "").toLowerCase();
+      // Subbies bill off their own spreadsheet template rather than a PDF. A
+      // workbook is always a document and never email decoration, so it skips
+      // the inline/size gate that the image branch below needs.
+      if (isSpreadsheetFile(a.filename, a.mimeType)) return true;
       const looksFile = a.mimeType === "application/pdf" || /^image\//.test(a.mimeType ?? "")
         || n.endsWith(".pdf") || /\.(png|jpe?g|gif|webp)$/.test(n);
       if (!looksFile) return false;
@@ -248,7 +253,7 @@ export async function handleInboundEmail(
       return size >= 25_000;
     });
     if (invoiceFiles.length === 0) {
-      if (!noReply) await sendErrorReply(env, senderRaw, subject, "We received your email but found no PDF or image invoice attached. Please attach the invoice and resend.");
+      if (!noReply) await sendErrorReply(env, senderRaw, subject, "We received your email but found no PDF, image or spreadsheet invoice attached. Please attach the invoice and resend.");
       return;
     }
     for (const att of invoiceFiles) {

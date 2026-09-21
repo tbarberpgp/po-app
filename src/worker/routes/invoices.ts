@@ -8,6 +8,8 @@ import type { Env, Variables } from "../env";
 import { isReleaseApprover, requirePermission, subjectOf } from "../auth";
 import { isReleased, needsApprovalBeforeRelease } from "../../shared/payment-release";
 import { can } from "../../shared/permissions";
+import { isSpreadsheetFile } from "../../shared/file-kind";
+import { spreadsheetToText } from "../../shared/spreadsheet-text";
 import {
   invMaterialCode, jobAmbiguity, lineQty, looksLikeServiceCharge, NON_GOODS_LINE_IDS, PAYMENT_SCHEDULE_LINE_ID,
   poRefCore, SERVICE_CHARGE_LINE_ID as SERVICE_CHARGE, scanLineMatch,
@@ -174,10 +176,19 @@ export async function extractInvoice(
     : lower.endsWith(".webp") ? "image/webp"
     : lower.endsWith(".gif") ? "image/gif"
     : null;
-  if (!isPdf && !imgType) throw new Error("Upload the invoice as a PDF or image (JPG/PNG).");
+  const isSheet = isSpreadsheetFile(file.name, file.type);
+  if (!isPdf && !imgType && !isSheet) throw new Error("Upload the invoice as a PDF, image (JPG/PNG) or spreadsheet (XLSX).");
+
+  // A spreadsheet has no document or image block Claude can read, so the
+  // workbook goes in as text instead. The tool, the prompt and the shape of the
+  // result are identical to a PDF's — only the carrier differs.
+  const sheetText = isSheet ? spreadsheetToText(file.buffer) : "";
+  if (isSheet && !sheetText.trim()) throw new Error("That spreadsheet has no readable rows.");
 
   const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
-  const source = isPdf
+  const source = isSheet
+    ? { type: "text" as const, text: `Spreadsheet "${file.name}", flattened to text:\n\n${sheetText}` }
+    : isPdf
     ? { type: "document" as const, source: { type: "base64" as const, media_type: "application/pdf" as const, data: bufToBase64(file.buffer) } }
     : { type: "image" as const, source: { type: "base64" as const, media_type: imgType as "image/png" | "image/jpeg" | "image/gif" | "image/webp", data: bufToBase64(file.buffer) } };
 
@@ -363,8 +374,9 @@ export async function ingestInvoice(
   // on the email — drop them. PDFs, manual uploads and extraction FAILURES
   // (which need human eyes) always come through.
   const lowerName = (args.file.name || "").toLowerCase();
-  const isPdfFile = args.file.type === "application/pdf" || lowerName.endsWith(".pdf");
-  if (args.source === "email" && !isPdfFile && ex && !extractError) {
+  const isDocFile = args.file.type === "application/pdf" || lowerName.endsWith(".pdf")
+    || isSpreadsheetFile(args.file.name, args.file.type);
+  if (args.source === "email" && !isDocFile && ex && !extractError) {
     const substance = ex.invoice_number || ex.gross_amount != null || ex.net_amount != null || (ex.lines?.length ?? 0) > 0;
     if (!substance) return { id: null, extracted: true, skipped: "signature_image" };
   }

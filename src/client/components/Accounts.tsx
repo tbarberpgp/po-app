@@ -3,6 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import { PdfHighlightViewer } from "./PdfHighlightViewer";
 import { GroupedCombobox, type ComboGroup, type ComboOption } from "./GroupedCombobox";
 import { api, fmtMoney } from "../lib/api";
+import { isSpreadsheetFile } from "../../shared/file-kind";
 import { can } from "../../shared/permissions";
 import { Topbar } from "./Shell";
 import type { CurrentUser, Invoice, InvoiceMatch, InvoiceMatchLine, MatchSummary, Project } from "../../shared/types";
@@ -365,6 +366,8 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
  *  img) with an Expand → fullscreen lightbox, plus Open / Download links. */
 function InvoiceViewer({ inv }: { inv: Invoice }) {
   const isPdf = (inv.file_type ?? "").includes("pdf") || (inv.file_name ?? "").toLowerCase().endsWith(".pdf");
+  // A workbook can't be shown inline — it gets a card pointing at Open/Download.
+  const isSheet = !isPdf && isSpreadsheetFile(inv.file_name, inv.file_type);
   const fileUrl = api.invoiceFileUrl(inv.id);
   const [z, setZ] = useState(1);
   const [lb, setLb] = useState(false);
@@ -388,13 +391,13 @@ function InvoiceViewer({ inv }: { inv: Invoice }) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [lb]);
-  const label = inv.file_name ? (inv.file_name.length > 24 ? inv.file_name.slice(0, 24) + "…" : inv.file_name) : (isPdf ? "PDF" : "Image");
+  const label = inv.file_name ? (inv.file_name.length > 24 ? inv.file_name.slice(0, 24) + "…" : inv.file_name) : (isPdf ? "PDF" : isSheet ? "Spreadsheet" : "Image");
   return (
     <div className="col-view">
       <div className="vtoolbar">
         <span className="vbtn" style={{ cursor: "default", color: "#fff", opacity: 0.85 }}>{label}</span>
         <span className="vspacer" />
-        {!isPdf && (
+        {!isPdf && !isSheet && (
           <>
             <button className="vbtn" title="Zoom out" onClick={() => setZ((v) => Math.max(0.5, +(v - 0.15).toFixed(2)))}>−</button>
             <button className="vbtn" title="Zoom in" onClick={() => setZ((v) => Math.min(3, +(v + 0.15).toFixed(2)))}>＋</button>
@@ -407,10 +410,16 @@ function InvoiceViewer({ inv }: { inv: Invoice }) {
         )}
         <a className="vbtn" href={fileUrl} target="_blank" rel="noreferrer" title="Open in a new tab">Open</a>
         <a className="vbtn" href={`${fileUrl}?download=1`} title={inv.file_name ? `Download ${inv.file_name}` : "Download"}>Download</a>
-        <button className="vbtn" onClick={() => setLb(true)} title="Expand to full screen">⤢ Expand</button>
+        {!isSheet && <button className="vbtn" onClick={() => setLb(true)} title="Expand to full screen">⤢ Expand</button>}
       </div>
       <div className="vport">
-        {isPdf
+        {isSheet
+          ? <div style={{ padding: "34px 20px", textAlign: "center", color: "var(--muted)", fontSize: 13, lineHeight: 1.5 }}>
+              <div style={{ fontSize: 15, color: "var(--fg)", marginBottom: 6 }}>{inv.file_name ?? "Spreadsheet"}</div>
+              <div>A spreadsheet can't be shown here — use <strong>Open</strong> or <strong>Download</strong> to see the workbook.
+                The figures alongside were read from it.</div>
+            </div>
+          : isPdf
           ? <div onClick={() => setLb(true)} title="Click to expand" style={{ cursor: "zoom-in", width: "100%" }}>
               <PdfHighlightViewer url={fileUrl} targets={targets} showHighlights={hl} />
             </div>
