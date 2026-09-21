@@ -1157,7 +1157,8 @@ function ProjectPOsPanel({ rows }: { rows: ProjectPORow[] }) {
           <PoRegisterExport
             rows={rows}
             opts={{ subject: [rows[0]?.project_code, rows[0]?.project_name].filter(Boolean).join(" — ") }}
-            filename={`purchase-orders-${rows[0]?.project_code || "project"}`} />
+            filename={`purchase-orders-${rows[0]?.project_code || "project"}`}
+            detailed />
           <span className="pill">{rows.length}</span>
         </div>
         <table>

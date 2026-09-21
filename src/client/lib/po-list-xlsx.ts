@@ -16,13 +16,11 @@ import {
   poDeliveryStateLabel, poOrderTypeLabel, poStatusLabel, poXeroStatusLabel, summarisePoRegister,
   type PoListExport, type PoRegisterRow,
 } from "./po-register";
+import { DATE_FMT, MONEY_FMT, asDate, autofilter, round2, setFormat } from "./xlsx-cells";
 
 type Cell = string | number | Date | null;
 type Fmt = "date" | "money";
 type Col = { label: string; wch: number; fmt?: Fmt; get: (po: PoRegisterRow) => Cell };
-
-const DATE_FMT = "dd mmm yyyy";
-const MONEY_FMT = "#,##0.00";
 
 function columns(o: PoListExport): Col[] {
   const cols: Col[] = [{ label: "PO", wch: 17, get: (p) => p.po_number }];
@@ -60,6 +58,13 @@ function columns(o: PoListExport): Col[] {
 }
 
 export function generatePoListXlsx(pos: PoRegisterRow[], o: PoListExport): Uint8Array {
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, registerSheet(pos, o), "Purchase orders");
+  return new Uint8Array(XLSX.write(wb, { bookType: "xlsx", type: "array" }) as ArrayBuffer);
+}
+
+/** One row per order — the register as the screen lists it. */
+export function registerSheet(pos: PoRegisterRow[], o: PoListExport): XLSX.WorkSheet {
   const cols = columns(o);
   const valueCol = cols.findIndex((c) => c.fmt === "money");
   const t = summarisePoRegister(pos);
@@ -92,35 +97,15 @@ export function generatePoListXlsx(pos: PoRegisterRow[], o: PoListExport): Uint8
   // Filter dropdowns on the header row — the register is normally read by
   // supplier, project or status. (Freeze panes are a SheetJS Pro feature, so
   // the header scrolls away; the autofilter is what earns its keep here.)
-  ws["!autofilter"] = {
-    ref: XLSX.utils.encode_range(
-      { s: { r: firstDataRow - 1, c: 0 }, e: { r: Math.max(lastDataRow, firstDataRow), c: cols.length - 1 } },
-    ),
-  };
+  autofilter(ws, firstDataRow - 1, lastDataRow, cols.length);
 
-  const fmt = (r: number, c: number, z: string, want: "d" | "n") => {
-    const cell = ws[XLSX.utils.encode_cell({ r, c })];
-    if (cell && cell.t === want) cell.z = z;
-  };
   for (let r = firstDataRow; r <= lastDataRow; r++) {
     cols.forEach((col, c) => {
-      if (col.fmt === "date") fmt(r, c, DATE_FMT, "d");
-      else if (col.fmt === "money") fmt(r, c, MONEY_FMT, "n");
+      if (col.fmt === "date") setFormat(ws, r, c, DATE_FMT, "d");
+      else if (col.fmt === "money") setFormat(ws, r, c, MONEY_FMT, "n");
     });
   }
-  if (valueCol >= 0) fmt(totalRow, valueCol, MONEY_FMT, "n");
-  for (const r of [committedRow, committedRow + 1]) fmt(r, 1, MONEY_FMT, "n");
-
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, "Purchase orders");
-  return new Uint8Array(XLSX.write(wb, { bookType: "xlsx", type: "array" }) as ArrayBuffer);
+  if (valueCol >= 0) setFormat(ws, totalRow, valueCol, MONEY_FMT, "n");
+  for (const r of [committedRow, committedRow + 1]) setFormat(ws, r, 1, MONEY_FMT, "n");
+  return ws;
 }
-
-/** Null, empty and unparseable dates all become a blank cell rather than
- *  "Invalid Date" text, which would break the column's sort. */
-function asDate(iso: string | null | undefined): Date | null {
-  if (!iso) return null;
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? null : d;
-}
-function round2(n: number): number { return Math.round(n * 100) / 100; }

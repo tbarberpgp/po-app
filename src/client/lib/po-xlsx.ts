@@ -12,6 +12,7 @@
 import * as XLSX from "xlsx";
 import { COMPANY } from "../../shared/company";
 import { poDeliveryStateLabel, poOrderTypeLabel, poStatusLabel, poXeroLabel } from "./po-register";
+import { DATE_FMT, MONEY_FMT, asDate, autofilter, round2, round2OrNull, setFormat } from "./xlsx-cells";
 import type { PurchaseOrder } from "../../shared/types";
 
 export type PoXlsxInput = PurchaseOrder & {
@@ -24,8 +25,6 @@ export type PoXlsxInput = PurchaseOrder & {
 };
 
 type Cell = string | number | Date | null;
-const DATE_FMT = "dd mmm yyyy";
-const MONEY_FMT = "#,##0.00";
 
 export function generatePoXlsx(po: PoXlsxInput): Uint8Array {
   const wb = XLSX.utils.book_new();
@@ -121,22 +120,18 @@ function orderSheet(po: PoXlsxInput): XLSX.WorkSheet {
 
   const ws = XLSX.utils.aoa_to_sheet(rows, { cellDates: true });
   ws["!cols"] = colWidths(header);
-  ws["!autofilter"] = {
-    ref: XLSX.utils.encode_range(
-      { s: { r: firstLine - 1, c: 0 }, e: { r: Math.max(lastLine, firstLine), c: header.length - 1 } },
-    ),
-  };
+  autofilter(ws, firstLine - 1, lastLine, header.length);
 
   for (let r = firstLine; r <= lastLine; r++) {
-    fmt(ws, r, header.indexOf("Unit price £"), MONEY_FMT, "n");
-    fmt(ws, r, netCol, MONEY_FMT, "n");
+    setFormat(ws, r, header.indexOf("Unit price £"), MONEY_FMT, "n");
+    setFormat(ws, r, netCol, MONEY_FMT, "n");
     if (isFramework) {
-      fmt(ws, r, header.indexOf("Called off £"), MONEY_FMT, "n");
-      fmt(ws, r, header.indexOf("Remaining £"), MONEY_FMT, "n");
+      setFormat(ws, r, header.indexOf("Called off £"), MONEY_FMT, "n");
+      setFormat(ws, r, header.indexOf("Remaining £"), MONEY_FMT, "n");
     }
   }
-  for (const [r, c] of money) fmt(ws, r, c, MONEY_FMT, "n");
-  for (const [r, c] of dates) fmt(ws, r, c, DATE_FMT, "d");
+  for (const [r, c] of money) setFormat(ws, r, c, MONEY_FMT, "n");
+  for (const [r, c] of dates) setFormat(ws, r, c, DATE_FMT, "d");
   return ws;
 }
 
@@ -182,28 +177,11 @@ function deliveriesSheet(po: PoXlsxInput): XLSX.WorkSheet {
 
   const ws = XLSX.utils.aoa_to_sheet(rows, { cellDates: true });
   ws["!cols"] = [{ wch: 18 }, { wch: 13 }, { wch: 22 }, { wch: 20 }, { wch: 44 }, { wch: 10 }, { wch: 8 }, { wch: 14 }, { wch: 26 }, { wch: 30 }];
-  ws["!autofilter"] = {
-    ref: XLSX.utils.encode_range({ s: { r: first - 1, c: 0 }, e: { r: Math.max(last, first), c: header.length - 1 } }),
-  };
-  for (let r = first; r <= last; r++) fmt(ws, r, 1, DATE_FMT, "d");
+  autofilter(ws, first - 1, last, header.length);
+  for (let r = first; r <= last; r++) setFormat(ws, r, 1, DATE_FMT, "d");
   return ws;
 }
 
 /* ── helpers ────────────────────────────────────────────────────────── */
 
-function fmt(ws: XLSX.WorkSheet, r: number, c: number, z: string, want: "d" | "n"): void {
-  if (c < 0) return;
-  const cell = ws[XLSX.utils.encode_cell({ r, c })];
-  if (cell && cell.t === want) cell.z = z;
-}
-/** Null, empty and unparseable dates all become a blank cell rather than
- *  "Invalid Date" text, which would break the column's sort. */
-function asDate(iso: string | null | undefined): Date | null {
-  if (!iso) return null;
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? null : d;
-}
-function round2(n: number): number { return Math.round(n * 100) / 100; }
-function round2OrNull(n: number | null | undefined): number | null {
-  return n == null ? null : round2(n);
-}
+
