@@ -22,6 +22,9 @@ import {
 import { DrillPanel, DrillKpi, type DrillData } from "./DrillPanel";
 import { AssignBudgetCell } from "./AssignBudgetCell";
 import { generateMaterialsXlsx } from "../lib/materials-xlsx";
+import { generatePoListXlsx } from "../lib/po-list-xlsx";
+import { downloadPdf, generatePoListPdf } from "../lib/po-list-pdf";
+import { summarisePoRegister } from "../lib/po-register";
 
 type Tab = "overview" | "materials" | "pos" | "commercials" | "programme" | "operations" | "reports" | "quality";
 type CommercialsSubtab = "breakdown" | "prelims" | "schedule" | "applications" | "labour" | "variations" | "contract" | "help";
@@ -1121,20 +1124,8 @@ function ProjectPOsPanel({ rows }: { rows: ProjectPORow[] }) {
     );
   }
 
-  // Quick KPIs across just this project's POs.
-  const totals = rows.reduce(
-    (acc, r) => {
-      acc.all += r.total_value;
-      if (r.status === "approved" || r.status === "issued" || r.status === "pending_approval") {
-        acc.committed += r.total_value;
-      }
-      if (r.status === "pending_approval") acc.pending += 1;
-      if (r.xero_sync_status === "synced") acc.inXero += 1;
-      if (r.xero_sync_status === "failed") acc.xeroFailed += 1;
-      return acc;
-    },
-    { all: 0, committed: 0, pending: 0, inXero: 0, xeroFailed: 0 },
-  );
+  // Quick KPIs across just this project's POs — same rollup the exports use.
+  const totals = summarisePoRegister(rows);
 
   return (
     <>
@@ -1164,6 +1155,7 @@ function ProjectPOsPanel({ rows }: { rows: ProjectPORow[] }) {
       <div className="card">
         <div className="card-hd">
           <h2 style={{ flex: 1 }}>Purchase orders on this project</h2>
+          <PoRegisterExport rows={rows} />
           <span className="pill">{rows.length}</span>
         </div>
         <table>
@@ -1201,6 +1193,49 @@ function ProjectPOsPanel({ rows }: { rows: ProjectPORow[] }) {
           </tbody>
         </table>
       </div>
+    </>
+  );
+}
+
+/* ── Export the PO register — Excel to work in, PDF to send ───────────── */
+
+function PoRegisterExport({ rows }: { rows: ProjectPORow[] }) {
+  const [busy, setBusy] = useState<"xlsx" | "pdf" | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  // Every row carries its project (GET /api/pos joins it), and the panel only
+  // renders this when there's at least one.
+  const code = rows[0]?.project_code || "project";
+  const name = rows[0]?.project_name || "";
+
+  async function run(kind: "xlsx" | "pdf") {
+    setBusy(kind); setErr(null);
+    try {
+      if (kind === "pdf") {
+        downloadPdf(await generatePoListPdf(rows, code, name), `purchase-orders-${code}.pdf`);
+      } else {
+        const bytes = generatePoListXlsx(rows, code, name);
+        const ab = new ArrayBuffer(bytes.byteLength);
+        new Uint8Array(ab).set(bytes);
+        const url = URL.createObjectURL(new Blob([ab], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
+        const a = document.createElement("a"); a.href = url; a.download = `purchase-orders-${code}.xlsx`; a.click();
+        URL.revokeObjectURL(url);
+      }
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "export failed");
+    } finally { setBusy(null); }
+  }
+
+  return (
+    <>
+      {err && <span style={{ fontSize: 11, color: "var(--danger)", marginRight: 8 }}>{err}</span>}
+      <button className="btn ghost tiny" disabled={busy != null} onClick={() => void run("xlsx")}
+        title="Download every order listed below as a spreadsheet — with order type, approval, delivery and payment columns to filter on">
+        {busy === "xlsx" ? "Preparing…" : "⤓ Excel"}
+      </button>
+      <button className="btn ghost tiny" disabled={busy != null} onClick={() => void run("pdf")}
+        title="Download this register as a PDF — the same table, ready to send on">
+        {busy === "pdf" ? "Preparing…" : "⤓ PDF"}
+      </button>
     </>
   );
 }
