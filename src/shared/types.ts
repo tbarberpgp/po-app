@@ -1775,6 +1775,11 @@ export type Invoice = {
   xero_bill_number: string | null;
   xero_sync_status: string | null;
   xero_sync_error: string | null;
+  /** Set when Accounts decided this was really a subcontractor's application
+   *  and handed it to the labour pipeline: the AfP it became. The invoice is
+   *  dismissed at the same time, so this is what distinguishes "moved on" from
+   *  "junk" in the Dismissed tab. */
+  labour_afp_id: number | null;
   matched_po_id: string | null;   // 3-way match: the PO this invoice bills against
   approved_at: string | null;     // approved-for-payment gate (project invoices)
   approved_by: string | null;

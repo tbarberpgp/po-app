@@ -15,6 +15,7 @@ import {
   poRefCore, SERVICE_CHARGE_LINE_ID as SERVICE_CHARGE, scanLineMatch,
   type InvLine, type PoLineRow,
 } from "../../shared/line-match";
+import { processLabourAppUpload } from "./applications";
 import { ensureXeroContact } from "./xero";
 import { createSalesInvoice, getInvoice, uploadAttachment } from "../xero/client";
 import { nextPONumber } from "./pos";
@@ -725,17 +726,86 @@ invoices.post("/:id/undismiss", async (c) => {
   const denied = requirePermission(c, "commercial.edit");
   if (denied) return denied;
   const id = c.req.param("id");
-  const cur = await c.env.DB.prepare("SELECT status FROM invoices WHERE id = ?")
-    .bind(id).first<{ status: string | null }>();
+  const cur = await c.env.DB.prepare("SELECT status, labour_afp_id FROM invoices WHERE id = ?")
+    .bind(id).first<{ status: string | null; labour_afp_id: number | null }>();
   if (!cur) return c.json({ error: "not found" }, 404);
   // Not an error worth a 500, but not a silent no-op either: restoring a
   // pushed invoice would read as un-booking it from Xero, which this doesn't do.
   if (cur.status !== "dismissed") {
     return c.json({ error: `This invoice isn't dismissed — it's ${cur.status ?? "unknown"}.` }, 409);
   }
+  // Restoring one that was handed to labour would put a second claim on the
+  // same work back in the payables queue, alongside the AfP it became.
+  if (cur.labour_afp_id != null) {
+    return c.json({ error: `This was sent to labour as application #${cur.labour_afp_id}. Cancel that application instead of restoring this.` }, 409);
+  }
   await c.env.DB.prepare("UPDATE invoices SET status = 'inbox' WHERE id = ?").bind(id).run();
   await logInvoice(c.env, id, "undismissed", c.get("userEmail"), { status: { from: "dismissed", to: "inbox" } });
   return c.json({ ok: true });
+});
+
+/** Hand an invoice to the labour pipeline.
+ *
+ *  Subcontractors bill on their own template — a day-work sheet with CIS
+ *  deducted from the labour element — and those arrive in the Accounts inbox
+ *  looking like any other supplier invoice. Paid as an ordinary bill the CIS
+ *  deduction is lost: `invoices` has no field for it. The labour side already
+ *  works it out from the supplier's cis_rate, excluding expenses, and pushes
+ *  the right thing to Xero.
+ *
+ *  So this re-runs the SAME stored file through processLabourAppUpload — the
+ *  entry point the labour mailbox uses — and dismisses the invoice, recording
+ *  which AfP it became. Nothing is re-uploaded and nothing is deleted: the
+ *  document is read back out of R2 exactly as stored. */
+invoices.post("/:id/send-to-labour", async (c) => {
+  const denied = requirePermission(c, "commercial.edit");
+  if (denied) return denied;
+  const id = c.req.param("id");
+  const body = await c.req.json<{
+    project_id?: string; counterparty_supplier_id?: number | null; period_end?: string; notes?: string | null;
+  }>().catch(() => ({} as Record<string, never>));
+
+  const inv = await c.env.DB.prepare(
+    "SELECT file_key, file_type, file_name, status, project_id, supplier_id, invoice_number, labour_afp_id FROM invoices WHERE id = ?",
+  ).bind(id).first<{
+    file_key: string | null; file_type: string | null; file_name: string | null; status: string;
+    project_id: string | null; supplier_id: number | null; invoice_number: string | null; labour_afp_id: number | null;
+  }>();
+  if (!inv) return c.json({ error: "not found" }, 404);
+  if (inv.labour_afp_id != null) return c.json({ error: `Already sent to labour as application #${inv.labour_afp_id}.` }, 409);
+  // A pushed invoice is a bill in Xero. Creating an AfP from it as well would
+  // claim the same work twice, and this doesn't un-book the bill.
+  if (inv.status === "pushed") return c.json({ error: "Already pushed to Xero as a bill — can't send it to labour too." }, 409);
+  if (!inv.file_key) return c.json({ error: "No stored file to send." }, 404);
+
+  const projectId = (body.project_id ?? inv.project_id ?? "").trim();
+  if (!projectId) return c.json({ error: "Pick the project this labour belongs to." }, 400);
+  const periodEnd = (body.period_end ?? "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(periodEnd)) return c.json({ error: "Pick the period end date (YYYY-MM-DD)." }, 400);
+
+  const obj = await c.env.R2.get(inv.file_key);
+  if (!obj) return c.json({ error: "Stored file is missing." }, 404);
+
+  const created = await processLabourAppUpload(c.env, {
+    projectId,
+    counterpartySupplierId: body.counterparty_supplier_id ?? inv.supplier_id ?? null,
+    periodEnd,
+    notes: body.notes?.trim() || `From Accounts invoice #${id}${inv.invoice_number ? ` (${inv.invoice_number})` : ""}`,
+    file: {
+      buffer: await obj.arrayBuffer(),
+      name: inv.file_name ?? "labour-application",
+      type: inv.file_type ?? "",
+    },
+    actor: c.get("userEmail"),
+  });
+
+  await c.env.DB.prepare("UPDATE invoices SET status = 'dismissed', labour_afp_id = ? WHERE id = ?")
+    .bind(created.id, id).run();
+  await logInvoice(c.env, id, "sent_to_labour", c.get("userEmail"), {
+    afp_id: created.id, project_id: projectId, period_end: periodEnd,
+    matched_lines: created.matched_count, unmatched_lines: created.unmatched_count,
+  });
+  return c.json({ ok: true, afp_id: created.id, app_number: created.app_number, unmatched_count: created.unmatched_count });
 });
 
 /** Re-run Claude extraction on the stored file — re-reads the supplier, PO ref,

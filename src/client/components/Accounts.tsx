@@ -6,7 +6,7 @@ import { api, fmtMoney } from "../lib/api";
 import { isSpreadsheetFile } from "../../shared/file-kind";
 import { can } from "../../shared/permissions";
 import { Topbar } from "./Shell";
-import type { CurrentUser, Invoice, InvoiceMatch, InvoiceMatchLine, MatchSummary, Project } from "../../shared/types";
+import type { CurrentUser, Invoice, InvoiceMatch, InvoiceMatchLine, MatchSummary, Project, Supplier } from "../../shared/types";
 import { NON_GOODS_LINE_IDS, PAYMENT_SCHEDULE_LINE_ID, SERVICE_CHARGE_LINE_ID } from "../../shared/line-match";
 import { poStatusHint, poDeliveryLabel } from "../../shared/po-delivery-status";
 import { isAwaitingApproval, isReadyToPush } from "../../shared/payment-release";
@@ -119,6 +119,8 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
   const [selId, setSelId] = useState<number | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const [accounts, setAccounts] = useState<Array<{ code: string; name: string; type: string }>>([]);
+  // Only needed to name the subcontractor when handing an invoice to labour.
+  const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
@@ -127,6 +129,22 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
 
   function load() {
     api.listInvoices().then(setRows).catch((e) => setErr(e.message));
+  }
+
+  /** Hand the invoice to the labour pipeline. It leaves this queue for the
+   *  Dismissed tab carrying the AfP it became, so the trail stays readable. */
+  async function sendToLabour(id: number, input: { project_id: string; counterparty_supplier_id: number | null; period_end: string }) {
+    setBusy(true); setErr(null); setInfo(null);
+    try {
+      const r = await api.sendInvoiceToLabour(id, input);
+      load();
+      setSelId(null);
+      setInfo(r.unmatched_count
+        ? `Sent to labour as application ${r.app_number} — ${r.unmatched_count} line(s) need matching there.`
+        : `Sent to labour as application ${r.app_number}.`);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Couldn't send this to labour.");
+    } finally { setBusy(false); }
   }
 
   // Deep link from the approvals dashboard (/accounts?invoice=123): open that
@@ -153,6 +171,7 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
   useEffect(() => {
     load();
     api.listProjects().then((r) => setProjects(r as unknown as Project[])).catch(() => {});
+    api.listSuppliers().then(setSuppliers).catch(() => {});
     if (isAdmin) api.xeroAccounts().then((r) => setAccounts(r.accounts ?? [])).catch(() => {});
   }, [isAdmin]);
 
@@ -308,7 +327,7 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
                         <div style={{ minWidth: 0 }}>
                           <div className="isup">{r.supplier_name || r.matched_supplier_name || "Unknown supplier"}</div>
                           <div className="imeta">
-                            <span>{r.invoice_number ? `#${r.invoice_number}` : "no #"} · {(r.invoice_date || (r.received_at ?? "")).slice(0, 10)}{r.kind === "overhead" ? " · Overhead" : ""}</span>
+                            <span>{r.invoice_number ? `#${r.invoice_number}` : "no #"} · {(r.invoice_date || (r.received_at ?? "")).slice(0, 10)}{r.kind === "overhead" ? " · Overhead" : ""}{r.labour_afp_id != null ? " · Sent to labour" : ""}</span>
                             {r.kind !== "overhead" && r.project_code && <span className="proj">{r.project_code}</span>}
                             {r.source === "email" && <span title="received by email">✉</span>}
                             {r.extract_error && <span title="couldn't auto-read">⚠</span>}
@@ -353,7 +372,8 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
                     onPatch={(b) => patch(sel.id, b)} onPush={() => push(sel.id)} onRelease={(note) => release(sel.id, note)}
                     onReload={() => reloadOne(sel.id)} onReread={() => reread(sel.id)}
                     onDismiss={async () => { await api.dismissInvoice(sel.id); load(); setSelId(null); }}
-                    onUndismiss={() => undismiss(sel.id)} />}
+                    onUndismiss={() => undismiss(sel.id)}
+                    suppliers={suppliers} onSendToLabour={(input) => sendToLabour(sel.id, input)} />}
             </section>
           </div>
         </div>
@@ -452,11 +472,13 @@ function InvoiceViewer({ inv }: { inv: Invoice }) {
   );
 }
 
-function InvoiceDetail({ inv, projects, accounts, isAdmin, canEdit, canRelease, busy, onPatch, onPush, onRelease, onReload, onReread, onDismiss, onUndismiss }: {
+function InvoiceDetail({ inv, projects, accounts, isAdmin, canEdit, canRelease, busy, onPatch, onPush, onRelease, onReload, onReread, onDismiss, onUndismiss, suppliers, onSendToLabour }: {
   inv: Invoice; projects: Project[]; accounts: Array<{ code: string; name: string; type: string }>;
   isAdmin: boolean; canEdit: boolean; canRelease: boolean; busy: boolean;
   onPatch: (b: Parameters<typeof api.updateInvoice>[1]) => void; onPush: () => void; onRelease: (note?: string) => void;
   onReload: () => void | Promise<void>; onReread: () => void; onDismiss: () => void; onUndismiss: () => void;
+  suppliers: Supplier[];
+  onSendToLabour: (input: { project_id: string; counterparty_supplier_id: number | null; period_end: string }) => void | Promise<void>;
 }) {
   const [f, setF] = useState({
     supplier_name: inv.supplier_name ?? "", invoice_number: inv.invoice_number ?? "",
@@ -467,6 +489,7 @@ function InvoiceDetail({ inv, projects, accounts, isAdmin, canEdit, canRelease, 
   const purchaseAccounts = accounts.filter((a) => /EXPENSE|OVERHEAD|DIRECTCOSTS|CURRLIAB/i.test(a.type) || a.type === "");
   const pushed = inv.status === "pushed";
   const dismissed = inv.status === "dismissed";
+  const [labourOpen, setLabourOpen] = useState(false);
   const isProject = inv.kind === "project";
   const pushBlockedForApproval = isProject && !inv.approved_at;
   const held = isAwaitingApproval(inv);
@@ -587,9 +610,20 @@ function InvoiceDetail({ inv, projects, accounts, isAdmin, canEdit, canRelease, 
                 <button className="ghost" disabled={busy} onClick={onReread} title="Re-read the invoice document (e.g. to pick up the PO number it quotes)">Re-read</button>
                 {/* One or the other: offering "Dismiss" on something already
                     dismissed is what made the tab look like a dead end. */}
+                {/* A subbie's own application arrives here looking like a
+                    supplier bill. Only the labour side deducts CIS, so it has
+                    to be handed over rather than coded and pushed. */}
+                {!dismissed && inv.labour_afp_id == null && (
+                  <button className="ghost" disabled={busy} onClick={() => setLabourOpen(true)}
+                    title="This is a subcontractor's application, not a supplier bill — send it to the labour pipeline, which deducts CIS">
+                    Send to labour
+                  </button>
+                )}
                 {dismissed
-                  ? <button className="ghost" disabled={busy} onClick={onUndismiss}
-                      title="Undo the dismissal and put this back in the review queue">Restore</button>
+                  ? (inv.labour_afp_id != null
+                      ? <span className="muted" style={{ fontSize: 12, alignSelf: "center" }}>Sent to labour as application #{inv.labour_afp_id}.</span>
+                      : <button className="ghost" disabled={busy} onClick={onUndismiss}
+                          title="Undo the dismissal and put this back in the review queue">Restore</button>)
                   : <button className="ghost" disabled={busy} onClick={onDismiss}>Dismiss</button>}
               </div>
             )}
@@ -612,7 +646,85 @@ function InvoiceDetail({ inv, projects, accounts, isAdmin, canEdit, canRelease, 
             </tbody></table>
           </div>
         )}
+
+      {labourOpen && (
+        <SendToLabourModal inv={inv} projects={projects} suppliers={suppliers} busy={busy}
+          onCancel={() => setLabourOpen(false)}
+          onConfirm={async (input) => { setLabourOpen(false); await onSendToLabour(input); }} />
+      )}
     </>
+  );
+}
+
+/** Confirming a hand-over to labour. The AfP needs three things the invoice
+ *  can nearly always answer for itself — which project, which subcontractor and
+ *  which period it covers — so this prefills all three and asks for a nod
+ *  rather than presenting an empty form. */
+function SendToLabourModal({ inv, projects, suppliers, busy, onCancel, onConfirm }: {
+  inv: Invoice; projects: Project[]; suppliers: Supplier[]; busy: boolean;
+  onCancel: () => void;
+  onConfirm: (input: { project_id: string; counterparty_supplier_id: number | null; period_end: string }) => void;
+}) {
+  const [projectId, setProjectId] = useState(inv.project_id ?? "");
+  const [supplierId, setSupplierId] = useState<string>(inv.supplier_id != null ? String(inv.supplier_id) : "");
+  // The period this labour covers. The invoice date is the closest thing the
+  // document gives us — the works rows themselves aren't parsed until the
+  // labour side reads the file.
+  const [periodEnd, setPeriodEnd] = useState(inv.invoice_date ?? "");
+  const supplier = suppliers.find((x) => String(x.id) === supplierId);
+  const cisLabel = !supplier ? null
+    : supplier.cis_rate == null ? "no CIS rate set on this supplier"
+    : supplier.cis_rate === 0 ? "CIS 0% (gross payment status)"
+    : `CIS ${supplier.cis_rate}%`;
+  const ready = !!projectId && /^\d{4}-\d{2}-\d{2}$/.test(periodEnd);
+  return (
+    <div className="rd-pick-scrim" onClick={() => !busy && onCancel()}>
+      <div className="a-labour-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="rd-pick-hd">
+          <div>
+            <strong>Send to labour</strong>
+            <div className="muted" style={{ fontSize: 12 }}>
+              {inv.supplier_name || "This invoice"}{inv.invoice_number ? ` · ${inv.invoice_number}` : ""} · {money(inv.gross_amount, inv.currency)}
+            </div>
+          </div>
+        </div>
+        <div style={{ padding: "14px 18px", display: "grid", gap: 12 }}>
+          <p className="muted" style={{ fontSize: 12.5, lineHeight: 1.5, margin: 0 }}>
+            The stored document is read again by the labour pipeline and becomes a draft application for payment.
+            This invoice leaves the Accounts queue — it isn't deleted, and nothing is pushed to Xero from here.
+          </p>
+          <div className="field">
+            <label htmlFor="stl-project">Project</label>
+            <select id="stl-project" className="a-sel" value={projectId} onChange={(e) => setProjectId(e.target.value)}>
+              <option value="">— pick the project —</option>
+              {projects.map((p) => <option key={p.id} value={p.id}>{p.code} — {p.name}</option>)}
+            </select>
+          </div>
+          <div className="field">
+            <label htmlFor="stl-supplier">Subcontractor</label>
+            <select id="stl-supplier" className="a-sel" value={supplierId} onChange={(e) => setSupplierId(e.target.value)}>
+              <option value="">— not set —</option>
+              {suppliers.map((x) => <option key={x.id} value={String(x.id)}>{x.name}</option>)}
+            </select>
+            {/* The deduction is only as right as this record: a subbie with no
+                rate set is paid gross, which is the wrong answer quietly. */}
+            {cisLabel && <span className="muted" style={{ fontSize: 11.5 }}>{cisLabel}</span>}
+          </div>
+          <div className="field">
+            <label htmlFor="stl-period">Period end</label>
+            <input id="stl-period" type="date" value={periodEnd} onChange={(e) => setPeriodEnd(e.target.value)} />
+          </div>
+        </div>
+        <div className="rd-pick-hd" style={{ borderBottom: 0, borderTop: "1px solid var(--line)", justifyContent: "flex-end" }}>
+          <button className="ghost" disabled={busy} onClick={onCancel}>Cancel</button>
+          <button className="accent" disabled={busy || !ready}
+            title={ready ? "" : "Pick a project and a period end first"}
+            onClick={() => onConfirm({ project_id: projectId, counterparty_supplier_id: supplierId ? Number(supplierId) : null, period_end: periodEnd })}>
+            Send to labour
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 

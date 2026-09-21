@@ -750,6 +750,12 @@ export const api = {
   /** Undo a dismissal — back to the review queue as 'inbox'. */
   undismissInvoice: (id: number) =>
     jfetch<{ ok: true }>(`/api/invoices/${id}/undismiss`, { method: "POST" }),
+  /** Hand an invoice to the labour pipeline — it was a subbie's own application,
+   *  not a supplier bill, and only that side deducts CIS correctly. */
+  sendInvoiceToLabour: (id: number, input: {
+    project_id: string; counterparty_supplier_id: number | null; period_end: string; notes?: string | null;
+  }) => jfetch<{ ok: true; afp_id: number; app_number: number; unmatched_count: number }>(
+    `/api/invoices/${id}/send-to-labour`, { method: "POST", body: JSON.stringify(input) }),
   pushInvoiceXero: (id: number) =>
     jfetch<{ ok: true; xero_bill_id: string; xero_bill_number?: string }>(`/api/invoices/${id}/push-xero`, { method: "POST" }),
   invoiceFileUrl: (id: number) => `/api/invoices/${id}/file`,
