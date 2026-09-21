@@ -734,14 +734,28 @@ invoices.post("/:id/undismiss", async (c) => {
   if (cur.status !== "dismissed") {
     return c.json({ error: `This invoice isn't dismissed — it's ${cur.status ?? "unknown"}.` }, 409);
   }
-  // Restoring one that was handed to labour would put a second claim on the
-  // same work back in the payables queue, alongside the AfP it became.
+  // One handed to labour can come back — but only while nothing is actually
+  // claiming the work. A refusal on the mere presence of a link stranded two
+  // invoices whose applications had since been deleted, with no way back.
+  let orphanedAfpId: number | null = null;
   if (cur.labour_afp_id != null) {
-    return c.json({ error: `This was sent to labour as application #${cur.labour_afp_id}. Cancel that application instead of restoring this.` }, 409);
+    const afp = await c.env.DB.prepare("SELECT status FROM applications_for_payment WHERE id = ?")
+      .bind(cur.labour_afp_id).first<{ status: string | null }>();
+    if (afp && afp.status !== "draft") {
+      return c.json({
+        error: `Application #${cur.labour_afp_id} has been ${afp.status}. Restoring this would claim the same work twice — cancel that application first.`,
+      }, 409);
+    }
+    // Still a draft: allowed, but the draft doesn't vanish on its own and the
+    // restorer is the only one who can know whether it should.
+    if (afp) orphanedAfpId = cur.labour_afp_id;
   }
-  await c.env.DB.prepare("UPDATE invoices SET status = 'inbox' WHERE id = ?").bind(id).run();
-  await logInvoice(c.env, id, "undismissed", c.get("userEmail"), { status: { from: "dismissed", to: "inbox" } });
-  return c.json({ ok: true });
+  await c.env.DB.prepare("UPDATE invoices SET status = 'inbox', labour_afp_id = NULL WHERE id = ?").bind(id).run();
+  await logInvoice(c.env, id, "undismissed", c.get("userEmail"), {
+    status: { from: "dismissed", to: "inbox" },
+    ...(cur.labour_afp_id != null ? { was_labour_afp_id: cur.labour_afp_id } : {}),
+  });
+  return c.json({ ok: true, orphaned_afp_id: orphanedAfpId });
 });
 
 /** Hand an invoice to the labour pipeline.

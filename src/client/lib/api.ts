@@ -749,7 +749,7 @@ export const api = {
     jfetch<{ ok: true }>(`/api/invoices/${id}/dismiss`, { method: "POST" }),
   /** Undo a dismissal — back to the review queue as 'inbox'. */
   undismissInvoice: (id: number) =>
-    jfetch<{ ok: true }>(`/api/invoices/${id}/undismiss`, { method: "POST" }),
+    jfetch<{ ok: true; orphaned_afp_id: number | null }>(`/api/invoices/${id}/undismiss`, { method: "POST" }),
   /** Hand an invoice to the labour pipeline — it was a subbie's own application,
    *  not a supplier bill, and only that side deducts CIS correctly. */
   sendInvoiceToLabour: (id: number, input: {

@@ -240,9 +240,14 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
   async function undismiss(id: number) {
     setBusy(true); setErr(null); setInfo(null);
     try {
-      await api.undismissInvoice(id);
+      const r = await api.undismissInvoice(id);
       const fresh = await api.getInvoice(id);
-      setInfo(`Restored to ${isAwaitingApproval(fresh) ? "Held" : "Inbox"}.`);
+      const where = isAwaitingApproval(fresh) ? "Held" : "Inbox";
+      // A draft application left behind would quietly claim the same work as
+      // the invoice that just came back, so say so rather than tidy silently.
+      setInfo(r.orphaned_afp_id
+        ? `Restored to ${where}. Draft application #${r.orphaned_afp_id} is still there — delete it under Applications if it isn't wanted.`
+        : `Restored to ${where}.`);
       load(); setSelId(null);
     } catch (e) { setErr(e instanceof Error ? e.message : "restore failed"); }
     finally { setBusy(false); }
@@ -620,10 +625,14 @@ function InvoiceDetail({ inv, projects, accounts, isAdmin, canEdit, canRelease, 
                   </button>
                 )}
                 {dismissed
-                  ? (inv.labour_afp_id != null
-                      ? <span className="muted" style={{ fontSize: 12, alignSelf: "center" }}>Sent to labour as application #{inv.labour_afp_id}.</span>
-                      : <button className="ghost" disabled={busy} onClick={onUndismiss}
-                          title="Undo the dismissal and put this back in the review queue">Restore</button>)
+                  ? <>
+                      <button className="ghost" disabled={busy} onClick={onUndismiss}
+                        title={inv.labour_afp_id != null
+                          ? "Bring this back into the review queue. Refused while its application is still live."
+                          : "Undo the dismissal and put this back in the review queue"}>Restore</button>
+                      {inv.labour_afp_id != null &&
+                        <span className="muted" style={{ fontSize: 12, alignSelf: "center" }}>Sent to labour as application #{inv.labour_afp_id}.</span>}
+                    </>
                   : <button className="ghost" disabled={busy} onClick={onDismiss}>Dismiss</button>}
               </div>
             )}

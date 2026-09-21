@@ -3640,6 +3640,10 @@ applications.delete("/:id", async (c) => {
   // row (no ON DELETE action on that FK, so it would block the delete). Unhook
   // it first — the tray row keeps its 'resolved' history, just pointing nowhere.
   await c.env.DB.prepare("UPDATE inbound_applications SET resolved_afp_id = NULL WHERE resolved_afp_id = ?").bind(id).run();
+  // Same for an invoice Accounts handed over: without this the invoice keeps
+  // pointing at an application that no longer exists, which read as "already
+  // sent to labour" and blocked the only route back.
+  await c.env.DB.prepare("UPDATE invoices SET labour_afp_id = NULL WHERE labour_afp_id = ?").bind(id).run();
   await c.env.DB.prepare("DELETE FROM applications_for_payment WHERE id = ?").bind(id).run();
   await c.env.DB.prepare(
     `INSERT INTO audit_log (entity_type, entity_id, action, actor, details, created_at)
