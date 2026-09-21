@@ -3,6 +3,7 @@ import { useParams } from "react-router-dom";
 import { api } from "../lib/api";
 import { SignaturePad } from "./SignaturePad";
 import type { PublicSite, PublicOperative } from "../../shared/types";
+import { matchOperatives } from "../../shared/operative-match";
 import logoUrl from "../logo.png";
 
 type Coords = { lat: number; lng: number; accuracy: number } | null;
@@ -262,15 +263,15 @@ function OperativePicker({
   const inputRef = useRef<HTMLInputElement>(null);
 
   const selected = useMemo(() => operatives.find((o) => o.id === value) ?? null, [operatives, value]);
-  const filtered = useMemo(() => {
-    const q = search.toLowerCase().trim();
-    if (!q) return operatives;
-    return operatives.filter((o) =>
-      o.name.toLowerCase().includes(q) ||
-      (o.company ?? "").toLowerCase().includes(q) ||
-      (o.trade ?? "").toLowerCase().includes(q),
-    );
-  }, [operatives, search]);
+  const matches = useMemo(() => matchOperatives(operatives, search), [operatives, search]);
+  // A search that found nobody used to end in "No one matches" and nothing
+  // else. On a picker with no freeform name box that is not a poor result,
+  // it's a lockout: the operative can't sign in, and shows up missing on the
+  // register with nothing to say why. So fall back to the whole list — there
+  // is always a way through. It stays unhighlighted, because picking the wrong
+  // name off an H&S register is worse than having to scroll for your own.
+  const showingAll = matches.length === 0;
+  const shown = showingAll ? operatives : matches;
 
   // Close on outside tap/click.
   useEffect(() => {
@@ -282,14 +283,16 @@ function OperativePicker({
     return () => document.removeEventListener("mousedown", onDoc);
   }, [open]);
   useEffect(() => { if (open) setTimeout(() => inputRef.current?.focus(), 0); }, [open]);
-  useEffect(() => { setHighlight(0); }, [search]);
+  useEffect(() => { setHighlight(showingAll ? -1 : 0); }, [search, showingAll]);
 
   function pick(op: PublicOperative) { onChange(op); setOpen(false); setSearch(""); }
 
   function onKeyDown(e: React.KeyboardEvent) {
-    if (e.key === "ArrowDown") { e.preventDefault(); setHighlight((h) => Math.min(filtered.length - 1, h + 1)); }
+    if (e.key === "ArrowDown") { e.preventDefault(); setHighlight((h) => Math.min(shown.length - 1, h + 1)); }
     else if (e.key === "ArrowUp") { e.preventDefault(); setHighlight((h) => Math.max(0, h - 1)); }
-    else if (e.key === "Enter") { e.preventDefault(); const op = filtered[highlight]; if (op) pick(op); }
+    // highlight is -1 in the fallback list, so Enter picks nobody until the
+    // operative has deliberately arrowed onto a row.
+    else if (e.key === "Enter") { e.preventDefault(); const op = shown[highlight]; if (op) pick(op); }
     else if (e.key === "Escape") { e.preventDefault(); setOpen(false); setSearch(""); }
   }
 
@@ -342,9 +345,13 @@ function OperativePicker({
             }}
           />
           <div role="listbox" style={{ overflowY: "auto", flex: 1 }}>
-            {filtered.length === 0 ? (
-              <div className="muted" style={{ padding: 14, fontSize: 13 }}>No one matches “{search}”.</div>
-            ) : filtered.map((op, i) => (
+            {showingAll && (
+              <div className="muted" style={{ padding: "10px 14px", fontSize: 12.5, borderBottom: "1px solid var(--line)" }}>
+                No one matches “{search}” — your name may be spelled differently on the register.
+                Find it in the full list below, or ask your site manager.
+              </div>
+            )}
+            {shown.map((op, i) => (
               <div
                 key={op.id}
                 role="option"
