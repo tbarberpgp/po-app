@@ -1,9 +1,25 @@
-// One reading of a project's purchase-order register, shared by the screen and
-// both exports. The KPI strip, the .xlsx and the PDF all roll up from here so a
+// One reading of a purchase-order register, shared by the screen and both
+// exports. The KPI strip, the .xlsx and the PDF all roll up from here so a
 // downloaded copy can't quietly disagree with the figures it was taken from.
 
 import type { OrderType, POStatus, PurchaseOrder } from "../../shared/types";
 import type { PoDeliveryState } from "../../shared/po-delivery-status";
+
+/** A register row. Both PO lists join the project onto each order, and the
+ *  cross-project register prints it as a column of its own. */
+export type PoRegisterRow = PurchaseOrder & { project_code?: string; project_name?: string };
+
+/** What a register export is of, and which optional columns it carries. */
+export type PoListExport = {
+  /** The register's subject — "26004 — Blyth", or "All projects". */
+  subject: string;
+  /** The slice on screen (status filter, search, count). Omitted when it's the lot. */
+  scope?: string;
+  /** Cross-project registers name the project on every row. */
+  showProject?: boolean;
+  /** The Deleted view carries when each order went, who deleted it and why. */
+  showDeleted?: boolean;
+};
 
 export type PoRegisterTotals = {
   /** Every row, whatever its status. */
@@ -58,6 +74,9 @@ export function poOrderTypeLabel(t: OrderType | undefined): string {
   return t === "framework" ? "Framework" : t === "call_off" ? "Call-off" : "Standard";
 }
 
-export function poDeliveryLabel(s: PoDeliveryState | undefined): string {
+/** The delivery column in words. Distinct from `poDeliveryLabel` in
+ *  shared/po-delivery-status, which needs the full per-line summary; a list
+ *  row only carries the state. */
+export function poDeliveryStateLabel(s: PoDeliveryState | undefined): string {
   return s === "full" ? "Delivered" : s === "part" ? "Part delivered" : s === "none" ? "Nothing delivered" : "";
 }

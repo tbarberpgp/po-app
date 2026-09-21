@@ -5,8 +5,21 @@ import { Topbar } from "./Shell";
 import { can } from "../../shared/permissions";
 import type { CurrentUser, PurchaseOrder } from "../../shared/types";
 import { poDeliveryLabel } from "../../shared/po-delivery-status";
+import { PoRegisterExport } from "./PoRegisterExport";
 
 type PickProject = { id: string; code: string; name: string; site_group_name?: string | null };
+
+/** The status dropdown, and how an export describes the slice it took. */
+const STATUS_FILTERS: Array<{ value: string; label: string; needsDelete?: boolean }> = [
+  { value: "", label: "All statuses" },
+  { value: "pending_approval", label: "Pending approval" },
+  { value: "approved", label: "Approved" },
+  { value: "issued", label: "Issued" },
+  { value: "rejected", label: "Rejected" },
+  // Deleted orders are hidden from every other view; this is the one place they
+  // can be read back, and it takes the same permission as deleting one.
+  { value: "deleted", label: "Deleted", needsDelete: true },
+];
 
 type Row = PurchaseOrder & { project_code: string; project_name: string };
 
@@ -78,6 +91,13 @@ export function POsList({ me }: { me: CurrentUser | null }) {
     return sortDir === "asc" ? c : -c;
   });
   const total = shown.reduce((s, r) => s + (r.total_value ?? 0), 0);
+  // How an export labels this slice — the filter, the search and how much of
+  // the register it covers.
+  const scope = [
+    STATUS_FILTERS.find((f) => f.value === status)?.label ?? "All statuses",
+    q.trim() ? `search “${q.trim()}”` : "",
+    shown.length === rows.length ? `${rows.length} orders` : `${shown.length} of ${rows.length} orders`,
+  ].filter(Boolean).join(" · ");
   // Independent of the search box / status filter — "Needs attention" always
   // reflects the true current state, not whatever the user happens to be
   // looking at right now.
@@ -161,16 +181,16 @@ export function POsList({ me }: { me: CurrentUser | null }) {
               style={{ width: 280, maxWidth: "45%" }} />
             {q && <button className="ghost tiny" onClick={() => setQ("")}>Clear</button>}
             <select value={status} onChange={(e) => setStatus(e.target.value)}>
-              <option value="">All statuses</option>
-              <option value="pending_approval">Pending approval</option>
-              <option value="approved">Approved</option>
-              <option value="issued">Issued</option>
-              <option value="rejected">Rejected</option>
-              {/* Deleted orders are hidden from every other view; this is the
-                  one place they can be read back, and it takes the same
-                  permission as deleting one. */}
-              {canDelete && <option value="deleted">Deleted</option>}
+              {STATUS_FILTERS.filter((f) => !f.needsDelete || canDelete).map((f) => (
+                <option key={f.value} value={f.value}>{f.label}</option>
+              ))}
             </select>
+            {/* Exports exactly what's on screen — `shown` is already searched,
+                filtered and sorted, so the file matches the table above it. */}
+            <PoRegisterExport
+              rows={shown}
+              opts={{ subject: "All projects", scope, showProject: true, showDeleted: showingDeleted }}
+              filename={`purchase-orders${status ? `-${status}` : ""}`} />
           </div>
           {shown.length === 0 ? (
             <div style={{ padding: 32 }}>
