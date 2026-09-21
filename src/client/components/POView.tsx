@@ -2,6 +2,7 @@ import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, fmtDate, fmtMoney, fmtQty } from "../lib/api";
 import { downloadPdf, generatePoPdf } from "../lib/po-pdf";
+import { generatePoXlsx } from "../lib/po-xlsx";
 import { Topbar } from "./Shell";
 import { GroupedCombobox, type ComboGroup } from "./GroupedCombobox";
 import { can } from "../../shared/permissions";
@@ -127,6 +128,26 @@ export function POView({ me }: { me: CurrentUser | null }) {
     } finally { setBusy(false); }
   }
 
+  /** The same order as a workbook — the lines opened up for checking, plus the
+   *  delivery register when there is one. */
+  function onDownloadXlsx() {
+    if (!po) return;
+    setErr(null);
+    try {
+      const bytes = generatePoXlsx({ ...po, parent_po_number: po.parent?.po_number ?? null });
+      // Copy into a plain ArrayBuffer — a Uint8Array over WASM memory isn't a
+      // valid Blob part in every browser.
+      const ab = new ArrayBuffer(bytes.byteLength);
+      new Uint8Array(ab).set(bytes);
+      const url = URL.createObjectURL(new Blob([ab], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
+      const a = document.createElement("a");
+      a.href = url; a.download = `${po.po_number}.xlsx`; a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Excel failed");
+    }
+  }
+
   if (!po) return <main className="muted">Loading…</main>;
 
   // An amend after rejection can leave a PO with no tier at all; the worker
@@ -177,7 +198,8 @@ export function POView({ me }: { me: CurrentUser | null }) {
         }
         actions={
           <>
-            <button className="ghost" onClick={onDownloadPdf} disabled={busy}>Download PDF</button>
+            <button className="ghost" onClick={onDownloadPdf} disabled={busy} title="Download this order as a PDF — the copy that goes to the supplier">↓ PDF</button>
+            <button className="ghost" onClick={onDownloadXlsx} disabled={busy} title="Download this order as a spreadsheet — the lines with their cost coding, budget line and what's been received">↓ Excel</button>
             {canEditPO && !isDeleted && (
               <button className="ghost" onClick={() => setShowEdit(true)} disabled={busy} title="Amend this purchase order — supplier, dates, notes and lines">Edit</button>
             )}
