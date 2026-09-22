@@ -15,7 +15,7 @@ import {
   poRefCore, SERVICE_CHARGE_LINE_ID as SERVICE_CHARGE, scanLineMatch,
   type InvLine, type PoLineRow,
 } from "../../shared/line-match";
-import { processLabourAppUpload } from "./applications";
+import { processLabourAppUpload, sha256Hex } from "./applications";
 import { ensureXeroContact } from "./xero";
 import { createSalesInvoice, getInvoice, uploadAttachment } from "../xero/client";
 import { nextPONumber } from "./pos";
@@ -365,6 +365,20 @@ export async function ingestInvoice(
 ): Promise<{ id: number | null; extracted: boolean; skipped?: "signature_image" | "duplicate"; duplicate_of?: number }> {
   const now = new Date().toISOString();
 
+  // The same DOCUMENT must never mint a second payable. The supplier's original
+  // and a colleague's forward of it both sit in the Accounts mailbox, and the
+  // pull re-lists an overlapping window by design, so this is the ordinary case
+  // rather than the odd one. Bytes are identity: it catches what the extracted
+  // supplier + number check below can't (the same name read two ways), and it
+  // runs BEFORE extraction, so a re-forward costs a row read, not a document read.
+  const fileHash = await sha256Hex(args.file.buffer).catch(() => null);
+  if (fileHash) {
+    const same = await env.DB.prepare(
+      "SELECT id FROM invoices WHERE file_sha256 = ? ORDER BY id LIMIT 1",
+    ).bind(fileHash).first<{ id: number }>();
+    if (same) return { id: same.id, extracted: false, skipped: "duplicate", duplicate_of: same.id };
+  }
+
   let ex: ExtractedInvoice | null = null;
   let extractError: string | null = null;
   try { ex = await extractInvoice(env, args.file); }
@@ -421,16 +435,16 @@ export async function ingestInvoice(
     `INSERT INTO invoices
        (status, supplier_id, supplier_name, invoice_number, extracted_po_ref, invoice_date, due_date, currency,
         net_amount, vat_amount, gross_amount, lines_json,
-        file_key, file_type, file_name, source, sender_email, subject, extract_error,
+        file_key, file_type, file_name, file_sha256, source, sender_email, subject, extract_error,
         kind, project_id, matched_po_id,
         received_at, created_at, created_by, extracted_meta_json)
-     VALUES ('inbox', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     VALUES ('inbox', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      RETURNING id`,
   ).bind(
     supplierId, ex?.supplier_name ?? null, ex?.invoice_number ?? null, ex?.po_number ?? null, ex?.invoice_date ?? null,
     ex?.due_date ?? dueDateFromTerms(ex?.invoice_date, ex?.payment_terms), ex?.currency ?? "GBP",
     ex?.net_amount ?? null, ex?.vat_amount ?? null, ex?.gross_amount ?? null, ex ? JSON.stringify(ex.lines) : null,
-    fileKey, args.file.type || null, args.file.name || null, args.source, args.sender ?? null, args.subject ?? null, extractError,
+    fileKey, args.file.type || null, args.file.name || null, fileHash, args.source, args.sender ?? null, args.subject ?? null, extractError,
     proj ? "project" : null, proj?.id ?? null, refPo?.id ?? null,
     now, now, args.actor, extractedMetaJson(ex),
   ).first<{ id: number }>();
@@ -600,12 +614,39 @@ invoices.post("/upload", async (c) => {
       source: "upload", actor: c.get("userEmail"),
     });
     if (r.skipped === "duplicate") {
-      return c.json({ error: `This invoice is already in the system (same supplier and invoice number) — see invoice #${r.duplicate_of}.`, duplicate_of: r.duplicate_of }, 409);
+      return c.json({ error: `This invoice is already in the system — see invoice #${r.duplicate_of}.`, duplicate_of: r.duplicate_of }, 409);
     }
     return c.json(r);
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : "upload failed" }, 500);
   }
+});
+
+/** One-off / re-runnable: hash the invoice files already in R2 onto their rows,
+ *  so duplicate detection also covers documents that predate the hash column.
+ *  Worth running before the mailbox pull's first window, which re-reads mail
+ *  whose invoices are already here — newest first, since those are the ones the
+ *  window can collide with. Batched: the R2 reads are the slow part, and the
+ *  reply says what's left, so it's just called again. */
+invoices.post("/backfill-file-hashes", async (c) => {
+  const denied = requirePermission(c, "commercial.edit");
+  if (denied) return denied;
+  const limit = Math.min(Math.max(Number(c.req.query("limit") ?? 100) || 100, 1), 250);
+  const rows = (await c.env.DB.prepare(
+    "SELECT id, file_key FROM invoices WHERE file_key IS NOT NULL AND file_sha256 IS NULL ORDER BY id DESC LIMIT ?",
+  ).bind(limit).all<{ id: number; file_key: string }>()).results;
+  let hashed = 0, missing = 0;
+  for (const r of rows) {
+    const obj = await c.env.R2.get(r.file_key).catch(() => null);
+    if (!obj) { missing++; continue; }
+    await c.env.DB.prepare("UPDATE invoices SET file_sha256 = ? WHERE id = ?")
+      .bind(await sha256Hex(await obj.arrayBuffer()), r.id).run();
+    hashed++;
+  }
+  const left = await c.env.DB.prepare(
+    "SELECT COUNT(*) AS n FROM invoices WHERE file_key IS NOT NULL AND file_sha256 IS NULL",
+  ).first<{ n: number }>();
+  return c.json({ ok: true, hashed, files_missing: missing, remaining: left?.n ?? 0 });
 });
 
 /** The invoice fields a Xero bill is built from — see pushInvoiceBillToXero,
