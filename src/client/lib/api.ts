@@ -668,10 +668,12 @@ export const api = {
       configured: boolean;
       mailboxes: Array<{ mailbox: string; as: string; folder: string }>;
       last_runs: Array<{ ran_at: string; ok: number; mailboxes: number; fetched: number; ingested: number; error: string | null }>;
+      watermarks: Array<{ mailbox: string; watermark: string; updated_at: string }>;
+      stuck: Array<{ subject: string; from_addr: string; attempts: number; last_error: string | null; received_at: string | null }>;
       total_ingested: number;
     }>("/api/mailbox-pull/status"),
   mailboxPullRun: () =>
-    jfetch<{ ran: boolean; mailboxes: number; fetched: number; ingested: number; errors: string[] }>(
+    jfetch<{ ran: boolean; mailboxes: number; fetched: number; ingested: number; skipped: number; errors: string[] }>(
       "/api/mailbox-pull/run", { method: "POST" }),
   xeroRecheckPaid: () =>
     jfetch<{ client_checked: number; client_marked_paid: number; bills_scanned: number; bills_marked_paid: number }>(

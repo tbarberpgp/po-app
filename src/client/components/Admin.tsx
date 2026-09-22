@@ -504,7 +504,7 @@ function MailboxPullSection() {
     setBusy(true); setErr(null); setMsg(null);
     try {
       const r = await api.mailboxPullRun();
-      setMsg(`Pulled from ${r.mailboxes} mailbox${r.mailboxes === 1 ? "" : "es"} — ${r.fetched} new, ${r.ingested} ingested${r.errors.length ? `; ${r.errors.length} issue(s): ${r.errors.join(" · ")}` : ""}.`);
+      setMsg(`Pulled from ${r.mailboxes} mailbox${r.mailboxes === 1 ? "" : "es"} — ${r.fetched} in window, ${r.ingested} ingested, ${r.skipped} already done${r.errors.length ? `; ${r.errors.length} issue(s): ${r.errors.join(" · ")}` : ""}.`);
       load();
     } catch (e) { setErr(e instanceof Error ? e.message : "run failed"); }
     finally { setBusy(false); }
@@ -522,6 +522,8 @@ function MailboxPullSection() {
       <p className="muted" style={{ marginTop: 0, fontSize: 13 }}>
         Reads supplier invoices &amp; subcontractor applications directly from the Microsoft&nbsp;365 mailboxes on a
         schedule (hourly), so ingestion no longer relies on auto-forwarding — which Microsoft blocks externally.
+        Each mailbox is read forwards from where it got to last time, so opening or filing a message in Outlook
+        doesn't hide it from the pull.
       </p>
       {err && <div className="flash error" style={{ fontSize: 12 }}>{err}</div>}
       {msg && <div className="flash" style={{ fontSize: 12 }}>{msg}</div>}
@@ -536,14 +538,33 @@ function MailboxPullSection() {
       ) : (
         <>
           <div style={{ display: "grid", gap: 4, marginBottom: 10 }}>
-            {status.mailboxes.map((m, i) => (
-              <div key={i} style={{ fontSize: 12.5 }}><b>{m.mailbox}</b> <span className="muted">/{m.folder}</span> → <span className="pill neutral" style={{ fontSize: 11 }}>{m.as}</span></div>
-            ))}
+            {status.mailboxes.map((m, i) => {
+              const wm = status.watermarks?.find((w) => w.mailbox.toLowerCase() === m.mailbox.toLowerCase());
+              return (
+                <div key={i} style={{ fontSize: 12.5 }}>
+                  <b>{m.mailbox}</b> <span className="muted">/{m.folder}</span> → <span className="pill neutral" style={{ fontSize: 11 }}>{m.as}</span>
+                  <span className="muted" style={{ fontSize: 11.5 }}>{wm ? ` · read up to ${dt(wm.watermark)}` : " · not read yet"}</span>
+                </div>
+              );
+            })}
           </div>
           <div className="muted" style={{ fontSize: 12 }}>
-            {last ? <>Last run {dt(last.ran_at)} — {last.ingested} ingested of {last.fetched} new{last.error ? ` · ⚠ ${last.error}` : ""}. </> : "No runs yet. "}
+            {last ? <>Last run {dt(last.ran_at)} — {last.ingested} ingested of {last.fetched} in window{last.error ? ` · ⚠ ${last.error}` : ""}. </> : "No runs yet. "}
             {status.total_ingested} messages ingested in total.
           </div>
+          {!!status.stuck?.length && (
+            <div style={{ marginTop: 10 }}>
+              <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 4 }}>Couldn't be read ({status.stuck.length})</div>
+              <div style={{ display: "grid", gap: 3 }}>
+                {status.stuck.map((b, i) => (
+                  <div key={i} className="muted" style={{ fontSize: 11.5 }}>
+                    {dt(b.received_at ?? "")} · <b>{b.subject || "(no subject)"}</b> from {b.from_addr || "?"} — {b.last_error || "failed"}
+                    {b.attempts >= 5 ? " · given up" : ` · attempt ${b.attempts}`}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </>
       )}
       <div className="row" style={{ gap: 8, marginTop: 12 }}>
