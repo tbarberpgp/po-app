@@ -1,9 +1,15 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
+import { getCookie, setCookie } from "hono/cookie";
 import type { Env, Variables } from "../env";
 import { normalisePhone } from "../../shared/operatives-import";
 import { signinsCarryOperativeId } from "../schema";
 import { extractQualCard } from "./operatives";
 import { computeQualityRollup, qualityDashboardHtml } from "./quality-dashboard";
+import {
+  SESSION_COOKIE, SESSION_TTL_MS, cleanCode, codePage, emailPage, endSession,
+  normalizeEmail, requestCode, sessionViewer, verifyCode,
+} from "../quality-access";
+import { sendViaResend } from "../email";
 import { isSafeMediaUrl } from "../safe-url";
 import { renderCabinQitpPdf } from "./qitp-pdf";
 
@@ -1021,19 +1027,86 @@ publicOps.delete("/cabin/:token/photo/:photoId", async (c) => {
   return c.json({ ok: true });
 });
 
-/* ── Client Quality Dashboard (public, share-token) ─────────────────────────
+/* ── Client Quality Dashboard (share token + viewer list) ─────────────────────
  *  A read-only, client-facing QITP progress summary. The share token (minted by
- *  a PM+ from the internal QITP dashboard) maps to a project via settings; the
- *  page is server-rendered HTML wired to live inspection data. Under /pub so
- *  the Access bypass already applies — anyone with the link can view it. */
-publicOps.get("/quality/:token", async (c) => {
-  const token = c.req.param("token");
-  const map = await c.env.DB.prepare("SELECT value FROM settings WHERE key = ?")
+ *  a PM+ from the internal QITP dashboard) maps to a project via settings and
+ *  says WHICH dashboard; the reader must also be on that project's viewer list
+ *  and prove it with a one-time emailed code (see ../quality-access.ts). Under
+ *  /pub so the Access bypass applies — clients are outside the Access policy. */
+async function resolveQualityShare(env: Env, token: string): Promise<{ projectId: string; label: string } | null> {
+  const map = await env.DB.prepare("SELECT value FROM settings WHERE key = ?")
     .bind(`quality_share:${token}`).first<{ value: string }>();
-  if (!map?.value) return c.html("<!doctype html><meta charset=utf-8><title>Not found</title><body style=\"font-family:system-ui;padding:48px;color:#0f1130\"><h1>Dashboard not found</h1><p>This quality dashboard link is no longer valid.</p></body>", 404);
-  const rollup = await computeQualityRollup(c.env, map.value);
-  if (!rollup) return c.html("<!doctype html><meta charset=utf-8><title>Not available</title><body style=\"font-family:system-ui;padding:48px;color:#0f1130\"><h1>Not available</h1><p>This quality dashboard isn't available yet.</p></body>", 404);
+  if (!map?.value) return null;
+  const p = await env.DB.prepare("SELECT code, name FROM projects WHERE id = ? AND deleted_at IS NULL")
+    .bind(map.value).first<{ code: string; name: string }>();
+  if (!p) return null;
+  return { projectId: map.value, label: `${p.code} ${p.name}` };
+}
+
+const qualityNotFound = (c: Context<{ Bindings: Env; Variables: Variables }>) =>
+  c.html("<!doctype html><meta charset=utf-8><meta name=viewport content=\"width=device-width, initial-scale=1\"><title>Not found</title><body style=\"font-family:system-ui;padding:48px 16px;color:#0f1130\"><h1>Dashboard not found</h1><p>This quality dashboard link is no longer valid.</p></body>", 404);
+
+function qualityCookie(c: Context<{ Bindings: Env; Variables: Variables }>, token: string, value: string, maxAgeSec: number) {
+  setCookie(c, SESSION_COOKIE, value, {
+    path: `/pub/quality/${token}`, httpOnly: true, secure: new URL(c.req.url).protocol === "https:",
+    sameSite: "Lax", maxAge: maxAgeSec,
+  });
+}
+
+function noStore(c: Context<{ Bindings: Env; Variables: Variables }>) {
   c.header("Cache-Control", "no-store");
   c.header("X-Robots-Tag", "noindex, nofollow");
-  return c.html(qualityDashboardHtml(rollup));
+}
+
+publicOps.get("/quality/:token", async (c) => {
+  const token = c.req.param("token");
+  const share = await resolveQualityShare(c.env, token);
+  if (!share) return qualityNotFound(c);
+  noStore(c);
+  const base = `/pub/quality/${token}`;
+  const email = await sessionViewer(c.env, share.projectId, getCookie(c, SESSION_COOKIE));
+  if (!email) return c.html(emailPage(share.label, `${base}/code`));
+  const rollup = await computeQualityRollup(c.env, share.projectId);
+  if (!rollup) return c.html("<!doctype html><meta charset=utf-8><meta name=viewport content=\"width=device-width, initial-scale=1\"><title>Not available</title><body style=\"font-family:system-ui;padding:48px 16px;color:#0f1130\"><h1>Not available</h1><p>This quality dashboard isn't available yet.</p></body>", 404);
+  return c.html(qualityDashboardHtml(rollup, { email, signOutAction: `${base}/signout` }));
+});
+
+publicOps.post("/quality/:token/code", async (c) => {
+  const token = c.req.param("token");
+  const share = await resolveQualityShare(c.env, token);
+  if (!share) return qualityNotFound(c);
+  noStore(c);
+  const base = `/pub/quality/${token}`;
+  const body = await c.req.parseBody();
+  const email = normalizeEmail(body.email);
+  if (!email) return c.html(emailPage(share.label, `${base}/code`, "That doesn't look like an email address."), 400);
+  await requestCode(c.env, share.projectId, email, share.label,
+    (to, subject, html) => sendViaResend(c.env, { to, subject, html }));
+  return c.html(codePage(share.label, `${base}/verify`, base, email));
+});
+
+publicOps.post("/quality/:token/verify", async (c) => {
+  const token = c.req.param("token");
+  const share = await resolveQualityShare(c.env, token);
+  if (!share) return qualityNotFound(c);
+  noStore(c);
+  const base = `/pub/quality/${token}`;
+  const body = await c.req.parseBody();
+  const email = normalizeEmail(body.email);
+  if (!email) return c.redirect(base, 303);
+  const res = await verifyCode(c.env, share.projectId, email, cleanCode(body.code));
+  if (!res.ok) {
+    return c.html(res.reason === "invalid"
+      ? codePage(share.label, `${base}/verify`, base, email, "That code isn't right — check it and try again.")
+      : emailPage(share.label, `${base}/code`, "That code has expired or been used up. Request a new one."), 400);
+  }
+  qualityCookie(c, token, res.sessionToken, Math.floor(SESSION_TTL_MS / 1000));
+  return c.redirect(base, 303);
+});
+
+publicOps.post("/quality/:token/signout", async (c) => {
+  const token = c.req.param("token");
+  await endSession(c.env, getCookie(c, SESSION_COOKIE));
+  qualityCookie(c, token, "", 0);
+  return c.redirect(`/pub/quality/${token}`, 303);
 });

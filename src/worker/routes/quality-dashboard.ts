@@ -356,7 +356,11 @@ function buildDrawers(r: QualityRollup): Record<string, { eyebrow: string; value
 }
 
 /** Render the complete standalone HTML page for the dashboard. */
-export function qualityDashboardHtml(r: QualityRollup): string {
+/** Who is looking, when the page sits behind the viewer list — shown in the
+ *  top bar with a way to sign out on a shared device. */
+export type DashboardViewer = { email: string; signOutAction: string };
+
+export function qualityDashboardHtml(r: QualityRollup, viewer?: DashboardViewer): string {
   const c = r.donut;
   const contractorSub = r.parties.length ? `witnessed w/ ${esc(r.parties.filter((p) => !/pgp/i.test(p)).join(", ") || r.parties.join(", "))}` : "";
   const phaseLabel = esc(r.currentPhase.label);
@@ -451,6 +455,8 @@ a{color:inherit;text-decoration:none}
 .topbar .sub{color:var(--muted);font-size:11.5px;margin-top:1px}
 .topbar .spacer{flex:1}
 .cbadge{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;font-weight:700;letter-spacing:.03em;color:var(--ink);background:var(--soft);border:1px solid var(--line-strong);border-radius:999px;padding:5px 11px}
+.who{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--muted);flex-basis:100%;justify-content:flex-end;margin:0}
+.who button{background:none;border:0;padding:0;font:inherit;font-weight:600;color:var(--orange2);text-decoration:underline;cursor:pointer}
 .cbadge .d{width:7px;height:7px;border-radius:50%;background:var(--pass)}
 .iconbtn{background:var(--card);border:1px solid var(--line-strong);border-radius:9px;width:36px;height:36px;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;color:var(--ink)}
 .iconbtn:hover{border-color:var(--orange);background:var(--soft)}
@@ -491,7 +497,7 @@ a{color:inherit;text-decoration:none}
 .kpi .v{font-family:var(--serif);font-size:32px;font-weight:600;letter-spacing:-.01em;margin-top:7px;line-height:1}
 .kpi .v small{font-family:Inter;font-size:15px;color:var(--muted);font-weight:500}
 .kpi .s{font-size:12px;color:var(--muted);margin-top:7px;display:flex;align-items:center;gap:6px}
-.grid2{display:grid;grid-template-columns:1.35fr 1fr;gap:16px}
+.grid2{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);gap:16px}
 .section{background:var(--card);border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow);margin-bottom:16px;overflow:hidden;transition:box-shadow .2s ease}
 .section:hover{box-shadow:0 2px 4px rgba(15,17,48,.05),0 12px 28px rgba(15,17,48,.08)}
 .section > header{display:flex;align-items:center;gap:10px;padding:15px 18px;border-bottom:1px solid var(--line)}
@@ -548,7 +554,7 @@ a{color:inherit;text-decoration:none}
 .dcell.hl .v{color:var(--orange)}
 .footnote{margin-top:18px;font-size:11.5px;color:var(--muted);text-align:center;line-height:1.6}
 @media (max-width:900px){
-  .hero,.grid2{grid-template-columns:1fr}
+  .hero,.grid2{grid-template-columns:minmax(0,1fr)}
   .kpis{grid-template-columns:repeat(2,1fr)}
   .dates{grid-template-columns:repeat(2,1fr)}
   .dcell:nth-child(2){border-right:0}
@@ -559,10 +565,10 @@ a{color:inherit;text-decoration:none}
   .donutwrap{flex-direction:column;align-items:flex-start}
   .stage .snm{width:130px}
 }
-.scrim{position:fixed;inset:0;background:rgba(15,17,48,.42);backdrop-filter:blur(2px);opacity:0;visibility:hidden;transition:opacity .28s ease,visibility .28s ease;z-index:80}
+.scrim{position:fixed;inset:0;background:rgba(15,17,48,.42);opacity:0;visibility:hidden;transition:opacity .28s ease,visibility .28s ease;z-index:80}
 .scrim.open{opacity:1;visibility:visible}
-.drawer{position:fixed;top:0;right:0;bottom:0;width:min(480px,94vw);background:var(--cream);border-left:1px solid var(--line);box-shadow:-12px 0 40px rgba(15,17,48,.18);transform:translateX(100%);transition:transform .34s cubic-bezier(.22,1,.36,1);z-index:81;display:flex;flex-direction:column}
-.drawer.open{transform:none}
+.drawer{position:fixed;top:0;right:0;bottom:0;width:min(480px,94vw);background:var(--cream);border-left:1px solid var(--line);box-shadow:-12px 0 40px rgba(15,17,48,.18);transform:translateX(100%);visibility:hidden;transition:transform .34s cubic-bezier(.22,1,.36,1),visibility .34s;z-index:81;display:flex;flex-direction:column}
+.drawer.open{transform:none;visibility:visible}
 .drawer .dh{flex:none;padding:20px 22px 16px;border-bottom:1px solid var(--line);position:relative}
 .drawer .dh .eyebrow{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}
 .drawer .dh .dv{font-family:var(--serif);font-size:34px;font-weight:600;line-height:1;margin:8px 0 4px;letter-spacing:-.01em}
@@ -610,7 +616,7 @@ a{color:inherit;text-decoration:none}
 .section.drillable:hover .drill-hint,.drill-hint:hover{color:var(--orange)}
 .section.drillable:hover .drill-hint svg{transform:translateX(2px)}
 @media print{
-  .topbar .iconbtn,.topbar .btn{display:none!important}
+  .topbar .iconbtn,.topbar .btn,.topbar .who{display:none!important}
   body{background:#fff}
   *{-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;animation:none!important;transition:none!important;opacity:1!important}
   .section,.kpi,.herocard,.dates{box-shadow:none;break-inside:avoid}
@@ -633,6 +639,7 @@ a{color:inherit;text-decoration:none}
     Export
   </button>
   <button class="iconbtn" id="themeBtn" title="Toggle theme" aria-label="Toggle theme"></button>
+  ${viewer ? `<form method="post" action="${esc(viewer.signOutAction)}" class="who"><span>${esc(viewer.email)}</span><button type="submit">Sign out</button></form>` : ""}
 </div>
 
 <div class="wrap">

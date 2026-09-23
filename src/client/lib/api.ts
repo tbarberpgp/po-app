@@ -1578,6 +1578,12 @@ export const api = {
     jfetch<{ token: string | null }>(`/api/qitp/${projectId}/client-link`),
   qitpCreateClientLink: (projectId: string) =>
     jfetch<{ token: string }>(`/api/qitp/${projectId}/client-link`, { method: "POST" }),
+  qitpDashboardViewers: (projectId: string) =>
+    jfetch<{ viewers: Array<{ email: string; added_by: string; added_at: string }> }>(`/api/qitp/${projectId}/viewers`),
+  qitpAddDashboardViewer: (projectId: string, email: string) =>
+    jfetch<{ ok: true; email: string }>(`/api/qitp/${projectId}/viewers`, { method: "POST", body: JSON.stringify({ email }) }),
+  qitpRemoveDashboardViewer: (projectId: string, email: string) =>
+    jfetch<{ ok: true }>(`/api/qitp/${projectId}/viewers/${encodeURIComponent(email)}`, { method: "DELETE" }),
 
   // ── Programme (works programme / Gantt) ──────────────────────────────────
   listProgramme: (projectId: string) =>

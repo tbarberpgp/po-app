@@ -27,8 +27,9 @@ export function QitpDashboard({ me, embedded }: { me: CurrentUser | null; embedd
   const [sort, setSort] = useState<"number" | "day">("number");
   const [day, setDay] = useState<number | null>(null);
 
-  // Client quality-dashboard share link (public, read-only). Viewable by anyone
-  // who runs quality (delivery.edit); publishing a new link needs projects.edit.
+  // Client quality-dashboard share link (read-only; opens only for addresses on
+  // the viewer list). Viewable by anyone who runs quality (delivery.edit);
+  // publishing a new link needs projects.edit; the list itself is superadmin's.
   const canViewLink = !!me && can(me, "delivery.edit");
   const canPublishLink = !!me && can(me, "projects.edit");
   const [linkOpen, setLinkOpen] = useState(false);
@@ -150,7 +151,7 @@ export function QitpDashboard({ me, embedded }: { me: CurrentUser | null; embedd
       {canViewLink && linkOpen && (
         <div className="card" style={{ padding: 14, marginBottom: 14, display: "flex", flexDirection: "column", gap: 10 }}>
           <div style={{ fontSize: 13 }}>
-            <b>Client quality dashboard</b> — a read-only, live QITP summary for the client. Anyone with this link can view it (no login), and it updates automatically as cabin gates are inspected.
+            <b>Client quality dashboard</b> — a read-only, live QITP summary for the client that updates as cabin gates are inspected. Only the email addresses listed below can open it: they enter their address at the link and we email them a one-time code.
           </div>
           {clientToken ? (
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
@@ -164,6 +165,7 @@ export function QitpDashboard({ me, embedded }: { me: CurrentUser | null; embedd
           ) : (
             <span className="muted" style={{ fontSize: 13 }}>No link has been published yet — a project manager can create one.</span>
           )}
+          {clientToken && <DashboardViewers projectId={id} canEdit={me?.role === "superadmin"} />}
         </div>
       )}
 
@@ -364,6 +366,61 @@ function Ring({ done, total, status, number }: { done: number; total: number; st
       </svg>
       <div className="qitp-ring-num">{number}</div>
       <div className="qitp-ring-sub">{done}/{total}</div>
+    </div>
+  );
+}
+
+/** Who may open the client dashboard. Everyone who can see the link sees the
+ *  list; only a superadmin can add or remove addresses. */
+function DashboardViewers({ projectId, canEdit }: { projectId: string; canEdit: boolean }) {
+  const [viewers, setViewers] = useState<Array<{ email: string; added_by: string; added_at: string }> | null>(null);
+  const [email, setEmail] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  const load = () => api.qitpDashboardViewers(projectId).then((r) => setViewers(r.viewers)).catch((e) => setMsg(e instanceof Error ? e.message : "Couldn't load the list"));
+  useEffect(() => { load(); }, [projectId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function add(e: React.FormEvent) {
+    e.preventDefault();
+    if (!email.trim()) return;
+    setBusy(true); setMsg(null);
+    try { await api.qitpAddDashboardViewer(projectId, email.trim()); setEmail(""); await load(); }
+    catch (err) { setMsg(err instanceof Error ? err.message : "Couldn't add that address"); }
+    finally { setBusy(false); }
+  }
+  async function remove(addr: string) {
+    if (!window.confirm(`Stop ${addr} from viewing the client dashboard? They are signed out straight away.`)) return;
+    setBusy(true); setMsg(null);
+    try { await api.qitpRemoveDashboardViewer(projectId, addr); await load(); }
+    catch (err) { setMsg(err instanceof Error ? err.message : "Couldn't remove that address"); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <div style={{ borderTop: "1px solid var(--line, #e6e3da)", paddingTop: 10, display: "flex", flexDirection: "column", gap: 8 }}>
+      <div style={{ fontSize: 13, fontWeight: 600 }}>Who can view</div>
+      {viewers === null ? <span className="muted" style={{ fontSize: 13 }}>Loading…</span>
+        : viewers.length === 0 ? <span className="muted" style={{ fontSize: 13 }}>Nobody yet — the link won't open for anyone until an address is added{canEdit ? "" : " by a superadmin"}.</span>
+        : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            {viewers.map((v) => (
+              <div key={v.email} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
+                <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>{v.email}</span>
+                <span className="muted" style={{ fontSize: 12 }}>added by {v.added_by}</span>
+                {canEdit && <button className="btn ghost" disabled={busy} onClick={() => remove(v.email)}>Remove</button>}
+              </div>
+            ))}
+          </div>
+        )}
+      {canEdit && (
+        <form onSubmit={add} style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <input type="email" placeholder="client@example.com" value={email} onChange={(e) => setEmail(e.target.value)}
+            style={{ flex: 1, minWidth: 220, fontSize: 13, padding: "8px 10px", border: "1px solid var(--line-strong, #c9c4b4)", borderRadius: 8 }} />
+          <button className="btn accent" type="submit" disabled={busy || !email.trim()}>Add</button>
+        </form>
+      )}
+      {msg && <div className="flash error">{msg}</div>}
     </div>
   );
 }

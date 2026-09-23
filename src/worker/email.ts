@@ -761,7 +761,7 @@ const DEFAULT_FROM = "PowerGrid Apps <apps@notifications.powergridprojects.co.uk
  * Resend (unverified domain, bad key, etc.) resolves normally, so we must
  * check res.ok and log the body or the failure is invisible.
  */
-async function sendViaResend(env: Env, msg: { to: string; subject: string; html: string }): Promise<void> {
+export async function sendViaResend(env: Env, msg: { to: string; subject: string; html: string }): Promise<void> {
   if (!env.RESEND_API_KEY) {
     console.warn("RESEND_API_KEY not set — would have emailed", msg.to, "·", msg.subject);
     return;

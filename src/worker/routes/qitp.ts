@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import type { Env, Variables } from "../env";
 import { requirePermission } from "../auth";
+import { normalizeEmail } from "../quality-access";
 
 // Authed, project-scoped QITP dashboard data. The public cabin inspection +
 // sign-off journey lives in publicOps.ts (token-gated, reached by QR).
@@ -113,7 +114,7 @@ qitp.post("/unsign/:token/:sectionId", async (c) => {
 // token (or null); POST mints one if absent (idempotent). Stored in `settings`
 // as a token↔project pair, so no schema change is needed. Viewing the link
 // needs delivery.edit (whoever runs quality); publishing it needs projects.edit
-// (PM and up) since it exposes a read-only view to anyone with the link.
+// (PM and up). The link on its own opens nothing — see the viewer list below.
 qitp.get("/:projectId/client-link", async (c) => {
   const denied = requirePermission(c, "delivery.edit");
   if (denied) return denied;
@@ -139,4 +140,47 @@ qitp.post("/:projectId/client-link", async (c) => {
       .bind(`quality_share:${token}`, projectId).run();
   }
   return c.json({ token });
+});
+
+// ── Client dashboard viewer list ─────────────────────────────────────────────
+// The share link alone no longer opens the dashboard: the reader must be on
+// this list and prove it with an emailed code (../quality-access.ts). Anyone
+// who can see the link can see who it's shared with; only a superadmin can
+// change the list, since each address added is a client given sight of live
+// project data.
+qitp.get("/:projectId/viewers", async (c) => {
+  const denied = requirePermission(c, "delivery.edit");
+  if (denied) return denied;
+  const rows = await c.env.DB.prepare(
+    "SELECT email, added_by, added_at FROM quality_dashboard_viewers WHERE project_id = ? ORDER BY email",
+  ).bind(c.req.param("projectId")).all<{ email: string; added_by: string; added_at: string }>();
+  return c.json({ viewers: rows.results });
+});
+
+qitp.post("/:projectId/viewers", async (c) => {
+  if (c.get("userRole") !== "superadmin") return c.json({ error: "Only a superadmin can change who can view the client dashboard." }, 403);
+  const projectId = c.req.param("projectId");
+  const body = await c.req.json<{ email?: string }>().catch(() => ({} as { email?: string }));
+  const email = normalizeEmail(body.email);
+  if (!email) return c.json({ error: "Enter a valid email address." }, 400);
+  const project = await c.env.DB.prepare("SELECT id FROM projects WHERE id = ? AND deleted_at IS NULL").bind(projectId).first();
+  if (!project) return c.json({ error: "Project not found" }, 404);
+  await c.env.DB.prepare(
+    `INSERT INTO quality_dashboard_viewers (project_id, email, added_by, added_at) VALUES (?, ?, ?, ?)
+     ON CONFLICT(project_id, email) DO NOTHING`,
+  ).bind(projectId, email, c.get("userEmail"), new Date().toISOString()).run();
+  return c.json({ ok: true, email });
+});
+
+qitp.delete("/:projectId/viewers/:email", async (c) => {
+  if (c.get("userRole") !== "superadmin") return c.json({ error: "Only a superadmin can change who can view the client dashboard." }, 403);
+  const projectId = c.req.param("projectId");
+  const email = decodeURIComponent(c.req.param("email")).trim().toLowerCase();
+  // Sessions die with the listing (sessionViewer joins on it); delete them too
+  // so nothing stale lingers.
+  await c.env.DB.batch([
+    c.env.DB.prepare("DELETE FROM quality_dashboard_viewers WHERE project_id = ? AND email = ?").bind(projectId, email),
+    c.env.DB.prepare("DELETE FROM quality_dashboard_sessions WHERE project_id = ? AND email = ?").bind(projectId, email),
+  ]);
+  return c.json({ ok: true });
 });
