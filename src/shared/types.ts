@@ -356,6 +356,10 @@ export type PurchaseOrder = {
   delivery_date: string | null;
   created_at: string;
   created_by: string;
+  /** Name held against `created_by` in the users table, joined into list
+   *  rows so the By column can show a person rather than an address.
+   *  Unset for users who have no name recorded. */
+  created_by_name?: string | null;
   approved_at: string | null;
   approved_by: string | null;
   rejected_at: string | null;
@@ -567,6 +571,10 @@ export type ApprovedPo = {
   approved_at: string;
   approved_by: string | null;
   created_by: string;
+  /** Name held against `created_by` in the users table, joined into list
+   *  rows so the By column can show a person rather than an address.
+   *  Unset for users who have no name recorded. */
+  created_by_name?: string | null;
   issued_at: string | null;
   project_code: string;
   project_name: string;

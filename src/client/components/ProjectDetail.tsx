@@ -6,6 +6,7 @@ import { ContractUpload } from "./ContractUpload";
 import { ContractPanel } from "./ContractPanel";
 import { Topbar } from "./Shell";
 import { can } from "../../shared/permissions";
+import { displayPerson } from "../lib/people";
 import { VariationsView } from "./VariationsView";
 import { ProjectOperations } from "./Operations";
 import { ProjectProgramme } from "./Programme";
@@ -1190,7 +1191,7 @@ function ProjectPOsPanel({ rows }: { rows: ProjectPORow[] }) {
                   )}
                 </td>
                 <td className="muted">{fmtDate(r.created_at)}</td>
-                <td className="muted">{r.created_by}</td>
+                <td className="muted" title={[r.created_by_name, r.created_by].filter(Boolean).join(" · ") || undefined}>{displayPerson(r.created_by_name, r.created_by)}</td>
               </tr>
             ))}
           </tbody>
