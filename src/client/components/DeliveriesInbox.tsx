@@ -302,7 +302,7 @@ function TicketDetail({ cand, projects, onActioned }: {
           </div>
 
           {/* extracted fields */}
-          <div style={{ display: "grid", gap: 10 }}>
+          <div style={{ display: "grid", gap: 10, maxWidth: 720 }}>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
               <div><div className="eyebrow" style={{ margin: 0 }}>Delivery note</div><div className="num">{cand.delivery_note_number || "—"}</div></div>
               <div><div className="eyebrow" style={{ margin: 0 }}>Date</div><div className="num">{fmtDate(cand.delivery_date || cand.occurred_at)}</div></div>
@@ -317,11 +317,11 @@ function TicketDetail({ cand, projects, onActioned }: {
             {(cand.items?.length ?? 0) > 0 && (
               <div>
                 <div className="eyebrow" style={{ marginBottom: 4 }}>{cand.items!.length} line item{cand.items!.length === 1 ? "" : "s"} read</div>
-                <div style={{ display: "grid", gap: 3 }}>
+                <div style={{ display: "grid", gap: 6 }}>
                   {cand.items!.slice(0, 6).map((it, i) => (
-                    <div key={i} style={{ display: "flex", gap: 8, fontSize: 12.5 }}>
-                      <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{it.description}</span>
-                      {it.qty != null && <span className="num muted">{it.qty}{it.unit ? ` ${it.unit}` : ""}</span>}
+                    <div key={i} style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", columnGap: 14, alignItems: "baseline", fontSize: 12.5, lineHeight: 1.45 }}>
+                      <span>{it.description}</span>
+                      {it.qty != null && <span className="num muted" style={{ whiteSpace: "nowrap" }}>{it.qty}{it.unit ? ` ${it.unit}` : ""}</span>}
                     </div>
                   ))}
                   {cand.items!.length > 6 && <div className="muted" style={{ fontSize: 11.5 }}>+{cand.items!.length - 6} more…</div>}
