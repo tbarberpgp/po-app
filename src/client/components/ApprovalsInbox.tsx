@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, fmtDate, fmtMoney } from "../lib/api";
+import { displayPerson } from "../lib/people";
 import { Topbar } from "./Shell";
 import type { ApprovedPo, CurrentUser, InvoiceQueueRow, PendingPriceApproval, PendingSubstitution, PoApprovalEvidence, PurchaseOrder } from "../../shared/types";
 
@@ -340,7 +341,7 @@ export function ApprovalsInbox({ me }: { me: CurrentUser | null }) {
                           </button>
                         </td>
                         <td className="muted">{fmtDate(r.created_at)}</td>
-                        <td className="muted">{r.created_by}</td>
+                        <td className="muted" title={[r.created_by_name, r.created_by].filter(Boolean).join(" · ") || undefined}>{displayPerson(r.created_by_name, r.created_by)}</td>
                       </tr>
                       {open && (
                         <tr>
@@ -559,7 +560,7 @@ export function ApprovalsInbox({ me }: { me: CurrentUser | null }) {
                         </td>
                         <td className="muted">{fmtDate(r.approved_at)}</td>
                         <td className="muted">{r.approved_by ?? "—"}</td>
-                        <td className="muted">{r.created_by}</td>
+                        <td className="muted" title={[r.created_by_name, r.created_by].filter(Boolean).join(" · ") || undefined}>{displayPerson(r.created_by_name, r.created_by)}</td>
                       </tr>
                     ))}
                   </tbody>

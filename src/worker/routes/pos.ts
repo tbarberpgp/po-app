@@ -472,6 +472,7 @@ pos.get("/", async (c) => {
       FROM overdrawn_items oi
     )
     SELECT po.*, p.code AS project_code, p.name AS project_name,
+           u.name AS created_by_name,
       CASE
         WHEN po.order_type = 'framework' AND EXISTS (
           SELECT 1 FROM overdrawn_items oi WHERE oi.framework_po_id = po.id
@@ -483,6 +484,7 @@ pos.get("/", async (c) => {
       END AS is_overdrawn
      FROM purchase_orders po
      JOIN projects p ON p.id = po.project_id
+     LEFT JOIN users u ON lower(u.email) = lower(po.created_by)
      ${where.length ? "WHERE " + where.join(" AND ") : ""}
      ORDER BY po.created_at DESC`;
   const rows = await c.env.DB.prepare(sql)
@@ -810,9 +812,11 @@ pos.get("/approved", async (c) => {
        SELECT po.id, po.po_number, po.supplier, po.total_value, po.status,
               po.approval_tier, po.approval_reason, po.approved_at, po.approved_by,
               po.created_by, po.issued_at,
-              p.code AS project_code, p.name AS project_name
+              p.code AS project_code, p.name AS project_name,
+              u.name AS created_by_name
          FROM purchase_orders po
          JOIN projects p ON p.id = po.project_id
+         LEFT JOIN users u ON lower(u.email) = lower(po.created_by)
         WHERE po.approved_at IS NOT NULL
           AND po.status IN ('approved', 'issued')
           AND p.deleted_at IS NULL

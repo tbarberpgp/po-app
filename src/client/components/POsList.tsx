@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { api, fmtDate, fmtMoney } from "../lib/api";
 import { Topbar } from "./Shell";
 import { can } from "../../shared/permissions";
+import { displayPerson } from "../lib/people";
 import type { CurrentUser, PurchaseOrder } from "../../shared/types";
 import { poDeliveryLabel } from "../../shared/po-delivery-status";
 import { PoRegisterExport } from "./PoRegisterExport";
@@ -37,7 +38,7 @@ const SORTS: Record<SortKey, (r: Row) => string | number> = {
   status: (r) => r.status ?? "",
   delivery: (r) => DELIVERY_RANK[r.delivery_state ?? "none"] ?? 0,
   created_at: (r) => Date.parse(r.created_at ?? "") || 0,
-  created_by: (r) => (r.created_by ?? "").toLowerCase(),
+  created_by: (r) => displayPerson(r.created_by_name, r.created_by).toLowerCase(),
 };
 
 export function POsList({ me }: { me: CurrentUser | null }) {
@@ -82,7 +83,7 @@ export function POsList({ me }: { me: CurrentUser | null }) {
   // "toolstation 26001" narrows rather than widens.
   const terms = q.trim().toLowerCase().split(/\s+/).filter(Boolean);
   const filtered = terms.length === 0 ? rows : rows.filter((r) => {
-    const hay = `${r.po_number ?? ""} ${r.supplier ?? ""} ${r.project_code ?? ""} ${r.project_name ?? ""} ${r.created_by ?? ""}`.toLowerCase();
+    const hay = `${r.po_number ?? ""} ${r.supplier ?? ""} ${r.project_code ?? ""} ${r.project_name ?? ""} ${r.created_by ?? ""} ${displayPerson(r.created_by_name, r.created_by)}`.toLowerCase();
     return terms.every((t) => hay.includes(t));
   });
   const shown = [...filtered].sort((a, b) => {
@@ -289,7 +290,7 @@ export function POsList({ me }: { me: CurrentUser | null }) {
                       )}
                     </td>
                     <td className="muted">{fmtDate(r.created_at)}</td>
-                    <td className="muted">{r.created_by}</td>
+                    <td className="muted" title={[r.created_by_name, r.created_by].filter(Boolean).join(" · ") || undefined}>{displayPerson(r.created_by_name, r.created_by)}</td>
                     {showingDeleted && (
                       <td className="muted">{fmtDate(r.deleted_at)}<br />{r.deleted_by}</td>
                     )}
