@@ -281,8 +281,12 @@ a:hover { text-decoration: underline; }
 .topbar .title-block { flex: 1; min-width: 0; }
 .topbar .actions { display: flex; align-items: center; gap: 8px; }
 
-/* Main content area */
-main { padding: 24px 28px; max-width: 1400px; }
+/* Main content area. No width cap: the data screens are wide tables and a
+   cap left a third of a large display empty. Pages that are prose or a form
+   rather than a table set their own bound below, since those do not get more
+   readable for being wider. */
+main { padding: 24px 28px; }
+main.guide, main.bulk-wrap { max-width: 1040px; }
 
 /* ── Cards ────────────────────────────────────────────────────────────── */
 .card {
