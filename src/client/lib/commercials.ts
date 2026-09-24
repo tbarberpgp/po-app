@@ -6,7 +6,7 @@
 // verbatim from ProjectDetail's old inline `summarise`/`forecast`.
 
 import type {
-  MaterialWithCommitment, OffBoqMaterial, POLine, ProjectCommercial, Variation, ContractItem, ApplicationForPayment,
+  MaterialWithCommitment, MaterialOrder, OffBoqMaterial, POLine, ProjectCommercial, Variation, ContractItem, ApplicationForPayment,
 } from "../../shared/types";
 import { MONEY_EPSILON, netBudgetUnits, pricedBudget } from "../../shared/budget";
 import { fmtMoney } from "./api";
@@ -67,6 +67,15 @@ export type UnpricedLine = {
 /** A row in the Materials table. `off_boq` is set on the rows that came from a
  *  purchase order rather than the pricing workbook. */
 export type MatRow = MaterialWithCommitment & { off_boq?: OffBoqMaterial };
+
+/** The purchase orders behind one materials row, newest first. A BOQ line gets
+ *  them from the materials endpoint; a PO-added row already carries its own on
+ *  `off_boq`. Both are `MaterialOrder`, so the breakdown reads the same either
+ *  way — and a row that spans both (a BOQ line also bought off-BOQ) never
+ *  counts an order twice, because the two live on different rows. */
+export function materialOrders(m: MatRow): MaterialOrder[] {
+  return (m.off_boq ? m.off_boq.orders : m.orders) ?? [];
+}
 
 /** Dress a PO-added item as a materials row so it sits in the same table — and
  *  the same filter, sort and Excel export — as the priced BOQ lines. Budget

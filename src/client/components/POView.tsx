@@ -10,6 +10,7 @@ import { budgetMoneyHint, effectiveSpendRate, matSupplier, pickUnit, poLineBudge
 import { describeCostCode } from "../../shared/types";
 import type { CurrentUser, MaterialWithCommitment, OffBoqMaterial, POLine, PoDeliveryDrop, PurchaseOrder, Supplier } from "../../shared/types";
 import { poDeliveryLabel } from "../../shared/po-delivery-status";
+import { isApprovedNotIssued } from "../lib/po-register";
 
 type Row = PurchaseOrder & {
   project_code: string; project_name: string;
@@ -189,6 +190,7 @@ export function POView({ me }: { me: CurrentUser | null }) {
         status={
           <>
             <span className={`pill ${po.status} dot`} style={{ verticalAlign: "middle" }}>{po.status.replace("_", " ")}</span>
+            {isApprovedNotIssued(po) && <span className="pill warn" style={{ verticalAlign: "middle", marginLeft: 6 }} title="Approved, so the money is committed against budget — but this order has never been issued to the supplier">Not issued</span>}
             {po.order_type === "framework" && <span className="pill info" style={{ verticalAlign: "middle", marginLeft: 6 }}>Framework</span>}
             {po.order_type === "call_off" && <span className="pill neutral" style={{ verticalAlign: "middle", marginLeft: 6 }}>Call-off</span>}
             {po.category === "prelims" && <span className="pill warn" style={{ verticalAlign: "middle", marginLeft: 6 }}>Prelims</span>}
