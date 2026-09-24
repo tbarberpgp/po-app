@@ -109,6 +109,27 @@ export type MaterialActiveSubstitution = {
   sub_created_by: string;
 };
 
+/** One purchase-order line standing behind a material's committed figure —
+ *  enough to name the order, say what kind it is and whether it actually
+ *  reached the supplier. */
+export type MaterialOrder = {
+  po_id: string;
+  po_number: string;
+  status: string;
+  /** Null on an approved order that was never issued — approval commits the
+   *  money, issuing is what sends it to the supplier, and the two come apart. */
+  issued_at: string | null;
+  order_type: string;
+  line_id: number;
+  qty: number;
+  line_total: number;
+  ordered_at: string | null;
+  /** False for a call-off (it draws down its framework's reservation rather
+   *  than adding to it) and for an unpriced line. Without this the orders
+   *  listed under a committed figure don't add up to it. */
+  counts_toward_committed: boolean;
+};
+
 export type MaterialWithCommitment = Material & {
   committed_qty: number;          // reserved: frameworks + standard POs (excludes call-offs) + unit-equivalent of coded costs (£ / rate)
   /** The same orders as committed_qty, in £ — what they actually cost. This is
@@ -124,6 +145,9 @@ export type MaterialWithCommitment = Material & {
   called_off_qty?: number;        // of the reserved amount, how much is actually called off
   framework_reserved_qty?: number; // how much of committed_qty sits on framework orders
   delivered_qty?: number;         // received on site to date (apportioned from PO deliveries)
+  /** The PO lines behind committed_qty — newest first. Lets a committed figure
+   *  name its orders instead of being a number with no provenance. */
+  orders?: MaterialOrder[];
   /** Whole line omitted from this job — excluded from rollups, hidden by default. */
   omitted?: number | boolean;
   /** Partial omission: this many units removed from the budgeted quantity
@@ -217,11 +241,9 @@ export type OffBoqMaterial = {
   called_off_value: number;
   last_ordered_at: string | null;
   /** Newest first. Each order is kept — the row aggregates the quantity, but
-   *  who ordered what and when still has to be answerable from the list. */
-  orders: Array<{
-    po_id: string; po_number: string; status: string; order_type: string;
-    line_id: number; qty: number; line_total: number; ordered_at: string | null;
-  }>;
+   *  who ordered what and when still has to be answerable from the list. Same
+   *  shape as a BOQ row's `orders` so one breakdown renders both. */
+  orders: MaterialOrder[];
 };
 
 export type ApprovalTier = "line_manager" | "commercial_manager" | "director";

@@ -70,6 +70,20 @@ export function poXeroLabel(po: PurchaseOrder): string {
   return s && po.xero_po_number ? `${s} · ${po.xero_po_number}` : s;
 }
 
+/** Approved but never sent to the supplier. Approval is what commits the money
+ *  — the order counts against budget from that moment — while issuing is what
+ *  actually places it, and the two come apart silently: nothing chases an
+ *  approved order into being issued. The result is budget consumed against an
+ *  order the supplier has never seen, which reads on every screen as a live
+ *  commitment. Deliberately computed rather than recorded, so it stops being
+ *  true the moment someone issues the order.
+ *
+ *  Takes the two fields alone so it serves a PO row, a register row and a
+ *  material's order breakdown without any of them having to be a full PO. */
+export function isApprovedNotIssued(o: { status: string; issued_at?: string | null }): boolean {
+  return o.status === "approved" && !o.issued_at;
+}
+
 export function poOrderTypeLabel(t: OrderType | undefined): string {
   return t === "framework" ? "Framework" : t === "call_off" ? "Call-off" : "Standard";
 }

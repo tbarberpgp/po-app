@@ -14,14 +14,21 @@ import {
   summariseMaterials, computeForecast, sumForecasts, withCombinedOverspend, contractTotals, effectiveSpendRate, matSupplier, netUnits, quoteSavingsOf,
   pricedBudgetDrill, committedDrill, materialSavingsDrill, labourSavingsDrill,
   variationProfitDrill, unpricedDrill, combinedUnexpectedSpendDrill, applicationsDrill, combineDrill,
-  offBoqRow, materialAddedAt, materialModifiedAt,
+  offBoqRow, materialAddedAt, materialModifiedAt, materialOrders,
   type Forecast, type UnpricedLine, type DrillBody, type MatRow, type MaterialScope,
 } from "../lib/commercials";
+import { isApprovedNotIssued } from "../lib/po-register";
 import { can } from "../../shared/permissions";
 import { combineSiteCodes } from "../../shared/site-code";
 import type {
   CurrentUser, Project, MaterialWithCommitment, OffBoqMaterial, ProjectCommercial, ContractItem, Variation, ApplicationForPayment, OpsSite,
 } from "../../shared/types";
+
+/** Orders listed per block before the rest collapse into a "+n earlier" line.
+ *  A framework, its call-offs and a top-up all fit, which is the common shape
+ *  of a material that has been bought more than once. */
+const ORDERS_SHOWN = 6;
+const orderPill: CSSProperties = { fontSize: 9.5, marginLeft: 4, verticalAlign: "middle" };
 
 type Member = { id: string; code: string; name: string; client?: string | null; payment_terms?: string | null; site_group_id?: string | null; site_group_name?: string | null; site_group_base?: string | null };
 type BlockData = {
@@ -940,7 +947,7 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
                                 // block's earlier purchase has no date and no PO anywhere on the
                                 // page — you'd have to open that block's own project page.
                                 const bOrders = b.mats
-                                  .flatMap((mat) => mat.off_boq?.orders ?? [])
+                                  .flatMap((mat) => materialOrders(mat))
                                   .sort((x, y) => String(y.ordered_at ?? "").localeCompare(String(x.ordered_at ?? "")));
                                 // Wording this block actually used, when it isn't the wording the
                                 // merged row is titled with — the check on whether a row has
@@ -958,18 +965,33 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
                                           as “{bAliases.join("”, “")}”
                                         </div>
                                       )}
-                                      {bOrders.slice(0, 3).map((o) => (
+                                      {bOrders.slice(0, ORDERS_SHOWN).map((o) => (
                                         <div key={o.line_id} style={{ fontSize: 11, marginTop: 2 }}>
                                           <Link to={`/pos/${o.po_id}`}>{o.po_number}</Link>
                                           <span className="muted">
                                             {o.ordered_at ? ` · ${fmtDate(o.ordered_at)}` : ""} · {qty(o.qty)} {m.unit ?? ""}
                                           </span>
+                                          {o.order_type === "framework" && (
+                                            <span className="pill info" style={orderPill} title="Framework order — reserves the quantity; its call-offs draw down inside this reservation">framework</span>
+                                          )}
+                                          {o.order_type === "call_off" && (
+                                            <span className="pill neutral" style={orderPill} title="Call-off — draws down its framework's reservation, so it is NOT added to Committed above; counting both would spend the allowance twice">call-off</span>
+                                          )}
+                                          {isApprovedNotIssued(o) && (
+                                            <span className="pill warn" style={orderPill} title="Approved, so it counts against budget — but this order has never been issued to the supplier">not issued</span>
+                                          )}
                                         </div>
                                       ))}
-                                      {bOrders.length > 3 && (
+                                      {bOrders.length > ORDERS_SHOWN && (
                                         <div className="muted" style={{ fontSize: 11, marginTop: 2 }}
-                                          title={bOrders.slice(3).map((o) => `${o.po_number} · ${fmtDate(o.ordered_at)} · ${qty(o.qty)} ${m.unit ?? ""}`).join("\n")}>
-                                          +{bOrders.length - 3} earlier order{bOrders.length - 3 === 1 ? "" : "s"}
+                                          title={bOrders.slice(ORDERS_SHOWN).map((o) => `${o.po_number} · ${fmtDate(o.ordered_at)} · ${qty(o.qty)} ${m.unit ?? ""}`).join("\n")}>
+                                          +{bOrders.length - ORDERS_SHOWN} earlier order{bOrders.length - ORDERS_SHOWN === 1 ? "" : "s"}
+                                        </div>
+                                      )}
+                                      {bOrders.length === 0 && (
+                                        <div className="muted" style={{ fontSize: 11, marginTop: 2 }}
+                                          title="Nothing live is on order for this block — any earlier orders were deleted, which is why its whole budget still reads as underspend">
+                                          no live order
                                         </div>
                                       )}
                                     </td>

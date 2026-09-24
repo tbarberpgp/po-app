@@ -5,7 +5,7 @@ import {
   readPricingWorkbook, reconcileCommercials,
 } from "../../shared/parse-xlsx";
 import type { ParsedMaterial, ParsedCommercialRow, ParsedContractItem, LabourRateLine } from "../../shared/parse-xlsx";
-import type { OffBoqMaterial } from "../../shared/types";
+import type { MaterialOrder, OffBoqMaterial } from "../../shared/types";
 import { requirePermission } from "../auth";
 import { loadSettings, tierForApproval } from "../approval";
 import { autoTagFromBill, baseProject } from "./programme";
@@ -1021,6 +1021,66 @@ materials.get("/:projectId", async (c) => {
     }
   } catch { /* pre-reconciliation deliveries table — degrade to no delivered qty */ }
 
+  // The orders BEHIND each line, so a committed figure can name the POs that
+  // made it. One query for the whole project, grouped in JS — a per-material
+  // subquery would bind a parameter per row and the live order book is well
+  // past D1's 100-parameter ceiling, which fails a read outright rather than
+  // trimming it. Matched the same three ways committed_qty is (see above): the
+  // line's own wording, the active substitution's replacement wording, and the
+  // budget line a retro PO was coded to via material_id.
+  const ordersByKey = new Map<string, MaterialOrder[]>();
+  try {
+    const orderLines = await c.env.DB.prepare(
+      `SELECT po.id AS po_id, po.po_number AS po_number, po.status AS status,
+              po.issued_at AS issued_at, po.created_at AS ordered_at,
+              COALESCE(po.order_type, 'standard') AS order_type,
+              pl.id AS line_id, pl.qty AS qty, COALESCE(pl.line_total, 0) AS line_total,
+              pl.is_unpriced AS is_unpriced,
+              lower(pl.item) AS item_l, lower(am.item) AS coded_item_l
+         FROM po_lines pl
+         JOIN purchase_orders po ON po.id = pl.po_id
+         LEFT JOIN materials am ON am.id = pl.material_id
+        WHERE po.project_id = ?
+          AND po.status IN ('approved', 'issued', 'pending_approval')
+        ORDER BY po.created_at DESC, pl.id DESC`,
+    ).bind(projectId).all<{
+      po_id: string; po_number: string; status: string; issued_at: string | null;
+      ordered_at: string | null; order_type: string; line_id: number;
+      qty: number | null; line_total: number; is_unpriced: number;
+      item_l: string | null; coded_item_l: string | null;
+    }>();
+    for (const l of orderLines.results) {
+      const order: MaterialOrder = {
+        po_id: l.po_id, po_number: l.po_number, status: l.status,
+        issued_at: l.issued_at, order_type: l.order_type, line_id: l.line_id,
+        qty: l.qty ?? 0, line_total: l.line_total, ordered_at: l.ordered_at,
+        // A call-off draws down its framework's reservation instead of adding
+        // to it, so it is NOT in committed_qty — the breakdown has to say so or
+        // its quantities won't add up to the figure they sit under. An unpriced
+        // line is excluded from committed_qty by the same query above.
+        counts_toward_committed: l.order_type !== "call_off" && l.is_unpriced === 0,
+      };
+      // A coded line is reported against the budget line it was coded to, not
+      // its own wording; anything else answers to the wording on the line.
+      const key = l.coded_item_l && l.coded_item_l !== l.item_l ? l.coded_item_l : l.item_l;
+      if (!key) continue;
+      const list = ordersByKey.get(key);
+      if (list) list.push(order); else ordersByKey.set(key, [order]);
+    }
+  } catch { /* order book unreadable — the rows still carry their totals */ }
+
+  /** Orders behind one material: its own wording plus the substitution's,
+   *  de-duplicated by line (a replaced material is ordered under either). */
+  const ordersFor = (item: unknown, subItem: unknown): MaterialOrder[] => {
+    const a = ordersByKey.get(String(item ?? "").toLowerCase()) ?? [];
+    const subKey = String(subItem ?? "").toLowerCase();
+    const b = subKey && subKey !== String(item ?? "").toLowerCase()
+      ? ordersByKey.get(subKey) ?? [] : [];
+    if (b.length === 0) return a;
+    const seen = new Set(a.map((o) => o.line_id));
+    return [...a, ...b.filter((o) => !seen.has(o.line_id))];
+  };
+
   // Budget is tracked in pack units (col V) since POs are raised in pack units.
   // Deliveries land under whichever wording the PO line used — for a replaced
   // material that's the substitution's name, so count both.
@@ -1058,6 +1118,7 @@ materials.get("/:projectId", async (c) => {
       + (r.sub_item && String(r.sub_item).toLowerCase() !== String(r.item ?? "").toLowerCase()
           ? deliveredByItem.get(String(r.sub_item).toLowerCase()) ?? 0
           : 0),
+    orders: ordersFor(r.item, r.sub_item),
     };
   });
   return c.json(result);
@@ -1117,6 +1178,7 @@ materials.get("/:projectId/off-boq", async (c) => {
      )
      SELECT po.id AS po_id, po.po_number AS po_number, po.status AS status,
             po.supplier AS supplier, po.created_at AS created_at,
+            po.issued_at AS issued_at,
             COALESCE(po.order_type, 'standard') AS order_type,
             pl.id AS line_id, pl.item AS item, pl.type AS type,
             pl.manufacturer AS manufacturer, pl.qty AS qty, pl.unit AS unit,
@@ -1150,7 +1212,8 @@ materials.get("/:projectId/off-boq", async (c) => {
     .bind(snapshotId, projectId)
     .all<{
       po_id: string; po_number: string; status: string; supplier: string | null;
-      created_at: string; order_type: string; line_id: number; item: string;
+      created_at: string; issued_at: string | null; order_type: string;
+      line_id: number; item: string;
       type: string | null; manufacturer: string | null; qty: number | null;
       unit: string | null; unit_cost: number | null; line_total: number;
       coded_to_material_id: number | null; coded_to_item: string | null;
@@ -1209,8 +1272,12 @@ materials.get("/:projectId/off-boq", async (c) => {
     }
     row.orders.push({
       po_id: r.po_id, po_number: r.po_number, status: r.status,
-      order_type: r.order_type, line_id: r.line_id,
+      issued_at: r.issued_at, order_type: r.order_type, line_id: r.line_id,
       qty, line_total: r.line_total, ordered_at: r.created_at ?? null,
+      // Same rule as a BOQ row: a call-off draws down its framework's
+      // reservation instead of adding to it, which is why the aggregation
+      // above puts it in called_off_qty rather than committed_qty.
+      counts_toward_committed: r.order_type !== "call_off",
     });
   }
 

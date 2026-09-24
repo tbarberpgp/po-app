@@ -7,6 +7,7 @@ import { displayPerson } from "../lib/people";
 import type { CurrentUser, PurchaseOrder } from "../../shared/types";
 import { poDeliveryLabel } from "../../shared/po-delivery-status";
 import { PoRegisterExport } from "./PoRegisterExport";
+import { isApprovedNotIssued } from "../lib/po-register";
 
 type PickProject = { id: string; code: string; name: string; site_group_name?: string | null };
 
@@ -231,6 +232,15 @@ export function POsList({ me }: { me: CurrentUser | null }) {
                       >
                         {r.status.replace("_", " ")}
                       </span>
+                      {isApprovedNotIssued(r) && (
+                        <span
+                          className="pill warn"
+                          style={{ fontSize: 10, marginLeft: 4 }}
+                          title="Approved, so the money is committed against budget — but the order has never been issued to the supplier"
+                        >
+                          not issued
+                        </span>
+                      )}
                       {r.order_type === "framework" && <span className="pill info" style={{ fontSize: 10, marginLeft: 4 }}>framework</span>}
                       {r.order_type === "call_off" && <span className="pill neutral" style={{ fontSize: 10, marginLeft: 4 }}>call-off</span>}
                       {r.category === "prelims" && <span className="pill warn" style={{ fontSize: 10, marginLeft: 4 }}>prelim</span>}
