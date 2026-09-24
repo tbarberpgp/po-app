@@ -93,6 +93,26 @@ async function jfetch<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+/** One order a delivery ticket could be checked in against, as the picker sees
+ *  it. `group` is where it came from — the number printed on the ticket, a
+ *  heuristic match, or simply another live order on the site — and `why` is the
+ *  one-line reason to show beside it. Everything on the site appears; the
+ *  ranking only decides the order they appear in. */
+export type PoCandidate = {
+  id: string;
+  po_number: string;
+  supplier: string | null;
+  order_type: string | null;
+  project_id: string;
+  project_code: string;
+  /** Item codes on the ticket that also appear as lines on this order. */
+  hits: number;
+  /** 0–1 overlap between the supplier on the ticket and the one on the order. */
+  supplier_match: number;
+  group: "quoted" | "likely" | "other";
+  why: string | null;
+};
+
 export const api = {
   me: () => jfetch<CurrentUser>("/api/me"),
   settings: () => jfetch<Settings>("/api/settings"),
@@ -1361,10 +1381,19 @@ export const api = {
       `/api/operations/${projectId}/deliveries/rescan`,
       { method: "POST", body: JSON.stringify({ before, limit }), headers: { "content-type": "application/json" } },
     ),
-  /** Suggest which PO a ticket belongs to from its item product codes. */
+  /** Which PO a delivery ticket belongs to. `ranked` is item-code evidence only
+   *  — the only signal strong enough to pre-select an order on someone's behalf.
+   *  `candidates` is every live order on the site, bucketed and ordered for a
+   *  person to choose from, and is never trimmed: the picker exists so that any
+   *  order stays reachable, including ones no heuristic would have guessed. */
   opsSuggestPoForCandidate: (projectId: string, id: number) =>
-    jfetch<{ suggested_po_id: string | null; item_codes?: string[]; ranked: Array<{ id: string; po_number: string; supplier: string | null; order_type: string | null; project_id: string; project_code: string; hits: number }> }>(
-      `/api/operations/${projectId}/deliveries/ticket-candidates/${id}/suggest`),
+    jfetch<{
+      suggested_po_id: string | null;
+      item_codes?: string[];
+      ranked: Array<{ id: string; po_number: string; supplier: string | null; order_type: string | null; project_id: string; project_code: string; hits: number }>;
+      quoted_po_id?: string | null;
+      candidates?: PoCandidate[];
+    }>(`/api/operations/${projectId}/deliveries/ticket-candidates/${id}/suggest`),
   /** Full reconciliation of a ticket against a chosen (or best-guess) PO — the
    *  PO's lines with ordered qty + cumulative prior receipts, and the ticket's
    *  items matched to those lines. `poId` overrides which PO to reconcile. */

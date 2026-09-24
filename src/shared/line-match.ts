@@ -16,6 +16,30 @@ export function invMaterialCode(s: string): string {
   return first.toUpperCase().replace(/[^A-Z0-9]/g, "");
 }
 
+/** The distinctive words in a company's name, for deciding whether two
+ *  spellings are the same firm. Legal suffixes and joining words carry no
+ *  signal — a ticket headed "Alumasc Building Products" has to read as the
+ *  supplier recorded as "Alumasc Building Products Ltd" — so they're dropped,
+ *  along with tokens too short to distinguish anything. */
+export function supplierNameTokens(s: string | null | undefined): Set<string> {
+  return new Set(String(s ?? "").toLowerCase().replace(/[^a-z0-9 ]/g, " ").split(/\s+/)
+    .filter((t) => t.length > 2 && !["ltd", "limited", "the", "and"].includes(t)));
+}
+
+/** 0–1: the share of `a`'s distinctive words that `b` also carries. Deliberately
+ *  asymmetric — the name printed on a ticket goes in `a`, because a supplier
+ *  abbreviating themselves on their own paperwork should still match the fuller
+ *  name in our register, while a PO supplier with extra words shouldn't be
+ *  penalised for them. */
+export function supplierNameOverlap(a: string | null | undefined, b: string | null | undefined): number {
+  const at = supplierNameTokens(a);
+  if (!at.size) return 0;
+  const bt = supplierNameTokens(b);
+  let hit = 0;
+  for (const t of at) if (bt.has(t)) hit++;
+  return hit / at.size;
+}
+
 /** Our PO numbers are PO-<5-digit project>-<4-digit sequence>, optionally a
  *  call-off suffix (-C1, -C2). Returns "<project>-<sequence>", or null when the
  *  text isn't one of ours.

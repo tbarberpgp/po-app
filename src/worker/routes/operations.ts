@@ -14,6 +14,7 @@ import { buildHsPack } from "../../shared/hs-pack-pdf";
 import { fuzzyFindPo } from "../poRef";
 import { learnAliases, aliasMapsBySupplier, normText } from "../matchMemory";
 import { deliveryVariance, matchItemToLine, type VarianceLine, type PriorReceipt } from "../../shared/delivery-variance";
+import { poRefCore, supplierNameOverlap } from "../../shared/line-match";
 import { summarisePoDeliveries, lineReceivedInFull, isDeliverableLine, PO_DELIVERY_NOTE_COLUMNS, PO_DELIVERY_NOTE_JOIN, type PoDeliveryRow } from "../../shared/po-delivery-status";
 
 // Operations — Phase 1 (site-team basics). Authenticated app-side endpoints:
@@ -2108,42 +2109,101 @@ function materialCode(s: string): string {
   return first.toUpperCase().replace(/[^A-Z0-9]/g, "");
 }
 
-/** Suggest which PO a ticket belongs to from its item codes — used when the PO
- *  number printed on the ticket is wrong/missing. Ranks the site's open POs by
- *  how many of the ticket's item codes appear as line items on them. */
+/** Which order does this ticket belong to?
+ *
+ *  Two answers, deliberately separated, because they are used for different
+ *  things and conflating them books goods against the wrong order.
+ *
+ *  `ranked` is the answer the app is allowed to ACT on: orders carrying the
+ *  ticket's own item codes, which is the only evidence strong enough to
+ *  pre-select a PO for someone. It is unchanged, and so is `suggested_po_id`.
+ *
+ *  `candidates` is the answer a PERSON chooses from: every live order on the
+ *  site, ranked and bucketed, never trimmed. A supplier-name match is a good
+ *  hint and a poor decision — Alumasc alone hold a dozen live orders across
+ *  the site — so it earns a place near the top of the list and nothing more.
+ *  Nothing is filtered out: the picker's whole job is that any order on the
+ *  site can be reached, including the ones no heuristic would have guessed.
+ *  Sibling contracts in the same site group are included for the same reason,
+ *  since a drop-shipped load routinely lands against a neighbouring job's
+ *  order.
+ */
 operations.get("/:projectId/deliveries/ticket-candidates/:id/suggest", async (c) => {
   const scope = await siteScope(c.env, c.req.param("projectId"));
   const base = scope.baseId;
   const scan = await c.env.DB.prepare(
-    "SELECT extracted_json FROM delivery_ticket_scans WHERE id = ? AND project_id = ?",
-  ).bind(c.req.param("id"), base).first<{ extracted_json: string | null }>();
+    "SELECT extracted_json, po_number, supplier_name FROM delivery_ticket_scans WHERE id = ? AND project_id = ?",
+  ).bind(c.req.param("id"), base).first<{ extracted_json: string | null; po_number: string | null; supplier_name: string | null }>();
   if (!scan) return c.json({ error: "not found" }, 404);
   let items: Array<{ description?: string }> = [];
   try { items = (JSON.parse(scan.extracted_json || "{}").items) || []; } catch { /* none */ }
   const codes = new Set(items.map((i) => materialCode(i.description ?? "")).filter((x) => x.length >= 3));
-  if (!codes.size) return c.json({ suggested_po_id: null, ranked: [] });
 
+  const empty = { suggested_po_id: null, item_codes: [...codes], ranked: [], quoted_po_id: null, candidates: [] };
   const ph = scope.memberIds.map(() => "?").join(",");
   const pos = await c.env.DB.prepare(
     `SELECT po.id, po.po_number, po.supplier, po.order_type, po.project_id, p.code AS project_code
        FROM purchase_orders po JOIN projects p ON p.id = po.project_id
       WHERE po.project_id IN (${ph}) AND po.status != 'deleted' AND po.order_type != 'framework'`,
   ).bind(...scope.memberIds).all<{ id: string; po_number: string; supplier: string | null; order_type: string | null; project_id: string; project_code: string }>();
-  if (!pos.results.length) return c.json({ suggested_po_id: null, ranked: [] });
+  if (!pos.results.length) return c.json(empty);
 
-  const lines = (await c.env.DB.prepare(
-    `SELECT l.po_id, l.item
-       FROM po_lines l ${sitePoScope("l.po_id", ph, "po.status != 'deleted'")}`,
-  ).bind(...scope.memberIds).all<{ po_id: string; item: string }>()).results;
+  // Bound only the member project ids — the order set is expressed in SQL. One
+  // `IN (?,?,…)` over a site's order book sits on D1's parameter ceiling, and
+  // the catch around this route would turn that into an empty picker.
+  const lines = codes.size
+    ? (await c.env.DB.prepare(
+      `SELECT l.po_id, l.item
+         FROM po_lines l ${sitePoScope("l.po_id", ph, "po.status != 'deleted'")}`,
+    ).bind(...scope.memberIds).all<{ po_id: string; item: string }>()).results
+    : [];
 
-  const ranked = pos.results.map((po) => {
+  // The order number printed on the ticket, when it resolves to a live order.
+  // `poRefCore` reads through the supplier's own rendering of it (zero padding,
+  // a slash instead of a dash), so "026003/0040" still finds PO-26003-0040.
+  const quotedRef = poRefCore(scan.po_number);
+  const quotedPo = quotedRef ? pos.results.find((p) => poRefCore(p.po_number) === quotedRef) ?? null : null;
+
+  const scored = pos.results.map((po) => {
     const poCodes = new Set(lines.filter((l) => l.po_id === po.id).map((l) => materialCode(l.item)));
     let hits = 0;
     for (const cd of codes) if (poCodes.has(cd)) hits++;
-    return { id: po.id, po_number: po.po_number, supplier: po.supplier, order_type: po.order_type, project_id: po.project_id, project_code: po.project_code, hits };
-  }).filter((r) => r.hits > 0).sort((a, b) => b.hits - a.hits);
+    const supplier_match = Math.round(supplierNameOverlap(scan.supplier_name, po.supplier) * 100) / 100;
+    return { id: po.id, po_number: po.po_number, supplier: po.supplier, order_type: po.order_type, project_id: po.project_id, project_code: po.project_code, hits, supplier_match };
+  });
 
-  return c.json({ suggested_po_id: ranked[0]?.id ?? null, item_codes: [...codes], ranked: ranked.slice(0, 5) });
+  // Unchanged contract: only item-code evidence is strong enough to pre-select.
+  const ranked = scored.filter((r) => r.hits > 0).sort((a, b) => b.hits - a.hits);
+
+  type Group = "quoted" | "likely" | "other";
+  const why = (r: (typeof scored)[number], group: Group): string | null => {
+    if (group === "quoted") return "the order number printed on the ticket";
+    const bits: string[] = [];
+    if (r.hits > 0) bits.push(`carries ${r.hits} item${r.hits === 1 ? "" : "s"} off this ticket`);
+    if (r.supplier_match >= 0.5) bits.push("same supplier");
+    return bits.join(" · ") || null;
+  };
+  const likely = scored
+    .filter((r) => r.id !== quotedPo?.id && (r.hits > 0 || r.supplier_match >= 0.5))
+    .sort((a, b) => (b.hits - a.hits) || (b.supplier_match - a.supplier_match) || b.po_number.localeCompare(a.po_number));
+  const likelyIds = new Set(likely.map((r) => r.id));
+  const rest = scored
+    .filter((r) => r.id !== quotedPo?.id && !likelyIds.has(r.id))
+    .sort((a, b) => b.po_number.localeCompare(a.po_number));
+
+  const candidates = [
+    ...(quotedPo ? [{ ...scored.find((r) => r.id === quotedPo.id)!, group: "quoted" as Group }] : []),
+    ...likely.map((r) => ({ ...r, group: "likely" as Group })),
+    ...rest.map((r) => ({ ...r, group: "other" as Group })),
+  ].map((r) => ({ ...r, why: why(r, r.group) }));
+
+  return c.json({
+    suggested_po_id: ranked[0]?.id ?? null,
+    item_codes: [...codes],
+    ranked: ranked.slice(0, 5),
+    quoted_po_id: quotedPo?.id ?? null,
+    candidates,
+  });
 });
 
 /** Full reconciliation for one ticket against a chosen (or best-guess) PO: the

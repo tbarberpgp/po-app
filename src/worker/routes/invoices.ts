@@ -12,7 +12,7 @@ import { isSpreadsheetFile } from "../../shared/file-kind";
 import { spreadsheetToText } from "../../shared/spreadsheet-text";
 import {
   invMaterialCode, jobAmbiguity, lineQty, looksLikeServiceCharge, NON_GOODS_LINE_IDS, PAYMENT_SCHEDULE_LINE_ID,
-  poRefCore, SERVICE_CHARGE_LINE_ID as SERVICE_CHARGE, scanLineMatch,
+  poRefCore, SERVICE_CHARGE_LINE_ID as SERVICE_CHARGE, scanLineMatch, supplierNameTokens,
   type InvLine, type PoLineRow,
 } from "../../shared/line-match";
 import { processLabourAppUpload, sha256Hex } from "./applications";
@@ -953,10 +953,6 @@ invoices.post("/:id/create-supplier", async (c) => {
   }
 });
 
-function nameTokenSet(s: string): Set<string> {
-  return new Set((s || "").toLowerCase().replace(/[^a-z0-9 ]/g, " ").split(/\s+/).filter((t) => t.length > 2 && !["ltd", "limited", "the", "and"].includes(t)));
-}
-
 /** Sentinel po_line_id meaning "explicitly a service/misc charge, not a
  *  product line" — a human picked this deliberately, so it counts as matched
  *  (no "no_po_line" flag) but is excluded from qty/value variance checks: a
@@ -1182,12 +1178,12 @@ export async function computeInvoiceMatch(env: Env, inv: Record<string, unknown>
   // These only decide the ORDER of the picker. Every live PO stays reachable, so a
   // genuine cross-job bill is still one click away.
   const invCodes = new Set(invLines.map((l) => invMaterialCode(l.description ?? "")).filter((x) => x.length >= 3));
-  const invSup = nameTokenSet(String(inv.supplier_name ?? ""));
+  const invSup = supplierNameTokens(inv.supplier_name as string | null);
   const ranked = pos.map((po) => {
     const poLinesFor = allLines.filter((l) => l.po_id === po.id);
     const codes = new Set(poLinesFor.map((l) => invMaterialCode(l.item)));
     let hits = 0; for (const cd of invCodes) if (codes.has(cd)) hits++;
-    const ct = nameTokenSet(po.supplier ?? "");
+    const ct = supplierNameTokens(po.supplier);
     let sup = 0; for (const t of invSup) if (ct.has(t)) sup++;
     // Lines whose billed value the order could actually cover, within the same 1%
     // tolerance used elsewhere. An order the invoice overshoots is the weaker

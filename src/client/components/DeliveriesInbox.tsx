@@ -366,8 +366,8 @@ function TicketDetail({ cand, projects, onActioned }: {
             <>
             <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>
               {cand.matched_po_id || cand.guess_po_id
-                ? "Site and PO pre-set from the recognised order — change either in the form if that's not right."
-                : "Project pre-set from the WhatsApp group this ticket arrived in — change it in the form if the delivery belongs elsewhere."}
+                ? `Pre-set to ${cand.matched_po_number || cand.guess_po_number || "the recognised order"} — the PO list below is every order on this site, with the likeliest first. Pick a different one if this isn't it.`
+                : "Project pre-set from the WhatsApp group this ticket arrived in. The PO list below is every order on this site, with the likeliest first."}
             </div>
             <CandidateCheckIn
               projectId={projectId}
@@ -379,8 +379,16 @@ function TicketDetail({ cand, projects, onActioned }: {
             </>
           ) : (
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              <button className="accent" onClick={() => setCheckingIn(true)} disabled={busy || !projectId}>
-                Check in against {st === "po" ? cand.matched_po_number : st === "line" ? cand.guess_po_number : "a PO"}
+              {/* One button, worded the same on every ticket, because choosing
+                  the order is always available and was never discoverable.
+                  Naming the matched PO here — "Check in against PO-26003-0040"
+                  — read as a decision already taken: the order picker sits
+                  inside this form, so nobody who disagreed with the match had
+                  any reason to open it. The match is still pre-selected and
+                  still stated, one line below the button. */}
+              <button className="accent" onClick={() => setCheckingIn(true)} disabled={busy || !projectId}
+                title="Opens the check-in form — the matched order is pre-selected and you can change it to any order on the site">
+                Check in against a PO…
               </button>
               {st !== "none" && (
                 <button className="ghost" onClick={checkInWholeOrder} disabled={busy || !projectId}
@@ -389,6 +397,13 @@ function TicketDetail({ cand, projects, onActioned }: {
                 </button>
               )}
               <button className="ghost" onClick={dismiss} disabled={busy}>Dismiss — not a delivery</button>
+              {/* The button no longer carries the order number, so the default
+                  says itself here — and says that it is only a default. */}
+              <div className="muted" style={{ flexBasis: "100%", fontSize: 11.5 }}>
+                {st === "po" ? <>Opens with <b>{cand.matched_po_number}</b> selected — the order number read off the ticket. Any other order on the site can be chosen instead.</>
+                  : st === "line" ? <>Opens with <b>{cand.guess_po_number}</b> selected — inferred from the item codes, not printed on the ticket. Check it before confirming.</>
+                    : <>No order matched this ticket. The form lists every order on the site, likeliest first.</>}
+              </div>
             </div>
           )}
         </div>

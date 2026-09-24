@@ -2,7 +2,7 @@ import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import qrcode from "qrcode-generator";
 import "leaflet/dist/leaflet.css";
-import { api, fmtDate, fmtMoney } from "../lib/api";
+import { api, fmtDate, fmtMoney, type PoCandidate } from "../lib/api";
 import { ProjectTicketInbox } from "./DeliveriesInbox";
 import { Topbar } from "./Shell";
 import { SupplierCombobox, compareSuppliers } from "./SupplierCombobox";
@@ -2089,10 +2089,6 @@ function poDeliveryText(p: PoRowDelivery): string {
   });
 }
 /** Suffix for a native <option>, which can carry no markup of its own. */
-function poOptionSuffix(p: PoRowDelivery): string {
-  const t = poDeliveryText(p);
-  return t ? ` — ${t}` : "";
-}
 /** Said again under the select once an order is chosen: an already-complete
  *  order is where a check-in is most likely to be a duplicate, and the option
  *  text scrolls out of sight the moment the list closes. */
@@ -2119,7 +2115,99 @@ function PoDeliveryLine({ po }: { po: PoRowDelivery | null }) {
   );
 }
 
-function SitePoChooser({ projects, initialSite, initialPoId, initialSupplier, initialCompletesPo, initialPoLineId, initialReceivedQty, initialReceivedUnit, busy, confirmLabel, onCancel, onConfirm }: {
+/** The order picker on a delivery check-in.
+ *
+ *  It replaced a plain <select> of the site's order book, which was where this
+ *  screen quietly stopped being usable. Two things were wrong with it, and only
+ *  one of them was visible.
+ *
+ *  The visible one: it was a flat, unsearchable list of every order on the site
+ *  — comfortably past a hundred numbers on a live job — with nothing to say
+ *  which of them the ticket in front of you was for. The invisible one was
+ *  worse: because the button above it read "Check in against PO-26003-0040",
+ *  people took the order as decided and never opened the form to discover the
+ *  list at all. A wrongly matched ticket had no obvious way back.
+ *
+ *  So the list now leads with the answer and keeps every other one within
+ *  reach: the number printed on the ticket first, then the orders the ticket's
+ *  items and supplier point at, each carrying the reason it's there, then the
+ *  rest of the book — searchable, and never trimmed. Recommendations are
+ *  suggestions to a person, not decisions: nothing here selects on its own
+ *  (that stays with the item-code match, which is the one signal strong enough
+ *  to act on), and no order is ever hidden because a heuristic scored it low.
+ *
+ *  Orders on sibling contracts in the same site group are included, which is
+ *  why `onChange` hands back a project id as well: picking one has to move the
+ *  Site field with it, or the check-in would post against the wrong job.
+ */
+function PoPicker({ candidates, pos, value, onChange, loading, emptyLabel }: {
+  candidates: PoCandidate[];
+  pos: Array<{ id: string; po_number: string; supplier: string | null; order_type?: string | null; project_id: string; project_code?: string } & PoRowDelivery>;
+  value: string;
+  onChange: (poId: string, projectId: string | null) => void;
+  loading?: boolean;
+  emptyLabel: string;
+}) {
+  const byId = new Map(pos.map((p) => [p.id, p]));
+  // A recommendation can name an order on a sibling contract, which this site's
+  // own list doesn't carry — so the option has to be able to describe itself.
+  const projectById = new Map<string, string>();
+  for (const cnd of candidates) projectById.set(cnd.id, cnd.project_id);
+  for (const po of pos) projectById.set(po.id, po.project_id);
+
+  const label = (id: string, po_number: string, supplier: string | null, order_type: string | null | undefined) => {
+    const row = byId.get(id);
+    const type = (row?.order_type ?? order_type) === "call_off" ? " (call-off)"
+      : (row?.order_type ?? order_type) === "framework" ? " (framework)" : "";
+    return `${po_number} · ${row?.supplier ?? supplier ?? "—"}${type}`;
+  };
+  // The hint carries the two things that decide whether this is the right
+  // order: why it's being suggested, and how much of it has already arrived —
+  // an order already delivered in full is where a check-in is most likely to be
+  // a duplicate.
+  const hint = (id: string, why: string | null, project_code?: string) => {
+    const row = byId.get(id);
+    const parts = [why, row ? poDeliveryText(row) : "", project_code && !byId.has(id) ? `on ${project_code}` : ""];
+    return parts.filter(Boolean).join(" · ") || undefined;
+  };
+
+  const listed = new Set<string>();
+  const opt = (c: PoCandidate) => {
+    listed.add(c.id);
+    return { value: c.id, label: label(c.id, c.po_number, c.supplier, c.order_type), hint: hint(c.id, c.why, c.project_code) };
+  };
+  const quoted = candidates.filter((c) => c.group === "quoted").map(opt);
+  const likely = candidates.filter((c) => c.group === "likely").map(opt);
+  // Everything else: the remaining candidates, then any order in the site's own
+  // list the suggester didn't return (frameworks, and anything added since).
+  const rest = [
+    ...candidates.filter((c) => c.group === "other").map(opt),
+    ...pos.filter((p) => !listed.has(p.id)).map((p) => {
+      listed.add(p.id);
+      return { value: p.id, label: label(p.id, p.po_number, p.supplier, p.order_type), hint: hint(p.id, null, p.project_code) };
+    }),
+  ];
+
+  const groups = [
+    { label: "", options: [{ value: "", label: loading ? "Finding the likely orders…" : emptyLabel }] },
+    ...(quoted.length ? [{ label: "Printed on the ticket", options: quoted }] : []),
+    ...(likely.length ? [{ label: "Likely orders", options: likely }] : []),
+    ...(rest.length ? [{ label: quoted.length || likely.length ? "Every other order on this site" : "Orders on this site", options: rest }] : []),
+  ];
+
+  return (
+    <GroupedCombobox
+      groups={groups}
+      value={value}
+      onChange={(v) => onChange(v, v ? projectById.get(v) ?? null : null)}
+      placeholder={emptyLabel}
+      searchPlaceholder="Search by order number, supplier or job…"
+      ariaLabel="Purchase order to check this delivery in against"
+    />
+  );
+}
+
+function SitePoChooser({ projects, initialSite, initialPoId, initialSupplier, initialCompletesPo, initialPoLineId, initialReceivedQty, initialReceivedUnit, candidates, candidatesLoading, busy, confirmLabel, onCancel, onConfirm }: {
   projects: Awaited<ReturnType<typeof api.listProjects>>;
   initialSite: string;
   initialPoId: string;
@@ -2128,6 +2216,11 @@ function SitePoChooser({ projects, initialSite, initialPoId, initialSupplier, in
   initialPoLineId?: number | null;
   initialReceivedQty?: number | null;
   initialReceivedUnit?: string | null;
+  /** Orders this delivery could belong to, best first. Absent where there's no
+   *  ticket to reason about (a delivery logged by hand), which just leaves the
+   *  picker showing the site's own order book. */
+  candidates?: PoCandidate[];
+  candidatesLoading?: boolean;
   busy: boolean;
   confirmLabel: string;
   onCancel: () => void;
@@ -2165,6 +2258,13 @@ function SitePoChooser({ projects, initialSite, initialPoId, initialSupplier, in
     return () => { live = false; };
   }, [poId]);
   const selPo = pos.find((p) => p.id === poId) || null;
+  // Picking an order on a sibling contract moves the Site field, and the new
+  // site's order list is briefly in flight — during which `pos` doesn't hold the
+  // chosen order at all. The order's number and supplier go into the check-in
+  // payload, so read them from the candidate row when that happens; otherwise a
+  // quick click posts a delivery with no PO on it.
+  const chosenPo: { id: string; po_number: string; supplier: string | null } | null =
+    selPo ?? (poId ? candidates?.find((cnd) => cnd.id === poId) ?? null : null);
   const selLine = poLines.find((l) => String(l.id) === poLineId) || null;
   // Default the drop's unit to the line's ordered unit when a line is picked, so
   // a matching-unit delivery (e.g. rolls of rolls) burns down as a real fraction.
@@ -2178,14 +2278,23 @@ function SitePoChooser({ projects, initialSite, initialPoId, initialSupplier, in
           {projects.filter((p) => !p.completed_at).map((p) => <option key={p.id} value={p.id}>{p.code} — {p.name}</option>)}
         </select>
       </label>
-      <label className="field"><span>Assign to PO</span>
-        <select className="input" value={poId} onChange={(e) => setPoId(e.target.value)}>
-          <option value="">— No PO — set supplier below —</option>
-          {pos.map((p) => <option key={p.id} value={p.id}>{p.po_number} · {p.supplier ?? "—"}{p.order_type === "framework" ? " (framework)" : p.order_type === "call_off" ? " (call-off)" : ""}{poOptionSuffix(p)}</option>)}
-        </select>
+      <div className="field"><span>Assign to PO</span>
+        <PoPicker
+          candidates={candidates ?? []}
+          pos={pos}
+          value={poId}
+          loading={candidatesLoading}
+          emptyLabel="— No PO — set supplier below —"
+          onChange={(v, proj) => {
+            // A suggested order can sit on a sibling contract; the site has to
+            // follow it, or the check-in posts against the wrong job.
+            if (proj && proj !== site) setSite(proj);
+            setPoId(v);
+          }}
+        />
         <PoDeliveryLine po={selPo} />
-      </label>
-      {selPo && poLines.length > 0 && (
+      </div>
+      {chosenPo && poLines.length > 0 && (
         <label className="field"><span>PO line item <span className="muted" style={{ textTransform: "none", letterSpacing: 0, fontWeight: 400 }}>· optional</span></span>
           <select className="input" value={poLineId} onChange={(e) => setPoLineId(e.target.value)}>
             <option value="">— Whole PO —</option>
@@ -2202,17 +2311,17 @@ function SitePoChooser({ projects, initialSite, initialPoId, initialSupplier, in
           <div className="muted" style={{ fontSize: 11.5, marginTop: 3 }}>Counts toward the running total for this line — {selLine.item}.</div>
         </div>
       )}
-      {!selPo && <label className="field"><span>Supplier</span>
+      {!chosenPo && <label className="field"><span>Supplier</span>
         <input className="input" value={supplier} onChange={(e) => setSupplier(e.target.value)} placeholder="e.g. Alumasc Water Management Solutions" />
       </label>}
-      {selPo && (
+      {chosenPo && (
         <label className="row" style={{ gap: 8, alignItems: "center", fontSize: 13, cursor: "pointer" }}>
           <input type="checkbox" checked={partial} onChange={(e) => setPartial(e.target.checked)} />
           <span>Part delivery (worked out automatically from the quantities — tick only if none could be read)</span>
         </label>
       )}
       <div className="row" style={{ gap: 8 }}>
-        <button className="primary tiny" disabled={busy} onClick={() => onConfirm({ target_project_id: site, po_id: selPo ? selPo.id : "", po_number: selPo ? selPo.po_number : "", supplier: selPo ? (selPo.supplier ?? "") : supplier.trim(), completes_po: selPo && partial ? "0" : "1", po_line_id: selLine ? String(selLine.id) : "", po_line_desc: selLine ? selLine.item : "", received_qty: selLine ? dropQty.trim() : "", received_unit: selLine ? dropUnit.trim() : "" })}>{busy ? "Saving…" : confirmLabel}</button>
+        <button className="primary tiny" disabled={busy} onClick={() => onConfirm({ target_project_id: site, po_id: chosenPo ? chosenPo.id : "", po_number: chosenPo ? chosenPo.po_number : "", supplier: chosenPo ? (chosenPo.supplier ?? "") : supplier.trim(), completes_po: chosenPo && partial ? "0" : "1", po_line_id: selLine ? String(selLine.id) : "", po_line_desc: selLine ? selLine.item : "", received_qty: selLine ? dropQty.trim() : "", received_unit: selLine ? dropUnit.trim() : "" })}>{busy ? "Saving…" : confirmLabel}</button>
         <button className="ghost tiny" disabled={busy} onClick={onCancel}>Cancel</button>
       </div>
     </div>
@@ -2240,12 +2349,26 @@ export function CandidateCheckIn({ projectId, cand, projects, onCancel, onDone }
   const [initSite, setInitSite] = useState(cand.matched_project_id || guessProjectId(cand, projects) || projectId);
   const [initPo, setInitPo] = useState(cand.matched_po_id || cand.guess_po_id || "");
   const [suggestedPo, setSuggestedPo] = useState(false);
+  // Candidate orders for the picker. Fetched for EVERY ticket, including the
+  // ones that already matched — a matched ticket is exactly where someone needs
+  // the alternatives, because the match is what they've come to disagree with.
+  // Pre-selecting is a separate question and keeps its old answer: only an
+  // item-code hit is evidence enough to choose an order on someone's behalf, so
+  // a ticket that already has a PO keeps it and just gains a list to change it
+  // from.
+  const [candidates, setCandidates] = useState<PoCandidate[]>([]);
+  const [candidatesLoading, setCandidatesLoading] = useState(!isMulti);
   useEffect(() => {
-    if (isMulti || cand.matched_po_id || cand.guess_po_id) return;
+    if (isMulti) return;
+    let live = true;
+    const preset = !!(cand.matched_po_id || cand.guess_po_id);
     api.opsSuggestPoForCandidate(projectId, cand.id).then((r) => {
+      if (!live) return;
+      setCandidates(r.candidates ?? []);
       const top = r.ranked?.[0];
-      if (top) { setInitSite(top.project_id); setInitPo(top.id); setSuggestedPo(true); }
-    }).catch(() => {});
+      if (!preset && top) { setInitSite(top.project_id); setInitPo(top.id); setSuggestedPo(true); }
+    }).catch(() => {}).finally(() => { if (live) setCandidatesLoading(false); });
+    return () => { live = false; };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
   // A note with several items (SAVBRF, MG3BASE…) maps onto several PO lines, so
   // it gets the multi-line matcher; a one-item ticket uses the simple chooser.
@@ -2264,6 +2387,8 @@ export function CandidateCheckIn({ projectId, cand, projects, onCancel, onDone }
         initialSupplier={cand.supplier_name || ""}
         initialReceivedQty={cand.scanned_qty}
         initialReceivedUnit={cand.scanned_unit}
+        candidates={candidates}
+        candidatesLoading={candidatesLoading}
         busy={busy}
         confirmLabel="Confirm check-in"
         onCancel={onCancel}
@@ -2317,17 +2442,24 @@ function MultiLineCheckIn({ projectId, cand, projects, onCancel, onDone }: {
   const [busy, setBusy] = useState(false);
   const [suggesting, setSuggesting] = useState(false);
   const [suggested, setSuggested] = useState(false);
+  const [candidates, setCandidates] = useState<PoCandidate[]>([]);
   const [err, setErr] = useState<string | null>(null);
 
-  // If the ticket didn't match a PO by number, ask the server which PO its item
-  // codes point to and pre-select that site + PO.
+  // Candidate orders for the picker — fetched whether or not the ticket already
+  // matched, because a matched ticket is precisely where someone needs to see
+  // the alternatives. Pre-selecting is the narrower question and keeps its old
+  // answer: only an item-code hit chooses an order on someone's behalf.
   useEffect(() => {
-    if (cand.matched_po_id || cand.guess_po_id) return;
+    let live = true;
+    const preset = !!(cand.matched_po_id || cand.guess_po_id);
     setSuggesting(true);
     api.opsSuggestPoForCandidate(projectId, cand.id).then((r) => {
+      if (!live) return;
+      setCandidates(r.candidates ?? []);
       const top = r.ranked?.[0];
-      if (top) { setSite(top.project_id); setPoId(top.id); setSuggested(true); }
-    }).catch(() => {}).finally(() => setSuggesting(false));
+      if (!preset && top) { setSite(top.project_id); setPoId(top.id); setSuggested(true); }
+    }).catch(() => {}).finally(() => { if (live) setSuggesting(false); });
+    return () => { live = false; };
   }, [projectId, cand.id, cand.matched_po_id]);
 
   useEffect(() => { api.listPOs({ project_id: site }).then((r) => setPos(r.filter((p) => p.status !== "deleted"))).catch(() => setPos([])); }, [site]);
@@ -2367,6 +2499,11 @@ function MultiLineCheckIn({ projectId, cand, projects, onCancel, onDone }: {
   }, [poId, projectId, cand.id]);
 
   const selPo = pos.find((p) => p.id === poId) || null;
+  // Same as the single-line chooser: an order picked on a sibling contract isn't
+  // in `pos` until that site's list lands, and its number/supplier are what the
+  // check-in is posted with.
+  const chosenPo: { id: string; po_number: string; supplier: string | null } | null =
+    selPo ?? (poId ? candidates.find((cnd) => cnd.id === poId) ?? null : null);
   const matchedCount = rows.filter((r) => r.include && r.lineId).length;
 
   // Every included item on the same PO line → offer to log ONE combined entry.
@@ -2409,9 +2546,9 @@ function MultiLineCheckIn({ projectId, cand, projects, onCancel, onDone }: {
       if (!lines.length) { setErr("Match at least one item to a PO line, or use single check-in."); setBusy(false); return; }
       await api.opsCheckInTicketCandidate(projectId, cand.id, {
         target_project_id: site,
-        po_id: selPo ? selPo.id : "",
-        po_number: selPo ? selPo.po_number : "",
-        supplier: selPo?.supplier || cand.supplier_name || "",
+        po_id: chosenPo ? chosenPo.id : "",
+        po_number: chosenPo ? chosenPo.po_number : "",
+        supplier: chosenPo?.supplier || cand.supplier_name || "",
         part: part ? "1" : "0",
         lines,
       });
@@ -2426,13 +2563,22 @@ function MultiLineCheckIn({ projectId, cand, projects, onCancel, onDone }: {
           {projects.filter((p) => !p.completed_at).map((p) => <option key={p.id} value={p.id}>{p.code} — {p.name}</option>)}
         </select>
       </label>
-      <label className="field"><span>PO {suggested && <span className="pill ok" style={{ fontSize: 10, fontWeight: 400, textTransform: "none", letterSpacing: 0 }}>matched from item codes</span>}</span>
-        <select className="input" value={poId} onChange={(e) => setPoId(e.target.value)}>
-          <option value="">{suggesting ? "Finding the PO from item codes…" : "— Pick a PO —"}</option>
-          {pos.map((p) => <option key={p.id} value={p.id}>{p.po_number} · {p.supplier ?? "—"}{p.order_type === "call_off" ? " (call-off)" : ""}{poOptionSuffix(p)}</option>)}
-        </select>
+      <div className="field"><span>PO {suggested && <span className="pill ok" style={{ fontSize: 10, fontWeight: 400, textTransform: "none", letterSpacing: 0 }}>matched from item codes</span>}</span>
+        <PoPicker
+          candidates={candidates}
+          pos={pos}
+          value={poId}
+          loading={suggesting}
+          emptyLabel="— Pick a PO —"
+          onChange={(v, proj) => {
+            // Changing the site clears the PO (the site select's own handler
+            // does that), so move the site first and set the order after.
+            if (proj && proj !== site) setSite(proj);
+            setPoId(v);
+          }}
+        />
         <PoDeliveryLine po={selPo} />
-      </label>
+      </div>
       {poId && (
         <div style={{ display: "grid", gap: 4 }}>
           {/* "matched" read as "agrees". It only ever meant the item found a PO line —
