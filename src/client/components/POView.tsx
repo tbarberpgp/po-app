@@ -1176,8 +1176,16 @@ function SummaryCard({ po }: { po: PurchaseOrder & { project_code: string; proje
         </div>
         {po.notes && (
           <div style={{ marginTop: 18, paddingTop: 14, borderTop: "1px solid var(--line)" }}>
-            <div className="eyebrow">Notes</div>
+            <div className="eyebrow" title="Printed on the PDF the supplier gets, and in the Excel export">Notes · on the supplier's copy</div>
             <div style={{ marginTop: 4 }}>{po.notes}</div>
+          </div>
+        )}
+        {po.internal_notes && (
+          <div style={{ marginTop: 18, paddingTop: 14, borderTop: "1px solid var(--line)" }}>
+            <div className="eyebrow" title="Ours. Never printed on the PO, never exported, never emailed out">
+              Internal notes <span className="pill neutral" style={{ fontSize: 9.5, marginLeft: 4, verticalAlign: "middle" }}>not on the PO</span>
+            </div>
+            <div style={{ marginTop: 4, whiteSpace: "pre-wrap" }}>{po.internal_notes}</div>
           </div>
         )}
       </div>
@@ -1447,6 +1455,7 @@ function POEditModal({
   const [supplier, setSupplier] = useState(po.supplier ?? "");
   const [deliveryDate, setDeliveryDate] = useState(po.delivery_date ? po.delivery_date.slice(0, 10) : "");
   const [notes, setNotes] = useState(po.notes ?? "");
+  const [internalNotes, setInternalNotes] = useState(po.internal_notes ?? "");
   const [category, setCategory] = useState<"materials" | "prelims">(po.category === "prelims" ? "prelims" : "materials");
   const [lines, setLines] = useState<EditLine[]>(
     (po.lines ?? []).map((l) => ({
@@ -1585,6 +1594,8 @@ function POEditModal({
       const res = await api.updatePO(po.id, {
         supplier: supplier.trim(),
         notes: notes.trim() || null,
+        // "" clears it; the route reads an ABSENT field as "leave it alone".
+        internal_notes: internalNotes.trim(),
         delivery_date: deliveryDate || null,
         category,
         lines: lines.map((l) => ({
@@ -1648,6 +1659,18 @@ function POEditModal({
           <div style={{ marginTop: 8 }}>
             <label>Notes</label>
             <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Optional note shown on the PO" />
+            <div className="muted" style={{ fontSize: 11, marginTop: 3 }}>Printed on the PDF the supplier gets, and in the Excel export.</div>
+          </div>
+
+          <div style={{ marginTop: 8 }}>
+            <label>Internal notes</label>
+            <textarea
+              value={internalNotes}
+              onChange={(e) => setInternalNotes(e.target.value)}
+              rows={3}
+              placeholder="Ours — chasing, variances, why this order looks the way it does"
+            />
+            <div className="muted" style={{ fontSize: 11, marginTop: 3 }}>Stays in the app. Never on the PO, the export or an email out.</div>
           </div>
 
           <div className="eyebrow" style={{ marginTop: 14, marginBottom: 6 }}>Line items</div>

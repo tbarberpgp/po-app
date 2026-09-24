@@ -1,0 +1,16 @@
+-- Somewhere to write about an order that is NOT the order.
+--
+-- `purchase_orders.notes` looks like a scratchpad and is anything but: it
+-- prints on the PO PDF (drawTotalsAndNotes in src/client/lib/po-pdf.ts) — the
+-- copy that goes to the supplier — it is a row in the per-PO Excel export, and
+-- the approver email replays it as "Note from <created_by>". The app sends the
+-- supplier nothing automatically, so searching for a send path finds nothing
+-- and the field reads as internal; the supplier copy is a manual download,
+-- which that search misses. Commercial commentary put there — chasing, a
+-- variance, an order approved months ago and never sent — reaches the supplier
+-- it is about, the next time anyone downloads the PO.
+--
+-- This column is the other half: visible on the order in the app, never on
+-- anything that leaves it. Supplier-facing renderers must keep reading `notes`
+-- alone; po-pdf.supplier-copy.test.ts fails if one of them starts reading this.
+ALTER TABLE purchase_orders ADD COLUMN internal_notes TEXT;
