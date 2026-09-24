@@ -1624,6 +1624,10 @@ pos.put("/:id", async (c) => {
   const body = await c.req.json<{
     supplier: string;
     notes?: string | null;
+    /** Our own commentary. Never leaves the app — see migration 0125. Absent
+     *  from the body means "not edited", which is NOT the same as cleared:
+     *  a caller that doesn't know about the field must not wipe it. */
+    internal_notes?: string | null;
     delivery_date?: string | null;
     category?: "materials" | "prelims";
     lines: CreatePOInput["lines"];
@@ -1675,13 +1679,19 @@ pos.put("/:id", async (c) => {
   const now = new Date().toISOString();
 
   // Header — status / approved-by / issued-at deliberately untouched.
+  // COALESCE on internal_notes, not the plain overwrite the other fields get:
+  // an older client, or any caller that simply doesn't send the field, would
+  // otherwise silently erase it on every edit. Clearing it is still possible —
+  // send an empty string rather than omitting the key.
   await c.env.DB.prepare(
     `UPDATE purchase_orders
         SET supplier = ?, total_value = ?, notes = ?, delivery_date = ?,
+            internal_notes = COALESCE(?, internal_notes),
             requires_approval = ?, approval_tier = ?, approval_reason = ?, category = ?
       WHERE id = ?`,
   ).bind(
     body.supplier, total, body.notes ?? null, body.delivery_date ?? null,
+    body.internal_notes === undefined ? null : (body.internal_notes?.trim() || ""),
     requiresApproval ? 1 : 0, tier, reason, category, id,
   ).run();
 

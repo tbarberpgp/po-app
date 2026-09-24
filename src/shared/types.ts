@@ -374,7 +374,16 @@ export type PurchaseOrder = {
   approval_tier: ApprovalTier | null;
   approval_reason: ApprovalReason | null;
   total_value: number;
+  /** SUPPLIER-FACING. Printed on the PO PDF (the copy that goes to the
+   *  supplier), a row in the per-PO Excel export, and replayed in the approver
+   *  email as "Note from <created_by>". Anything about a supplier that they
+   *  shouldn't read belongs in `internal_notes`. */
   notes: string | null;
+  /** Ours. Shown on the order in the app and nowhere else — no PDF, no export,
+   *  no email (migration 0125; po-pdf.supplier-copy.test.ts holds that line).
+   *  Empty string is a cleared note: the update route can't tell an omitted
+   *  field from an explicit null, so clearing sends "". */
+  internal_notes?: string | null;
   delivery_date: string | null;
   created_at: string;
   created_by: string;
@@ -1241,6 +1250,8 @@ export type CreatePOInput = {
 export type UpdatePOInput = {
   supplier: string;
   notes?: string | null;
+  /** Omit to leave it as it is; send "" to clear it. */
+  internal_notes?: string | null;
   delivery_date?: string | null;
   category?: "materials" | "prelims";
   lines: CreatePOInput["lines"];
