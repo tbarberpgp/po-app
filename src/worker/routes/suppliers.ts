@@ -18,11 +18,16 @@ suppliers.use("/*", async (c, next) => {
 /** List approved suppliers, with approved elements + a count of product-level
  * supplier entries that name them. */
 suppliers.get("/", async (c) => {
+  // NOCASE on the name: SQLite's default binary collation files every
+  // upper-case name ahead of the lower-case ones ("BOC Ltd" before "Bairds
+  // Windows Ltd"), which scatters the near-duplicate rows this register
+  // accumulates — "BARWELL SPARES & SERVICES LTD" and "Barwell Spares &
+  // Service Ltd" land in different halves of the list instead of adjacent.
   const rows = await c.env.DB.prepare(
     `SELECT s.*,
             (SELECT COUNT(*) FROM product_suppliers ps WHERE lower(ps.supplier_name) = lower(s.name)) AS product_supplier_count
      FROM suppliers s
-     ORDER BY (s.status = 'preferred') DESC, s.name`,
+     ORDER BY (s.status = 'preferred') DESC, s.name COLLATE NOCASE`,
   ).all<Record<string, unknown>>();
 
   const scopes = await c.env.DB.prepare(
