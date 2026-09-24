@@ -470,7 +470,6 @@ a{color:inherit;text-decoration:none}
 .metagrid .mi .v small{font-family:Inter;font-size:12px;color:var(--muted);font-weight:500}
 .donutwrap{display:flex;align-items:center;gap:22px}
 .donut{position:relative;flex:none;width:168px;height:168px}
-.donut svg{transform:rotate(-90deg)}
 .donut .ctr{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center}
 .donut .ctr .big{font-family:var(--serif);font-size:38px;font-weight:600;line-height:1}
 .donut .ctr .lbl{font-size:11px;color:var(--muted);font-weight:600;margin-top:2px}
@@ -653,9 +652,11 @@ a{color:inherit;text-decoration:none}
       <div class="donutwrap">
         <div class="donut">
           <svg width="168" height="168" viewBox="0 0 168 168">
+            <g transform="rotate(-90 84 84)">
             <circle cx="84" cy="84" r="70" fill="none" stroke="var(--soft)" stroke-width="20"/>
-            <circle id="dPass" cx="84" cy="84" r="70" fill="none" stroke="var(--pass)" stroke-width="20" stroke-linecap="butt"/>
-            <circle id="dProg" cx="84" cy="84" r="70" fill="none" stroke="var(--top)" stroke-width="20" stroke-linecap="butt"/>
+            <circle id="dPass" cx="84" cy="84" r="70" fill="none" stroke="var(--pass)" stroke-width="20" stroke-linecap="butt" stroke-dasharray="0 440"/>
+            <circle id="dProg" cx="84" cy="84" r="70" fill="none" stroke="var(--top)" stroke-width="20" stroke-linecap="butt" stroke-dasharray="0 440"/>
+            </g>
           </svg>
           <div class="ctr"><div class="big tnum" id="dPct">0%</div><div class="lbl">gates passed</div></div>
         </div>
@@ -735,23 +736,25 @@ a{color:inherit;text-decoration:none}
 <script>
 var Q = ${qjson};
 (function(){
+  // Each arc is a single dash placed by dashoffset. No CSS transforms on SVG
+  // shapes: Safari mis-renders them (the in-progress arc showed as a stray diamond).
   var C = 2*Math.PI*70, gap = 3;
   var pPass = Q.donut.passed/Q.totalGates, pProg = Q.donut.prog/Q.totalGates;
   var passEl = document.getElementById('dPass'), progEl = document.getElementById('dProg');
-  passEl.setAttribute('stroke-dasharray', C); progEl.setAttribute('stroke-dasharray', C);
-  progEl.style.transform = 'rotate('+ (pPass*360) +'deg)'; progEl.style.transformOrigin = '84px 84px';
+  var passLen = C*pPass, progLen = Math.max(0, C*pProg - gap);
+  progEl.style.strokeDashoffset = -(passLen + gap);
   var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion:reduce)').matches;
-  var passOff = C*(1-pPass), progOff = C*(1-pProg)+gap, pctv = Math.round(pPass*100);
+  var pctv = Math.round(pPass*100);
   document.getElementById('lgPass').textContent = Q.donut.passed;
   document.getElementById('lgProg').textContent = Q.donut.prog;
   document.getElementById('lgTodo').textContent = Q.donut.notStarted;
   document.getElementById('lgFail').textContent = Q.donut.failed;
   var pctEl = document.getElementById('dPct');
-  if(reduce){ passEl.style.strokeDashoffset = passOff; progEl.style.strokeDashoffset = progOff; pctEl.textContent = pctv+'%'; return; }
-  passEl.style.strokeDashoffset = C; progEl.style.strokeDashoffset = C;
-  passEl.style.transition = 'stroke-dashoffset 1.1s cubic-bezier(.22,1,.36,1)';
-  progEl.style.transition = 'stroke-dashoffset 1.1s cubic-bezier(.22,1,.36,1) .25s';
-  requestAnimationFrame(function(){ requestAnimationFrame(function(){ passEl.style.strokeDashoffset = passOff; progEl.style.strokeDashoffset = progOff; }); });
+  function paint(){ passEl.style.strokeDasharray = passLen+' '+C; progEl.style.strokeDasharray = progLen+' '+C; }
+  if(reduce){ paint(); pctEl.textContent = pctv+'%'; return; }
+  passEl.style.transition = 'stroke-dasharray 1.1s cubic-bezier(.22,1,.36,1)';
+  progEl.style.transition = 'stroke-dasharray 1.1s cubic-bezier(.22,1,.36,1) .25s';
+  requestAnimationFrame(function(){ requestAnimationFrame(paint); });
   var t0=null, dur=1100;
   function tick(ts){ if(!t0)t0=ts; var k=Math.min(1,(ts-t0)/dur); var e=1-Math.pow(1-k,3); pctEl.textContent=Math.round(e*pctv)+'%'; if(k<1)requestAnimationFrame(tick); }
   requestAnimationFrame(tick);
