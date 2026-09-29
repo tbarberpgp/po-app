@@ -1266,16 +1266,24 @@ function ApprovalRouteCard({ po }: { po: PurchaseOrder }) {
 }
 
 function ReasonExplainer({ po }: { po: PurchaseOrder }) {
-  // An order amended after sign-off can be perfectly ordinary — every line
-  // priced and within budget — so the lists below would both come up empty and
-  // the card would render as a heading with nothing under it.
-  if (po.approval_reason === "amended") {
-    return (
-      <p className="explainer" style={{ margin: 0 }}>
-        This PO had already been approved and was then amended, so it needs signing off again.
-        The Activity tab below has who changed it, when, and which lines moved.
-      </p>
-    );
+  // Reasons that aren't about the LINES. The two lists below read the order's
+  // own lines, so for any of these they both come up empty and the card
+  // renders as a heading with nothing under it — which is what a
+  // "retrospective" order has looked like all along.
+  const notAboutTheLines: Partial<Record<NonNullable<PurchaseOrder["approval_reason"]>, string>> = {
+    amended:
+      "This PO had already been approved and was then amended, so it needs signing off again."
+      + " The Activity list below has who changed it, when, and which lines moved.",
+    retrospective:
+      "This PO was raised against an invoice for goods that had already been received,"
+      + " so it is being signed off after the fact rather than before the order went out.",
+    raiser:
+      "Everything this person raises is sent for sign-off, whatever it contains —"
+      + " nothing about the order itself asked for a signature.",
+  };
+  const plainReason = po.approval_reason ? notAboutTheLines[po.approval_reason] : undefined;
+  if (plainReason) {
+    return <p className="explainer" style={{ margin: 0 }}>{plainReason}</p>;
   }
   const unpriced = po.lines.filter((l) => l.is_unpriced);
   // Flagged when raised, or over today — an approver deciding now needs to see
