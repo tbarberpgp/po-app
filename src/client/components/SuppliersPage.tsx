@@ -144,7 +144,7 @@ export function SuppliersPage({ me }: { me: CurrentUser | null }) {
 
   const visible = rows
     .filter((s) => statusFilter === "all" || s.status === statusFilter)
-    .filter((s) => !filter || (s.name + (s.contact_name ?? "") + (s.contact_email ?? "")).toLowerCase().includes(filter.toLowerCase()));
+    .filter((s) => !filter || (s.name + (s.contact_name ?? "") + (s.contact_email ?? "") + (s.pgp_account_number ?? "")).toLowerCase().includes(filter.toLowerCase()));
 
   // The register holds both kinds; show them as their own sections with the
   // columns that matter for each (materials: scope/credit/products, labour:
@@ -220,7 +220,7 @@ export function SuppliersPage({ me }: { me: CurrentUser | null }) {
             </button>
           </div>
           <input
-            placeholder="Filter by name / contact…"
+            placeholder="Filter by name / contact / account no…"
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
             style={{ width: 260 }}
@@ -308,6 +308,16 @@ export function SuppliersPage({ me }: { me: CurrentUser | null }) {
                         >
                           {s.contact_email ?? s.contact_name ?? s.contact_phone ?? "—"}
                         </div>
+                        {/* The account number they hold us under — on the row so it can be
+                            read out mid-call without opening the supplier. */}
+                        {s.pgp_account_number && (
+                          <div
+                            style={{ fontFamily: "ui-monospace, monospace", fontSize: 11, whiteSpace: "nowrap", marginTop: 2 }}
+                            title={`Our PGP account number with ${s.name}`}
+                          >
+                            A/C {s.pgp_account_number}
+                          </div>
+                        )}
                       </td>
                       <td className="num">
                         {s.credit_limit_gbp != null ? fmtMoney(s.credit_limit_gbp) : <span className="muted">—</span>}
@@ -420,6 +430,16 @@ export function SuppliersPage({ me }: { me: CurrentUser | null }) {
                         >
                           {s.contact_email ?? s.contact_name ?? s.contact_phone ?? "—"}
                         </div>
+                        {/* The account number they hold us under — on the row so it can be
+                            read out mid-call without opening the supplier. */}
+                        {s.pgp_account_number && (
+                          <div
+                            style={{ fontFamily: "ui-monospace, monospace", fontSize: 11, whiteSpace: "nowrap", marginTop: 2 }}
+                            title={`Our PGP account number with ${s.name}`}
+                          >
+                            A/C {s.pgp_account_number}
+                          </div>
+                        )}
                       </td>
                       <td style={{ whiteSpace: "nowrap" }} onClick={(e) => e.stopPropagation()}>
                         {canManage && (
@@ -583,6 +603,7 @@ function SupplierForm({
     address: initial?.address ?? "",
     vat_number: initial?.vat_number ?? "",
     utr: initial?.utr ?? "",
+    pgp_account_number: initial?.pgp_account_number ?? "",
     bank_account_name: initial?.bank_account_name ?? "",
     bank_sort_code: initial?.bank_sort_code ?? "",
     bank_account_number: initial?.bank_account_number ?? "",
@@ -621,6 +642,7 @@ function SupplierForm({
         address: form.address.trim() || null,
         vat_number: form.vat_number.trim() || null,
         utr: form.utr.trim() || null,
+        pgp_account_number: form.pgp_account_number.trim() || null,
         bank_account_name: form.bank_account_name.trim() || null,
         bank_sort_code: form.bank_sort_code.trim() || null,
         bank_account_number: form.bank_account_number.trim() || null,
@@ -734,7 +756,7 @@ function SupplierForm({
         </div>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginTop: 12 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1.2fr 1fr 1fr", gap: 12, marginTop: 12 }}>
         <div>
           <label>Supplier contact name</label>
           <input value={form.contact_name} onChange={(e) => setForm({ ...form, contact_name: e.target.value })} />
@@ -747,6 +769,19 @@ function SupplierForm({
           <label>Supplier contact phone</label>
           <input value={form.contact_phone} onChange={(e) => setForm({ ...form, contact_phone: e.target.value })} />
         </div>
+        <div>
+          <label>PGP account number</label>
+          <input
+            value={form.pgp_account_number}
+            onChange={(e) => setForm({ ...form, pgp_account_number: e.target.value })}
+            placeholder="e.g. POW001"
+            style={{ fontFamily: "ui-monospace, monospace" }}
+          />
+        </div>
+      </div>
+      <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+        The account number <b>this supplier</b> holds PGP under — quote it when you ring them
+        instead of making them search for us. Nothing to do with the bank account below.
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr", gap: 12, marginTop: 12 }}>
