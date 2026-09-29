@@ -31,8 +31,22 @@ export async function authMiddleware(
   let user: { email: string; name: string | null; role: Role; active: number } | null = null;
   let tableMissing = false;
   try {
+    // `users.email` is the primary key and SQLite compares it case-sensitively,
+    // so "JTong@…" and "jtong@…" are two rows — while this lookup, which
+    // lower()s both sides, matches both. Both writers (this file's
+    // auto-provision and the Admin → Users route) lower-case before inserting,
+    // so a duplicate only arrives from a hand-written D1 insert — but when one
+    // does exist, .first() without an ORDER BY could return either row, and a
+    // real account would intermittently come back as a `viewer`. That reads to
+    // the person as being locked out, and it clears up on its own, which is the
+    // worst way for a permissions bug to behave.
+    // Prefer the account somebody set up over the auto-provisioned twin, then an
+    // active one, then the oldest.
     user = await c.env.DB.prepare(
-      "SELECT email, name, role, active FROM users WHERE lower(email) = ?",
+      `SELECT email, name, role, active FROM users
+        WHERE lower(email) = ?
+        ORDER BY (COALESCE(created_by, '') <> 'auto') DESC, active DESC, created_at ASC
+        LIMIT 1`,
     )
       .bind(email)
       .first<{ email: string; name: string | null; role: Role; active: number }>();

@@ -37,6 +37,7 @@ import { WhatsNew } from "./components/WhatsNew";
 // actually opens /dashboard.
 const Dashboard = lazy(() => import("./components/Dashboard").then((m) => ({ default: m.Dashboard })));
 import { Sidebar } from "./components/Shell";
+import { ScreenBoundary } from "./components/ScreenBoundary";
 import { api } from "./lib/api";
 import type { CurrentUser } from "../shared/types";
 import { ROLES, ROLE_LABELS, type Role } from "../shared/permissions";
@@ -149,41 +150,46 @@ export function App() {
             <div className="flash error">{error}</div>
           </div>
         )}
-        <Suspense fallback={<div className="empty" style={{ padding: 40 }}>Loading…</div>}>
-          <Routes>
-            <Route path="/" element={<ProjectsList me={effectiveMe} />} />
-            <Route path="/dashboard" element={<Dashboard me={effectiveMe} />} />
-            <Route path="/projects/:id" element={<ProjectDetail me={effectiveMe} />} />
-            <Route path="/projects/:id/qitp" element={<QitpDashboard me={effectiveMe} />} />
-            <Route path="/projects/:id/qitp/print" element={<QitpPrint />} />
-            <Route path="/projects/:id/new-po" element={<NewPO />} />
-            <Route path="/projects/:id/new-plant-po" element={<NewPlantPO />} />
-            <Route path="/pos" element={<POsList me={effectiveMe} />} />
-            <Route path="/pos/:id" element={<POView me={effectiveMe} />} />
-            <Route path="/approvals" element={<ApprovalsInbox me={effectiveMe} />} />
-            <Route path="/approvals/:id" element={<POView me={effectiveMe} />} />
-            <Route path="/admin" element={<Admin me={effectiveMe} />} />
-            <Route path="/deleted-projects" element={<DeletedProjects me={effectiveMe} />} />
-            <Route path="/products" element={<ProductLibrary me={effectiveMe} />} />
-            <Route path="/suppliers" element={<SuppliersPage me={effectiveMe} />} />
-            <Route path="/accounts" element={<Accounts me={effectiveMe} />} />
-            <Route path="/deliveries" element={<DeliveriesWorkspace me={effectiveMe} />} />
-            <Route path="/operatives" element={<Operatives me={effectiveMe} />} />
-            <Route path="/operatives/bulk-upload" element={<OperativesBulkUpload me={effectiveMe} />} />
-            <Route path="/plant" element={<OwnedPlantPage me={effectiveMe} />} />
-            <Route path="/quotes/:quoteId" element={<QuoteReview me={effectiveMe} />} />
-            <Route path="/applications" element={<ApplicationsWorkspace me={effectiveMe} />} />
-            <Route path="/applications/:id" element={<AfpView me={effectiveMe} />} />
-            <Route path="/groups/:groupId" element={<GroupPage me={effectiveMe} />} />
-            <Route path="/calendar" element={<CalendarPage />} />
-            <Route path="/programme" element={<ProgrammePortfolio />} />
-            <Route path="/reports" element={<Reports />} />
-            <Route path="/reports/:id" element={<ReportView />} />
-            <Route path="/guide" element={<Guide me={effectiveMe} />} />
-            <Route path="/whatsnew" element={<WhatsNew />} />
-            <Route path="*" element={<NoMatch />} />
-          </Routes>
-        </Suspense>
+        {/* A screen that throws — most often a lazy chunk that never arrived on a
+            weak signal — used to take the whole tree down and leave a white page.
+            Keyed on the path so moving elsewhere clears it. */}
+        <ScreenBoundary resetKey={location.pathname}>
+          <Suspense fallback={<div className="empty" style={{ padding: 40 }}>Loading…</div>}>
+            <Routes>
+              <Route path="/" element={<ProjectsList me={effectiveMe} />} />
+              <Route path="/dashboard" element={<Dashboard me={effectiveMe} />} />
+              <Route path="/projects/:id" element={<ProjectDetail me={effectiveMe} />} />
+              <Route path="/projects/:id/qitp" element={<QitpDashboard me={effectiveMe} />} />
+              <Route path="/projects/:id/qitp/print" element={<QitpPrint />} />
+              <Route path="/projects/:id/new-po" element={<NewPO />} />
+              <Route path="/projects/:id/new-plant-po" element={<NewPlantPO />} />
+              <Route path="/pos" element={<POsList me={effectiveMe} />} />
+              <Route path="/pos/:id" element={<POView me={effectiveMe} />} />
+              <Route path="/approvals" element={<ApprovalsInbox me={effectiveMe} />} />
+              <Route path="/approvals/:id" element={<POView me={effectiveMe} />} />
+              <Route path="/admin" element={<Admin me={effectiveMe} />} />
+              <Route path="/deleted-projects" element={<DeletedProjects me={effectiveMe} />} />
+              <Route path="/products" element={<ProductLibrary me={effectiveMe} />} />
+              <Route path="/suppliers" element={<SuppliersPage me={effectiveMe} />} />
+              <Route path="/accounts" element={<Accounts me={effectiveMe} />} />
+              <Route path="/deliveries" element={<DeliveriesWorkspace me={effectiveMe} />} />
+              <Route path="/operatives" element={<Operatives me={effectiveMe} />} />
+              <Route path="/operatives/bulk-upload" element={<OperativesBulkUpload me={effectiveMe} />} />
+              <Route path="/plant" element={<OwnedPlantPage me={effectiveMe} />} />
+              <Route path="/quotes/:quoteId" element={<QuoteReview me={effectiveMe} />} />
+              <Route path="/applications" element={<ApplicationsWorkspace me={effectiveMe} />} />
+              <Route path="/applications/:id" element={<AfpView me={effectiveMe} />} />
+              <Route path="/groups/:groupId" element={<GroupPage me={effectiveMe} />} />
+              <Route path="/calendar" element={<CalendarPage />} />
+              <Route path="/programme" element={<ProgrammePortfolio />} />
+              <Route path="/reports" element={<Reports />} />
+              <Route path="/reports/:id" element={<ReportView />} />
+              <Route path="/guide" element={<Guide me={effectiveMe} />} />
+              <Route path="/whatsnew" element={<WhatsNew />} />
+              <Route path="*" element={<NoMatch />} />
+            </Routes>
+          </Suspense>
+        </ScreenBoundary>
       </div>
     </div>
   );
