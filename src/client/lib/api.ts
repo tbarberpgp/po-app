@@ -426,6 +426,8 @@ export const api = {
     jfetch<{
       budget: number; po_committed: number; po_count: number;
       labour_committed: number; labour_app_count: number;
+      /** Hire accrued past its own order, and the pot's spend / overrun. */
+      plant_beyond_orders: number; spend: number; overrun: number;
       plant_accrued: number; plant_count: number;
       by_type: Array<{ type: string; committed: number; po_count: number }>;
       headings: Array<{ name: string; budget: number; committed: number; po_count: number; remaining: number }>;
@@ -1517,7 +1519,9 @@ export const api = {
         /** `committed` and `paid` are the whole job's — these are their halves. */
         po_committed: number; labour_committed: number;
         po_paid: number; labour_paid: number;
-        prelim_budget: number; prelim_committed: number;
+        /** The prelims pot: budget, spend against it, and the part past it
+         *  that `ffc` carries. */
+        prelim_budget: number; prelim_committed: number; prelims_overrun: number; prelim_po_count: number;
       }>;
       key_dates: Array<{ date: string; entry_type: string; app_number: number | null; project_code: string; project_name: string }>;
       cash_monthly: Array<{ month: string; cash_in: number; cash_out: number; invoices_due: number; labour_due?: number; labour_applied?: number; receivables_due?: number; revenue: number }>;

@@ -4,6 +4,8 @@ import { requirePermission } from "../auth";
 import { parsePaymentTerms, expectedDueDate } from "./invoices";
 import { LABOUR_POSITION, PRELIM_LABOUR_BY_PROJECT } from "../labour-expended";
 import { labourOutturn, type LabourPositionRow } from "../../shared/labour-cost";
+import { PLANT_ON_ORDER, PRELIMS_POSITION, PRELIM_LINE, prelimRow } from "../prelims-position";
+import { plantAccrued, plantBeyondOrders, prelimsOutturn, type PlantOnOrder } from "../../shared/prelims-cost";
 
 // Admin reporting dashboard — org-wide (or single-project) aggregates across
 // projects, POs, commercials, operations and operative compliance.
@@ -33,7 +35,6 @@ reports.get("/dashboard", async (c) => {
   // Convenience: a clause + binds for "this PO belongs to the selected project".
   const poProj = pid ? "AND po.project_id = ?" : "";
   const aProj = pid ? "AND a.project_id = ?" : "";
-  const sProj = pid ? "AND s.project_id = ?" : "";
   const siProj = pid ? "AND si.project_id = ?" : "";
   const plProj = pid ? "AND pl.project_id = ?" : "";
   const b = (...extra: unknown[]) => (pid ? [pid, ...extra] : extra);
@@ -43,9 +44,9 @@ reports.get("/dashboard", async (c) => {
   // another's result, so fire them all in one parallel batch instead.
   const [
     proj, withBoq, poStatus, paidRow, poMonthly,
-    prelimBudget, prelimCommitted, apps, ops, signinDaily,
+    apps, ops, signinDaily,
     opv, qrows, ramsRow, xeroConn, xeroPo, byProject, plantTests,
-    prelimBudgetPP, prelimCommittedPP, keyDates,
+    keyDates,
     plantHire, signals, worstCard,
     afpPaidMonthly, poPaidMonthly, revenueMonthly,
   ] = await Promise.all([
@@ -86,22 +87,6 @@ reports.get("/dashboard", async (c) => {
           AND po.created_at >= date('now', ?, 'start of month')
         GROUP BY month ORDER BY month`,
     ).bind(...b(`-${months - 1} months`)).all<{ month: string; count: number; value: number }>(),
-    // ── Prelims ─────────────────────────────────────────────────────────────
-    db.prepare(
-      `SELECT COALESCE(SUM(m.material_total_cost), 0) AS budget
-         FROM materials m JOIN material_snapshots s ON s.id = m.snapshot_id
-         LEFT JOIN elements e ON e.code = m.element_code
-         JOIN projects p ON p.id = s.project_id
-        WHERE s.is_active = 1 AND p.deleted_at IS NULL AND p.id <> 'sandbox' ${sProj}
-          AND (lower(COALESCE(e.name, '')) LIKE '%prelim%' OR lower(COALESCE(m.type, '')) LIKE '%prelim%')`,
-    ).bind(...b()).first<{ budget: number }>(),
-    db.prepare(
-      `SELECT COALESCE(SUM(po.total_value), 0) AS c
-         FROM purchase_orders po JOIN projects p ON p.id = po.project_id
-        WHERE p.deleted_at IS NULL AND p.id <> 'sandbox' AND po.category = 'prelims'
-          AND COALESCE(po.order_type,'standard') != 'call_off'
-          AND po.status IN ('approved','issued','pending_approval') ${poProj}`,
-    ).bind(...b()).first<{ c: number }>(),
     // ── Applications (applied vs certified, by direction) ───────────────────
     db.prepare(
       `SELECT a.direction AS direction,
@@ -182,23 +167,6 @@ reports.get("/dashboard", async (c) => {
          FROM owned_plant_tests t JOIN owned_plant op ON op.id = t.plant_id
         WHERE op.archived_at IS NULL ${pid ? "AND op.assigned_project_id = ?" : ""}`,
     ).bind(...(pid ? [pid] : [])).all<{ expiry_date: string | null }>().catch(() => ({ results: [] as Array<{ expiry_date: string | null }> })),
-    // ── Per-project prelims: budget (from prelim materials) + committed (prelim POs) ──
-    db.prepare(
-      `SELECT s.project_id AS pid, COALESCE(SUM(m.material_total_cost), 0) AS budget
-         FROM materials m JOIN material_snapshots s ON s.id = m.snapshot_id
-         LEFT JOIN elements e ON e.code = m.element_code
-         JOIN projects p ON p.id = s.project_id
-        WHERE s.is_active = 1 AND p.deleted_at IS NULL AND p.id <> 'sandbox'
-          AND (lower(COALESCE(e.name, '')) LIKE '%prelim%' OR lower(COALESCE(m.type, '')) LIKE '%prelim%')
-        GROUP BY s.project_id`,
-    ).all<{ pid: string; budget: number }>().catch(() => ({ results: [] as Array<{ pid: string; budget: number }> })),
-    db.prepare(
-      `SELECT po.project_id AS pid, COALESCE(SUM(po.total_value), 0) AS committed, COUNT(*) AS n
-         FROM purchase_orders po JOIN projects p ON p.id = po.project_id
-        WHERE p.deleted_at IS NULL AND p.id <> 'sandbox' AND po.category = 'prelims'
-          AND po.status IN ('approved','issued','pending_approval')
-        GROUP BY po.project_id`,
-    ).all<{ pid: string; committed: number; n: number }>().catch(() => ({ results: [] as Array<{ pid: string; committed: number; n: number }> })),
     // ── Upcoming key dates (next 14 days, from the valuation schedule) ──────────
     db.prepare(
       `SELECT v.date AS date, v.entry_type AS entry_type, v.app_number AS app_number,
@@ -322,7 +290,7 @@ reports.get("/dashboard", async (c) => {
   // + unexpected spend (off-BOQ unpriced POs + committed over a line's budget)
   // + certified labour past its budget (shared/labour-cost.ts).
   // Savings reuse the "latest applied live price/rate" subqueries from materials.ts.
-  const [contractRows, varSellRows, varMatRows, varLabRows, matSavRows, contRows, labPosRows, prelimLabRows, labPaidRows, unpricedRows, committedItemRows, budgetItemRows] = await Promise.all([
+  const [contractRows, varSellRows, varMatRows, varLabRows, matSavRows, contRows, labPosRows, prelimLabRows, labPaidRows, unpricedRows, committedItemRows, budgetItemRows, prelimsRows, plantRows] = await Promise.all([
     db.prepare(
       `SELECT sn.project_id AS pid, c.value AS value, c.cost AS cost
          FROM project_commercials c JOIN material_snapshots sn ON sn.id = c.snapshot_id
@@ -348,7 +316,8 @@ reports.get("/dashboard", async (c) => {
                    AND mlp.unit_price <= COALESCE(m.cost, mlp.unit_price) * 5
                  ORDER BY mlp.applied_at DESC LIMIT 1), m.cost)) * COALESCE(m.total_units, 0)), 0) AS sav
          FROM materials m JOIN material_snapshots sn ON sn.id = m.snapshot_id
-        WHERE sn.is_active = 1 AND m.cost IS NOT NULL
+         LEFT JOIN elements e ON e.code = m.element_code
+        WHERE sn.is_active = 1 AND m.cost IS NOT NULL AND NOT ${prelimRow()}
         GROUP BY sn.project_id`,
     ).all<{ pid: string; sav: number }>(),
     db.prepare("SELECT key, value FROM settings WHERE key LIKE 'contingency:%'")
@@ -374,10 +343,13 @@ reports.get("/dashboard", async (c) => {
       // Exclude call-offs: a framework PO already reserves the value and its
       // call-offs draw within it (same rule as the committed-value query above).
       // Counting both would double-book the spend.
+      // Prelim order lines are left out: they draw on the prelims budget and
+      // the pot below measures them against it (see projects.ts's list).
       `SELECT po.project_id AS pid, COALESCE(SUM(pl.line_total), 0) AS v
          FROM po_lines pl JOIN purchase_orders po ON po.id = pl.po_id
         WHERE po.status IN ('approved','issued','pending_approval') AND pl.is_unpriced = 1
           AND COALESCE(po.order_type,'standard') != 'call_off'
+          AND NOT ${PRELIM_LINE}
         GROUP BY po.project_id`,
     ).all<{ pid: string; v: number }>(),
     db.prepare(
@@ -388,11 +360,20 @@ reports.get("/dashboard", async (c) => {
         GROUP BY po.project_id, lower(pl.item)`,
     ).all<{ pid: string; item: string; v: number }>(),
     db.prepare(
+      // Prelim rows carry no material budget here, so spend against them is
+      // never booked as material overspend — the prelims pot measures it.
       `SELECT sn.project_id AS pid, lower(m.item) AS item, COALESCE(SUM(m.total_units * m.cost), 0) AS v
          FROM materials m JOIN material_snapshots sn ON sn.id = m.snapshot_id
-        WHERE sn.is_active = 1 AND m.cost IS NOT NULL
+         LEFT JOIN elements e ON e.code = m.element_code
+        WHERE sn.is_active = 1 AND m.cost IS NOT NULL AND NOT ${prelimRow()}
         GROUP BY sn.project_id, lower(m.item)`,
     ).all<{ pid: string; item: string; v: number }>(),
+    // The prelims pot per project — budget, orders, certified prelim labour —
+    // and plant hire on order, from the definition the project's Prelims tab
+    // and forecast read (worker/prelims-position.ts).
+    db.prepare(PRELIMS_POSITION)
+      .all<{ pid: string; budget: number; row_count: number; orders: number; po_count: number; labour: number }>(),
+    db.prepare(PLANT_ON_ORDER).all<PlantOnOrder & { pid: string }>(),
   ]);
   const sumMap = (rows: { results: Array<{ pid: string; v: number }> }) => {
     const m = new Map<string, number>(); for (const r of rows.results) m.set(r.pid, r.v); return m;
@@ -414,6 +395,9 @@ reports.get("/dashboard", async (c) => {
     labourRows.set(r.pid, rows);
   }
   const prelimLabour = sumMap(prelimLabRows), labourPaid = sumMap(labPaidRows);
+  const prelimsPot = new Map(prelimsRows.results.map((r) => [r.pid, r]));
+  const plantByPid = new Map<string, PlantOnOrder[]>();
+  for (const r of plantRows.results) plantByPid.set(r.pid, [...(plantByPid.get(r.pid) ?? []), r]);
   const conting = new Map<string, number>();
   for (const r of contRows.results) { const n = Number(r.value); conting.set(r.key.slice("contingency:".length), Number.isFinite(n) ? n : 0); }
   // Unexpected spend per project: off-BOQ unpriced spend + committed-above-budget
@@ -442,7 +426,13 @@ reports.get("/dashboard", async (c) => {
     const lRows = labourRows.get(id) ?? [];
     const lSav = lRows.reduce((s, r) => s + (r.saving ?? 0), 0);
     const labour = labourOutturn(lRows, vLab.get(id) ?? 0);
-    const ffc = contractCost + (vMat.get(id) ?? 0) + (vLab.get(id) ?? 0) - (mSav.get(id) ?? 0) - lSav + (conting.get(id) ?? 0) + unexpected + labour.overrun;
+    const pot = prelimsPot.get(id);
+    const prelims = prelimsOutturn({
+      budget: pot?.budget ?? 0, orders: pot?.orders ?? 0, labour: pot?.labour ?? 0,
+      plant: plantBeyondOrders(plantByPid.get(id) ?? [], today),
+    });
+    const ffc = contractCost + (vMat.get(id) ?? 0) + (vLab.get(id) ?? 0) - (mSav.get(id) ?? 0) - lSav + (conting.get(id) ?? 0) + unexpected
+      + labour.overrun + prelims.overrun;
     return {
       contract_value: r2(contractValue),
       contract_cost: r2(contractCost),
@@ -456,11 +446,14 @@ reports.get("/dashboard", async (c) => {
       // Labour the job owes: everything certified against the labour budget,
       // plus prelim-tagged claims, which draw on the prelims allowance instead.
       labour_committed: r2(labour.certified + (prelimLabour.get(id) ?? 0)),
+      // The prelims pot, as the project's Prelims tab shows it: its budget, what
+      // has been spent against it, and the part past it that forecast cost carries.
+      prelim_budget: prelims.budget,
+      prelim_committed: prelims.spend,
+      prelims_overrun: prelims.overrun,
+      prelim_po_count: pot?.po_count ?? 0,
     };
   };
-  const prelimBudgetMap = new Map(prelimBudgetPP.results.map((r) => [r.pid, r.budget]));
-  const prelimCommittedMap = new Map(prelimCommittedPP.results.map((r) => [r.pid, r.committed]));
-  const prelimCountMap = new Map(prelimCommittedPP.results.map((r) => [r.pid, r.n]));
   const byProjectEnriched = byProject.results.map((p) => {
     const com = commercialFor(p.id);
     const lPaid = r2(labourPaid.get(p.id) ?? 0);
@@ -475,22 +468,16 @@ reports.get("/dashboard", async (c) => {
       po_paid: p.paid,
       labour_paid: lPaid,
       paid: r2(p.paid + lPaid),
-      prelim_budget: r2(prelimBudgetMap.get(p.id) ?? 0),
-      prelim_committed: r2(prelimCommittedMap.get(p.id) ?? 0),
     };
   }).sort((a, b) => b.committed - a.committed || a.code.localeCompare(b.code));
-  const prelimPoCount = byProjectEnriched.reduce((s, p) => s + (prelimCountMap.get(p.id) ?? 0), 0);
-  // Accrued plant-hire cost (mirrors the project Prelims tab calc).
-  let plantAccrued = 0;
-  for (const pl of plantHire.results) {
-    if (pl.day_rate == null || !pl.on_hire_from) continue;
-    const from = new Date(pl.on_hire_from + "T00:00:00").getTime();
-    const to = new Date((pl.off_hire_to ?? today) + "T00:00:00").getTime();
-    if (Number.isNaN(from) || Number.isNaN(to)) continue;
-    const days = Math.max(1, Math.floor((to - from) / 86_400_000) + 1);
-    const units = pl.rate_unit === "week" ? Math.ceil(days / 7) : days;
-    plantAccrued += units * pl.day_rate;
-  }
+  // The portfolio's prelims card: the per-project pots added up, so it reads
+  // the same budget and spend as each project's own Prelims tab.
+  const prelimTotals = byProjectEnriched.reduce(
+    (a, p) => ({ budget: a.budget + p.prelim_budget, spent: a.spent + p.prelim_committed, pos: a.pos + p.prelim_po_count }),
+    { budget: 0, spent: 0, pos: 0 },
+  );
+  // Accrued plant-hire cost — the Prelims tab's cross-check, on its calculation.
+  const plantAccruedTotal = plantHire.results.reduce((s, pl) => s + plantAccrued(pl, today), 0);
   // The single most-pressing qualification card, "PASMA · P. Shah · expired".
   let worstCardLabel: string | null = null;
   if (worstCard?.expiry_date) {
@@ -626,7 +613,7 @@ reports.get("/dashboard", async (c) => {
       by_status: poStatus.results,
       monthly: poMonthly.results,
     },
-    prelims: { budget: prelimBudget?.budget ?? 0, committed: prelimCommitted?.c ?? 0, po_count: prelimPoCount, plant_accrued: r2(plantAccrued) },
+    prelims: { budget: r2(prelimTotals.budget), committed: r2(prelimTotals.spent), po_count: prelimTotals.pos, plant_accrued: r2(plantAccruedTotal) },
     applications: { client: appByDir("outgoing"), labour: appByDir("incoming_labour") },
     operations: {
       on_site_now: ops?.on_site_now ?? 0,

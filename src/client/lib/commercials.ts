@@ -10,6 +10,7 @@ import type {
 } from "../../shared/types";
 import { MONEY_EPSILON, netBudgetUnits, pricedBudget } from "../../shared/budget";
 import { labourOutturn, type LabourPositionRow } from "../../shared/labour-cost";
+import { prelimsOutturn } from "../../shared/prelims-cost";
 import { fmtMoney } from "./api";
 import type { DrillColumn } from "../components/DrillPanel";
 
@@ -48,6 +49,12 @@ export type Forecast = {
   /** Labour certified to date against the labour budget, and that budget — the
    *  Labour subtab's Expended and Total labour. */
   labourCertified: number; labourBudget: number;
+  /** What forecast cost carries on top of the prelims budget: the prelims pot's
+   *  spend (orders, certified prelim labour, plant hire past its order) past
+   *  that budget. Never negative — see shared/prelims-cost.ts. */
+  prelimsOverrun: number;
+  /** The pot's spend and budget — the Prelims tab's Committed and budget. */
+  prelimsSpend: number; prelimsBudget: number;
   /** Budget removed from the forecast cost by omitted materials (whole lines +
    *  the omitted part of partial omissions), at the BOQ rate. */
   omittedValue: number;
@@ -336,6 +343,16 @@ export function accumulateMaterials(scopes: MaterialScope[]): AccumulatedMateria
   return [...by.values()];
 }
 
+/** A bill line that is a prelims budget line — the test the server applies
+ *  (worker/prelims-position.ts `prelimRow`) and the PO form offers headings by.
+ *  Prelim rows are measured by the prelims pot against the prelims budget, so
+ *  the material levers — quote savings, overspend — leave them out: counting
+ *  them in both would book the same prelims money twice. */
+export const isPrelimMaterial = (m: Pick<MaterialWithCommitment, "element_name" | "type">): boolean =>
+  /prelim/i.test(m.element_name ?? "") || /prelim/i.test(m.type ?? "");
+const withoutPrelims = (scopes: MaterialScope[]): MaterialScope[] =>
+  scopes.map((g) => ({ ...g, mats: g.mats.filter((m) => !isPrelimMaterial(m)) }));
+
 /** Committed spend above budget — measured on the ACCUMULATED material, never on
  *  a single row. A material counts as overspent only once everything the job
  *  holds for it is added up: every line in the bill, and every block in the
@@ -345,7 +362,7 @@ export function accumulateMaterials(scopes: MaterialScope[]): AccumulatedMateria
  *  has always shown the merged line. Scope is the caller's: a block's own page
  *  passes its rows and still sees its own over-run. */
 export function materialOverspendOf(scopes: MaterialScope[]): number {
-  return accumulateMaterials(scopes).reduce((s, a) => s + Math.max(0, a.committed - a.budget), 0);
+  return accumulateMaterials(withoutPrelims(scopes)).reduce((s, a) => s + Math.max(0, a.committed - a.budget), 0);
 }
 
 export function summariseMaterials(mats: MaterialWithCommitment[], unpricedSpend: number): Summary {
@@ -408,7 +425,7 @@ export function quoteSavingsOf(mats: MaterialWithCommitment[]): number {
   // figures use, so a cheaper substitution pulls through to the forecast just
   // like a cheaper quote. A line with neither buys at BOQ cost (delta 0).
   return mats
-    .filter((m) => !m.omitted && m.cost != null)
+    .filter((m) => !m.omitted && m.cost != null && !isPrelimMaterial(m))
     .reduce((s, m) => {
       const buy = effectiveSpendRate(m);
       if (buy <= 0) return s; // zero-rate data can't claim a 100% saving
@@ -436,6 +453,20 @@ export function omittedMaterialValue(mats: MaterialWithCommitment[]): number {
 export const variationLabourBudget = (variations: Variation[]): number =>
   variations.reduce((s, v) => s + (v.labour_budget ?? 0), 0);
 
+/** The Prelims tab's pot as `/prelims` returns it — the fields the forecast and
+ *  its drill read. */
+export type PrelimsSummary = {
+  budget: number;
+  po_committed: number;
+  labour_committed: number;
+  plant_beyond_orders?: number;
+  headings?: Array<{ name: string; budget: number; committed: number }>;
+};
+
+/** The pot's outturn, worked out by the one shared rule (shared/prelims-cost). */
+export const prelimsOf = (p: PrelimsSummary | null | undefined) =>
+  prelimsOutturn(p ? { budget: p.budget, orders: p.po_committed, labour: p.labour_committed, plant: p.plant_beyond_orders ?? 0 } : null);
+
 /** Certified prelim-tagged labour claims — a subcontract PM's time and the like,
  *  drawn on the Preliminaries allowance rather than the labour BOQ, so it isn't
  *  labour expended. It is still money the job owes, so cost-to-date counts it.
@@ -458,6 +489,8 @@ export function computeForecast(input: {
   /** The Labour subtab's per-section position (`/labour-by-cost-code`). Left
    *  out, certified labour doesn't reach the forecast — which is how it was. */
   labour?: LabourPositionRow[];
+  /** The Prelims tab's pot (`/prelims`). Left out, prelims add nothing. */
+  prelims?: PrelimsSummary | null;
 }): Forecast {
   const { commercials, variations, contractItems, afps, mats, contingency, summary } = input;
   const total = commercials.find((r) => r.is_total === 1);
@@ -486,7 +519,12 @@ export function computeForecast(input: {
   // total doesn't hold. Without it the forecast kept every labour overrun off
   // the books and GP% kept margin the job was no longer making.
   const labour = labourOutturn(input.labour ?? [], variationLabourBudget(variations));
-  const ffc = contractCost + varCost - materialSavings - labourSavings - omittedValue + contingency + unexpectedSpend + labour.overrun;
+  // Prelims past the prelims budget. Prelim orders no longer sit in unexpected
+  // spend (the unpriced list leaves them out), so this is the only place they
+  // reach forecast cost — and only what the pot's spend exceeds its budget by.
+  const prelims = prelimsOf(input.prelims);
+  const ffc = contractCost + varCost - materialSavings - labourSavings - omittedValue + contingency + unexpectedSpend
+    + labour.overrun + prelims.overrun;
   const forecastProfit = ffa - ffc;
   const forecastGpPct = ffa > 0 ? forecastProfit / ffa : null;
 
@@ -501,6 +539,7 @@ export function computeForecast(input: {
     ffa, ffc, forecastProfit, forecastGpPct, contingency,
     materialSavings, labourSavings, varProfit, unexpectedSpend, omittedValue,
     labourOverrun: labour.overrun, labourCertified: labour.certified, labourBudget: labour.budget,
+    prelimsOverrun: prelims.overrun, prelimsSpend: prelims.spend, prelimsBudget: prelims.budget,
     unpricedSpend: summary.unpriced_spend, materialOverspend: summary.material_overspend,
     appliedValue, certifiedValue, varApplied, varCertified,
   };
@@ -513,7 +552,7 @@ export function computeForecast(input: {
  *  too, or the tile and the Forecast outturn row start telling different
  *  stories, which is what contingency did until 2026-09-03. */
 export const totalChange = (f: Forecast): number =>
-  f.materialSavings + f.labourSavings - f.labourOverrun + f.varProfit + f.omittedValue - f.unexpectedSpend - f.contingency;
+  f.materialSavings + f.labourSavings - f.labourOverrun - f.prelimsOverrun + f.varProfit + f.omittedValue - f.unexpectedSpend - f.contingency;
 
 /** The Profit/Loss from Labour lever: live-rate savings less what certified
  *  labour has cost past its budget. One number, so the tile, its drill and
@@ -533,6 +572,9 @@ export function addForecasts(a: Forecast, b: Forecast): Forecast {
     labourOverrun: a.labourOverrun + b.labourOverrun,
     labourCertified: a.labourCertified + b.labourCertified,
     labourBudget: a.labourBudget + b.labourBudget,
+    prelimsOverrun: a.prelimsOverrun + b.prelimsOverrun,
+    prelimsSpend: a.prelimsSpend + b.prelimsSpend,
+    prelimsBudget: a.prelimsBudget + b.prelimsBudget,
     varProfit: a.varProfit + b.varProfit,
     unexpectedSpend: a.unexpectedSpend + b.unexpectedSpend,
     omittedValue: a.omittedValue + b.omittedValue,
@@ -550,6 +592,7 @@ export const sumForecasts = (fs: Forecast[]): Forecast =>
     hasContract: false, ffa: 0, ffc: 0, forecastProfit: 0, forecastGpPct: null, contingency: 0,
     materialSavings: 0, labourSavings: 0, varProfit: 0, unexpectedSpend: 0, omittedValue: 0,
     labourOverrun: 0, labourCertified: 0, labourBudget: 0,
+    prelimsOverrun: 0, prelimsSpend: 0, prelimsBudget: 0,
     unpricedSpend: 0, materialOverspend: 0,
     appliedValue: 0, certifiedValue: 0, varApplied: 0, varCertified: 0,
   });
@@ -593,20 +636,10 @@ export type DrillBody = {
 const money = (v: unknown) => fmtMoney(Number(v) || 0);
 const qtyFmt = (v: unknown) => (v == null || v === "" ? "—" : Number(v).toLocaleString("en-GB", { maximumFractionDigits: 2 }));
 const sum = (rows: Array<Record<string, unknown>>, key: string) => rows.reduce((s, r) => s + (Number(r[key]) || 0), 0);
-const categoryFmt = (v: unknown) => (v === "prelims" ? "Prelim" : "Material");
-/** How much of a set of off-BOQ lines sits on PRELIM orders. Prelims are
- *  budgeted separately (Commercials → Prelims), so this slice of the figure is
- *  not unbudgeted material spend in the way the rest of it is. */
-const prelimTotal = (lines: UnpricedLine[]) =>
-  lines.reduce((s, l) => s + (l.category === "prelims" ? (l.line_total ?? 0) : 0), 0);
-const prelimSuffix = (lines: UnpricedLine[]) => {
-  const p = prelimTotal(lines);
-  return p > 0.005
-    ? ` Of this, ${fmtMoney(p)} is on prelim orders (welfare, plant, scaffold), which carry their own Preliminaries budget.`
-    : "";
-};
-const unpricedNote = (lines: UnpricedLine[]) =>
-  `Purchase-order lines raised outside the priced BOQ (call-offs excluded).${prelimSuffix(lines)}`;
+/** Where prelim orders went — they used to be listed among the off-BOQ lines. */
+const PRELIMS_ELSEWHERE = " Prelim orders aren't here: they draw on the prelims budget and are measured against it under Profit/Loss from Prelims.";
+const unpricedNote = () =>
+  `Purchase-order lines raised outside the priced BOQ (call-offs excluded).${PRELIMS_ELSEWHERE}`;
 
 /** Priced material budget = Σ BOQ qty × BOQ cost over priced lines. */
 export function pricedBudgetDrill(mats: MaterialWithCommitment[]): DrillBody {
@@ -684,7 +717,7 @@ export function materialSavingsDrill(mats: MaterialWithCommitment[]): DrillBody 
   // Same buy-rate basis as quoteSavingsOf: applied quote price first, else the
   // approved substitution's rate — so the drill's rows sum to the headline.
   const rows = mats
-    .filter((m) => !m.omitted && m.cost != null)
+    .filter((m) => !m.omitted && m.cost != null && !isPrelimMaterial(m))
     .map((m) => {
       const buy = effectiveSpendRate(m);
       return {
@@ -744,6 +777,33 @@ export function labourDrill(items: ContractItem[], rows: LabourPositionRow[], va
   };
 }
 
+/** Profit / loss from prelims: the pot's spend per heading against its budget.
+ *  Measured as one pot, so only the total past the budget reaches forecast
+ *  cost — a heading over its own line while the pot has room adds nothing. */
+export function prelimsDrill(p: PrelimsSummary | null | undefined): DrillBody {
+  const o = prelimsOf(p);
+  const rows: Array<Record<string, unknown>> = (p?.headings ?? [])
+    .filter((h) => Math.abs(h.budget) > 0.005 || Math.abs(h.committed) > 0.005)
+    .map((h) => ({ what: h.name, budget: h.budget, spent: h.committed }));
+  if (o.plant > 0.005) rows.push({ what: "Plant hire kept past its order", budget: 0, spent: o.plant });
+  // A bill with no prelim rows takes its budget from the cost sheet's one
+  // Preliminaries line, which no heading holds.
+  const unheld = o.budget - sum(rows, "budget");
+  if (unheld > 0.005) rows.push({ what: "Preliminaries (cost sheet)", budget: unheld, spent: 0 });
+  return {
+    columns: [
+      { key: "what", label: "Prelims" },
+      { key: "budget", label: "Budget", align: "right", fmt: money },
+      { key: "spent", label: "Spent", align: "right", fmt: money },
+    ],
+    rows, total: money(o.spend), totalLabel: "Spent",
+    note: `Orders, certified prelim labour claims and plant hire past its order, against the ${fmtMoney(o.budget)} prelims budget as one pot. ` +
+      (o.overrun > 0.005
+        ? `${fmtMoney(o.overrun)} past it, which forecast cost carries.`
+        : `${fmtMoney(o.budget - o.spend)} of it still to spend, so nothing is added to forecast cost.`),
+  };
+}
+
 /** Variation profit per VO = sell − (material + labour budget). */
 export function variationProfitDrill(variations: Variation[]): DrillBody {
   const rows = variations
@@ -769,19 +829,18 @@ export function unpricedDrill(lines: UnpricedLine[]): DrillBody {
   // Rows carry hidden PO/line refs so the drawer can offer "assign to a
   // budget item" in place (same affordance as the unexpected-spend drill).
   const rows = lines
-    .map((l) => ({ po: l.po_number, supplier: l.supplier || "—", item: l.item, qty: l.qty, line_total: l.line_total, status: l.status, category: l.category ?? "materials", __po_id: l.po_id, __line_id: l.line_id, __suggest_id: l.suggested_material_id, __suggest_item: l.suggested_material_item }))
+    .map((l) => ({ po: l.po_number, supplier: l.supplier || "—", item: l.item, qty: l.qty, line_total: l.line_total, status: l.status, __po_id: l.po_id, __line_id: l.line_id, __suggest_id: l.suggested_material_id, __suggest_item: l.suggested_material_item }))
     .sort((a, b) => b.line_total - a.line_total);
   return {
     columns: [
       { key: "po", label: "PO", align: "left" },
       { key: "supplier", label: "Supplier", align: "center" },
       { key: "item", label: "Item" },
-      { key: "category", label: "Cost", align: "center", fmt: categoryFmt },
       { key: "qty", label: "Qty", align: "right", fmt: qtyFmt },
       { key: "line_total", label: "Value", align: "right", fmt: money },
     ],
     rows, total: money(sum(rows, "line_total")),
-    note: unpricedNote(lines),
+    note: unpricedNote(),
   };
 }
 
@@ -789,7 +848,7 @@ export function unpricedDrill(lines: UnpricedLine[]): DrillBody {
  *  (__po_id/__line_id) so the drill drawer can offer "assign to a budget item"
  *  in place. */
 const offBoqSpendRows = (lines: UnpricedLine[]) => lines.map((l) => ({
-  kind: l.category === "prelims" ? "Off-BOQ · prelim" : "Off-BOQ",
+  kind: "Off-BOQ",
   detail: `${l.po_number} · ${l.item}`, amount: l.line_total,
   __po_id: l.po_id, __line_id: l.line_id,
   __suggest_id: l.suggested_material_id, __suggest_item: l.suggested_material_item,
@@ -805,7 +864,7 @@ const scopeLabel = (a: AccumulatedMaterial, scopes: MaterialScope[]) =>
  *  is committed above its budget — and then at that net amount, not the worst
  *  row's. Over the scope's whole material list these rows sum to exactly the
  *  overspend in the headline figure. */
-const overBudgetRows = (scopes: MaterialScope[]) => accumulateMaterials(scopes)
+const overBudgetRows = (scopes: MaterialScope[]) => accumulateMaterials(withoutPrelims(scopes))
   .map((a) => ({ kind: "Over budget", detail: a.item, amount: a.committed - a.budget, __scope: scopeLabel(a, scopes) }))
   .filter((r) => r.amount > 0.005);
 
@@ -814,8 +873,8 @@ const UNEXPECTED_COLUMNS: DrillColumn[] = [
   { key: "detail", label: "Detail" },
   { key: "amount", label: "Amount", align: "right", fmt: money },
 ];
-const unexpectedNote = (lines: UnpricedLine[]) =>
-  `Off-BOQ purchases plus committed spend above a material's budget — both pull through to forecast cost. A material is listed only where its total across the scope shown is over budget, so an over-run covered by the same material elsewhere doesn't appear.${prelimSuffix(lines)}`;
+const unexpectedNote = () =>
+  `Off-BOQ purchases plus committed spend above a material's budget — both pull through to forecast cost. A material is listed only where its total across the scope shown is over budget, so an over-run covered by the same material elsewhere doesn't appear.${PRELIMS_ELSEWHERE}`;
 
 /** Unexpected spend = off-BOQ unpriced lines + over-budget materials. */
 export function unexpectedSpendDrill(lines: UnpricedLine[], mats: MaterialWithCommitment[]): DrillBody {
@@ -824,7 +883,7 @@ export function unexpectedSpendDrill(lines: UnpricedLine[], mats: MaterialWithCo
   return {
     columns: UNEXPECTED_COLUMNS,
     rows, total: money(sum(rows, "amount")),
-    note: unexpectedNote(lines),
+    note: unexpectedNote(),
   };
 }
 
@@ -843,7 +902,7 @@ export function combinedUnexpectedSpendDrill(
   return {
     columns: [{ key: "__block", label: "Block", align: "left" }, ...UNEXPECTED_COLUMNS],
     rows, total: total ?? money(sum(rows, "amount")),
-    note: unexpectedNote(blocks.flatMap((b) => b.lines)),
+    note: unexpectedNote(),
   };
 }
 

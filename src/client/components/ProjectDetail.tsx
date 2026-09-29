@@ -17,7 +17,7 @@ import type { ApplicationForPayment, CurrentUser, LabourByCostCode, MaterialWith
 import {
   summariseMaterials, computeForecast, totalChange, labourProfit, prelimLabourCertified, matSupplier, contractTotals, effectiveSpendRate, quoteSavingsOf,
   pricedBudgetDrill, committedDrill, materialSavingsDrill,
-  labourDrill, variationProfitDrill, unpricedDrill, unexpectedSpendDrill, applicationsDrill,
+  labourDrill, prelimsDrill, variationProfitDrill, unpricedDrill, unexpectedSpendDrill, applicationsDrill,
   offBoqRow, materialAddedAt, materialModifiedAt, type Forecast, type MatRow,
 } from "../lib/commercials";
 import { DrillPanel, DrillKpi, type DrillData } from "./DrillPanel";
@@ -59,6 +59,7 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
   const [contingency, setContingency] = useState(0);
   const [pendingUpload, setPendingUpload] = useState<Awaited<ReturnType<typeof api.getPendingUpload>>>(null);
   const [labour, setLabour] = useState<LabourByCostCode[]>([]);
+  const [prelims, setPrelims] = useState<Awaited<ReturnType<typeof api.prelimsSummary>> | null>(null);
   const [contractItems, setContractItems] = useState<import("../../shared/types").ContractItem[]>([]);
   const [afps, setAfps] = useState<ApplicationForPayment[]>([]);
   const [variations, setVariations] = useState<import("../../shared/types").Variation[]>([]);
@@ -101,6 +102,7 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
     api.getContingency(id).then((r) => setContingency(r.contingency)).catch(() => setContingency(0));
     api.getPendingUpload(id).then(setPendingUpload).catch(() => setPendingUpload(null));
     api.listLabourByCostCode(id).then(setLabour).catch(() => setLabour([]));
+    api.prelimsSummary(id).then(setPrelims).catch(() => setPrelims(null));
     api.listContractItems(id).then(setContractItems).catch(() => setContractItems([]));
     api.listVariations(id).then(setVariations).catch(() => setVariations([]));
     // Fetch BOTH directions so the Outgoing/Incoming labour toggle has data
@@ -255,8 +257,8 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
   // Forecast outturn — computed by the shared commercials module so the group
   // page (and dashboard) roll up from the exact same maths and can't drift.
   const forecast = useMemo(
-    () => computeForecast({ commercials, variations, contractItems, afps, mats, contingency, summary, labour }),
-    [commercials, variations, contractItems, afps, mats, contingency, summary, labour],
+    () => computeForecast({ commercials, variations, contractItems, afps, mats, contingency, summary, labour, prelims }),
+    [commercials, variations, contractItems, afps, mats, contingency, summary, labour, prelims],
   );
 
   // Open the slide-over listing exactly what makes up a forecast lever / applied
@@ -265,6 +267,7 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
     switch (m) {
       case "materials": setDrill({ title: "Profit / loss from materials", value: fmtMoney(forecast.materialSavings), ...materialSavingsDrill(mats) }); break;
       case "labour": setDrill({ title: "Profit / loss from labour", value: fmtMoney(labourProfit(forecast)), ...labourDrill(contractItems, labour, variations) }); break;
+      case "prelims": setDrill({ title: "Profit / loss from prelims", value: fmtMoney(-forecast.prelimsOverrun), ...prelimsDrill(prelims) }); break;
       case "variations": setDrill({ title: "Profit / loss from variations", value: fmtMoney(forecast.varProfit), ...variationProfitDrill(variations) }); break;
       case "unexpected": {
         const body = unexpectedSpendDrill(poSummary?.unpriced_lines ?? [], mats);
@@ -1582,7 +1585,7 @@ function CostToDate({ forecast: f, ordersCommitted, prelimLabour }: { forecast: 
  * profit), and what's been applied for / certified by the client.
  */
 type ForecastSection = "forecast" | "levers" | "applied";
-export type ForecastDrill = "materials" | "labour" | "variations" | "unexpected" | "applied" | "certified";
+export type ForecastDrill = "materials" | "labour" | "prelims" | "variations" | "unexpected" | "applied" | "certified";
 export function ForecastDashboard({ f, sections = ["forecast", "levers", "applied"], onDrill }: { f: Forecast; sections?: ForecastSection[]; onDrill?: (m: ForecastDrill) => void }) {
   // With a drill handler the lever/applied figures become clickable and open the
   // slide-over listing exactly what made them up. Same tile otherwise.
@@ -1600,6 +1603,7 @@ export function ForecastDashboard({ f, sections = ["forecast", "levers", "applie
               if (f.contingency > 0) p.push(`incl. ${fmtMoney(f.contingency)} contingency`);
               if (f.unexpectedSpend > 0.005) p.push(`incl. ${fmtMoney(f.unexpectedSpend)} unexpected`);
               if (f.labourOverrun > 0.005) p.push(`incl. ${fmtMoney(f.labourOverrun)} labour over budget`);
+              if (f.prelimsOverrun > 0.005) p.push(`incl. ${fmtMoney(f.prelimsOverrun)} prelims over budget`);
               if (f.omittedValue > 0.005) p.push(`less ${fmtMoney(f.omittedValue)} omitted`);
               return p.length ? p.join(" · ") : undefined;
             })()} />
@@ -1623,6 +1627,13 @@ export function ForecastDashboard({ f, sections = ["forecast", "levers", "applie
                 ? `${fmtMoney(f.labourSavings)} live rates − ${fmtMoney(f.labourOverrun)} certified over budget`
                 : Math.abs(f.labourSavings) < 0.005 ? "upload labour rates" : "live vs BOQ"}
               tone={moneyTone(labourProfit(f))} />
+            {/* Prelims can only cost the forecast, never lift it: inside the
+                budget they leave it at the budget. */}
+            <D metric="prelims" label="Profit/Loss from Prelims" value={fmtMoney(-f.prelimsOverrun)}
+              sub={f.prelimsBudget > 0.005 || f.prelimsSpend > 0.005
+                ? `${fmtMoney(f.prelimsSpend)} spent of ${fmtMoney(f.prelimsBudget)} budget`
+                : "no prelims budget or spend"}
+              tone={f.prelimsOverrun > 0.005 ? "danger" : "default"} />
             <D metric="variations" label="Profit/Loss from Variations" value={fmtMoney(f.varProfit)} tone={moneyTone(f.varProfit)} />
             <D metric="unexpected" label="Unexpected spend" value={fmtMoney(-f.unexpectedSpend)}
               sub={`${fmtMoney(f.unpricedSpend)} off-BOQ (the Materials tab figure) + ${fmtMoney(f.materialOverspend)} over-budget materials`}
@@ -1808,6 +1819,9 @@ function OverviewAtAGlance({ projectId, forecast: f, commercials, afps, variatio
     // a margin is easy to read past. The dashboard raises the same flag.
     if (f.labourOverrun > 0.5) {
       flags.push({ text: `Labour ${fmtMoney(f.labourOverrun)} over budget — certified past its allowance`, tab: "commercials", tone: "var(--danger)" });
+    }
+    if (f.prelimsOverrun > 0.5) {
+      flags.push({ text: `Prelims ${fmtMoney(f.prelimsOverrun)} over budget`, tab: "commercials", tone: "var(--danger)" });
     }
   }
   if (overdrawnFrameworkCount > 0) {
@@ -2119,7 +2133,15 @@ export function PrelimsTab({ projectId, canRaisePO }: { projectId: string; canRa
 
   const prelimPos = pos.filter((p) => p.category === "prelims");
   const budget = d?.budget ?? 0;
-  const committed = d?.po_committed ?? 0;
+  // Everything drawing on the budget — orders, certified prelim labour claims,
+  // and plant hire kept past its order — the pot the forecast measures. It was
+  // the orders alone, so a PM's certified time never showed as spent here.
+  const committed = d?.spend ?? d?.po_committed ?? 0;
+  const committedSub = [
+    `${fmtMoney(d?.po_committed ?? 0)} on ${d?.po_count ?? 0} PO${(d?.po_count ?? 0) === 1 ? "" : "s"}`,
+    (d?.labour_committed ?? 0) > 0.005 ? `${fmtMoney(d?.labour_committed ?? 0)} labour` : null,
+    (d?.plant_beyond_orders ?? 0) > 0.005 ? `${fmtMoney(d?.plant_beyond_orders ?? 0)} plant past its order` : null,
+  ].filter(Boolean).join(" · ");
   const remaining = budget - committed;
   const over = remaining < 0;
   const pct = budget > 0 ? Math.min(100, (committed / budget) * 100) : (committed > 0 ? 100 : 0);
@@ -2144,7 +2166,7 @@ export function PrelimsTab({ projectId, canRaisePO }: { projectId: string; canRa
         </div>
         <div className="kpis" style={{ marginBottom: 12 }}>
           <div className="kpi"><div className="kpi-label">Prelims budget</div><div className="kpi-value">{fmtMoney(budget)}</div></div>
-          <div className="kpi"><div className="kpi-label">Committed</div><div className="kpi-value">{fmtMoney(committed)}</div><div className="kpi-sub">{d?.po_count ?? 0} prelim PO{(d?.po_count ?? 0) === 1 ? "" : "s"}</div></div>
+          <div className="kpi"><div className="kpi-label">Committed</div><div className="kpi-value">{fmtMoney(committed)}</div><div className="kpi-sub">{committedSub}</div></div>
           <div className={`kpi${over ? " tone-danger" : ""}`}><div className="kpi-label">Available to spend</div><div className="kpi-value">{fmtMoney(remaining)}</div>{over && <div className="kpi-sub">over budget</div>}</div>
           <div className="kpi"><div className="kpi-label">Plant on site (accrued)</div><div className="kpi-value">{fmtMoney(d?.plant_accrued ?? 0)}</div><div className="kpi-sub">{d?.plant_count ?? 0} item{(d?.plant_count ?? 0) === 1 ? "" : "s"} · from tracker</div></div>
         </div>
@@ -2152,7 +2174,9 @@ export function PrelimsTab({ projectId, canRaisePO }: { projectId: string; canRa
         <p className="muted" style={{ fontSize: 12, marginTop: 10 }}>
           Prelims (welfare, plant hire, scaffold, site management) aren't tied to a single supplier — use
           {" "}<b>Raise prelim expenditure</b> to raise a PO against this budget and choose the supplier then.
-          Plant on site is accrued from the Operations plant tracker (day-rate × days) as a cross-check.
+          Plant on site is accrued from the Operations plant tracker (day-rate × days) as a cross-check;
+          only hire kept past its own order counts as spend. Anything committed past the budget is carried
+          by the forecast final cost.
         </p>
       </div>
 
