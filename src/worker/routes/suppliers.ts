@@ -72,6 +72,7 @@ suppliers.post("/", async (c) => {
     address?: string | null;
     vat_number?: string | null;
     utr?: string | null;
+    pgp_account_number?: string | null;
     bank_account_name?: string | null;
     bank_sort_code?: string | null;
     bank_account_number?: string | null;
@@ -88,12 +89,12 @@ suppliers.post("/", async (c) => {
     const res = await c.env.DB.prepare(
       `INSERT INTO suppliers
          (name, status, scope_notes, payment_terms, contact_name, contact_email,
-          contact_phone, address, vat_number, utr,
+          contact_phone, address, vat_number, utr, pgp_account_number,
           bank_account_name, bank_sort_code, bank_account_number, bank_name,
           credit_limit_gbp, notes,
           is_labour_supplier, cis_rate,
           created_at, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        RETURNING id`,
     )
       .bind(
@@ -107,6 +108,7 @@ suppliers.post("/", async (c) => {
         body.address?.trim() || null,
         body.vat_number?.trim() || null,
         body.utr?.trim() || null,
+        body.pgp_account_number?.trim() || null,
         body.bank_account_name?.trim() || null,
         body.bank_sort_code?.trim() || null,
         body.bank_account_number?.trim() || null,
@@ -148,7 +150,7 @@ suppliers.put("/:id", async (c) => {
   const allowed = [
     "name", "status", "scope_notes", "payment_terms", "contact_name",
     "contact_email", "contact_phone", "address", "vat_number", "utr",
-    "bank_account_name", "bank_sort_code", "bank_account_number", "bank_name",
+    "pgp_account_number", "bank_account_name", "bank_sort_code", "bank_account_number", "bank_name",
     "credit_limit_gbp", "notes", "is_labour_supplier", "cis_rate",
   ] as const;
   const sets: string[] = [];

@@ -730,6 +730,9 @@ export type Supplier = {
   address: string | null;
   vat_number: string | null;
   utr: string | null;
+  /** The account number this supplier holds PGP under — quoted to them on the
+   *  phone. Not `bank_account_number`, which points the other way. */
+  pgp_account_number: string | null;
   credit_limit_gbp: number | null;
   // Remittance / payment details — the bank account PGP pays this supplier into.
   bank_account_name: string | null;
