@@ -20,17 +20,21 @@ import {
   createSalesInvoice,
   uploadAttachment,
   findContactByName,
+  findContactsByName,
   findProjectTracking,
   formatPaymentTerms,
   listAccounts,
+  listInvoices,
   listSupplierContacts,
+  parseXeroDate,
   resolveSalesTaxType,
 } from "../xero/client";
 import type { XeroContact, XeroPOInput, XeroInvoiceInput } from "../xero/client";
 import { encryptToken } from "../xero/crypto";
 import { recheckPaidStatus } from "../xero/paid";
-import { isSandboxId } from "../sandbox";
+import { isSandboxId, SANDBOX_PROJECT_ID } from "../sandbox";
 import { isCertInXero, isCertReleased } from "../../shared/payment-release";
+import { reconcileBills, type AppInvoiceSide, type AppPoSide, type XeroBillSide } from "../../shared/bill-reconcile";
 
 /** Refusal for a certificate that hasn't been signed off. Shared by the push
  *  itself and the route that pre-checks it, so the two can't word it differently. */
@@ -611,6 +615,151 @@ xero.post("/recheck-paid", async (c) => {
     return c.json({ error: e instanceof Error ? e.message : String(e) }, 502);
   }
 });
+
+/* ── Bill check: what a supplier has in Xero vs what the app knows ─────── */
+
+/** The supplier the check opens on. Alumasc drop-ship through their makers and
+ *  bill under several names, so their bills are the ones most likely to be keyed
+ *  straight into Xero — which is what this screen exists to surface. */
+const BILL_CHECK_DEFAULT_SUPPLIER = "Alumasc";
+/** How far back to look, and the ceiling a caller can ask for. */
+const BILL_CHECK_DEFAULT_MONTHS = 12;
+const BILL_CHECK_MAX_MONTHS = 36;
+/** Caps both the Xero contacts we query bills for and the local supplier ids we
+ *  bind into an `IN (…)`. D1 refuses a statement carrying more than 100 bound
+ *  parameters, and an overflowing read comes back empty rather than wrong — so a
+ *  loose search term would silently blank the screen instead of answering it. */
+const BILL_CHECK_MAX_SUPPLIER_IDS = 40;
+
+/**
+ * Read-only reconciliation: the bills a supplier has in Xero, beside the
+ * invoices the app holds for them. Nothing here writes — not to Xero, not to
+ * our own tables — so it can be run at any time, and it needs no Xero
+ * permission the app doesn't already have (the `accounting.invoices` scope we
+ * push bills with reads them back too).
+ *
+ * It answers the question the Accounts inbox can't: a bill keyed straight into
+ * Xero never passed through the app, so as far as the app is concerned it
+ * doesn't exist.
+ */
+xero.get("/bill-check", async (c) => {
+  // Same gate as the Accounts workspace this is reached from — it shows the
+  // same supplier invoice values, from the other side.
+  const denied = requirePermission(c, "commercial.view");
+  if (denied) return denied;
+  const nc = notConfigured(c.env);
+  if (nc) return nc;
+
+  const supplier = (c.req.query("supplier") ?? BILL_CHECK_DEFAULT_SUPPLIER).trim() || BILL_CHECK_DEFAULT_SUPPLIER;
+  const askedMonths = Number(c.req.query("months"));
+  const months = Number.isFinite(askedMonths) && askedMonths > 0
+    ? Math.min(Math.floor(askedMonths), BILL_CHECK_MAX_MONTHS)
+    : BILL_CHECK_DEFAULT_MONTHS;
+  const since = new Date();
+  since.setUTCMonth(since.getUTCMonth() - months);
+  const sinceYmd = since.toISOString().slice(0, 10);
+
+  try {
+    const contacts = await findContactsByName(c.env, supplier);
+    if (contacts.length === 0) {
+      // No contact means no bills to compare against, so say that rather than
+      // reporting every invoice we hold as missing from Xero.
+      return c.json({
+        supplier, months, since: sinceYmd, contacts: [],
+        rows: [], summary: { matched: 0, xero_only: 0, app_only: 0, amount_mismatches: 0, xero_only_total: 0 },
+        note: `No contact in Xero whose name contains "${supplier}", so there is nothing to compare against.`,
+      });
+    }
+
+    // Both halves are bounded by the same window and the same supplier, so a
+    // one-sided row means a genuine difference rather than a framing artefact.
+    const [bills, app] = await Promise.all([
+      fetchSupplierBills(c.env, contacts, since),
+      loadAppSideForSupplier(c.env, supplier, sinceYmd),
+    ]);
+
+    const { rows, summary } = reconcileBills(bills, app.invoices, app.pos);
+    return c.json({
+      supplier,
+      months,
+      since: sinceYmd,
+      contacts: contacts.map((ct) => ({ id: ct.ContactID, name: ct.Name })),
+      rows,
+      summary,
+    });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return c.json({ error: msg === "not_connected" ? "Xero isn't connected — an admin can connect it at Admin → Xero." : msg }, 502);
+  }
+});
+
+/** Every ACCPAY bill these contacts have in Xero since `since`, flattened into
+ *  the shape the reconciler compares. Xero's `where` takes the contact ids
+ *  disjunctively, so several trading names come back in one pass. */
+async function fetchSupplierBills(env: Env, contacts: XeroContact[], since: Date): Promise<XeroBillSide[]> {
+  const ids = contacts.map((ct) => ct.ContactID).filter(Boolean).slice(0, BILL_CHECK_MAX_SUPPLIER_IDS);
+  if (ids.length === 0) return [];
+  const contactClause = ids.map((id) => `Contact.ContactID==guid("${id}")`).join("||");
+  const dateClause = `Date>=DateTime(${since.getUTCFullYear()},${since.getUTCMonth() + 1},${since.getUTCDate()})`;
+  // summaryOnly keeps line items out of the response — this screen compares
+  // headers, and the full form would be many times the payload for nothing.
+  const found = await listInvoices(env, `Type=="ACCPAY"&&(${contactClause})&&${dateClause}`, {
+    summaryOnly: true,
+    maxPages: 20,
+  });
+  return found.map((b) => ({
+    id: b.InvoiceID,
+    number: b.InvoiceNumber ?? null,
+    reference: b.Reference ?? null,
+    status: b.Status ?? null,
+    total: typeof b.Total === "number" ? b.Total : null,
+    amount_due: typeof b.AmountDue === "number" ? b.AmountDue : null,
+    currency: b.CurrencyCode ?? null,
+    date: parseXeroDate(b.Date),
+    contact_name: b.Contact?.Name ?? null,
+  }));
+}
+
+/** Our side of the comparison: the invoices logged against this supplier in the
+ *  window, plus their order numbers — a Xero-only bill quoting one of those is
+ *  a bill we can at least place, which is a different problem from one we can't. */
+async function loadAppSideForSupplier(
+  env: Env, supplier: string, sinceYmd: string,
+): Promise<{ invoices: AppInvoiceSide[]; pos: AppPoSide[] }> {
+  const like = `%${supplier.toLowerCase()}%`;
+
+  // Local supplier rows matching the term, so an invoice that was matched to the
+  // register (and had its free-text name cleared) is still picked up.
+  const supplierRows = await env.DB.prepare(
+    "SELECT id FROM suppliers WHERE LOWER(name) LIKE ? LIMIT ?",
+  ).bind(like, BILL_CHECK_MAX_SUPPLIER_IDS).all<{ id: number }>();
+  const supplierIds = supplierRows.results.map((r) => r.id);
+  const idHoles = supplierIds.map(() => "?").join(",");
+  const idClause = supplierIds.length ? ` OR i.supplier_id IN (${idHoles})` : "";
+
+  const invoices = await env.DB.prepare(
+    `SELECT i.id, i.invoice_number, COALESCE(i.supplier_name, s.name) AS supplier_name,
+            i.gross_amount, i.currency, i.status, i.invoice_date,
+            i.xero_bill_id, i.xero_bill_number, p.code AS project_code
+       FROM invoices i
+       LEFT JOIN suppliers s ON s.id = i.supplier_id
+       LEFT JOIN projects  p ON p.id = i.project_id
+      WHERE (LOWER(COALESCE(i.supplier_name, s.name, '')) LIKE ?${idClause})
+        AND COALESCE(i.invoice_date, i.created_at) >= ?
+        AND COALESCE(i.project_id, '') != ?
+      ORDER BY COALESCE(i.invoice_date, i.created_at) DESC
+      LIMIT 500`,
+  ).bind(like, ...supplierIds, sinceYmd, SANDBOX_PROJECT_ID).all<AppInvoiceSide>();
+
+  const pos = await env.DB.prepare(
+    `SELECT po_number, supplier, total_value, xero_bill_id
+       FROM purchase_orders
+      WHERE LOWER(supplier) LIKE ? AND created_at >= ? AND project_id != ?
+      LIMIT 500`,
+  ).bind(like, sinceYmd, SANDBOX_PROJECT_ID).all<AppPoSide>();
+
+  return { invoices: invoices.results, pos: pos.results };
+}
 
 /** How many approved/issued POs aren't yet successfully in Xero. Used by the
  *  PO list page to show a count + bulk-push affordance. */

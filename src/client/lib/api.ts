@@ -43,6 +43,7 @@ import type {
   SupplierQuoteLine,
   SupplierStatus,
 } from "../../shared/types";
+import type { ReconcileRow, ReconcileSummary } from "../../shared/bill-reconcile";
 import type { Role, Permission } from "../../shared/permissions";
 import type { RamsDoc } from "../../shared/rams";
 
@@ -749,6 +750,19 @@ export const api = {
   /** Live chart of accounts from Xero for the Admin account-code selects. */
   xeroAccounts: () =>
     jfetch<{ accounts: Array<{ code: string; name: string; type: string; class: string }>; error?: string }>("/api/xero/accounts"),
+
+  /** Read-only: a supplier's bills in Xero beside the invoices we hold for them.
+   *  Writes nothing on either side, so it's safe to run whenever. */
+  xeroBillCheck: (supplier: string, months: number) =>
+    jfetch<{
+      supplier: string;
+      months: number;
+      since: string;
+      contacts: Array<{ id: string; name: string }>;
+      rows: ReconcileRow[];
+      summary: ReconcileSummary;
+      note?: string;
+    }>(`/api/xero/bill-check?supplier=${encodeURIComponent(supplier)}&months=${months}`),
 
   /* ── Accounts / invoices workpiece ──────────────────────────────────── */
   listInvoices: (status?: string) =>
