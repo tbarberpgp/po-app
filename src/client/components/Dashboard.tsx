@@ -319,6 +319,7 @@ function DashboardBody({ d, onPickProject, scopeLabel }: { d: Report; onPickProj
           period_end: a.period_end,
           status: a.status,
           claim: a.cumulative_value ?? 0,
+          expenses: a.expenses_amount ?? 0,
           certified: (a.status === "certified" || a.status === "paid") ? (a.certified_amount ?? 0) : null,
         }));
       setDrill({
@@ -329,11 +330,12 @@ function DashboardBody({ d, onPickProject, scopeLabel }: { d: Report; onPickProj
           { key: "app", label: "Application", align: "left" },
           { key: "period_end", label: "Period end", align: "center", fmt: shortDate },
           { key: "status", label: "Status", align: "center" },
-          moneyCol("claim", "Claimed"),
+          moneyCol("claim", "Claimed to date"),
+          moneyCol("expenses", "Expenses"),
           { key: "certified", label: "Certified", align: "right", fmt: (v) => (v == null ? "—" : fmtMoney(Number(v))) },
         ],
         rows: rows as unknown as Array<Record<string, unknown>>,
-        note: "Only certified applications expend the labour budget — drafts and submitted claims are listed for context.",
+        note: "Claimed to date is each subcontractor's cumulative position, so the figure above is their LATEST certified application — not the sum of that column. Expenses are claimed per application and do add up. Only certified applications expend the budget; drafts and submitted claims are listed for context.",
       });
     } catch { /* leave closed on fetch failure */ }
   }

@@ -850,7 +850,12 @@ export type ApplicationForPayment = {
   retention_pct: number;
   vat_pct: number;
   contract_sum: number | null;
+  /** The cumulative MEASURED position — expenses are held out of it. */
   cumulative_value: number | null;
+  /** Expenses claimed on this application alone (hotel, mileage, fares). A
+   *  per-application claim, never carried forward, so it sits outside the
+   *  cumulative position and is added to this application's net on its own. */
+  expenses_amount: number | null;
   previous_certified: number | null;
   this_period_net: number | null;
   retention_amount: number | null;
@@ -946,7 +951,12 @@ export type ApplicationListItem = {
   total_invoice: number | null;
   certified_amount: number | null;
   amount_due: number | null;
+  /** The cumulative MEASURED position — expenses are held out of it. */
   cumulative_value: number | null;
+  /** Expenses claimed on this application alone (hotel, mileage, fares). A
+   *  per-application claim, never carried forward, so it sits outside the
+   *  cumulative position and is added to this application's net on its own. */
+  expenses_amount: number | null;
   created_at: string;
   created_by: string;
   has_unmatched: number;   // 0/1 from SQLite
