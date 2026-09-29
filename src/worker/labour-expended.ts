@@ -34,7 +34,7 @@
 
 /** An application that is a standalone prelims drawdown, not a measured claim.
  *  The same test recalcTotals applies (`isPrelimClaim`). */
-const PRELIM_CLAIM = "(a.prelim_heading IS NOT NULL AND a.claimed_amount IS NOT NULL)";
+export const PRELIM_CLAIM = "(a.prelim_heading IS NOT NULL AND a.claimed_amount IS NOT NULL)";
 
 /** Applications whose position counts: the newest certified/paid one per
  *  subcontractor on each project. */

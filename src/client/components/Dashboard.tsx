@@ -405,6 +405,9 @@ function DashboardBody({ d, onPickProject, scopeLabel }: { d: Report; onPickProj
     if ((p.labour_overrun ?? 0) > 0.5) {
       flags.push({ tone: "danger", text: `${p.code} — labour ${moneyK(p.labour_overrun)} over budget`, to: `/projects/${p.id}`, action: "Open" });
     }
+    if ((p.prelims_overrun ?? 0) > 0.5) {
+      flags.push({ tone: "danger", text: `${p.code} — prelims ${moneyK(p.prelims_overrun)} over budget`, to: `/projects/${p.id}`, action: "Open" });
+    }
   }
   // Budget watch — projects committed ≥ 60% of forecast cost (and not yet over).
   // Committed is purchase orders and certified labour both.
@@ -1096,10 +1099,10 @@ function downloadCsv(d: Report, scopeLabel: string, months: number) {
   for (const [k, v] of kpis) lines.push(`${esc(k)},${esc(v)}`);
   lines.push("");
   lines.push("By project");
-  lines.push("Code,Name,Status,Forecast final account,Committed,PO committed,Labour committed,Labour budget,Labour expended,Labour over budget,Contract GP%,Forecast GP%,Forecast GP £,Applied,Certified,Paid,Pending POs,On site");
+  lines.push("Code,Name,Status,Forecast final account,Committed,PO committed,Labour committed,Labour budget,Labour expended,Labour over budget,Prelims budget,Prelims spent,Prelims over budget,Contract GP%,Forecast GP%,Forecast GP £,Applied,Certified,Paid,Pending POs,On site");
   const gpCsv = (f: number | null) => (f == null ? "" : (f * 100).toFixed(1));
   for (const p of d.by_project) {
-    lines.push([p.code, p.name, p.completed_at ? "Complete" : "Active", p.ffa, p.committed, p.po_committed, p.labour_committed, p.labour_budget, p.labour_expended, p.labour_overrun, gpCsv(p.contract_gp_pct), gpCsv(p.forecast_gp_pct), p.ffa > 0 ? Math.round((p.ffa - p.ffc) * 100) / 100 : "", p.applied, p.certified, p.paid, p.pending, p.on_site].map(esc).join(","));
+    lines.push([p.code, p.name, p.completed_at ? "Complete" : "Active", p.ffa, p.committed, p.po_committed, p.labour_committed, p.labour_budget, p.labour_expended, p.labour_overrun, p.prelim_budget, p.prelim_committed, p.prelims_overrun, gpCsv(p.contract_gp_pct), gpCsv(p.forecast_gp_pct), p.ffa > 0 ? Math.round((p.ffa - p.ffc) * 100) / 100 : "", p.applied, p.certified, p.paid, p.pending, p.on_site].map(esc).join(","));
   }
   const blob = new Blob(["﻿" + lines.join("\r\n")], { type: "text/csv;charset=utf-8;" });
   const url = URL.createObjectURL(blob);

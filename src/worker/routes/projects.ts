@@ -3,6 +3,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import type { Env, Variables } from "../env";
 import { aliasMapsBySupplier, normText } from "../matchMemory";
 import { requirePermission } from "../auth";
+import { PRELIM_LINE } from "../prelims-position";
 
 export const projects = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -379,6 +380,11 @@ projects.get("/:id/summary", async (c) => {
   // into that material's committed spend, so listing them here too would tell
   // the story twice. Assigning a line from the Unexpected-spend drill is what
   // moves it from this list into the budget.
+  //
+  // Prelim order lines are excluded too (PRELIM_LINE): they draw on the prelims
+  // budget, which sits in the contract cost, and the prelims pot measures them
+  // against it. Listed here they were counted twice — once as that budget and
+  // again, in full, as unexpected off-BOQ spend on top of it.
   const unpricedLines = await c.env.DB.prepare(
     `SELECT po.id AS po_id, pl.id AS line_id, po.po_number AS po_number, po.supplier AS supplier,
             pl.item AS item, pl.qty AS qty, pl.unit AS unit,
@@ -395,6 +401,7 @@ projects.get("/:id/summary", async (c) => {
        AND pl.is_unpriced = 1
        AND pl.material_id IS NULL
        AND COALESCE(po.order_type, 'standard') != 'call_off'
+       AND NOT ${PRELIM_LINE}
      ORDER BY pl.line_total DESC`,
   )
     .bind(id)

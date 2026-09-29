@@ -5,7 +5,8 @@ import {
   budgetMoney, poLineBudgetMoney,
   unexpectedSpendDrill, combinedUnexpectedSpendDrill, withCombinedOverspend,
   computeForecast, contractTotals, totalChange, labourProfit, labourDrill, addForecasts, prelimLabourCertified,
-  type UnpricedLine, type Forecast,
+  prelimsDrill, quoteSavingsOf, isPrelimMaterial,
+  type UnpricedLine, type Forecast, type PrelimsSummary,
 } from "./commercials";
 import type { ApplicationForPayment, ContractItem, MaterialWithCommitment, POLine, ProjectCommercial } from "../../shared/types";
 import type { LabourPositionRow } from "../../shared/labour-cost";
@@ -243,6 +244,7 @@ test("re-basing the overspend pulls forecast cost, profit and GP% with it", () =
     hasContract: true, ffa: 1000, ffc: 900, forecastProfit: 100, forecastGpPct: 0.1, contingency: 0,
     materialSavings: 0, labourSavings: 0, varProfit: 0, omittedValue: 0,
     labourOverrun: 0, labourCertified: 0, labourBudget: 0,
+    prelimsOverrun: 0, prelimsSpend: 0, prelimsBudget: 0,
     unpricedSpend: 0, materialOverspend: OVER_26001, unexpectedSpend: OVER_26001,
     appliedValue: 0, certifiedValue: 0, varApplied: 0, varCertified: 0,
   };
@@ -263,6 +265,7 @@ test("re-basing the overspend pulls forecast cost, profit and GP% with it", () =
 function forecastWith(o: {
   contingency?: number; committed?: number; unpriced?: number; variationSell?: number; variationCost?: number;
   variationLabour?: number; labour?: readonly LabourPositionRow[]; contractItems?: readonly ContractItem[];
+  prelims?: PrelimsSummary;
 }) {
   const commercials = [{ is_total: 1, value: 100_000, cost: 80_000 }] as unknown as ProjectCommercial[];
   const mats = [mat({ item: "Butyl Tape", cost: 10, total_units: 1000, committed_qty: o.committed ?? 0, live_unit_price: 9 })];
@@ -274,8 +277,13 @@ function forecastWith(o: {
     contingency: o.contingency ?? 0,
     summary: summariseMaterials(mats, o.unpriced ?? 0),
     labour: o.labour && [...o.labour],
+    prelims: o.prelims,
   });
 }
+
+/** A project's prelims pot, as `/prelims` returns it. */
+const pot = (o: Partial<PrelimsSummary> = {}): PrelimsSummary =>
+  ({ budget: 13_600, po_committed: 0, labour_committed: 0, plant_beyond_orders: 0, ...o });
 
 /** A labour BOQ section's position, as `/labour-by-cost-code` returns it. */
 const section = (o: Partial<LabourPositionRow> & { section: string }): LabourPositionRow =>
@@ -304,10 +312,13 @@ for (const [name, opts] of [
   ["with labour expenses", { labour: expenses }],
   ["with variation labour past its budget", { variationSell: 4_000, variationLabour: 2_000, labour: varLabourOver }],
   ["with a live labour rate", { contractItems: [labourLine({ description: "Roof sheets", qty: 100, labour_rate: 50, live_labour_rate: 45 })] }],
+  ["with prelims inside their budget", { prelims: pot({ po_committed: 561.44 }) }],
+  ["with prelims past their budget", { prelims: pot({ budget: 10_000, po_committed: 9_000, labour_committed: 1_200, plant_beyond_orders: 650 }) }],
   ["with all of them at once", {
     contingency: 5_000, committed: 1200, unpriced: 3_000, variationSell: 9_000, variationCost: 6_000, variationLabour: 2_000,
     labour: [...roofOver, ...expenses, ...varLabourOver],
     contractItems: [labourLine({ description: "Roof sheets", qty: 100, labour_rate: 50, live_labour_rate: 45 })],
+    prelims: pot({ budget: 10_000, po_committed: 9_000, labour_committed: 1_200, plant_beyond_orders: 650 }),
   }],
 ] as const) {
   test(`the levers reconcile to forecast profit — ${name}`, () => {
@@ -374,6 +385,77 @@ test("combining blocks adds up their labour", () => {
   assert.equal(both.labourOverrun, a.labourOverrun + b.labourOverrun);
   assert.equal(both.labourCertified, a.labourCertified + b.labourCertified);
   assert.equal(both.ffc, a.ffc + b.ffc);
+});
+
+// ── Prelims in the forecast ─────────────────────────────────────────────────
+
+// 26002: £561.44 of prelim orders inside a £13,600 prelims budget. They used to
+// sit in unexpected spend at full value on top of the budget already in cost.
+test("prelims inside their budget leave forecast cost at the budget", () => {
+  const base = forecastWith({});
+  const f = forecastWith({ prelims: pot({ po_committed: 561.44 }) });
+  assert.equal(f.ffc, base.ffc);
+  assert.equal(f.prelimsOverrun, 0);
+  assert.equal(f.prelimsSpend, 561.44);
+  assert.equal(f.prelimsBudget, 13_600);
+});
+
+test("prelims past their budget raise forecast cost by the excess, from every source", () => {
+  const base = forecastWith({});
+  const f = forecastWith({ prelims: pot({ budget: 10_000, po_committed: 9_000, labour_committed: 1_200, plant_beyond_orders: 650 }) });
+  assert.equal(f.prelimsOverrun, 850);
+  assert.equal(Math.round((f.ffc - base.ffc) * 100) / 100, 850);
+  assert.equal(Math.round((base.forecastProfit - f.forecastProfit) * 100) / 100, 850);
+});
+
+test("combining blocks adds up their prelims, each measured against its own budget", () => {
+  const a = forecastWith({ prelims: pot({ budget: 1_000, po_committed: 1_500 }) });   // £500 over
+  const b = forecastWith({ prelims: pot({ budget: 5_000, po_committed: 1_000 }) });   // £4,000 to spare
+  const both = addForecasts(a, b);
+  assert.equal(both.prelimsOverrun, 500, "one block's slack doesn't pay for another's contract");
+  assert.equal(both.prelimsSpend, 2_500);
+  assert.equal(both.ffc, a.ffc + b.ffc);
+});
+
+const prelimMat = (item: string, cost: number, units: number, committed: number, o: Partial<MaterialWithCommitment> = {}) =>
+  mat({ item, cost, total_units: units, committed_qty: committed, type: "Preliminaries", element_name: "Preliminaries", ...o } as never);
+
+test("a prelims budget row is told apart the way the server tells it", () => {
+  assert.equal(isPrelimMaterial({ element_name: "Preliminaries", type: "Preliminaries" }), true);
+  assert.equal(isPrelimMaterial({ element_name: null, type: "Business Prelims" }), true);
+  assert.equal(isPrelimMaterial({ element_name: "Roofing", type: "Sheet" }), false);
+});
+
+// A prelim row committed past its own line is the pot's business — booking it
+// as material overspend too would carry the same money twice.
+test("prelims rows stay out of material overspend", () => {
+  const rows = [prelimMat("Site Manager", 1700, 3, 5), mat({ item: "Butyl Tape", cost: 10, total_units: 100, committed_qty: 120 })];
+  assert.equal(summariseMaterials(rows, 0).material_overspend, 200);
+});
+
+test("prelims rows stay out of quote savings", () => {
+  const rows = [prelimMat("Accommodation", 55, 200, 0, { live_unit_price: 40 }), mat({ item: "Butyl Tape", cost: 10, total_units: 100, committed_qty: 0, live_unit_price: 9 })];
+  assert.equal(quoteSavingsOf(rows), 100);
+});
+
+test("the prelims drill lists the pot's spend per heading and adds up to it", () => {
+  const drill = prelimsDrill(pot({
+    budget: 13_600, po_committed: 561.44, labour_committed: 0, plant_beyond_orders: 120,
+    headings: [
+      { name: "Project Manager", budget: 2_750, committed: 504.68 },
+      { name: "Site Manager", budget: 5_100, committed: 0 },
+      { name: "Preliminaries", budget: 0, committed: 52.76 },
+      { name: "Untyped", budget: 0, committed: 4 },
+      { name: "Quantity Surveyor", budget: 0, committed: 0 },
+    ],
+  }));
+  const spent = drill.rows.reduce((s, r) => s + Number(r.spent), 0);
+  assert.equal(Math.round(spent * 100) / 100, 561.44 + 120);
+  assert.equal(drill.total, "£681.44");
+  assert.ok(drill.rows.some((r) => r.what === "Plant hire kept past its order"));
+  assert.ok(!drill.rows.some((r) => r.what === "Quantity Surveyor"), "a heading with no budget and no spend isn't listed");
+  // The £5,750 of budget the headings don't hold comes from the cost sheet's line.
+  assert.ok(drill.rows.some((r) => r.what === "Preliminaries (cost sheet)" && r.budget === 13_600 - 2_750 - 5_100));
 });
 
 test("certified prelim labour claims are counted, drafts and measured claims aren't", () => {

@@ -9,7 +9,9 @@ import type { MaterialOrder, OffBoqMaterial } from "../../shared/types";
 import { requirePermission } from "../auth";
 import { loadSettings, tierForApproval } from "../approval";
 import { autoTagFromBill, baseProject } from "./programme";
-import { LABOUR_POSITION } from "../labour-expended";
+import { LABOUR_POSITION, PRELIM_CLAIM } from "../labour-expended";
+import { PLANT_ON_ORDER, PRELIMS_POSITION, PRELIM_LINE, PRELIM_ROW_BUDGET, prelimRow } from "../prelims-position";
+import { plantAccrued, plantBeyondOrders, prelimsOutturn, type PlantHire, type PlantOnOrder } from "../../shared/prelims-cost";
 
 export const materials = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -376,82 +378,75 @@ materials.get("/:projectId/labour-by-cost-code", async (c) => {
   return c.json(out);
 });
 
-/** Prelims budget vs expended — prelim-tagged PO commitments + plant-tracker
- *  accrual (day-rate × days on site). Budget = the Preliminaries cost-sheet row. */
+/** Prelims budget vs spend — the project's prelims pot (worker/prelims-position.ts)
+ *  as the forecast measures it, plus the per-heading split and the plant
+ *  tracker's accrual as a cross-check. */
 materials.get("/:projectId/prelims", async (c) => {
   const projectId = c.req.param("projectId");
-
-  // Prelim line items live in the materials list, tagged as prelims by their
-  // element ("Preliminaries") or type. Each is an expenditure heading with its
-  // own budget. (Falls back to the Summary Cost Sheet's Preliminaries line for
-  // the total when no prelim materials have been entered yet.)
-  const prelimMats = await c.env.DB.prepare(
-    `SELECT m.item AS name, COALESCE(m.material_total_cost, 0) AS budget
-       FROM materials m
-       JOIN material_snapshots s ON s.id = m.snapshot_id
-       LEFT JOIN elements e ON e.code = m.element_code
-      WHERE s.project_id = ? AND s.is_active = 1
-        AND (lower(COALESCE(e.name, '')) LIKE '%prelim%' OR lower(COALESCE(m.type, '')) LIKE '%prelim%')
-      ORDER BY m.item`,
-  ).bind(projectId).all<{ name: string; budget: number }>();
-
-  const budgetRow = await c.env.DB.prepare(
-    `SELECT COALESCE(SUM(pc.cost), 0) AS budget
-       FROM project_commercials pc
-       JOIN material_snapshots s ON s.id = pc.snapshot_id
-      WHERE s.project_id = ? AND s.is_active = 1 AND pc.is_total = 0
-        AND lower(pc.category) LIKE '%prelim%'`,
-  ).bind(projectId).first<{ budget: number }>();
-
-  const poRow = await c.env.DB.prepare(
-    `SELECT COALESCE(SUM(total_value), 0) AS committed, COUNT(*) AS n
-       FROM purchase_orders
-      WHERE project_id = ? AND category = 'prelims'
-        AND COALESCE(order_type,'standard') != 'call_off'
-        AND status IN ('approved','issued','pending_approval')`,
-  ).bind(projectId).first<{ committed: number; n: number }>();
-
-  const plant = await c.env.DB.prepare(
-    "SELECT day_rate, rate_unit, on_hire_from, off_hire_to FROM plant_logs WHERE project_id = ?",
-  ).bind(projectId).all<{ day_rate: number | null; rate_unit: string | null; on_hire_from: string | null; off_hire_to: string | null }>();
   const today = new Date().toISOString().slice(0, 10);
-  let plant_accrued = 0;
-  for (const p of plant.results) {
-    if (p.day_rate == null || !p.on_hire_from) continue;
-    const from = new Date(p.on_hire_from + "T00:00:00").getTime();
-    const to = new Date((p.off_hire_to ?? today) + "T00:00:00").getTime();
-    const days = Math.max(1, Math.floor((to - from) / 86_400_000) + 1);
-    const units = p.rate_unit === "week" ? Math.ceil(days / 7) : days;
-    plant_accrued += units * p.day_rate;
-  }
+  const r2 = (n: number) => Math.round(n * 100) / 100;
 
-  // Prelim spend broken down by prelim type (Plant, Site management, …) — taken
-  // from the tagged PO line types so the Prelims tab can show where it's going.
-  const byType = await c.env.DB.prepare(
-    `SELECT COALESCE(NULLIF(TRIM(l.type), ''), 'Untyped') AS type,
-            COALESCE(SUM(l.line_total), 0) AS committed,
-            COUNT(DISTINCT l.po_id) AS po_count
-       FROM po_lines l
-       JOIN purchase_orders p ON p.id = l.po_id
-      WHERE p.project_id = ? AND p.category = 'prelims'
-        AND COALESCE(p.order_type,'standard') != 'call_off'
-        AND p.status IN ('approved','issued','pending_approval')
-      GROUP BY type
-      ORDER BY committed DESC`,
-  ).bind(projectId).all<{ type: string; committed: number; po_count: number }>();
+  const [pot, plantOnOrder, prelimMats, byType, labourApps, plant] = await Promise.all([
+    // Budget, orders and certified prelim labour — the one definition the
+    // forecast and the portfolio dashboard read, so this tab can't disagree
+    // with the forecast about how much of the prelims budget is gone.
+    c.env.DB.prepare(`SELECT * FROM (${PRELIMS_POSITION}) WHERE pid = ?`).bind(projectId)
+      .first<{ budget: number; row_count: number; orders: number; po_count: number; labour: number }>(),
+    c.env.DB.prepare(`SELECT * FROM (${PLANT_ON_ORDER}) WHERE pid = ?`).bind(projectId)
+      .all<PlantOnOrder & { pid: string }>(),
+    // Prelim line items live in the materials list, tagged as prelims by their
+    // element ("Preliminaries") or type. Each is an expenditure heading with its
+    // own budget, net of anything omitted.
+    c.env.DB.prepare(
+      `SELECT m.item AS name, ${PRELIM_ROW_BUDGET} AS budget
+         FROM materials m
+         JOIN material_snapshots s ON s.id = m.snapshot_id
+         LEFT JOIN elements e ON e.code = m.element_code
+        WHERE s.project_id = ? AND s.is_active = 1 AND ${prelimRow()}
+        ORDER BY m.item`,
+    ).bind(projectId).all<{ name: string; budget: number }>(),
+    // Prelim spend per heading — the same lines the pot counts, so the headings
+    // add up to its orders figure. A line coded to a prelim row sits under that
+    // row's heading; otherwise under its prelim type.
+    c.env.DB.prepare(
+      `SELECT COALESCE((SELECT cm.item FROM materials cm WHERE cm.id = pl.material_id),
+                       NULLIF(TRIM(pl.type), ''), 'Untyped') AS type,
+              COALESCE(SUM(pl.line_total), 0) AS committed,
+              COUNT(DISTINCT pl.po_id) AS po_count
+         FROM po_lines pl
+         JOIN purchase_orders po ON po.id = pl.po_id
+        WHERE po.project_id = ?
+          AND po.status IN ('approved','issued','pending_approval')
+          AND COALESCE(po.order_type,'standard') != 'call_off'
+          AND ${PRELIM_LINE}
+        GROUP BY type
+        ORDER BY committed DESC`,
+    ).bind(projectId).all<{ type: string; committed: number; po_count: number }>(),
+    // Prelim-tagged labour claims (a subcontract PM's time etc.) — certified,
+    // as all labour is counted, and on the test recalcTotals applies, so a claim
+    // counts here or as labour, never both.
+    c.env.DB.prepare(
+      `SELECT COALESCE(NULLIF(TRIM(a.prelim_heading), ''), 'Untyped') AS type,
+              COALESCE(SUM(COALESCE(a.cumulative_value, a.claimed_amount, 0)), 0) AS committed,
+              COUNT(*) AS n
+         FROM applications_for_payment a
+        WHERE a.project_id = ? AND a.direction = 'incoming_labour' AND ${PRELIM_CLAIM}
+          AND a.status IN ('certified', 'paid')
+        GROUP BY type`,
+    ).bind(projectId).all<{ type: string; committed: number; n: number }>(),
+    c.env.DB.prepare(
+      "SELECT day_rate, rate_unit, on_hire_from, off_hire_to FROM plant_logs WHERE project_id = ?",
+    ).bind(projectId).all<PlantHire>(),
+  ]);
 
-  // Labour applications tagged as prelims (a subcontract PM's time etc.) —
-  // their cumulative claim expends the heading they're tagged to.
-  const labourApps = await c.env.DB.prepare(
-    `SELECT COALESCE(NULLIF(TRIM(prelim_heading), ''), 'Untyped') AS type,
-            COALESCE(SUM(COALESCE(cumulative_value, 0)), 0) AS committed,
-            COUNT(*) AS n
-       FROM applications_for_payment
-      WHERE project_id = ? AND direction = 'incoming_labour' AND prelim_heading IS NOT NULL
-        AND status IN ('submitted', 'certified', 'paid')
-      GROUP BY type`,
-  ).bind(projectId).all<{ type: string; committed: number; n: number }>();
-  const labour_committed = labourApps.results.reduce((s2, r) => s2 + r.committed, 0);
+  const outturn = prelimsOutturn({
+    budget: pot?.budget ?? 0,
+    orders: pot?.orders ?? 0,
+    labour: pot?.labour ?? 0,
+    plant: plantBeyondOrders(plantOnOrder.results, today),
+  });
+  // Everything the tracker has accrued, ordered or not — the cross-check.
+  const plant_accrued = plant.results.reduce((s, p) => s + plantAccrued(p, today), 0);
 
   // Committed spend per prelim heading (matched on the PO line's prelim type).
   const committedByName = new Map<string, { committed: number; po_count: number }>();
@@ -465,31 +460,33 @@ materials.get("/:projectId/prelims", async (c) => {
     const c = committedByName.get(h.name);
     return {
       name: h.name,
-      budget: h.budget,
-      committed: c?.committed ?? 0,
+      budget: r2(h.budget),
+      committed: r2(c?.committed ?? 0),
       po_count: c?.po_count ?? 0,
-      remaining: h.budget - (c?.committed ?? 0),
+      remaining: r2(h.budget - (c?.committed ?? 0)),
     };
   });
   // Spend tagged to a heading that isn't in the materials list (e.g. legacy or
   // "Other prelim") still needs surfacing, so append those as budget-less rows.
   for (const [name2, v2] of committedByName) {
     if (!prelimMats.results.some((h) => h.name === name2) && !headings.some((h) => h.name === name2)) {
-      headings.push({ name: name2, budget: 0, committed: v2.committed, po_count: v2.po_count, remaining: -v2.committed });
+      headings.push({ name: name2, budget: 0, committed: r2(v2.committed), po_count: v2.po_count, remaining: r2(-v2.committed) });
     }
   }
 
-  // Budget = sum of prelim materials when present; else the cost-sheet line.
-  const matsBudget = prelimMats.results.reduce((s, h) => s + (h.budget || 0), 0);
-  const budget = prelimMats.results.length > 0 ? matsBudget : (budgetRow?.budget ?? 0);
-
   return c.json({
-    budget,
-    po_committed: poRow?.committed ?? 0,
-    po_count: poRow?.n ?? 0,
-    labour_committed: Math.round(labour_committed * 100) / 100,
+    budget: outturn.budget,
+    po_committed: outturn.orders,
+    po_count: pot?.po_count ?? 0,
+    labour_committed: outturn.labour,
     labour_app_count: labourApps.results.reduce((s2, r) => s2 + r.n, 0),
-    plant_accrued: Math.round(plant_accrued * 100) / 100,
+    /** Hire accrued past its own order — prelims spend the orders don't hold. */
+    plant_beyond_orders: outturn.plant,
+    /** Orders + certified labour + plant past its order: the pot's spend. */
+    spend: outturn.spend,
+    /** What forecast cost carries on top of the budget. */
+    overrun: outturn.overrun,
+    plant_accrued: r2(plant_accrued),
     plant_count: plant.results.length,
     by_type: byType.results ?? [],
     headings,

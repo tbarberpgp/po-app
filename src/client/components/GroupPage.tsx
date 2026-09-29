@@ -12,7 +12,7 @@ import { DrillPanel, DrillKpi, type DrillData } from "./DrillPanel";
 import { AssignBudgetCell } from "./AssignBudgetCell";
 import {
   summariseMaterials, computeForecast, sumForecasts, withCombinedOverspend, contractTotals, effectiveSpendRate, matSupplier, netUnits, quoteSavingsOf,
-  pricedBudgetDrill, committedDrill, materialSavingsDrill, labourDrill, labourProfit,
+  pricedBudgetDrill, committedDrill, materialSavingsDrill, labourDrill, labourProfit, prelimsDrill, type PrelimsSummary,
   variationProfitDrill, unpricedDrill, combinedUnexpectedSpendDrill, applicationsDrill, combineDrill,
   offBoqRow, materialAddedAt, materialModifiedAt, materialOrders,
   type Forecast, type UnpricedLine, type DrillBody, type MatRow, type MaterialScope,
@@ -51,6 +51,9 @@ type BlockData = {
   /** The block's labour position per section — what puts certified labour
    *  into its forecast cost. */
   labour: LabourByCostCode[];
+  /** The block's prelims pot — a block is its own contract with its own
+   *  prelims budget, so each is measured on its own and the overruns summed. */
+  prelims: PrelimsSummary | null;
 };
 type GTab = "overview" | "commercials" | "materials" | "programme" | "operations" | "reports";
 
@@ -155,8 +158,9 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
           api.getProjectSummary(m.id).then((s) => ({ lines: s.unpriced_lines ?? [], spend: s.unpriced_spend ?? 0 })).catch(() => ({ lines: [] as UnpricedLine[], spend: 0 })),
           api.listOffBoqMaterials(m.id).catch(() => [] as OffBoqMaterial[]),
           api.listLabourByCostCode(m.id).catch(() => [] as LabourByCostCode[]),
-        ]).then(([commercials, variations, contractItems, afps, mats, contingency, summary, offBoq, labour]) => {
-          setData((p) => ({ ...p, [m.id]: { commercials, variations, contractItems, afps, mats, contingency, unpricedLines: summary.lines, unpricedSpend: summary.spend, offBoq, labour } }));
+          api.prelimsSummary(m.id).catch(() => null),
+        ]).then(([commercials, variations, contractItems, afps, mats, contingency, summary, offBoq, labour, prelims]) => {
+          setData((p) => ({ ...p, [m.id]: { commercials, variations, contractItems, afps, mats, contingency, unpricedLines: summary.lines, unpricedSpend: summary.spend, offBoq, labour, prelims } }));
         }).catch(() => {});
       });
     }).catch((e) => setErr(e.message));
@@ -203,6 +207,7 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
     afps: d.afps, mats: d.mats, contingency: d.contingency,
     summary: summariseMaterials(d.mats, d.unpricedSpend),
     labour: d.labour,
+    prelims: d.prelims,
   });
   // Every block's BOQ materials, each still tagged with its block. Overspend is
   // the one lever that can't be summed from the blocks — a material has to be
@@ -492,6 +497,7 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
     const map: Record<Exclude<ForecastDrill, "unexpected">, [string, number, (d: BlockData) => DrillBody]> = {
       materials: ["Profit / loss from materials", fc.materialSavings, (d) => materialSavingsDrill(d.mats)],
       labour: ["Profit / loss from labour", labourProfit(fc), (d) => labourDrill(d.contractItems, d.labour, d.variations)],
+      prelims: ["Profit / loss from prelims", -fc.prelimsOverrun, (d) => prelimsDrill(d.prelims)],
       variations: ["Profit / loss from variations", fc.varProfit, (d) => variationProfitDrill(d.variations)],
       applied: ["Applied value", fc.appliedValue, (d) => applicationsDrill(d.afps, "applied")],
       certified: ["Certified value", fc.certifiedValue, (d) => applicationsDrill(d.afps, "certified")],
