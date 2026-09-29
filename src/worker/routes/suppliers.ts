@@ -15,13 +15,39 @@ suppliers.use("/*", async (c, next) => {
   await next();
 });
 
+/**
+ * The WHERE clause deciding whether a supplier list includes hidden names.
+ *
+ * Default is to leave them out, because all sixteen client callers of this
+ * endpoint are pickers of one kind or another and none of them should offer a
+ * name nobody buys from. Only the register itself passes `include_hidden=1`,
+ * since it's the one screen that can unhide.
+ *
+ * Its own function so the default is stated once and reads the safe way round:
+ * a caller has to ask for hidden suppliers to get them, rather than remembering
+ * to exclude them. Note this governs *listing* only — the lookups that match a
+ * name to a supplier (the Xero sync, invoice coding, PO raising) deliberately
+ * still see hidden rows, because finding the hidden row is exactly what stops
+ * them creating a duplicate of it.
+ */
+export function hiddenClause(includeHidden: string | undefined): string {
+  return includeHidden === "1" ? "" : "WHERE s.hidden = 0";
+}
+
 /** List approved suppliers, with approved elements + a count of product-level
- * supplier entries that name them. */
+ * supplier entries that name them.
+ *
+ * Hidden suppliers are left out by default. The register is a mirror of Xero's
+ * IsSupplier contacts (see migration 0127), so it carries names nobody buys
+ * from — hiding them here is what keeps them out of all sixteen callers of this
+ * endpoint at once, pickers included. `?include_hidden=1` returns the lot, for
+ * the register's own "show hidden" toggle. */
 suppliers.get("/", async (c) => {
   const rows = await c.env.DB.prepare(
     `SELECT s.*,
             (SELECT COUNT(*) FROM product_suppliers ps WHERE lower(ps.supplier_name) = lower(s.name)) AS product_supplier_count
      FROM suppliers s
+     ${hiddenClause(c.req.query("include_hidden"))}
      ORDER BY (s.status = 'preferred') DESC, s.name`,
   ).all<Record<string, unknown>>();
 
@@ -40,6 +66,7 @@ suppliers.get("/", async (c) => {
     ...r,
     // SQLite stores booleans as 0/1 — surface them as proper JS booleans
     is_labour_supplier: Number(r.is_labour_supplier ?? 0) === 1,
+    hidden: Number(r.hidden ?? 0) === 1,
     approved_elements: (scopeBySupplier.get(Number(r.id)) ?? []).sort(),
   }));
   return c.json(result);
@@ -56,6 +83,7 @@ suppliers.get("/:id", async (c) => {
   return c.json({
     ...supplier,
     is_labour_supplier: Number(supplier.is_labour_supplier ?? 0) === 1,
+    hidden: Number(supplier.hidden ?? 0) === 1,
     approved_elements: scopes.results.map((s) => s.element_code),
   });
 });
@@ -152,6 +180,7 @@ suppliers.put("/:id", async (c) => {
     "contact_email", "contact_phone", "address", "vat_number", "utr",
     "pgp_account_number", "bank_account_name", "bank_sort_code", "bank_account_number", "bank_name",
     "credit_limit_gbp", "notes", "is_labour_supplier", "cis_rate",
+    "hidden", "hidden_reason",
   ] as const;
   const sets: string[] = [];
   const binds: unknown[] = [];
@@ -161,8 +190,20 @@ suppliers.put("/:id", async (c) => {
       let v = body[k];
       if (typeof v === "string") v = v.trim() || null;
       // Booleans become SQLite 0/1
-      if (k === "is_labour_supplier") v = v ? 1 : 0;
+      if (k === "is_labour_supplier" || k === "hidden") v = v ? 1 : 0;
       binds.push(v ?? null);
+    }
+  }
+
+  // Hiding is an audit-worthy call — it takes a name out of every picker in the
+  // app — so stamp who did it and when. Unhiding clears the stamp rather than
+  // leaving a stale one that reads like the supplier is still hidden.
+  if ("hidden" in body) {
+    if (body.hidden) {
+      sets.push("hidden_at = ?", "hidden_by = ?");
+      binds.push(new Date().toISOString(), c.get("userEmail"));
+    } else {
+      sets.push("hidden_at = NULL", "hidden_by = NULL", "hidden_reason = NULL");
     }
   }
 
@@ -197,6 +238,12 @@ suppliers.put("/:id", async (c) => {
   return c.json({ ok: true });
 });
 
+/** Hard-delete a supplier.
+ *
+ * Only right for a row nothing in Xero backs — a typo, a duplicate someone just
+ * made. For a name that came down from Xero, prefer `hidden` (PUT): deleting it
+ * nulls any invoice's supplier_id and the row comes straight back on the next
+ * sync, the next invoice coded to that name, or the next PO raised against it. */
 suppliers.delete("/:id", async (c) => {
   await c.env.DB.prepare("DELETE FROM suppliers WHERE id = ?")
     .bind(c.req.param("id")).run();

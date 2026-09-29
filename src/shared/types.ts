@@ -746,6 +746,17 @@ export type Supplier = {
   /** CIS deduction rate for a labour subcontractor: 30 (unverified), 20
    *  (registered), 0 (gross payment status). null = CIS doesn't apply. */
   cis_rate: number | null;
+  /** Kept in the register, but not somewhere we buy from — so left out of every
+   *  picker and of the register itself unless "show hidden" is on. Used for the
+   *  names the Xero sync drags in that nobody raises a PO against: a director's
+   *  expense claim, the bookkeeper, a software subscription. Hiding rather than
+   *  deleting is what stops the sync (and the invoice matcher) recreating them —
+   *  see migration 0127. Orthogonal to `status`, which is about whether we're
+   *  allowed to buy from someone today. */
+  hidden: boolean;
+  hidden_reason: string | null;
+  hidden_at: string | null;
+  hidden_by: string | null;
   created_at: string;
   created_by: string | null;
   // Xero sync — populated when this supplier maps to a Xero Contact

@@ -32,6 +32,7 @@ export function SuppliersPage({ me }: { me: CurrentUser | null }) {
   const [statusFilter, setStatusFilter] = useState<"all" | SupplierStatus>("all");
   const [filter, setFilter] = useState("");
   const [section, setSection] = useState<"materials" | "labour">("materials");
+  const [showHidden, setShowHidden] = useState(false);
   const [xeroConnected, setXeroConnected] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [pushingId, setPushingId] = useState<number | null>(null);
@@ -89,7 +90,9 @@ export function SuppliersPage({ me }: { me: CurrentUser | null }) {
   }
 
   function refresh() {
-    api.listSuppliers().then(setRows).catch((e) => setErr(e.message));
+    // Ask for hidden ones as well: this page is the only place that can unhide,
+    // so it needs to see them even while it filters them out of the tables.
+    api.listSuppliers(true).then(setRows).catch((e) => setErr(e.message));
     api.listElements().then(setElements).catch((e) => setErr(e.message));
     api.xeroStatus().then((s) => setXeroConnected(s.connected)).catch(() => setXeroConnected(false));
   }
@@ -128,7 +131,7 @@ export function SuppliersPage({ me }: { me: CurrentUser | null }) {
   // backlog of suppliers whose auto-push on create failed (or that were created
   // via a PO / subbie flow that doesn't auto-push), and reports any that fail.
   async function pushAllUnlinked() {
-    const unlinked = rows.filter((s) => !s.xero_contact_id);
+    const unlinked = rows.filter((s) => !s.xero_contact_id && !s.hidden);
     if (unlinked.length === 0) return;
     if (!confirm(`Push ${unlinked.length} un-linked supplier${unlinked.length === 1 ? "" : "s"} to Xero (create or link their contacts)?`)) return;
     setPushingAll(true); setErr(null); setInfo(null);
@@ -143,8 +146,11 @@ export function SuppliersPage({ me }: { me: CurrentUser | null }) {
   }
 
   const visible = rows
+    .filter((s) => showHidden || !s.hidden)
     .filter((s) => statusFilter === "all" || s.status === statusFilter)
     .filter((s) => !filter || (s.name + (s.contact_name ?? "") + (s.contact_email ?? "") + (s.pgp_account_number ?? "")).toLowerCase().includes(filter.toLowerCase()));
+
+  const hiddenCount = rows.filter((s) => s.hidden).length;
 
   // The register holds both kinds; show them as their own sections with the
   // columns that matter for each (materials: scope/credit/products, labour:
@@ -152,9 +158,11 @@ export function SuppliersPage({ me }: { me: CurrentUser | null }) {
   const materials = visible.filter((s) => !s.is_labour_supplier);
   const labour = visible.filter((s) => s.is_labour_supplier);
 
+  // Counts describe the register you actually buy from, so hidden names stay out
+  // of them however the table below is filtered.
   const byStatus = useMemo(() => {
     const m: Record<SupplierStatus, number> = { approved: 0, preferred: 0, suspended: 0, pending: 0 };
-    for (const r of rows) m[r.status] += 1;
+    for (const r of rows) if (!r.hidden) m[r.status] += 1;
     return m;
   }, [rows]);
 
@@ -184,10 +192,10 @@ export function SuppliersPage({ me }: { me: CurrentUser | null }) {
                 </button>
               </>
             )}
-            {canManage && xeroConnected && rows.some((s) => !s.xero_contact_id) && (
+            {canManage && xeroConnected && rows.some((s) => !s.xero_contact_id && !s.hidden) && (
               <button className="ghost" onClick={pushAllUnlinked} disabled={pushingAll}
                 title="Create/link a Xero contact for every supplier not yet in Xero">
-                {pushingAll ? "Pushing…" : `↑ Push ${rows.filter((s) => !s.xero_contact_id).length} to Xero`}
+                {pushingAll ? "Pushing…" : `↑ Push ${rows.filter((s) => !s.xero_contact_id && !s.hidden).length} to Xero`}
               </button>
             )}
             {canManage && xeroConnected && (
@@ -232,6 +240,13 @@ export function SuppliersPage({ me }: { me: CurrentUser | null }) {
             <option value="pending">Pending</option>
             <option value="suspended">Suspended</option>
           </select>
+          {hiddenCount > 0 && (
+            <label className="row" style={{ gap: 6, alignItems: "center", fontSize: 13 }}
+              title="Names kept in the register but not bought from — usually people and overheads the Xero sync brought in">
+              <input type="checkbox" checked={showHidden} onChange={(e) => setShowHidden(e.target.checked)} />
+              <span className="muted">Show hidden ({hiddenCount})</span>
+            </label>
+          )}
         </div>
 
         {/* ── Materials suppliers ── */}
@@ -284,6 +299,7 @@ export function SuppliersPage({ me }: { me: CurrentUser | null }) {
                         {s.xero_contact_id && (
                           <span className="pill issued" style={{ marginLeft: 6, fontSize: 10 }} title={`Xero Contact ID: ${s.xero_contact_id}`}>Xero</span>
                         )}
+                        {s.hidden && <HiddenPill s={s} />}
                       </td>
                       <td>
                         {s.approved_elements.length === 0 ? (
@@ -401,6 +417,7 @@ export function SuppliersPage({ me }: { me: CurrentUser | null }) {
                         {s.xero_contact_id && (
                           <span className="pill issued" style={{ marginLeft: 6, fontSize: 10 }} title={`Xero Contact ID: ${s.xero_contact_id}`}>Xero</span>
                         )}
+                        {s.hidden && <HiddenPill s={s} />}
                       </td>
                       <td className="muted" style={{ fontSize: 13, whiteSpace: "nowrap" }}>{s.payment_terms ?? "—"}</td>
                       <td className="center">
@@ -550,7 +567,7 @@ function RowActions({ s, xeroConnected, pushingId, onPush, onRemoved }: {
 }) {
   return (
     <>
-      {xeroConnected && (
+      {xeroConnected && !s.hidden && (
         <>
           <button className="ghost tiny" disabled={pushingId === s.id} onClick={onPush}
             title={s.xero_contact_id ? "Re-sync this supplier's details (incl. bank) to its Xero contact" : "Create this supplier as a contact in Xero"}>
@@ -558,12 +575,53 @@ function RowActions({ s, xeroConnected, pushingId, onPush, onRemoved }: {
           </button>{" "}
         </>
       )}
-      <button className="ghost tiny" onClick={async () => {
-        if (!confirm(`Remove ${s.name}? Existing product-level supplier entries with this name will be preserved.`)) return;
-        await api.removeSupplier(s.id);
-        onRemoved();
-      }}>×</button>
+      {s.hidden ? (
+        <button className="ghost tiny" title="Put this supplier back in the register and the pickers"
+          onClick={async () => { await api.setSupplierHidden(s.id, false); onRemoved(); }}>
+          ↩ Unhide
+        </button>
+      ) : (
+        <>
+          {/* Hiding, not deleting, is the answer for anything Xero backs — a
+              delete comes straight back on the next sync. */}
+          <button className="ghost tiny" title="Keep the record, but take it out of the register and every supplier picker"
+            onClick={async () => {
+              const reason = prompt(
+                `Hide ${s.name}?\n\nThey stay in the register's hidden list and keep any invoices already linked to them, but stop appearing in supplier pickers. Reversible.\n\nReason (optional):`,
+                "",
+              );
+              if (reason === null) return;
+              await api.setSupplierHidden(s.id, true, reason.trim() || null);
+              onRemoved();
+            }}>
+            Hide
+          </button>{" "}
+          <button className="ghost tiny" title="Delete the record outright" onClick={async () => {
+            const warning = s.xero_contact_id
+              ? `\n\nHeads up: ${s.name} is linked to a Xero contact, so the next "Sync with Xero" will recreate them. Hide is what actually sticks.`
+              : "";
+            if (!confirm(`Remove ${s.name}? Existing product-level supplier entries with this name will be preserved.${warning}`)) return;
+            await api.removeSupplier(s.id);
+            onRemoved();
+          }}>×</button>
+        </>
+      )}
     </>
+  );
+}
+
+/** Marks a supplier that's kept on record but not bought from. Only ever seen
+ *  with "Show hidden" on, so it explains itself in the tooltip rather than
+ *  spending row width on it. */
+function HiddenPill({ s }: { s: Supplier }) {
+  const when = s.hidden_at?.slice(0, 10);
+  const detail = [s.hidden_reason, s.hidden_by && `${s.hidden_by}${when ? `, ${when}` : ""}`]
+    .filter(Boolean).join(" · ");
+  return (
+    <span className="pill" style={{ marginLeft: 6, fontSize: 10 }}
+      title={`Hidden from the register and all supplier pickers${detail ? ` — ${detail}` : ""}`}>
+      Hidden
+    </span>
   );
 }
 

@@ -614,8 +614,11 @@ export const api = {
       method: "DELETE",
     }),
 
-  // Approved suppliers register
-  listSuppliers: () => jfetch<Supplier[]>("/api/suppliers"),
+  // Approved suppliers register. Hidden suppliers are left out server-side, so
+  // every picker gets the curated list for free; only the register itself asks
+  // for them, to offer an unhide.
+  listSuppliers: (includeHidden = false) =>
+    jfetch<Supplier[]>(`/api/suppliers${includeHidden ? "?include_hidden=1" : ""}`),
   getSupplier: (id: number) => jfetch<Supplier>(`/api/suppliers/${id}`),
   /** Mark a PO as arriving in parts (ordered whole, delivered piecemeal). */
   setPoPartDelivery: (id: string, part: boolean) =>
@@ -662,7 +665,17 @@ export const api = {
     credit_limit_gbp: number | null;
     notes: string | null;
     approved_elements: string[];
+    hidden: boolean;
+    hidden_reason: string | null;
   }>) => jfetch<{ ok: true }>(`/api/suppliers/${id}`, { method: "PUT", body: JSON.stringify(input) }),
+  /** Take a name out of the register and every picker without deleting it — the
+   *  right move for anything the Xero sync brought in, which a delete wouldn't
+   *  hold. Unhiding clears the reason too. */
+  setSupplierHidden: (id: number, hidden: boolean, reason?: string | null) =>
+    jfetch<{ ok: true }>(`/api/suppliers/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(hidden ? { hidden: true, hidden_reason: reason ?? null } : { hidden: false }),
+    }),
   removeSupplier: (id: number) =>
     jfetch<{ ok: true }>(`/api/suppliers/${id}`, { method: "DELETE" }),
 
