@@ -4,10 +4,11 @@ import {
   accumulateMaterials, materialOverspendOf, summariseMaterials, oneScope, budgetMoneyHint, pickUnit,
   budgetMoney, poLineBudgetMoney,
   unexpectedSpendDrill, combinedUnexpectedSpendDrill, withCombinedOverspend,
-  computeForecast, contractTotals, totalChange,
+  computeForecast, contractTotals, totalChange, labourProfit, labourDrill, addForecasts, prelimLabourCertified,
   type UnpricedLine, type Forecast,
 } from "./commercials";
-import type { MaterialWithCommitment, POLine, ProjectCommercial } from "../../shared/types";
+import type { ApplicationForPayment, ContractItem, MaterialWithCommitment, POLine, ProjectCommercial } from "../../shared/types";
+import type { LabourPositionRow } from "../../shared/labour-cost";
 
 /** A priced BOQ row — only the fields the commercial maths reads. */
 function mat(o: Partial<MaterialWithCommitment> & { item: string; cost: number; total_units: number; committed_qty: number }): MaterialWithCommitment {
@@ -241,6 +242,7 @@ test("re-basing the overspend pulls forecast cost, profit and GP% with it", () =
   const summed: Forecast = {
     hasContract: true, ffa: 1000, ffc: 900, forecastProfit: 100, forecastGpPct: 0.1, contingency: 0,
     materialSavings: 0, labourSavings: 0, varProfit: 0, omittedValue: 0,
+    labourOverrun: 0, labourCertified: 0, labourBudget: 0,
     unpricedSpend: 0, materialOverspend: OVER_26001, unexpectedSpend: OVER_26001,
     appliedValue: 0, certifiedValue: 0, varApplied: 0, varCertified: 0,
   };
@@ -258,18 +260,34 @@ test("re-basing the overspend pulls forecast cost, profit and GP% with it", () =
  *  comes the other way round, off contract value and cost. They are the same
  *  quantity, so they have to agree — a term that reaches one and not the other
  *  is the bug this guards. */
-function forecastWith(o: { contingency?: number; committed?: number; unpriced?: number; variationSell?: number; variationCost?: number }) {
+function forecastWith(o: {
+  contingency?: number; committed?: number; unpriced?: number; variationSell?: number; variationCost?: number;
+  variationLabour?: number; labour?: readonly LabourPositionRow[]; contractItems?: readonly ContractItem[];
+}) {
   const commercials = [{ is_total: 1, value: 100_000, cost: 80_000 }] as unknown as ProjectCommercial[];
   const mats = [mat({ item: "Butyl Tape", cost: 10, total_units: 1000, committed_qty: o.committed ?? 0, live_unit_price: 9 })];
-  const variations = (o.variationSell || o.variationCost)
-    ? [{ sell_value: o.variationSell ?? 0, material_budget: o.variationCost ?? 0, labour_budget: 0 }] as never[]
+  const variations = (o.variationSell || o.variationCost || o.variationLabour)
+    ? [{ sell_value: o.variationSell ?? 0, material_budget: o.variationCost ?? 0, labour_budget: o.variationLabour ?? 0 }] as never[]
     : [];
   return computeForecast({
-    commercials, variations, contractItems: [], afps: [], mats,
+    commercials, variations, contractItems: [...(o.contractItems ?? [])], afps: [], mats,
     contingency: o.contingency ?? 0,
     summary: summariseMaterials(mats, o.unpriced ?? 0),
+    labour: o.labour && [...o.labour],
   });
 }
+
+/** A labour BOQ section's position, as `/labour-by-cost-code` returns it. */
+const section = (o: Partial<LabourPositionRow> & { section: string }): LabourPositionRow =>
+  ({ labour_total: 0, saving: 0, boq_expended: 0, variation_expended: 0, other_expended: 0, ...o });
+const roofOver = [section({ section: "Roof", labour_total: 20_000, boq_expended: 23_000 })];
+const expenses = [section({ section: "Expenses", other_expended: 1_389.18 })];
+const varLabourOver = [section({ section: "Variations", variation_expended: 2_500 })];
+
+/** A labour BOQ line with a live subcontract rate applied. */
+const labourLine = (o: { description: string; qty: number; labour_rate: number; live_labour_rate: number | null; section?: string }) =>
+  ({ id: 1, snapshot_id: 1, item_no: 1, category: "measured", section: o.section ?? "Roof", unit: "m2",
+     sell_rate: 0, sell_total: 0, labour_total: o.qty * o.labour_rate, ...o }) as ContractItem;
 
 const contractGp = () => {
   const ct = contractTotals([{ is_total: 1, value: 100_000, cost: 80_000 }] as unknown as ProjectCommercial[])!;
@@ -282,7 +300,15 @@ for (const [name, opts] of [
   ["with material spend over budget", { committed: 1200 }],
   ["with off-BOQ spend", { unpriced: 3_000 }],
   ["with a variation", { variationSell: 9_000, variationCost: 6_000 }],
-  ["with all of them at once", { contingency: 5_000, committed: 1200, unpriced: 3_000, variationSell: 9_000, variationCost: 6_000 }],
+  ["with labour certified past its budget", { labour: roofOver }],
+  ["with labour expenses", { labour: expenses }],
+  ["with variation labour past its budget", { variationSell: 4_000, variationLabour: 2_000, labour: varLabourOver }],
+  ["with a live labour rate", { contractItems: [labourLine({ description: "Roof sheets", qty: 100, labour_rate: 50, live_labour_rate: 45 })] }],
+  ["with all of them at once", {
+    contingency: 5_000, committed: 1200, unpriced: 3_000, variationSell: 9_000, variationCost: 6_000, variationLabour: 2_000,
+    labour: [...roofOver, ...expenses, ...varLabourOver],
+    contractItems: [labourLine({ description: "Roof sheets", qty: 100, labour_rate: 50, live_labour_rate: 45 })],
+  }],
 ] as const) {
   test(`the levers reconcile to forecast profit — ${name}`, () => {
     const f = forecastWith(opts);
@@ -295,6 +321,71 @@ for (const [name, opts] of [
 
 test("a contingency comes off the change in profit, pound for pound", () => {
   assert.equal(totalChange(forecastWith({})) - totalChange(forecastWith({ contingency: 5_000 })), 5_000);
+});
+
+// ── Labour in the forecast ──────────────────────────────────────────────────
+
+test("labour certified past its budget raises forecast cost pound for pound", () => {
+  const base = forecastWith({});
+  const f = forecastWith({ labour: roofOver });
+  assert.equal(f.labourOverrun, 3_000);
+  assert.equal(Math.round((f.ffc - base.ffc) * 100) / 100, 3_000);
+  assert.equal(Math.round((base.forecastProfit - f.forecastProfit) * 100) / 100, 3_000);
+  assert.ok((f.forecastGpPct ?? 0) < (base.forecastGpPct ?? 0), "GP% comes down with it");
+});
+
+test("labour inside its budget leaves forecast cost where the budget put it", () => {
+  const base = forecastWith({});
+  const f = forecastWith({ labour: [section({ section: "Roof", labour_total: 20_000, boq_expended: 8_000 })] });
+  assert.equal(f.ffc, base.ffc);
+  assert.equal(f.labourCertified, 8_000);
+  assert.equal(f.labourBudget, 20_000);
+});
+
+test("with no labour position the forecast is what it always was", () => {
+  const a = forecastWith({});
+  const b = forecastWith({ labour: [] });
+  assert.equal(a.ffc, b.ffc);
+  assert.equal(a.labourOverrun, 0);
+});
+
+test("variation labour counts only past the variation's own labour budget", () => {
+  const within = forecastWith({ variationSell: 4_000, variationLabour: 3_000, labour: varLabourOver });
+  assert.equal(within.labourOverrun, 0, "£2,500 certified against a £3,000 budget");
+  const past = forecastWith({ variationSell: 4_000, variationLabour: 2_000, labour: varLabourOver });
+  assert.equal(past.labourOverrun, 500);
+});
+
+test("the labour lever is live-rate savings less the overrun, and its drill adds up to it", () => {
+  const items = [labourLine({ description: "Roof sheets", qty: 100, labour_rate: 50, live_labour_rate: 45 })];
+  const f = forecastWith({ contractItems: items, labour: [...roofOver, ...expenses] });
+  assert.equal(f.labourSavings, 500);
+  assert.equal(labourProfit(f), 500 - 3_000 - 1_389.18);
+  const drill = labourDrill(items, [...roofOver, ...expenses], []);
+  const effect = drill.rows.reduce((s, r) => s + Number(r.effect), 0);
+  assert.ok(Math.abs(effect - labourProfit(f)) < 0.005, `drill ${effect} vs lever ${labourProfit(f)}`);
+  assert.deepEqual(drill.rows.map((r) => r.description), ["Roof sheets", "Roof", "Expenses"]);
+});
+
+test("combining blocks adds up their labour", () => {
+  const a = forecastWith({ labour: roofOver });
+  const b = forecastWith({ labour: expenses });
+  const both = addForecasts(a, b);
+  assert.equal(both.labourOverrun, a.labourOverrun + b.labourOverrun);
+  assert.equal(both.labourCertified, a.labourCertified + b.labourCertified);
+  assert.equal(both.ffc, a.ffc + b.ffc);
+});
+
+test("certified prelim labour claims are counted, drafts and measured claims aren't", () => {
+  const afp = (o: Partial<ApplicationForPayment>) =>
+    ({ direction: "incoming_labour", status: "certified", prelim_heading: "Site management", claimed_amount: 1_000, cumulative_value: 1_000, ...o }) as ApplicationForPayment;
+  assert.equal(prelimLabourCertified([
+    afp({}),
+    afp({ status: "paid", claimed_amount: 250, cumulative_value: 250 }),
+    afp({ status: "submitted" }),
+    afp({ prelim_heading: null }),
+    afp({ direction: "outgoing" }),
+  ]), 1_250);
 });
 
 // ── pickUnit ──────────────────────────────────────────────────────────────

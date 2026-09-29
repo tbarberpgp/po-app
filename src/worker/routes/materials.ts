@@ -9,7 +9,7 @@ import type { MaterialOrder, OffBoqMaterial } from "../../shared/types";
 import { requirePermission } from "../auth";
 import { loadSettings, tierForApproval } from "../approval";
 import { autoTagFromBill, baseProject } from "./programme";
-import { LABOUR_EXPENDED_BY_SECTION } from "../labour-expended";
+import { LABOUR_POSITION } from "../labour-expended";
 
 export const materials = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -333,48 +333,44 @@ async function persistParsedWorkbook(
 materials.get("/:projectId/labour-by-cost-code", async (c) => {
   const projectId = c.req.param("projectId");
 
-  // Labour BUDGET per BOQ section (from the labour BOQ = contract_items).
-  const budget = await c.env.DB.prepare(
-    `SELECT COALESCE(NULLIF(TRIM(ci.section), ''), 'Other') AS section,
-            COUNT(*) AS line_count,
-            COALESCE(SUM(ci.labour_total), 0) AS labour_total
-     FROM contract_items ci
-     JOIN material_snapshots s ON s.id = ci.snapshot_id
-     WHERE s.project_id = ? AND s.is_active = 1 AND ci.labour_total > 0
-     GROUP BY section`,
-  ).bind(projectId).all<{ section: string; line_count: number; labour_total: number }>();
-
-  // Labour CERTIFIED per section, on the shared definition — the cumulative BOQ
-  // position from each subcontractor's latest application, plus the ad-hoc
-  // claims across the whole series. Same `section` dimension as the budget, so
-  // % expended is real per row.
-  const cert = await c.env.DB.prepare(LABOUR_EXPENDED_BY_SECTION)
-    .bind(projectId, projectId).all<{ section: string; expended: number }>();
+  // Budget, live-rate saving and certified labour per BOQ section, from the one
+  // definition the forecast and the portfolio dashboard read too — so the %
+  // expended here, the labour in forecast cost and the dashboard's labour
+  // column can't come apart. Certified is split by kind (measured work,
+  // variation labour, everything else) because each sits against a different
+  // budget; `expended` is their total, the figure this subtab has always shown.
+  const rows = await c.env.DB.prepare(`SELECT * FROM (${LABOUR_POSITION}) WHERE pid = ?`)
+    .bind(projectId)
+    .all<{
+      section: string; line_count: number; budget: number; saving: number;
+      boq_expended: number; variation_expended: number; other_expended: number;
+    }>();
   // To the penny, as the portfolio dashboard already rounds its own figure —
   // otherwise the same total reads 1389.1799999999998 on one screen and
   // 1389.18 on the other.
-  const certBySection = new Map(
-    cert.results.map((r) => [r.section, Math.round((r.expended ?? 0) * 100) / 100]),
-  );
+  const r2 = (n: number | null | undefined) => Math.round((n ?? 0) * 100) / 100;
 
-  const out = budget.results
-    .map((r) => ({
-      section: r.section,
-      line_count: r.line_count,
-      labour_total: r.labour_total,
-      expended: certBySection.get(r.section) ?? 0,
-    }));
-
-  // Spend in a section the labour BOQ has no budget for — Expenses, Variations,
-  // or work booked against a section that was never priced. Listing only the
-  // budgeted sections dropped it from the page entirely, which is how a
-  // subcontractor's hotel bills could be certified and paid and still appear
-  // nowhere on the project. Shown with a zero budget, which is what they have.
-  for (const [section, expended] of certBySection) {
-    if (expended === 0) continue;
-    if (out.some((r) => r.section === section)) continue;
-    out.push({ section, line_count: 0, labour_total: 0, expended });
-  }
+  const out = rows.results
+    .map((r) => {
+      const boq = r2(r.boq_expended), variation = r2(r.variation_expended), other = r2(r.other_expended);
+      return {
+        section: r.section,
+        line_count: r.line_count ?? 0,
+        labour_total: r2(r.budget),
+        expended: r2(boq + variation + other),
+        saving: r2(r.saving),
+        boq_expended: boq,
+        variation_expended: variation,
+        other_expended: other,
+      };
+    })
+    // A section the labour BOQ prices, or one with certified spend and no
+    // budget — Expenses, Variations, or work booked against a section that was
+    // never priced. Listing only the budgeted sections dropped that spend from
+    // the page entirely, which is how a subcontractor's hotel bills could be
+    // certified and paid and still appear nowhere on the project. Shown with a
+    // zero budget, which is what they have.
+    .filter((r) => r.line_count > 0 || r.expended !== 0);
 
   out.sort((a, b) => b.labour_total - a.labour_total || b.expended - a.expended);
   return c.json(out);

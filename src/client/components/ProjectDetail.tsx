@@ -15,9 +15,9 @@ import { QitpDashboard } from "./QitpDashboard";
 import { SubBadge, SubstituteAction } from "./MaterialSubstitute";
 import type { ApplicationForPayment, CurrentUser, LabourByCostCode, MaterialWithCommitment, OffBoqMaterial, Project, ProjectCommercial, PurchaseOrder } from "../../shared/types";
 import {
-  summariseMaterials, computeForecast, totalChange, matSupplier, contractTotals, effectiveSpendRate, quoteSavingsOf,
+  summariseMaterials, computeForecast, totalChange, labourProfit, prelimLabourCertified, matSupplier, contractTotals, effectiveSpendRate, quoteSavingsOf,
   pricedBudgetDrill, committedDrill, materialSavingsDrill,
-  labourSavingsDrill, variationProfitDrill, unpricedDrill, unexpectedSpendDrill, applicationsDrill,
+  labourDrill, variationProfitDrill, unpricedDrill, unexpectedSpendDrill, applicationsDrill,
   offBoqRow, materialAddedAt, materialModifiedAt, type Forecast, type MatRow,
 } from "../lib/commercials";
 import { DrillPanel, DrillKpi, type DrillData } from "./DrillPanel";
@@ -255,8 +255,8 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
   // Forecast outturn — computed by the shared commercials module so the group
   // page (and dashboard) roll up from the exact same maths and can't drift.
   const forecast = useMemo(
-    () => computeForecast({ commercials, variations, contractItems, afps, mats, contingency, summary }),
-    [commercials, variations, contractItems, afps, mats, contingency, summary],
+    () => computeForecast({ commercials, variations, contractItems, afps, mats, contingency, summary, labour }),
+    [commercials, variations, contractItems, afps, mats, contingency, summary, labour],
   );
 
   // Open the slide-over listing exactly what makes up a forecast lever / applied
@@ -264,7 +264,7 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
   const forecastDrill = (m: ForecastDrill) => {
     switch (m) {
       case "materials": setDrill({ title: "Profit / loss from materials", value: fmtMoney(forecast.materialSavings), ...materialSavingsDrill(mats) }); break;
-      case "labour": setDrill({ title: "Profit / loss from labour", value: fmtMoney(forecast.labourSavings), ...labourSavingsDrill(contractItems) }); break;
+      case "labour": setDrill({ title: "Profit / loss from labour", value: fmtMoney(labourProfit(forecast)), ...labourDrill(contractItems, labour, variations) }); break;
       case "variations": setDrill({ title: "Profit / loss from variations", value: fmtMoney(forecast.varProfit), ...variationProfitDrill(variations) }); break;
       case "unexpected": {
         const body = unexpectedSpendDrill(poSummary?.unpriced_lines ?? [], mats);
@@ -535,6 +535,9 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
               <CommercialsHeadlineKpis rows={commercials} />
             )}
             {tab === "overview" && commercials.length > 0 && canViewCommercial && <ForecastDashboard f={forecast} sections={["forecast"]} />}
+            {tab === "overview" && commercials.length > 0 && canViewCommercial && (
+              <CostToDate forecast={forecast} ordersCommitted={summarisePoRegister(projectPOs).committed} prelimLabour={prelimLabourCertified(afps)} />
+            )}
             {tab === "overview" && commercials.length > 0 && canViewCommercial && (
               <OverviewAtAGlance projectId={id ?? ""} forecast={forecast} commercials={commercials} afps={afps} variations={variations} projectPOs={projectPOs} canViewCommercial={canViewCommercial} overdrawnFrameworkCount={poSummary?.overdrawn_framework_lines?.length ?? 0} onJump={setTab} />
             )}
@@ -1542,6 +1545,37 @@ function CommercialsHeadlineKpis({ rows }: { rows: ProjectCommercial[] }) {
 
 export const moneyTone = (n: number): "success" | "danger" | "default" => (n > 0.005 ? "success" : n < -0.005 ? "danger" : "default");
 
+/** What the job has committed so far — orders and labour side by side, and
+ *  together against the forecast final cost, which carries both. Labour used to
+ *  appear only on the Commercials → Labour subtab, so the Overview's money
+ *  picture was the purchase orders alone.
+ *
+ *  Orders are every live PO's value, the Purchase orders tab's Committed and the
+ *  dashboard's figure — not the Materials tab's, which only sees lines it can
+ *  match to a BOQ item and so reads £0 on a job whose orders are worded
+ *  differently from its bill. Together with labour this is the dashboard's
+ *  Committed for the project, to the penny. */
+function CostToDate({ forecast: f, ordersCommitted, prelimLabour }: { forecast: Forecast; ordersCommitted: number; prelimLabour: number }) {
+  const labour = f.labourCertified + prelimLabour;
+  const total = ordersCommitted + labour;
+  const labourSub = [
+    f.labourBudget > 0 ? `${((f.labourCertified / f.labourBudget) * 100).toFixed(0)}% of ${fmtMoney(f.labourBudget)} labour budget` : null,
+    prelimLabour > 0.005 ? `+ ${fmtMoney(prelimLabour)} against prelims` : null,
+  ].filter(Boolean).join(" · ");
+  return (
+    <>
+      <div className="eyebrow" style={{ marginTop: 4 }}>Cost to date</div>
+      <div className="kpis">
+        <Kpi label="Orders committed" value={fmtMoney(ordersCommitted)} sub="purchase orders — approved, issued or awaiting approval" />
+        <Kpi label="Labour certified" value={fmtMoney(labour)} sub={labourSub || "subcontractor applications"}
+          tone={f.labourOverrun > 0.005 ? "danger" : "default"} />
+        <Kpi label="Committed to date" value={fmtMoney(total)}
+          sub={f.ffc > 0 ? `${((total / f.ffc) * 100).toFixed(0)}% of forecast final cost` : undefined} />
+      </div>
+    </>
+  );
+}
+
 /**
  * Commercial dashboard shown under the headline KPIs on the Overview tab:
  * the forecast outturn, the profit levers (material/labour savings + variation
@@ -1565,6 +1599,7 @@ export function ForecastDashboard({ f, sections = ["forecast", "levers", "applie
               const p: string[] = [];
               if (f.contingency > 0) p.push(`incl. ${fmtMoney(f.contingency)} contingency`);
               if (f.unexpectedSpend > 0.005) p.push(`incl. ${fmtMoney(f.unexpectedSpend)} unexpected`);
+              if (f.labourOverrun > 0.005) p.push(`incl. ${fmtMoney(f.labourOverrun)} labour over budget`);
               if (f.omittedValue > 0.005) p.push(`less ${fmtMoney(f.omittedValue)} omitted`);
               return p.length ? p.join(" · ") : undefined;
             })()} />
@@ -1583,7 +1618,11 @@ export function ForecastDashboard({ f, sections = ["forecast", "levers", "applie
           <div className="eyebrow" style={{ marginTop: 4 }}>Profit levers</div>
           <div className="kpis">
             <D metric="materials" label="Profit/Loss from Materials" value={fmtMoney(f.materialSavings)} sub="quotes vs BOQ" tone={moneyTone(f.materialSavings)} />
-            <D metric="labour" label="Profit/Loss from Labour" value={fmtMoney(f.labourSavings)} sub={Math.abs(f.labourSavings) < 0.005 ? "upload labour rates" : "live vs BOQ"} tone={moneyTone(f.labourSavings)} />
+            <D metric="labour" label="Profit/Loss from Labour" value={fmtMoney(labourProfit(f))}
+              sub={f.labourOverrun > 0.005
+                ? `${fmtMoney(f.labourSavings)} live rates − ${fmtMoney(f.labourOverrun)} certified over budget`
+                : Math.abs(f.labourSavings) < 0.005 ? "upload labour rates" : "live vs BOQ"}
+              tone={moneyTone(labourProfit(f))} />
             <D metric="variations" label="Profit/Loss from Variations" value={fmtMoney(f.varProfit)} tone={moneyTone(f.varProfit)} />
             <D metric="unexpected" label="Unexpected spend" value={fmtMoney(-f.unexpectedSpend)}
               sub={`${fmtMoney(f.unpricedSpend)} off-BOQ (the Materials tab figure) + ${fmtMoney(f.materialOverspend)} over-budget materials`}
@@ -1765,6 +1804,11 @@ function OverviewAtAGlance({ projectId, forecast: f, commercials, afps, variatio
     }
     const openVars = variations.filter((v) => v.status === "open").length;
     if (openVars > 0) flags.push({ text: `${openVars} open variation${openVars === 1 ? "" : "s"}`, tab: "commercials", tone: "var(--warn)" });
+    // Already in forecast cost and GP% — flagged too, because a pound buried in
+    // a margin is easy to read past. The dashboard raises the same flag.
+    if (f.labourOverrun > 0.5) {
+      flags.push({ text: `Labour ${fmtMoney(f.labourOverrun)} over budget — certified past its allowance`, tab: "commercials", tone: "var(--danger)" });
+    }
   }
   if (overdrawnFrameworkCount > 0) {
     flags.push({

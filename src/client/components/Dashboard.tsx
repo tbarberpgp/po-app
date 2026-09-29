@@ -369,8 +369,9 @@ function DashboardBody({ d, onPickProject, scopeLabel }: { d: Report; onPickProj
     (a, p) => ({
       ffa: a.ffa + p.ffa, ffc: a.ffc + p.ffc, cv: a.cv + p.contract_value, cc: a.cc + p.contract_cost,
       committed: a.committed + p.committed, labExp: a.labExp + p.labour_expended, labBudget: a.labBudget + p.labour_budget,
+      labCommitted: a.labCommitted + (p.labour_committed ?? 0),
     }),
-    { ffa: 0, ffc: 0, cv: 0, cc: 0, committed: 0, labExp: 0, labBudget: 0 },
+    { ffa: 0, ffc: 0, cv: 0, cc: 0, committed: 0, labExp: 0, labBudget: 0, labCommitted: 0 },
   );
   const portLabPct = port.labBudget > 0 ? pct(port.labExp, port.labBudget) : 0;
   const portContractGp = port.cv > 0 ? (port.cv - port.cc) / port.cv : null;
@@ -398,7 +399,15 @@ function DashboardBody({ d, onPickProject, scopeLabel }: { d: Report; onPickProj
   if (d.compliance.cards.pending > 0) flags.push({ tone: "warn", text: `${d.compliance.cards.pending} self-uploaded card${d.compliance.cards.pending === 1 ? "" : "s"} to verify`, to: "/operatives", action: "Verify" });
   if (d.xero.pos_failed > 0) flags.push({ tone: "danger", text: `${d.xero.pos_failed} Xero sync failure${d.xero.pos_failed === 1 ? "" : "s"}`, to: "/admin", action: "Open" });
   else if (d.xero.pos_unsynced > 0) flags.push({ tone: "warn", text: `${d.xero.pos_unsynced} approved PO${d.xero.pos_unsynced === 1 ? "" : "s"} awaiting Xero push`, to: "/admin", action: "Open" });
+  // Labour past budget — the overrun is already in forecast cost and GP%, but a
+  // number buried in a margin is easy to miss.
+  for (const p of d.by_project) {
+    if ((p.labour_overrun ?? 0) > 0.5) {
+      flags.push({ tone: "danger", text: `${p.code} — labour ${moneyK(p.labour_overrun)} over budget`, to: `/projects/${p.id}`, action: "Open" });
+    }
+  }
   // Budget watch — projects committed ≥ 60% of forecast cost (and not yet over).
+  // Committed is purchase orders and certified labour both.
   for (const p of d.by_project) {
     if (p.ffc > 0 && p.committed / p.ffc >= 0.6 && p.committed < p.ffc) {
       flags.push({ tone: "warn", text: `${p.code} — ${pct(p.committed, p.ffc)}% committed, watch budget`, to: `/projects/${p.id}`, action: "Open" });
@@ -414,7 +423,8 @@ function DashboardBody({ d, onPickProject, scopeLabel }: { d: Report; onPickProj
         <Kpi label="Forecast final account" value={moneyK(port.ffa)} sub={port.ffa - port.cv > 0.5 ? `incl. ${moneyK(port.ffa - port.cv)} variations` : "contract value"} />
         <Kpi label="Forecast GP%" value={gp(portForecastGp)} tone={portGpDeltaPts != null && portGpDeltaPts < 0 ? "warn" : portForecastGp != null ? "success" : "default"}
           sub={<>Contract {gp(portContractGp)} · <Delta pts={portGpDeltaPts} /></>} />
-        <Kpi label="Committed" value={`${committedPct}%`} sub={`${moneyK(port.committed)} of cost budget`} />
+        <Kpi label="Committed" value={`${committedPct}%`}
+          sub={`${moneyK(port.committed)} of cost budget${port.labCommitted > 0.5 ? ` · incl. ${moneyK(port.labCommitted)} labour` : ""}`} />
         <Kpi label="Certified of FFA" value={`${certOfFfa}%`} tone={certOfFfa > 0 ? "success" : "default"} sub={`${moneyK(totCertified)} certified to date`} />
       </div>
 
@@ -483,13 +493,18 @@ function DashboardBody({ d, onPickProject, scopeLabel }: { d: Report; onPickProj
                     <td className="num">{p.ffa > 0 ? moneyK(p.ffa) : <span className="muted">—</span>}</td>
                     <td>
                       <Bar pctWidth={cPct} color={cPct >= 90 ? "var(--warn)" : undefined} />
-                      <div className="muted num" style={{ fontSize: 12, marginTop: 3 }}>{p.ffc > 0 ? `${cPct}% · ` : ""}{moneyK(p.committed)}</div>
+                      <div className="muted num" style={{ fontSize: 12, marginTop: 3 }}
+                        title={`${money(p.po_committed ?? p.committed)} purchase orders · ${money(p.labour_committed ?? 0)} certified labour`}>
+                        {p.ffc > 0 ? `${cPct}% · ` : ""}{moneyK(p.committed)}
+                      </div>
+                      {(p.labour_committed ?? 0) > 0.5 && <div className="muted num" style={{ fontSize: 11.5 }}>incl. {moneyK(p.labour_committed)} labour</div>}
                     </td>
                     <td>
                       {p.labour_budget > 0 || p.labour_expended > 0 ? (
                         <>
                           <Bar pctWidth={p.labour_budget > 0 ? pct(p.labour_expended, p.labour_budget) : 100} color="var(--success)" />
                           <div className="muted num" style={{ fontSize: 12, marginTop: 3 }}>{p.labour_budget > 0 ? `${pct(p.labour_expended, p.labour_budget)}% · ` : ""}{moneyK(p.labour_expended)}</div>
+                          {(p.labour_overrun ?? 0) > 0.5 && <div className="num" style={{ fontSize: 11.5, color: "var(--danger)" }}>{moneyK(p.labour_overrun)} over budget</div>}
                         </>
                       ) : <span className="muted">—</span>}
                     </td>
@@ -1081,10 +1096,10 @@ function downloadCsv(d: Report, scopeLabel: string, months: number) {
   for (const [k, v] of kpis) lines.push(`${esc(k)},${esc(v)}`);
   lines.push("");
   lines.push("By project");
-  lines.push("Code,Name,Status,Forecast final account,Committed,Labour budget,Labour expended,Contract GP%,Forecast GP%,Forecast GP £,Applied,Certified,Paid,Pending POs,On site");
+  lines.push("Code,Name,Status,Forecast final account,Committed,PO committed,Labour committed,Labour budget,Labour expended,Labour over budget,Contract GP%,Forecast GP%,Forecast GP £,Applied,Certified,Paid,Pending POs,On site");
   const gpCsv = (f: number | null) => (f == null ? "" : (f * 100).toFixed(1));
   for (const p of d.by_project) {
-    lines.push([p.code, p.name, p.completed_at ? "Complete" : "Active", p.ffa, p.committed, p.labour_budget, p.labour_expended, gpCsv(p.contract_gp_pct), gpCsv(p.forecast_gp_pct), p.ffa > 0 ? Math.round((p.ffa - p.ffc) * 100) / 100 : "", p.applied, p.certified, p.paid, p.pending, p.on_site].map(esc).join(","));
+    lines.push([p.code, p.name, p.completed_at ? "Complete" : "Active", p.ffa, p.committed, p.po_committed, p.labour_committed, p.labour_budget, p.labour_expended, p.labour_overrun, gpCsv(p.contract_gp_pct), gpCsv(p.forecast_gp_pct), p.ffa > 0 ? Math.round((p.ffa - p.ffc) * 100) / 100 : "", p.applied, p.certified, p.paid, p.pending, p.on_site].map(esc).join(","));
   }
   const blob = new Blob(["﻿" + lines.join("\r\n")], { type: "text/csv;charset=utf-8;" });
   const url = URL.createObjectURL(blob);

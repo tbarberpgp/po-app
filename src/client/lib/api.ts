@@ -1512,6 +1512,11 @@ export const api = {
         contract_value: number; contract_cost: number; ffa: number; ffc: number;
         contract_gp_pct: number | null; forecast_gp_pct: number | null;
         labour_budget: number; labour_expended: number;
+        /** Certified labour past its budget, carried in `ffc`. */
+        labour_overrun: number;
+        /** `committed` and `paid` are the whole job's — these are their halves. */
+        po_committed: number; labour_committed: number;
+        po_paid: number; labour_paid: number;
         prelim_budget: number; prelim_committed: number;
       }>;
       key_dates: Array<{ date: string; entry_type: string; app_number: number | null; project_code: string; project_name: string }>;
