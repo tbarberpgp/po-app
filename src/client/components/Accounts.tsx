@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { PdfHighlightViewer } from "./PdfHighlightViewer";
 import { GroupedCombobox, type ComboGroup, type ComboOption } from "./GroupedCombobox";
 import { api, fmtMoney } from "../lib/api";
@@ -304,6 +304,13 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
               ))}
             </div>
             <span style={{ flex: 1 }} />
+            {/* The inbox only knows about invoices that came through it. This is
+                the other direction: what the supplier has in Xero, whether or
+                not it ever reached us. Read-only, so it sits beside the tabs
+                rather than among them. */}
+            <Link className="btn ghost tiny" to="/accounts/xero-check" title="Compare a supplier's bills in Xero against the invoices logged here">
+              Bills in Xero
+            </Link>
             {canEdit && (
               <>
                 <input ref={fileRef} type="file" accept="application/pdf,.pdf,image/*" hidden onChange={upload} />

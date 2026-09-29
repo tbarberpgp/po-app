@@ -256,6 +256,31 @@ export async function findContactByName(env: Env, name: string): Promise<XeroCon
   return null;
 }
 
+/**
+ * Every contact whose name contains `name` — the plural of findContactByName,
+ * for reading rather than writing. A supplier that trades under one name to us
+ * often has several contacts in Xero ("Alumasc Ltd", "Alumasc Water Management"),
+ * and a reconciliation that looked at only the first of them would report the
+ * rest of their bills as missing. Returns [] when nothing matches.
+ */
+export async function findContactsByName(env: Env, name: string): Promise<XeroContact[]> {
+  const term = name.trim();
+  if (!term) return [];
+  const conn = await getValidConnection(env);
+  const safe = term.replace(/"/g, '\\"');
+  try {
+    const body = await xeroFetch(
+      env,
+      conn,
+      "GET",
+      `/Contacts?where=${encodeURIComponent(`Name.Contains("${safe}")`)}`,
+    ) as { Contacts?: XeroContact[] };
+    return body.Contacts ?? [];
+  } catch {
+    return [];
+  }
+}
+
 /** Create a supplier contact in Xero from our register fields, returning the new
  *  contact (with its ContactID). Callers should check findContactByName first —
  *  Xero rejects a second contact with the same Name. */
@@ -438,6 +463,10 @@ export type XeroInvoiceFull = {
   AmountPaid?: number;
   Total?: number;
   FullyPaidOnDate?: string;         // Xero MS-date, e.g. "/Date(1718...+0000)/"
+  /** The bill's own date and due date, in the same MS-date form — run them
+   *  through parseXeroDate. summaryOnly listings include both. */
+  Date?: string;
+  DueDate?: string;
   Contact?: { ContactID?: string; Name?: string };
   /** The invoice's own currency, and Xero's rate for converting it into the
    *  organisation's BASE currency (base = amount x CurrencyRate). Xero sets the

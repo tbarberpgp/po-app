@@ -12,6 +12,7 @@ import { DeletedProjects } from "./components/DeletedProjects";
 import { ProductLibrary } from "./components/ProductLibrary";
 import { SuppliersPage } from "./components/SuppliersPage";
 import { Accounts } from "./components/Accounts";
+import { XeroBillCheck } from "./components/XeroBillCheck";
 import { DeliveriesWorkspace } from "./components/DeliveriesInbox";
 import { QuoteReview } from "./components/QuoteReview";
 import { AfpView } from "./components/AfpView";
@@ -167,6 +168,7 @@ export function App() {
             <Route path="/products" element={<ProductLibrary me={effectiveMe} />} />
             <Route path="/suppliers" element={<SuppliersPage me={effectiveMe} />} />
             <Route path="/accounts" element={<Accounts me={effectiveMe} />} />
+            <Route path="/accounts/xero-check" element={<XeroBillCheck me={effectiveMe} />} />
             <Route path="/deliveries" element={<DeliveriesWorkspace me={effectiveMe} />} />
             <Route path="/operatives" element={<Operatives me={effectiveMe} />} />
             <Route path="/operatives/bulk-upload" element={<OperativesBulkUpload me={effectiveMe} />} />
