@@ -12,7 +12,7 @@ import { DrillPanel, DrillKpi, type DrillData } from "./DrillPanel";
 import { AssignBudgetCell } from "./AssignBudgetCell";
 import {
   summariseMaterials, computeForecast, sumForecasts, withCombinedOverspend, contractTotals, effectiveSpendRate, matSupplier, netUnits, quoteSavingsOf,
-  pricedBudgetDrill, committedDrill, materialSavingsDrill, labourSavingsDrill,
+  pricedBudgetDrill, committedDrill, materialSavingsDrill, labourDrill, labourProfit,
   variationProfitDrill, unpricedDrill, combinedUnexpectedSpendDrill, applicationsDrill, combineDrill,
   offBoqRow, materialAddedAt, materialModifiedAt, materialOrders,
   type Forecast, type UnpricedLine, type DrillBody, type MatRow, type MaterialScope,
@@ -21,7 +21,7 @@ import { isApprovedNotIssued } from "../lib/po-register";
 import { can } from "../../shared/permissions";
 import { combineSiteCodes } from "../../shared/site-code";
 import type {
-  CurrentUser, Project, MaterialWithCommitment, OffBoqMaterial, ProjectCommercial, ContractItem, Variation, ApplicationForPayment, OpsSite,
+  CurrentUser, Project, MaterialWithCommitment, OffBoqMaterial, ProjectCommercial, ContractItem, Variation, ApplicationForPayment, OpsSite, LabourByCostCode,
 } from "../../shared/types";
 
 /** Orders listed per block before the rest collapse into a "+n earlier" line.
@@ -48,6 +48,9 @@ type BlockData = {
   contingency: number;
   unpricedLines: UnpricedLine[];
   unpricedSpend: number;
+  /** The block's labour position per section — what puts certified labour
+   *  into its forecast cost. */
+  labour: LabourByCostCode[];
 };
 type GTab = "overview" | "commercials" | "materials" | "programme" | "operations" | "reports";
 
@@ -151,8 +154,9 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
           api.getContingency(m.id).then((r) => r.contingency).catch(() => 0),
           api.getProjectSummary(m.id).then((s) => ({ lines: s.unpriced_lines ?? [], spend: s.unpriced_spend ?? 0 })).catch(() => ({ lines: [] as UnpricedLine[], spend: 0 })),
           api.listOffBoqMaterials(m.id).catch(() => [] as OffBoqMaterial[]),
-        ]).then(([commercials, variations, contractItems, afps, mats, contingency, summary, offBoq]) => {
-          setData((p) => ({ ...p, [m.id]: { commercials, variations, contractItems, afps, mats, contingency, unpricedLines: summary.lines, unpricedSpend: summary.spend, offBoq } }));
+          api.listLabourByCostCode(m.id).catch(() => [] as LabourByCostCode[]),
+        ]).then(([commercials, variations, contractItems, afps, mats, contingency, summary, offBoq, labour]) => {
+          setData((p) => ({ ...p, [m.id]: { commercials, variations, contractItems, afps, mats, contingency, unpricedLines: summary.lines, unpricedSpend: summary.spend, offBoq, labour } }));
         }).catch(() => {});
       });
     }).catch((e) => setErr(e.message));
@@ -198,6 +202,7 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
     commercials: d.commercials, variations: d.variations, contractItems: d.contractItems,
     afps: d.afps, mats: d.mats, contingency: d.contingency,
     summary: summariseMaterials(d.mats, d.unpricedSpend),
+    labour: d.labour,
   });
   // Every block's BOQ materials, each still tagged with its block. Overspend is
   // the one lever that can't be summed from the blocks — a material has to be
@@ -486,7 +491,7 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
     }
     const map: Record<Exclude<ForecastDrill, "unexpected">, [string, number, (d: BlockData) => DrillBody]> = {
       materials: ["Profit / loss from materials", fc.materialSavings, (d) => materialSavingsDrill(d.mats)],
-      labour: ["Profit / loss from labour", fc.labourSavings, (d) => labourSavingsDrill(d.contractItems)],
+      labour: ["Profit / loss from labour", labourProfit(fc), (d) => labourDrill(d.contractItems, d.labour, d.variations)],
       variations: ["Profit / loss from variations", fc.varProfit, (d) => variationProfitDrill(d.variations)],
       applied: ["Applied value", fc.appliedValue, (d) => applicationsDrill(d.afps, "applied")],
       certified: ["Certified value", fc.certifiedValue, (d) => applicationsDrill(d.afps, "certified")],

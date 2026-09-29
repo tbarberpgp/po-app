@@ -9,6 +9,7 @@ import type {
   MaterialWithCommitment, MaterialOrder, OffBoqMaterial, POLine, ProjectCommercial, Variation, ContractItem, ApplicationForPayment,
 } from "../../shared/types";
 import { MONEY_EPSILON, netBudgetUnits, pricedBudget } from "../../shared/budget";
+import { labourOutturn, type LabourPositionRow } from "../../shared/labour-cost";
 import { fmtMoney } from "./api";
 import type { DrillColumn } from "../components/DrillPanel";
 
@@ -39,6 +40,14 @@ export type Forecast = {
   ffa: number; ffc: number; forecastProfit: number; forecastGpPct: number | null;
   contingency: number;
   materialSavings: number; labourSavings: number; varProfit: number; unexpectedSpend: number;
+  /** What forecast cost carries on top of the labour BOQ: certified labour past
+   *  its section's budget, labour claimed with no budget at all (expenses,
+   *  daywork) and variation labour past the variations' budget. Never negative
+   *  — see shared/labour-cost.ts. */
+  labourOverrun: number;
+  /** Labour certified to date against the labour budget, and that budget — the
+   *  Labour subtab's Expended and Total labour. */
+  labourCertified: number; labourBudget: number;
   /** Budget removed from the forecast cost by omitted materials (whole lines +
    *  the omitted part of partial omissions), at the BOQ rate. */
   omittedValue: number;
@@ -421,6 +430,23 @@ export function omittedMaterialValue(mats: MaterialWithCommitment[]): number {
   }, 0);
 }
 
+/** The variations' labour budget forecast cost already carries. Absorbed
+ *  variations come back from the API with a £0 labour budget, so they count as
+ *  nothing here too. */
+export const variationLabourBudget = (variations: Variation[]): number =>
+  variations.reduce((s, v) => s + (v.labour_budget ?? 0), 0);
+
+/** Certified prelim-tagged labour claims — a subcontract PM's time and the like,
+ *  drawn on the Preliminaries allowance rather than the labour BOQ, so it isn't
+ *  labour expended. It is still money the job owes, so cost-to-date counts it.
+ *  The rule PRELIM_LABOUR_BY_PROJECT applies on the worker for the dashboard. */
+export function prelimLabourCertified(afps: ApplicationForPayment[]): number {
+  return afps
+    .filter((a) => a.direction === "incoming_labour" && (a.status === "certified" || a.status === "paid")
+      && a.prelim_heading != null && a.claimed_amount != null)
+    .reduce((s, a) => s + (a.cumulative_value ?? a.claimed_amount ?? 0), 0);
+}
+
 export function computeForecast(input: {
   commercials: ProjectCommercial[];
   variations: Variation[];
@@ -429,6 +455,9 @@ export function computeForecast(input: {
   mats: MaterialWithCommitment[];
   contingency: number;
   summary: Summary;
+  /** The Labour subtab's per-section position (`/labour-by-cost-code`). Left
+   *  out, certified labour doesn't reach the forecast — which is how it was. */
+  labour?: LabourPositionRow[];
 }): Forecast {
   const { commercials, variations, contractItems, afps, mats, contingency, summary } = input;
   const total = commercials.find((r) => r.is_total === 1);
@@ -453,7 +482,11 @@ export function computeForecast(input: {
   // contractCost is the pricing workbook's cost total — it still contains any
   // line since omitted, so take those out or the forecast never moves.
   const omittedValue = omittedMaterialValue(mats);
-  const ffc = contractCost + varCost - materialSavings - labourSavings - omittedValue + contingency + unexpectedSpend;
+  // Certified labour past its budget — or with no budget — is cost the workbook
+  // total doesn't hold. Without it the forecast kept every labour overrun off
+  // the books and GP% kept margin the job was no longer making.
+  const labour = labourOutturn(input.labour ?? [], variationLabourBudget(variations));
+  const ffc = contractCost + varCost - materialSavings - labourSavings - omittedValue + contingency + unexpectedSpend + labour.overrun;
   const forecastProfit = ffa - ffc;
   const forecastGpPct = ffa > 0 ? forecastProfit / ffa : null;
 
@@ -467,6 +500,7 @@ export function computeForecast(input: {
     hasContract: !!total,
     ffa, ffc, forecastProfit, forecastGpPct, contingency,
     materialSavings, labourSavings, varProfit, unexpectedSpend, omittedValue,
+    labourOverrun: labour.overrun, labourCertified: labour.certified, labourBudget: labour.budget,
     unpricedSpend: summary.unpriced_spend, materialOverspend: summary.material_overspend,
     appliedValue, certifiedValue, varApplied, varCertified,
   };
@@ -479,7 +513,12 @@ export function computeForecast(input: {
  *  too, or the tile and the Forecast outturn row start telling different
  *  stories, which is what contingency did until 2026-09-03. */
 export const totalChange = (f: Forecast): number =>
-  f.materialSavings + f.labourSavings + f.varProfit + f.omittedValue - f.unexpectedSpend - f.contingency;
+  f.materialSavings + f.labourSavings - f.labourOverrun + f.varProfit + f.omittedValue - f.unexpectedSpend - f.contingency;
+
+/** The Profit/Loss from Labour lever: live-rate savings less what certified
+ *  labour has cost past its budget. One number, so the tile, its drill and
+ *  Total Change can't disagree about labour. */
+export const labourProfit = (f: Forecast): number => f.labourSavings - f.labourOverrun;
 
 /** Sum two forecasts (used to combine per-block forecasts on the group page). */
 export function addForecasts(a: Forecast, b: Forecast): Forecast {
@@ -491,6 +530,9 @@ export function addForecasts(a: Forecast, b: Forecast): Forecast {
     contingency: a.contingency + b.contingency,
     materialSavings: a.materialSavings + b.materialSavings,
     labourSavings: a.labourSavings + b.labourSavings,
+    labourOverrun: a.labourOverrun + b.labourOverrun,
+    labourCertified: a.labourCertified + b.labourCertified,
+    labourBudget: a.labourBudget + b.labourBudget,
     varProfit: a.varProfit + b.varProfit,
     unexpectedSpend: a.unexpectedSpend + b.unexpectedSpend,
     omittedValue: a.omittedValue + b.omittedValue,
@@ -507,6 +549,7 @@ export const sumForecasts = (fs: Forecast[]): Forecast =>
   fs.reduce(addForecasts, {
     hasContract: false, ffa: 0, ffc: 0, forecastProfit: 0, forecastGpPct: null, contingency: 0,
     materialSavings: 0, labourSavings: 0, varProfit: 0, unexpectedSpend: 0, omittedValue: 0,
+    labourOverrun: 0, labourCertified: 0, labourBudget: 0,
     unpricedSpend: 0, materialOverspend: 0,
     appliedValue: 0, certifiedValue: 0, varApplied: 0, varCertified: 0,
   });
@@ -666,22 +709,38 @@ export function materialSavingsDrill(mats: MaterialWithCommitment[]): DrillBody 
   };
 }
 
-/** Labour savings per line = (BOQ rate − live rate) × qty over rated items. */
-export function labourSavingsDrill(items: ContractItem[]): DrillBody {
-  const rows = items
+/** Profit / loss from labour, line by line: each live subcontract rate's saving
+ *  against the BOQ, then every pound forecast cost carries because certified
+ *  labour went past its budget or never had one. The rows add up to the lever
+ *  (labourProfit) — savings less the overrun. */
+export function labourDrill(items: ContractItem[], rows: LabourPositionRow[], variations: Variation[]): DrillBody {
+  const savings = items
     .filter((ci) => ci.live_labour_rate != null && ci.labour_rate != null)
-    .map((ci) => ({ description: ci.description, boq: ci.labour_rate, live: ci.live_labour_rate, qty: ci.qty, saving: (ci.labour_rate! - ci.live_labour_rate!) * (ci.qty ?? 0) }))
-    .filter((r) => Math.abs(r.saving) > 0.005)
-    .sort((a, b) => b.saving - a.saving);
+    .map((ci) => {
+      const qty = ci.qty ?? 0;
+      return {
+        description: ci.description, why: "Live rate vs BOQ",
+        budget: ci.labour_rate! * qty, actual: ci.live_labour_rate! * qty,
+        effect: (ci.labour_rate! - ci.live_labour_rate!) * qty,
+      };
+    })
+    .filter((r) => Math.abs(r.effect) > 0.005)
+    .sort((a, b) => b.effect - a.effect);
+  const why = { over_budget: "Certified past its budget", unbudgeted: "No labour budget", variations: "Past the variations' labour budget" } as const;
+  const overruns = labourOutturn(rows, variationLabourBudget(variations)).lines.map((l) => ({
+    description: l.section, why: why[l.kind], budget: l.budget, actual: l.certified, effect: -l.over,
+  }));
+  const all = [...savings, ...overruns];
   return {
     columns: [
-      { key: "description", label: "Labour item" },
-      { key: "boq", label: "BOQ rate", align: "right", fmt: money },
-      { key: "live", label: "Live rate", align: "right", fmt: money },
-      { key: "qty", label: "Qty", align: "right", fmt: qtyFmt },
-      { key: "saving", label: "Saving", align: "right", fmt: money },
+      { key: "description", label: "Labour item / section" },
+      { key: "why", label: "Why" },
+      { key: "budget", label: "Budget", align: "right", fmt: money },
+      { key: "actual", label: "Live / certified", align: "right", fmt: money },
+      { key: "effect", label: "Profit / loss", align: "right", fmt: money },
     ],
-    rows, total: money(sum(rows, "saving")),
+    rows: all, total: money(sum(all, "effect")),
+    note: "Certified labour only — a submitted claim moves the forecast once it's certified. An underspend isn't counted as a saving until the work is done; live subcontract rates are where labour savings come from.",
   };
 }
 

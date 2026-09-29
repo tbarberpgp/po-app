@@ -2,7 +2,8 @@ import { Hono } from "hono";
 import type { Env, Variables } from "../env";
 import { requirePermission } from "../auth";
 import { parsePaymentTerms, expectedDueDate } from "./invoices";
-import { LABOUR_EXPENDED_BY_PROJECT } from "../labour-expended";
+import { LABOUR_POSITION, PRELIM_LABOUR_BY_PROJECT } from "../labour-expended";
+import { labourOutturn, type LabourPositionRow } from "../../shared/labour-cost";
 
 // Admin reporting dashboard — org-wide (or single-project) aggregates across
 // projects, POs, commercials, operations and operative compliance.
@@ -318,9 +319,10 @@ reports.get("/dashboard", async (c) => {
   // Mirrors the project Overview's forecast model so dashboard figures match
   // each project's own page: FFA = contract value + variation sell; forecast
   // cost = contract cost + variation cost − material/labour savings + contingency
-  // + unexpected spend (off-BOQ unpriced POs + committed over a line's budget).
+  // + unexpected spend (off-BOQ unpriced POs + committed over a line's budget)
+  // + certified labour past its budget (shared/labour-cost.ts).
   // Savings reuse the "latest applied live price/rate" subqueries from materials.ts.
-  const [contractRows, varSellRows, varMatRows, varLabRows, matSavRows, labSavRows, contRows, labBudgetRows, labCertRows, unpricedRows, committedItemRows, budgetItemRows] = await Promise.all([
+  const [contractRows, varSellRows, varMatRows, varLabRows, matSavRows, contRows, labPosRows, prelimLabRows, labPaidRows, unpricedRows, committedItemRows, budgetItemRows] = await Promise.all([
     db.prepare(
       `SELECT sn.project_id AS pid, c.value AS value, c.cost AS cost
          FROM project_commercials c JOIN material_snapshots sn ON sn.id = c.snapshot_id
@@ -330,8 +332,13 @@ reports.get("/dashboard", async (c) => {
       .all<{ pid: string; v: number }>(),
     db.prepare("SELECT v.project_id AS pid, COALESCE(SUM(vm.value),0) AS v FROM variation_materials vm JOIN variations v ON v.id = vm.variation_id GROUP BY v.project_id")
       .all<{ pid: string; v: number }>(),
-    db.prepare("SELECT v.project_id AS pid, COALESCE(SUM(vl.value),0) AS v FROM variation_labour vl JOIN variations v ON v.id = vl.variation_id GROUP BY v.project_id")
-      .all<{ pid: string; v: number }>(),
+    // An absorbed variation's labour is done inside the contract allowance: £0
+    // to the project, as the project page counts it (variations.ts). Summing it
+    // here booked labour the forecast on the project's own page leaves out.
+    db.prepare(
+      `SELECT v.project_id AS pid, COALESCE(SUM(vl.value),0) AS v FROM variation_labour vl JOIN variations v ON v.id = vl.variation_id
+        WHERE COALESCE(v.labour_absorbed, 0) = 0 GROUP BY v.project_id`,
+    ).all<{ pid: string; v: number }>(),
     db.prepare(
       `SELECT sn.project_id AS pid,
               COALESCE(SUM((m.cost - COALESCE((
@@ -344,33 +351,23 @@ reports.get("/dashboard", async (c) => {
         WHERE sn.is_active = 1 AND m.cost IS NOT NULL
         GROUP BY sn.project_id`,
     ).all<{ pid: string; sav: number }>(),
-    db.prepare(
-      `SELECT sn.project_id AS pid,
-              COALESCE(SUM((ci.labour_rate - COALESCE((
-                SELECT llr.live_rate FROM labour_live_rates llr
-                 WHERE (llr.contract_item_id = ci.id
-                        OR (llr.description IS NOT NULL AND lower(llr.description) = lower(ci.description)))
-                   AND llr.project_id = sn.project_id AND llr.status IN ('applied','approved')
-                   AND llr.live_rate <= COALESCE(ci.labour_rate, llr.live_rate) * 5
-                 ORDER BY llr.applied_at DESC LIMIT 1), ci.labour_rate)) * COALESCE(ci.qty, 0)), 0) AS sav
-         FROM contract_items ci JOIN material_snapshots sn ON sn.id = ci.snapshot_id
-        WHERE sn.is_active = 1 AND ci.labour_rate IS NOT NULL
-        GROUP BY sn.project_id`,
-    ).all<{ pid: string; sav: number }>(),
     db.prepare("SELECT key, value FROM settings WHERE key LIKE 'contingency:%'")
       .all<{ key: string; value: string }>(),
-    // Labour budget (BOQ) = labour_rate × qty across the active snapshot's items.
+    // Labour budget, live-rate saving and certified labour per project and
+    // section — the query the project's Labour subtab and forecast read, so the
+    // dashboard's labour, committed and GP figures are the project page's.
+    db.prepare(LABOUR_POSITION).all<{
+      pid: string; section: string; budget: number; saving: number;
+      boq_expended: number; variation_expended: number; other_expended: number;
+    }>(),
+    db.prepare(PRELIM_LABOUR_BY_PROJECT).all<{ pid: string; v: number }>(),
+    // Labour paid per project, on the portfolio cash position's rule.
     db.prepare(
-      `SELECT sn.project_id AS pid, COALESCE(SUM(ci.labour_rate * ci.qty), 0) AS v
-         FROM contract_items ci JOIN material_snapshots sn ON sn.id = ci.snapshot_id
-        WHERE sn.is_active = 1 AND ci.labour_rate IS NOT NULL
-        GROUP BY sn.project_id`,
+      `SELECT a.project_id AS pid, COALESCE(SUM(COALESCE(a.certified_amount, a.cumulative_value, 0)), 0) AS v
+         FROM applications_for_payment a
+        WHERE a.direction = 'incoming_labour' AND (a.status = 'paid' OR a.paid_at IS NOT NULL)
+        GROUP BY a.project_id`,
     ).all<{ pid: string; v: number }>(),
-    // Labour expended — the shared definition, so this figure and the project's
-    // own Labour subtab are the same number worked out once. Reading the
-    // application's cumulative_value alone also missed the expenses, which are
-    // held outside the cumulative position.
-    db.prepare(LABOUR_EXPENDED_BY_PROJECT).all<{ pid: string; v: number }>(),
     // Unexpected spend (mirrors the project page): off-BOQ "unpriced" PO spend,
     // plus committed-above-budget per material line (bulk-joined in JS below).
     db.prepare(
@@ -406,8 +403,17 @@ reports.get("/dashboard", async (c) => {
   const cValue = new Map<string, number>(), cCost = new Map<string, number>();
   for (const r of contractRows.results) { cValue.set(r.pid, r.value ?? 0); cCost.set(r.pid, r.cost ?? 0); }
   const vSell = sumMap(varSellRows), vMat = sumMap(varMatRows), vLab = sumMap(varLabRows);
-  const mSav = savMap(matSavRows), lSav = savMap(labSavRows);
-  const lBudget = sumMap(labBudgetRows), lCert = sumMap(labCertRows);
+  const mSav = savMap(matSavRows);
+  const labourRows = new Map<string, LabourPositionRow[]>();
+  for (const r of labPosRows.results) {
+    const rows = labourRows.get(r.pid) ?? [];
+    rows.push({
+      section: r.section, labour_total: r.budget ?? 0, saving: r.saving ?? 0,
+      boq_expended: r.boq_expended ?? 0, variation_expended: r.variation_expended ?? 0, other_expended: r.other_expended ?? 0,
+    });
+    labourRows.set(r.pid, rows);
+  }
+  const prelimLabour = sumMap(prelimLabRows), labourPaid = sumMap(labPaidRows);
   const conting = new Map<string, number>();
   for (const r of contRows.results) { const n = Number(r.value); conting.set(r.key.slice("contingency:".length), Number.isFinite(n) ? n : 0); }
   // Unexpected spend per project: off-BOQ unpriced spend + committed-above-budget
@@ -433,7 +439,10 @@ reports.get("/dashboard", async (c) => {
     const contractCost = cCost.get(id) ?? 0;
     const ffa = contractValue + (vSell.get(id) ?? 0);
     const unexpected = (unpriced.get(id) ?? 0) + (overspend.get(id) ?? 0);
-    const ffc = contractCost + (vMat.get(id) ?? 0) + (vLab.get(id) ?? 0) - (mSav.get(id) ?? 0) - (lSav.get(id) ?? 0) + (conting.get(id) ?? 0) + unexpected;
+    const lRows = labourRows.get(id) ?? [];
+    const lSav = lRows.reduce((s, r) => s + (r.saving ?? 0), 0);
+    const labour = labourOutturn(lRows, vLab.get(id) ?? 0);
+    const ffc = contractCost + (vMat.get(id) ?? 0) + (vLab.get(id) ?? 0) - (mSav.get(id) ?? 0) - lSav + (conting.get(id) ?? 0) + unexpected + labour.overrun;
     return {
       contract_value: r2(contractValue),
       contract_cost: r2(contractCost),
@@ -441,18 +450,35 @@ reports.get("/dashboard", async (c) => {
       ffc: r2(ffc),
       contract_gp_pct: contractValue > 0 ? (contractValue - contractCost) / contractValue : null,
       forecast_gp_pct: ffa > 0 ? (ffa - ffc) / ffa : null,
-      labour_budget: r2(lBudget.get(id) ?? 0),
-      labour_expended: r2(lCert.get(id) ?? 0),
+      labour_budget: r2(labour.budget),
+      labour_expended: r2(labour.certified),
+      labour_overrun: r2(labour.overrun),
+      // Labour the job owes: everything certified against the labour budget,
+      // plus prelim-tagged claims, which draw on the prelims allowance instead.
+      labour_committed: r2(labour.certified + (prelimLabour.get(id) ?? 0)),
     };
   };
   const prelimBudgetMap = new Map(prelimBudgetPP.results.map((r) => [r.pid, r.budget]));
   const prelimCommittedMap = new Map(prelimCommittedPP.results.map((r) => [r.pid, r.committed]));
   const prelimCountMap = new Map(prelimCommittedPP.results.map((r) => [r.pid, r.n]));
-  const byProjectEnriched = byProject.results.map((p) => ({
-    ...p, ...commercialFor(p.id),
-    prelim_budget: r2(prelimBudgetMap.get(p.id) ?? 0),
-    prelim_committed: r2(prelimCommittedMap.get(p.id) ?? 0),
-  }));
+  const byProjectEnriched = byProject.results.map((p) => {
+    const com = commercialFor(p.id);
+    const lPaid = r2(labourPaid.get(p.id) ?? 0);
+    return {
+      ...p, ...com,
+      // Committed and paid are the whole job's — purchase orders AND labour.
+      // They were the POs alone, so "% committed of cost budget" set material
+      // orders against a forecast cost that holds the labour too, and the budget
+      // watch couldn't see a job whose labour had run away.
+      po_committed: p.committed,
+      committed: r2(p.committed + com.labour_committed),
+      po_paid: p.paid,
+      labour_paid: lPaid,
+      paid: r2(p.paid + lPaid),
+      prelim_budget: r2(prelimBudgetMap.get(p.id) ?? 0),
+      prelim_committed: r2(prelimCommittedMap.get(p.id) ?? 0),
+    };
+  }).sort((a, b) => b.committed - a.committed || a.code.localeCompare(b.code));
   const prelimPoCount = byProjectEnriched.reduce((s, p) => s + (prelimCountMap.get(p.id) ?? 0), 0);
   // Accrued plant-hire cost (mirrors the project Prelims tab calc).
   let plantAccrued = 0;

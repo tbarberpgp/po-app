@@ -1131,8 +1131,16 @@ export type LabourByCostCode = {
   line_count: number;
   labour_total: number;
   /** Gross labour value certified to subcontractors against this section via
-   *  incoming-labour applications (sum of line cumulative_value). */
+   *  incoming-labour applications — boq + variation + other below. */
   expended: number;
+  /** Live-rate saving on this section's lines (BOQ − live, × qty). */
+  saving?: number;
+  /** Certified measured work: each subcontractor's latest position. */
+  boq_expended?: number;
+  /** Certified ad-hoc claims against variations. */
+  variation_expended?: number;
+  /** Certified ad-hoc claims with no budget line — expenses, daywork. */
+  other_expended?: number;
 };
 
 /** A row from the workbook's Summary Cost Sheet — value / cost / GP per category. */
