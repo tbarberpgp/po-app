@@ -43,6 +43,7 @@ import type {
   SupplierQuoteLine,
   SupplierStatus,
 } from "../../shared/types";
+import { isAccessLoginResponse, reauthenticate } from "./recover";
 import type { Role, Permission } from "../../shared/permissions";
 import type { RamsDoc } from "../../shared/rams";
 
@@ -63,14 +64,48 @@ async function programmeActivitiesFrom(projectId: string, file: File) {
   return parseProgrammeClient(file);
 }
 
+/** Thrown when the request never reached the worker — no signal, or Access
+ *  stepped in. Distinct from a 4xx/5xx the worker actually answered. */
+export class NetworkError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "NetworkError";
+  }
+}
+
 async function jfetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(path, {
-    ...init,
-    headers: {
-      ...(init?.body && !(init.body instanceof FormData) ? { "Content-Type": "application/json" } : {}),
-      ...init?.headers,
-    },
-  });
+  let res: Response;
+  try {
+    res = await fetch(path, {
+      ...init,
+      headers: {
+        ...(init?.body && !(init.body instanceof FormData) ? { "Content-Type": "application/json" } : {}),
+        ...init?.headers,
+      },
+    });
+  } catch {
+    // fetch only rejects when the request never completed: no signal, the
+    // connection dropped, or Access refused a cross-origin redirect. On a site
+    // connection the first is routine, so say so plainly rather than letting
+    // "Failed to fetch" surface — that string used to reach the page-reload
+    // handler in main.tsx and restart the app under whoever was typing.
+    throw new NetworkError(
+      navigator.onLine === false
+        ? "You're offline — this didn't reach the server."
+        : "Couldn't reach the server. Check your signal and try again.",
+    );
+  }
+
+  // Cloudflare Access answering in the worker's place means the sign-in has
+  // lapsed. Access can't redirect a fetch to its PIN form, so it hands back
+  // either another origin's response or an HTML page — never our JSON. Send the
+  // browser through Access as a real navigation; it returns to this same page
+  // once the PIN is entered, instead of leaving a parse error on screen.
+  if (path.startsWith("/api/") && isAccessLoginResponse(res)) {
+    if (reauthenticate()) throw new NetworkError("Signing you in again…");
+    throw new NetworkError("Your sign-in has expired. Reload the page to sign in again.");
+  }
+
   if (!res.ok) {
     const body = await res.text();
     // Worker errors come back as JSON like {"error":"…"} — unwrap so the UI
