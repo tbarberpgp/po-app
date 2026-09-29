@@ -87,11 +87,16 @@ export function AfpView({ me }: { me: CurrentUser | null }) {
   // Over-budget gate (labour only): the claim has exceeded the budgeted labour
   // (the BOQ lines, excluding variations). Such an application is held until a
   // director signs it off (recorded as approved_at) before it can be certified.
-  const labourBudget = lines.filter((l) => !l.is_adhoc).reduce((s, l) => s + (l.contract_value ?? 0), 0);
+  // Expenses are a disbursement, not labour: outside the budget on both sides,
+  // matching lineBudgetStatus on the server. Counting a hotel bill as claimed
+  // against a budget it was never in put the application in front of a
+  // director. Variations still count — those are labour beyond the budget.
+  const budgetLines = lines.filter((l) => !(l.is_adhoc && isExpenseSection(l.section)));
+  const labourBudget = budgetLines.filter((l) => !l.is_adhoc).reduce((s, l) => s + (l.contract_value ?? 0), 0);
   // The over-budget gate judges the CLAIM (cumulative), not the certified
   // position — a submitted over-budget claim must be held even before any
   // certification exists.
-  const labourClaimed = lines.reduce((s, l) => s + (l.cumulative_value ?? 0), 0);
+  const labourClaimed = budgetLines.reduce((s, l) => s + (l.cumulative_value ?? 0), 0);
   const overBudget = !isOutgoing && labourClaimed > labourBudget + 0.01;
   const overBy = labourClaimed - labourBudget;
   const signedOff = !!afp.approved_at;
