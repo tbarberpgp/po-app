@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import type { Env, Variables } from "../env";
 import { requirePermission } from "../auth";
 import { parsePaymentTerms, expectedDueDate } from "./invoices";
+import { LABOUR_EXPENDED_BY_PROJECT } from "../labour-expended";
 
 // Admin reporting dashboard — org-wide (or single-project) aggregates across
 // projects, POs, commercials, operations and operative compliance.
@@ -365,16 +366,11 @@ reports.get("/dashboard", async (c) => {
         WHERE sn.is_active = 1 AND ci.labour_rate IS NOT NULL
         GROUP BY sn.project_id`,
     ).all<{ pid: string; v: number }>(),
-    // Labour expended = certified incoming-labour, taking each supplier's latest
-    // cumulative value (a cumulative series would otherwise double-count).
-    db.prepare(
-      `SELECT project_id AS pid, COALESCE(SUM(cumulative_value), 0) AS v FROM (
-         SELECT a.project_id AS project_id, a.cumulative_value AS cumulative_value,
-                ROW_NUMBER() OVER (PARTITION BY a.project_id, a.counterparty_supplier_id ORDER BY a.app_number DESC) AS rn
-           FROM applications_for_payment a
-          WHERE a.direction = 'incoming_labour' AND a.status IN ('certified','paid')
-       ) WHERE rn = 1 GROUP BY project_id`,
-    ).all<{ pid: string; v: number }>(),
+    // Labour expended — the shared definition, so this figure and the project's
+    // own Labour subtab are the same number worked out once. Reading the
+    // application's cumulative_value alone also missed the expenses, which are
+    // held outside the cumulative position.
+    db.prepare(LABOUR_EXPENDED_BY_PROJECT).all<{ pid: string; v: number }>(),
     // Unexpected spend (mirrors the project page): off-BOQ "unpriced" PO spend,
     // plus committed-above-budget per material line (bulk-joined in JS below).
     db.prepare(

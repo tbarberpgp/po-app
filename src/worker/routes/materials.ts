@@ -9,6 +9,7 @@ import type { MaterialOrder, OffBoqMaterial } from "../../shared/types";
 import { requirePermission } from "../auth";
 import { loadSettings, tierForApproval } from "../approval";
 import { autoTagFromBill, baseProject } from "./programme";
+import { LABOUR_EXPENDED_BY_SECTION } from "../labour-expended";
 
 export const materials = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -343,18 +344,18 @@ materials.get("/:projectId/labour-by-cost-code", async (c) => {
      GROUP BY section`,
   ).bind(projectId).all<{ section: string; line_count: number; labour_total: number }>();
 
-  // Labour CERTIFIED per section (gross line value on certified incoming-labour
-  // applications). Same `section` dimension, so % expended is real per row.
-  const cert = await c.env.DB.prepare(
-    `SELECT COALESCE(NULLIF(TRIM(al.section), ''), 'Other') AS section,
-            COALESCE(SUM(al.cumulative_value), 0) AS expended
-     FROM afp_lines al
-     JOIN applications_for_payment a ON a.id = al.afp_id
-     WHERE a.project_id = ? AND a.direction = 'incoming_labour'
-       AND a.status IN ('certified', 'paid')
-     GROUP BY section`,
-  ).bind(projectId).all<{ section: string; expended: number }>();
-  const certBySection = new Map(cert.results.map((r) => [r.section, r.expended ?? 0]));
+  // Labour CERTIFIED per section, on the shared definition — the cumulative BOQ
+  // position from each subcontractor's latest application, plus the ad-hoc
+  // claims across the whole series. Same `section` dimension as the budget, so
+  // % expended is real per row.
+  const cert = await c.env.DB.prepare(LABOUR_EXPENDED_BY_SECTION)
+    .bind(projectId, projectId).all<{ section: string; expended: number }>();
+  // To the penny, as the portfolio dashboard already rounds its own figure —
+  // otherwise the same total reads 1389.1799999999998 on one screen and
+  // 1389.18 on the other.
+  const certBySection = new Map(
+    cert.results.map((r) => [r.section, Math.round((r.expended ?? 0) * 100) / 100]),
+  );
 
   const out = budget.results
     .map((r) => ({
@@ -362,8 +363,20 @@ materials.get("/:projectId/labour-by-cost-code", async (c) => {
       line_count: r.line_count,
       labour_total: r.labour_total,
       expended: certBySection.get(r.section) ?? 0,
-    }))
-    .sort((a, b) => b.labour_total - a.labour_total);
+    }));
+
+  // Spend in a section the labour BOQ has no budget for — Expenses, Variations,
+  // or work booked against a section that was never priced. Listing only the
+  // budgeted sections dropped it from the page entirely, which is how a
+  // subcontractor's hotel bills could be certified and paid and still appear
+  // nowhere on the project. Shown with a zero budget, which is what they have.
+  for (const [section, expended] of certBySection) {
+    if (expended === 0) continue;
+    if (out.some((r) => r.section === section)) continue;
+    out.push({ section, line_count: 0, labour_total: 0, expended });
+  }
+
+  out.sort((a, b) => b.labour_total - a.labour_total || b.expended - a.expended);
   return c.json(out);
 });
 
