@@ -1,0 +1,16 @@
+-- 0126: expenses on a labour application are a standalone, per-application
+-- claim — not part of the cumulative measured position.
+--
+-- A subcontractor's application carries their week's work AND their expenses
+-- (hotel, mileage, train fares). Expenses have no BOQ line to sit on, so they
+-- land as ad-hoc lines in the "Expenses" section. They were, however, still
+-- being folded into the application's cumulative_value, which the NEXT
+-- application then subtracts as previously-certified — while ad-hoc lines are
+-- never carried forward into that next application. Net effect: every expense
+-- claimed in one period was silently deducted from the following period's
+-- payment.
+--
+-- Recording the expense portion separately lets the cumulative ledger run on
+-- the measured works alone, with each application's own expenses added on top.
+-- Additive; existing rows read 0 via COALESCE.
+ALTER TABLE applications_for_payment ADD COLUMN expenses_amount REAL;
