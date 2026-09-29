@@ -15,6 +15,8 @@ import { cisLabourBase } from "./xero";
 import { emailAfpCertified } from "../notify";
 import type { AfpCisPreview } from "../../shared/types";
 import { isSandboxId } from "../sandbox";
+import { EXPENSES_SECTION, isExpenseSection, looksLikeExpenseLine } from "../../shared/afp-expenses";
+import { amountsArePeriod as inferPeriodBasis } from "../../shared/afp-claim-basis";
 
 export const applications = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -85,7 +87,7 @@ async function recalcTotals(
   const afp = await db
     .prepare(
       `SELECT id, project_id, direction, app_number, retention_pct, vat_pct, status,
-              prelim_heading, claimed_amount
+              prelim_heading, claimed_amount, counterparty_supplier_id
        FROM applications_for_payment WHERE id = ?`,
     )
     .bind(afpId)
@@ -93,16 +95,30 @@ async function recalcTotals(
       id: number; project_id: string; direction: Direction; app_number: number;
       retention_pct: number; vat_pct: number; status: Status;
       prelim_heading: string | null; claimed_amount: number | null;
+      counterparty_supplier_id: number | null;
     }>();
   if (!afp || (afp.status !== "draft" && !opts.force)) return;
 
   const lines = await db
     .prepare(
-      "SELECT contract_value, percent_complete, cumulative_value FROM afp_lines WHERE afp_id = ?",
+      "SELECT contract_value, percent_complete, cumulative_value, is_adhoc, section FROM afp_lines WHERE afp_id = ?",
     )
     .bind(afpId)
-    .all<{ contract_value: number; percent_complete: number; cumulative_value: number }>();
+    .all<{
+      contract_value: number; percent_complete: number; cumulative_value: number;
+      is_adhoc: 0 | 1; section: string | null;
+    }>();
   const contractSum = lines.results.reduce((s, l) => s + (l.contract_value ?? 0), 0);
+
+  // Expenses (hotel, mileage, fares) are a standalone claim for THIS period —
+  // they carry no BOQ line and are never carried forward into the next
+  // application. Kept out of the cumulative position so the following
+  // application doesn't subtract them as previously-certified work.
+  const isExpenseLine = (l: { is_adhoc: 0 | 1; section: string | null }) =>
+    l.is_adhoc === 1 && isExpenseSection(l.section);
+  const expensesAmount = lines.results
+    .filter(isExpenseLine)
+    .reduce((s, l) => s + (l.cumulative_value ?? 0), 0);
 
   // A prelim-tagged application is a standalone drawdown against the prelim
   // heading's allowance: its single claimed amount IS its value (management/PM
@@ -110,9 +126,10 @@ async function recalcTotals(
   // counts as "previously certified" for later BOQ apps — each claim stands
   // alone and the allowance tracks the running total.
   const isPrelimClaim = afp.prelim_heading != null && afp.claimed_amount != null;
+  // The cumulative measured position — everything but the standalone expenses.
   const cumulative = isPrelimClaim
     ? (afp.claimed_amount ?? 0)
-    : lines.results.reduce((s, l) => s + (l.cumulative_value ?? 0), 0);
+    : lines.results.filter((l) => !isExpenseLine(l)).reduce((s, l) => s + (l.cumulative_value ?? 0), 0);
 
   // Previously certified = sum of certified_amount on prior AfPs for the same
   // (project, direction). If an earlier app is still 'submitted' (not yet
@@ -120,17 +137,31 @@ async function recalcTotals(
   // anchor so we never double-claim work between overlapping apps.
   // Prelim-tagged apps are excluded on both sides: their claims are
   // standalone, not part of the cumulative measured-works position.
+  //
+  // An incoming-labour application is scoped to ONE subcontractor: each subbie
+  // holds a separate contract and so a separate cumulative position. Pooling
+  // them across the project charged every subbie with the others' certified
+  // work, so the second subcontractor onto a job netted £0 for real weeks
+  // worked. Client (outgoing) apps stay project-wide — there is only ever one
+  // counterparty.
   let previousCertified = 0;
   if (!isPrelimClaim) {
+    const perSupplier = afp.direction === "incoming_labour";
     const priors = await db
       .prepare(
-        `SELECT COALESCE(certified_amount, cumulative_value, 0) AS prev_value
+        `SELECT COALESCE(certified_amount, cumulative_value, 0)
+                  - COALESCE(expenses_amount, 0) AS prev_value
          FROM applications_for_payment
          WHERE project_id = ? AND direction = ? AND app_number < ?
            AND status IN ('submitted', 'certified', 'paid')
-           AND prelim_heading IS NULL`,
+           AND prelim_heading IS NULL
+           ${perSupplier ? "AND counterparty_supplier_id IS ?" : ""}`,
       )
-      .bind(afp.project_id, afp.direction, afp.app_number)
+      .bind(
+        ...(perSupplier
+          ? [afp.project_id, afp.direction, afp.app_number, afp.counterparty_supplier_id]
+          : [afp.project_id, afp.direction, afp.app_number]),
+      )
       .all<{ prev_value: number }>();
     previousCertified = priors.results.reduce((s, p) => s + (p.prev_value ?? 0), 0);
   }
@@ -140,7 +171,10 @@ async function recalcTotals(
   // raw binary-float artifacts (e.g. 1234.5600000000002) would drift the app
   // vs. Xero by a penny on reconciliation.
   const r2 = (n: number) => Math.round(n * 100) / 100;
-  const thisPeriodNet = r2(Math.max(0, cumulative - previousCertified));
+  // Measured movement since the last application, plus this application's own
+  // expenses. The max(0,…) floor applies to the measured movement alone — an
+  // over-certified position must not swallow the expenses claimed this period.
+  const thisPeriodNet = r2(Math.max(0, cumulative - previousCertified) + expensesAmount);
   const retentionAmount = r2(thisPeriodNet * (afp.retention_pct / 100));
   const amountDue = r2(thisPeriodNet - retentionAmount);
   const vatAmount = r2(amountDue * (afp.vat_pct / 100));
@@ -151,13 +185,13 @@ async function recalcTotals(
       `UPDATE applications_for_payment
        SET contract_sum = ?, cumulative_value = ?, previous_certified = ?,
            this_period_net = ?, retention_amount = ?, amount_due = ?,
-           vat_amount = ?, total_invoice = ?
+           vat_amount = ?, total_invoice = ?, expenses_amount = ?
        WHERE id = ?`,
     )
     .bind(
       contractSum, cumulative, previousCertified,
       thisPeriodNet, retentionAmount, amountDue,
-      vatAmount, totalInvoice, afpId,
+      vatAmount, totalInvoice, r2(expensesAmount), afpId,
     )
     .run();
 }
@@ -216,11 +250,17 @@ async function autoSubmitIfReady(db: D1Database, afpId: number, actor: string): 
  */
 async function lineBudgetStatus(db: D1Database, afpId: number): Promise<{ budget: number; claimed: number; over: boolean; overBy: number }> {
   const rows = await db
-    .prepare("SELECT is_adhoc, contract_value, cumulative_value FROM afp_lines WHERE afp_id = ?")
+    .prepare("SELECT is_adhoc, section, contract_value, cumulative_value FROM afp_lines WHERE afp_id = ?")
     .bind(afpId)
-    .all<{ is_adhoc: 0 | 1; contract_value: number; cumulative_value: number }>();
+    .all<{ is_adhoc: 0 | 1; section: string | null; contract_value: number; cumulative_value: number }>();
   let budget = 0, claimed = 0;
   for (const l of rows.results) {
+    // Expenses are a disbursement, not labour: they sit outside the budget on
+    // BOTH sides. Counting them as claimed against a budget they were never in
+    // put every application carrying a hotel bill over the line and in front of
+    // a director. Variations still count — those really are labour beyond the
+    // budgeted works, which is what this gate is for.
+    if (l.is_adhoc === 1 && isExpenseSection(l.section)) continue;
     if (!l.is_adhoc) budget += l.contract_value ?? 0;
     claimed += l.cumulative_value ?? 0;
   }
@@ -1668,8 +1708,35 @@ export async function createAfpFromLines(env: Env, args: {
   // Variation rows (from the workbook's Variations tab) are extra work beyond
   // the BOQ — they're added as ad-hoc lines, not matched to contract items.
   const variationLines = extracted.filter((l) => l.is_variation);
-  const normalLines = extracted.filter((l) => !l.is_variation);
+  // Expense rows (hotel, mileage, fares) claimed on a labour application have
+  // no BOQ line and never will, so matching them is pointless — they'd sit in
+  // the unmatched tray holding their value out of every total. Route them
+  // straight to the Expenses bucket instead. Client (outgoing) applications
+  // don't carry subcontractor disbursements, so this is labour-only.
   const isLabour = args.direction === "incoming_labour";
+
+  // Period vs cumulative. Subcontractors invoice weekly for days and hours
+  // worked, so a labour application states THIS PERIOD unless the document
+  // shows a to-date position (a stated % complete, or a cumulative figure that
+  // differs from the period one). Read as cumulative, each weekly invoice
+  // replaced the previous one instead of stacking, and the project's labour
+  // figure collapsed to the last week claimed.
+  //
+  // An explicit period_mode tick still forces period; the inference only fills
+  // the gap where nothing was stated — which is every emailed application.
+  // Client (outgoing) applications are genuinely cumulative and keep the flag
+  // exactly as passed.
+  const amountsArePeriod = args.amountsArePeriod === true
+    ? true
+    : isLabour
+      ? inferPeriodBasis(args.extracted)
+      : false;
+
+  const expenseLines = isLabour
+    ? extracted.filter((l) => !l.is_variation && looksLikeExpenseLine(l.description))
+    : [];
+  const expenseNos = new Set(expenseLines.map((l) => l.line_no));
+  const normalLines = extracted.filter((l) => !l.is_variation && !expenseNos.has(l.line_no));
   const terms = termsFor(args.direction, project);
 
   // Load contract items. Pick the direction-appropriate rate/total.
@@ -1715,15 +1782,22 @@ export async function createAfpFromLines(env: Env, args: {
   // subbie didn't claim this period carries forward, not zero), claimed lines
   // then add their period value on top.
   const prevByItem = new Map<number, number>();
-  if (args.amountsArePeriod) {
+  if (amountsArePeriod) {
+    // Scoped to this subcontractor for labour: another subbie's position on the
+    // same BOQ line is their contract, not this one's starting point.
     const prev = await env.DB.prepare(
       `SELECT al.contract_item_id AS cid,
               COALESCE(SUM(COALESCE(al.certified_percent / 100.0 * al.contract_value, al.cumulative_value)), 0) AS prev
          FROM afp_lines al JOIN applications_for_payment a2 ON a2.id = al.afp_id
         WHERE a2.project_id = ? AND a2.direction = ?
           AND a2.status IN ('submitted','certified','paid') AND al.contract_item_id IS NOT NULL
+          ${isLabour ? "AND a2.counterparty_supplier_id IS ?" : ""}
         GROUP BY al.contract_item_id`,
-    ).bind(args.projectId, args.direction).all<{ cid: number; prev: number | null }>();
+    ).bind(
+      ...(isLabour
+        ? [args.projectId, args.direction, args.counterpartySupplierId ?? null]
+        : [args.projectId, args.direction]),
+    ).all<{ cid: number; prev: number | null }>();
     for (const r of prev.results) prevByItem.set(Number(r.cid), r.prev ?? 0);
   }
 
@@ -1734,8 +1808,8 @@ export async function createAfpFromLines(env: Env, args: {
   const seedItems = isLabour ? items.filter((it) => it.total > 0) : items;
   const itemById = new Map(items.map((it) => [it.id, it]));
   const seedStmts = seedItems.map((it, idx) => {
-    const startCum = args.amountsArePeriod ? Math.round((prevByItem.get(it.id) ?? 0) * 100) / 100 : 0;
-    const startPct = args.amountsArePeriod && it.total > 0 ? Math.max(0, Math.min(100, (startCum / it.total) * 100)) : 0;
+    const startCum = amountsArePeriod ? Math.round((prevByItem.get(it.id) ?? 0) * 100) / 100 : 0;
+    const startPct = amountsArePeriod && it.total > 0 ? Math.max(0, Math.min(100, (startCum / it.total) * 100)) : 0;
     return env.DB.prepare(
       `INSERT INTO afp_lines
          (afp_id, contract_item_id, category, section, description, unit, qty, rate,
@@ -1776,7 +1850,7 @@ export async function createAfpFromLines(env: Env, args: {
 
     // Cumulative mode: the line value IS the to-date total. Period mode: add it
     // on top of what's already been certified (capped at the line's contract).
-    const cumVal = args.amountsArePeriod
+    const cumVal = amountsArePeriod
       ? Math.min((prevByItem.get(m.contract_item_id) ?? 0) + lineVal, itemTotal || (prevByItem.get(m.contract_item_id) ?? 0) + lineVal)
       : lineVal;
     // itemTotal !== 0, not > 0: deduction lines (negative qty/rate, e.g. a
@@ -1873,6 +1947,31 @@ export async function createAfpFromLines(env: Env, args: {
            VALUES (?, 'Variations', ?, NULL, 1, ?, ?, 0, 0, 1, ?, ?)`,
         ).bind(afpId, `VO${ov.variation_no} — ${ov.description}`, ov.sell_value, ov.sell_value, varOrder, ov.id).run();
       }
+    }
+  }
+
+  // Expenses — one ad-hoc line each under the Expenses section, at 100% (the
+  // cost was incurred, there is nothing part-complete about a hotel bill).
+  // They sit outside the measured labour budget and outside the cumulative
+  // ledger; recalcTotals adds them to this application's net on their own.
+  if (expenseLines.length > 0) {
+    const maxOrder = await env.DB.prepare(
+      "SELECT COALESCE(MAX(display_order), 0) AS n FROM afp_lines WHERE afp_id = ?",
+    ).bind(afpId).first<{ n: number }>();
+    let expOrder = maxOrder?.n ?? 0;
+    for (const e of expenseLines) {
+      const v = e.cumulative_value ?? e.this_period_value ?? 0;
+      if (!Number.isFinite(v) || v === 0) continue;
+      expOrder += 1;
+      await env.DB.prepare(
+        `INSERT INTO afp_lines
+           (afp_id, section, description, unit, qty, rate, contract_value,
+            percent_complete, cumulative_value, is_adhoc, display_order)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 100, ?, 1, ?)`,
+      ).bind(
+        afpId, EXPENSES_SECTION, e.description,
+        e.unit ?? null, e.qty ?? 1, v, v, v, expOrder,
+      ).run();
     }
   }
 
@@ -2126,6 +2225,173 @@ export async function findDuplicateSourceDoc(env: Env, hash: string): Promise<
 /** One-off/rerunnable: hash the source files already sitting in R2 onto their
  *  AfP / inbound rows, so duplicate detection also catches re-forwards of
  *  documents that predate the hash column. Safe to run repeatedly. */
+/**
+ * One-off/rerunnable repair for labour applications booked before the ledger
+ * was scoped per subcontractor and expenses were given their own bucket.
+ *
+ * Two things went wrong and both understated what subcontractors were owed:
+ *
+ *   1. Every subbie on a project shared ONE cumulative ledger, so the second
+ *      one onto a job had the first one's certified work subtracted from their
+ *      claim. Applications netted £0 for real weeks worked.
+ *   2. Expense lines (hotel, mileage, fares) matched no BOQ line, so they sat
+ *      in the unmatched tray holding their value out of every total.
+ *
+ * This moves stranded expense lines into the Expenses bucket and recomputes
+ * totals under the corrected rules.
+ *
+ * DRAFT AND SUBMITTED APPLICATIONS ONLY. A certified or paid application is a
+ * record of what was agreed and settled with a subcontractor — rewriting those
+ * figures here would contradict a document already sent. They are reported in
+ * `needs_review` with the difference so a human can decide.
+ *
+ * Pass ?dry=1 to see what would change without writing.
+ */
+applications.post("/repair-labour-ledger", async (c) => {
+  const denied = requirePermission(c, "commercial.edit");
+  if (denied) return denied;
+  const dry = c.req.query("dry") === "1";
+
+  const apps = (await c.env.DB.prepare(
+    `SELECT id, project_id, app_number, status, counterparty_supplier_id,
+            unmatched_lines_json, resolved_lines_json,
+            cumulative_value, amount_due, total_invoice, certified_amount
+       FROM applications_for_payment
+      WHERE direction = 'incoming_labour'
+      ORDER BY project_id, counterparty_supplier_id, app_number`,
+  ).all<{
+    id: number; project_id: string; app_number: number; status: Status;
+    counterparty_supplier_id: number | null;
+    unmatched_lines_json: string | null; resolved_lines_json: string | null;
+    cumulative_value: number | null; amount_due: number | null;
+    total_invoice: number | null; certified_amount: number | null;
+  }>()).results;
+
+  const changed: Array<Record<string, unknown>> = [];
+  const needsReview: Array<Record<string, unknown>> = [];
+  let expensesMoved = 0;
+
+  for (const a of apps) {
+    const before = { cumulative_value: a.cumulative_value, amount_due: a.amount_due, total_invoice: a.total_invoice };
+
+    if (a.status !== "draft" && a.status !== "submitted") {
+      // Historical: report the gap, change nothing.
+      const stranded = strandedExpenseTotal(a.unmatched_lines_json);
+      if (stranded > 0) {
+        needsReview.push({
+          afp_id: a.id, app_number: a.app_number, status: a.status,
+          reason: "certified/paid application carries unclaimed expenses",
+          stranded_expenses: stranded,
+        });
+      }
+      continue;
+    }
+
+    // Move stranded expense lines into the Expenses bucket.
+    let list: Array<Record<string, unknown>> = a.unmatched_lines_json ? JSON.parse(a.unmatched_lines_json) : [];
+    const resolved: Array<Record<string, unknown>> = a.resolved_lines_json ? JSON.parse(a.resolved_lines_json) : [];
+    const keep: Array<Record<string, unknown>> = [];
+    const toAdd: Array<Record<string, unknown>> = [];
+    for (const l of list) {
+      if (looksLikeExpenseLine(String(l.description ?? ""))) toAdd.push(l);
+      else keep.push(l);
+    }
+
+    if (!dry && toAdd.length > 0) {
+      const maxOrder = await c.env.DB.prepare(
+        "SELECT COALESCE(MAX(display_order), 0) AS n FROM afp_lines WHERE afp_id = ?",
+      ).bind(a.id).first<{ n: number }>();
+      let order = maxOrder?.n ?? 0;
+      for (const l of toAdd) {
+        const v = typeof l.cumulative_value === "number" ? l.cumulative_value
+          : typeof l.this_period_value === "number" ? l.this_period_value : 0;
+        if (!v) { keep.push(l); continue; }
+        order += 1;
+        const ins = await c.env.DB.prepare(
+          `INSERT INTO afp_lines
+             (afp_id, section, description, unit, qty, rate, contract_value,
+              percent_complete, cumulative_value, is_adhoc, display_order)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 100, ?, 1, ?) RETURNING id`,
+        ).bind(
+          a.id, EXPENSES_SECTION, String(l.description ?? ""),
+          l.unit ? String(l.unit) : null, typeof l.qty === "number" ? l.qty : 1,
+          v, v, v, order,
+        ).first<{ id: number }>();
+        resolved.push({ ...l, resolution: { action: "add_as_expense", afp_line_id: ins!.id, by: "repair-labour-ledger" } });
+        expensesMoved += 1;
+      }
+      await c.env.DB.prepare(
+        "UPDATE applications_for_payment SET unmatched_lines_json = ?, resolved_lines_json = ? WHERE id = ?",
+      ).bind(
+        keep.length > 0 ? JSON.stringify(keep) : null,
+        resolved.length > 0 ? JSON.stringify(resolved) : null,
+        a.id,
+      ).run();
+    }
+
+    // Recompute under the corrected rules. force: a submitted application is
+    // still awaiting certification, so its figures are ours to correct.
+    if (!dry) await recalcTotals(c.env.DB, a.id, { force: true });
+
+    // A weekly invoice filed as a cumulative position states no advance on the
+    // subcontractor's own earlier position — week 19 reads the same 6.9% as
+    // week 9 — so it nets to nothing. The arithmetic here is now right; what it
+    // is being given is not. Which week's work each claim represents can't be
+    // recovered from the stored position, so flag it rather than guess: someone
+    // with the invoices reassigns the line, or re-uploads the document now that
+    // labour applications are read as period claims.
+    const advance = await c.env.DB.prepare(
+      `SELECT COALESCE(MAX(l.cumulative_value), 0) AS top
+         FROM afp_lines l WHERE l.afp_id = ? AND l.contract_item_id IS NOT NULL`,
+    ).bind(a.id).first<{ top: number }>();
+    const peer = await c.env.DB.prepare(
+      `SELECT COALESCE(MAX(l.cumulative_value), 0) AS top
+         FROM afp_lines l JOIN applications_for_payment p ON p.id = l.afp_id
+        WHERE p.project_id = ? AND p.direction = 'incoming_labour'
+          AND p.counterparty_supplier_id IS ? AND p.app_number < ?
+          AND l.contract_item_id IS NOT NULL`,
+    ).bind(a.project_id, a.counterparty_supplier_id, a.app_number).first<{ top: number }>();
+    if ((advance?.top ?? 0) > 0 && (advance?.top ?? 0) <= (peer?.top ?? 0) + 0.005) {
+      needsReview.push({
+        afp_id: a.id, app_number: a.app_number, status: a.status,
+        reason: "claim states no advance on this subcontractor's earlier position — likely a weekly invoice filed as a cumulative one",
+        claimed_position: advance?.top ?? 0,
+        position_already_reached: peer?.top ?? 0,
+      });
+    }
+
+    const after = await c.env.DB.prepare(
+      "SELECT cumulative_value, amount_due, total_invoice, expenses_amount FROM applications_for_payment WHERE id = ?",
+    ).bind(a.id).first<{ cumulative_value: number | null; amount_due: number | null; total_invoice: number | null; expenses_amount: number | null }>();
+
+    changed.push({
+      afp_id: a.id, app_number: a.app_number, status: a.status,
+      expenses_moved: toAdd.length,
+      still_unmatched: keep.length,
+      before, after,
+    });
+  }
+
+  return c.json({
+    ok: true, dry,
+    applications_examined: apps.length,
+    expense_lines_moved: expensesMoved,
+    changed,
+    needs_review: needsReview,
+  });
+});
+
+/** Total £ of expense-looking lines still sitting unreconciled on an application. */
+function strandedExpenseTotal(unmatchedJson: string | null): number {
+  if (!unmatchedJson) return 0;
+  let list: Array<Record<string, unknown>>;
+  try { list = JSON.parse(unmatchedJson); } catch { return 0; }
+  return list
+    .filter((l) => looksLikeExpenseLine(String(l.description ?? "")))
+    .reduce((s, l) => s + (typeof l.cumulative_value === "number" ? l.cumulative_value
+      : typeof l.this_period_value === "number" ? l.this_period_value : 0), 0);
+}
+
 applications.post("/backfill-source-hashes", async (c) => {
   const denied = requirePermission(c, "commercial.edit");
   if (denied) return denied;

@@ -14,6 +14,7 @@ import { afpDocLabel } from "../../shared/types";
 import { parseMoney, parsePositiveMoney } from "../../shared/money";
 import type { AfpDetail, AfpLine, AfpStatus, CurrentUser, ApplicationForPayment } from "../../shared/types";
 import { isCertAwaitingApproval } from "../../shared/payment-release";
+import { isExpenseSection } from "../../shared/afp-expenses";
 
 export function AfpView({ me }: { me: CurrentUser | null }) {
   const { id } = useParams<{ id: string }>();
@@ -712,9 +713,6 @@ function LabourPayApproval({ afp, cis, certified, claimed, budget, canEdit, canR
 
 function isMosSection(s: string | null | undefined): boolean {
   return /material/i.test(s ?? "") && /site/i.test(s ?? "");
-}
-function isExpenseSection(s: string | null | undefined): boolean {
-  return /expense/i.test(s ?? "");
 }
 
 function statusPill(s: AfpStatus): string {
