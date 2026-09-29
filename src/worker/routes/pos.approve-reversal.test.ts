@@ -2,10 +2,12 @@
 //
 //   npm test
 //
-// The case: a director rejects a PO, then changes his mind. A rejection used
+// The case: a director rejects a PO, then changes their mind. A rejection used
 // to be terminal — /approve and /reject both demanded 'pending_approval', and
-// an amend deliberately preserves workflow status — so the order was stuck and
+// amending a rejected order preserves its status — so the order was stuck and
 // the only way forward was to raise it again from scratch under a new number.
+// Amending a rejected order still preserves its status, deliberately: see
+// pos.amend-reapproval.test.ts, which covers the statuses that now don't.
 //
 // What matters is that opening 'rejected' back up doesn't open anything else:
 // an issued PO must not be re-approved (it has already gone to the supplier),

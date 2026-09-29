@@ -279,8 +279,11 @@ export type PendingSubstitution = {
  *  the person who raised it is flagged so everything they raise is looked at,
  *  whatever it contains. "retrospective" is written by the retro-PO path that
  *  raises an order from an invoice already received — it predates this union
- *  and 57 production rows carry it, so leaving it out made the type a lie. */
-export type ApprovalReason = "over_budget" | "unpriced" | "both" | "raiser" | "retrospective";
+ *  and 57 production rows carry it, so leaving it out made the type a lie.
+ *  "amended" is written when an order that had already been approved (or
+ *  issued) was edited: the edit itself is what sent it back, so the order can
+ *  be perfectly ordinary — priced, within budget — and still be in the queue. */
+export type ApprovalReason = "over_budget" | "unpriced" | "both" | "raiser" | "retrospective" | "amended";
 // "deleted" is the soft-delete state: hidden from lists, but the detail view
 // still renders it (with a banner) via direct link.
 export type POStatus = "draft" | "pending_approval" | "approved" | "rejected" | "issued" | "deleted";
