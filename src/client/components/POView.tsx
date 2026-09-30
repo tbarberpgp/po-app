@@ -10,7 +10,7 @@ import { budgetMoneyHint, effectiveSpendRate, matSupplier, pickUnit, poLineBudge
 import { describeCostCode } from "../../shared/types";
 import type { CurrentUser, MaterialWithCommitment, OffBoqMaterial, POLine, PoDeliveryDrop, PurchaseOrder, Supplier } from "../../shared/types";
 import { poDeliveryLabel } from "../../shared/po-delivery-status";
-import { isApprovedNotIssued } from "../lib/po-register";
+import { isApprovedNotIssued, supplierCopyState } from "../lib/po-register";
 
 type Row = PurchaseOrder & {
   project_code: string; project_name: string;
@@ -164,7 +164,14 @@ export function POView({ me }: { me: CurrentUser | null }) {
     (po.status === "pending_approval" || wasRejected) &&
     me?.is_approver &&
     holdsTier;
-  const canIssue = po.status === "approved" && me?.email === po.created_by && can(me, "pos.issue");
+  const supplierCopy = supplierCopyState(po);
+  // Mirrors issueGate on the worker: 'approved' normally, plus an order left
+  // 'issued' while the supplier's copy is stale — the pre-0127 orders, which
+  // would otherwise show the warning with no way to clear it.
+  const canIssue =
+    (po.status === "approved" || (po.status === "issued" && supplierCopy.state === "stale")) &&
+    me?.email === po.created_by &&
+    can(me, "pos.issue");
   const isDeleted = po.status === "deleted";
   // Approved-supplier register status for this PO's supplier (same banners as New PO).
   const supplierRecord = approvedSuppliers.find((s) => s.name.toLowerCase() === po.supplier.trim().toLowerCase()) ?? null;
@@ -190,7 +197,11 @@ export function POView({ me }: { me: CurrentUser | null }) {
         status={
           <>
             <span className={`pill ${po.status} dot`} style={{ verticalAlign: "middle" }}>{po.status.replace("_", " ")}</span>
-            {isApprovedNotIssued(po) && <span className="pill warn" style={{ verticalAlign: "middle", marginLeft: 6 }} title="Approved, so the money is committed against budget — but this order has never been issued to the supplier">Not issued</span>}
+            {/* Two different problems, and they were the same pill until the
+                supplier_copy_* columns could tell them apart. */}
+            {supplierCopy.state === "stale"
+              ? <span className="pill error" style={{ verticalAlign: "middle", marginLeft: 6 }} title={`The supplier is holding the copy issued ${fmtDate(supplierCopy.issuedAt)}, which this order no longer matches`}>Supplier has old version</span>
+              : isApprovedNotIssued(po) && <span className="pill warn" style={{ verticalAlign: "middle", marginLeft: 6 }} title="Approved, so the money is committed against budget — but this order has never been issued to the supplier">Not issued</span>}
             {po.order_type === "framework" && <span className="pill info" style={{ verticalAlign: "middle", marginLeft: 6 }}>Framework</span>}
             {po.order_type === "call_off" && <span className="pill neutral" style={{ verticalAlign: "middle", marginLeft: 6 }}>Call-off</span>}
             {po.category === "prelims" && <span className="pill warn" style={{ verticalAlign: "middle", marginLeft: 6 }}>Prelims</span>}
@@ -238,6 +249,25 @@ export function POView({ me }: { me: CurrentUser | null }) {
       <main>
         {err && <div className="flash error">{err}</div>}
         {notice && <div className="flash info">{notice}</div>}
+
+        {/* Above everything else, including the deleted notice: this is the one
+            state on this page that is wrong OUTSIDE the app. Someone is
+            working to a document that no longer matches the order. */}
+        {supplierCopy.state === "stale" && (
+          <div className="flash error">
+            <b>The supplier has an older version of this order.</b>{" "}
+            They hold the copy issued {fmtDate(supplierCopy.issuedAt)}
+            {supplierCopy.value != null
+              ? <>, for <b>{fmtMoney(supplierCopy.value)}</b></>
+              : <> (what it said wasn't recorded at the time)</>}
+            . It was amended on {fmtDate(supplierCopy.staleSince)}
+            {supplierCopy.value != null && supplierCopy.value !== po.total_value && (
+              <> and now comes to <b>{fmtMoney(po.total_value)}</b></>
+            )}
+            . Until someone sends them the current PDF and marks it issued again, they will
+            deliver and invoice against what they were given.
+          </div>
+        )}
 
         {isDeleted && (
           <div className="flash error">
@@ -793,13 +823,44 @@ export function POView({ me }: { me: CurrentUser | null }) {
             {canIssue && (
               <div className="card">
                 <div className="card-bd">
-                  <div className="stat">
-                    <div className="label">Approved & ready</div>
-                    <div className="sub">Mark as issued when the PO has been sent to the supplier.</div>
-                  </div>
-                  <button className="primary" onClick={() => act(() => api.issuePO(po.id))} disabled={busy} style={{ width: "100%", marginTop: 12, justifyContent: "center" }}>
-                    Mark as issued to supplier
-                  </button>
+                  {supplierCopy.state === "stale" ? (
+                    <>
+                      <div className="stat">
+                        <div className="label">Re-issue to the supplier</div>
+                        <div className="sub">
+                          They are holding the copy from {fmtDate(supplierCopy.issuedAt)}. Send them
+                          the current PDF, then mark it issued again.
+                        </div>
+                      </div>
+                      {/* One button for both halves. Downloading the new PDF and
+                          recording the send were separate actions, which is how
+                          an order came to be "issued" with the old copy still
+                          the only one anyone had sent. The PDF lands first; if
+                          it fails, `act` never runs and the order stays honest
+                          about not having gone out. */}
+                      <button
+                        className="primary"
+                        onClick={async () => { await onDownloadPdf(); await act(() => api.issuePO(po.id)); }}
+                        disabled={busy}
+                        style={{ width: "100%", marginTop: 12, justifyContent: "center" }}
+                      >
+                        Download new PDF &amp; mark as re-issued
+                      </button>
+                      <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>
+                        The app doesn't email suppliers — the PDF downloads here and you send it.
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="stat">
+                        <div className="label">Approved &amp; ready</div>
+                        <div className="sub">Mark as issued when the PO has been sent to the supplier.</div>
+                      </div>
+                      <button className="primary" onClick={() => act(() => api.issuePO(po.id))} disabled={busy} style={{ width: "100%", marginTop: 12, justifyContent: "center" }}>
+                        Mark as issued to supplier
+                      </button>
+                    </>
+                  )}
                 </div>
               </div>
             )}
@@ -1633,11 +1694,12 @@ function POEditModal({
           : ` But the Xero update failed: ${res.xero.error ?? "unknown error"} — re-push from this page once resolved.`
         : "";
       const back = res.sent_back_for_approval;
+      const superseded = res.supplier_copy_superseded;
       onSaved(
         back
           ? `PO updated and sent back for approval — it needs signing off again${
-              back.from === "issued"
-                ? ", then re-issuing: the supplier still has the version from before this change."
+              superseded
+                ? `, then re-issuing: the supplier is holding the copy from ${fmtDate(superseded.issued_at)} and nothing has told them otherwise.`
                 : "."
             }${po.xero_sync_status === "synced" ? " Xero keeps the approved version until then." : ""}`
           : `PO updated.${xeroMsg}`,
@@ -1665,7 +1727,7 @@ function POEditModal({
               <b>Saving sends this PO back for approval.</b> It has already been signed off, so any
               change here — including a date or a note — returns it to the approvals queue and it
               will need approving again
-              {po.status === "issued" && <> and re-issuing, since the supplier holds the version before your change</>}.
+              {po.supplier_copy_issued_at && <> and re-issuing, since the supplier is holding the copy from {fmtDate(po.supplier_copy_issued_at)}</>}.
               {po.xero_sync_status === "synced" && <> Xero keeps the approved version until it is signed off again.</>}
             </div>
           )}

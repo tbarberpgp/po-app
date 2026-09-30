@@ -460,6 +460,10 @@ export const api = {
       /** Present when the amendment sent an already-decided order back to the
        *  approvals queue — `from` is the status it left. */
       sent_back_for_approval?: { from: string; tier: string | null };
+      /** Present when this amendment is the one that superseded the copy the
+       *  supplier is holding — `issued_at` is when that copy went out. Absent
+       *  on an order never issued, and on one already known to be stale. */
+      supplier_copy_superseded?: { issued_at: string | null };
       xero?: { ok: boolean; error?: string };
     }>(
       `/api/pos/${id}`,
@@ -471,7 +475,9 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ reason }),
     }),
-  issuePO: (id: string) => jfetch<{ ok: true }>(`/api/pos/${id}/issue`, { method: "POST" }),
+  /** `reissue` is true when a copy had already gone out — the supplier was
+   *  holding a superseded version and this send replaces it. */
+  issuePO: (id: string) => jfetch<{ ok: true; reissue: boolean }>(`/api/pos/${id}/issue`, { method: "POST" }),
 
   listApprovers: (projectId?: string) =>
     jfetch<Array<{ id: number; project_id: string | null; tier: string; email: string; name: string | null }>>(

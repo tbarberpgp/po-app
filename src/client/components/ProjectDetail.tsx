@@ -23,7 +23,7 @@ import {
 import { DrillPanel, DrillKpi, type DrillData } from "./DrillPanel";
 import { AssignBudgetCell } from "./AssignBudgetCell";
 import { generateMaterialsXlsx } from "../lib/materials-xlsx";
-import { summarisePoRegister } from "../lib/po-register";
+import { summarisePoRegister, supplierHasStaleCopy } from "../lib/po-register";
 import { PoRegisterExport } from "./PoRegisterExport";
 
 type Tab = "overview" | "materials" | "pos" | "commercials" | "programme" | "operations" | "reports" | "quality";
@@ -1186,7 +1186,15 @@ function ProjectPOsPanel({ rows }: { rows: ProjectPORow[] }) {
                 <td><Link to={`/pos/${r.id}`}>{r.po_number}</Link></td>
                 <td>{r.supplier}</td>
                 <td className="num">{fmtMoney(r.total_value)}</td>
-                <td className="center"><span className={`pill ${r.status}`}>{r.status.replace("_", " ")}</span></td>
+                <td className="center">
+                  <span className={`pill ${r.status}`}>{r.status.replace("_", " ")}</span>
+                  {supplierHasStaleCopy(r) && (
+                    <span className="pill error" style={{ fontSize: 10, marginLeft: 4 }}
+                      title={`Amended since it was issued — the supplier is holding the copy from ${fmtDate(r.supplier_copy_issued_at)}`}>
+                      old version out
+                    </span>
+                  )}
+                </td>
                 <td className="center">
                   {r.xero_sync_status === "synced" ? (
                     <span className="pill approved" style={{ fontSize: 10 }} title={r.xero_po_number ?? ""}>✓ {r.xero_po_number ?? "synced"}</span>

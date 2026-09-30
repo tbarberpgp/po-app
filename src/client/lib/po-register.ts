@@ -84,6 +84,51 @@ export function isApprovedNotIssued(o: { status: string; issued_at?: string | nu
   return o.status === "approved" && !o.issued_at;
 }
 
+/** What the supplier is holding, as one reading.
+ *
+ *  Three states, and they want opposite things done about them:
+ *
+ *    "none"    nothing has gone out. Someone has to send it.
+ *    "current" they hold this order as it stands. Nothing to do.
+ *    "stale"   they hold an EARLIER version. Someone has to send it again,
+ *              or they deliver and invoice against what they were told.
+ *
+ *  "stale" is the one the app couldn't express before. Amending an issued
+ *  order clears `issued_at`, which is correct — it isn't issued any more — but
+ *  that made it identical to an order never sent, and `isApprovedNotIssued`
+ *  reports both the same way. The difference matters: one supplier is waiting
+ *  for a first copy, the other is working to a copy that says something else.
+ *
+ *  `value` is what the copy they hold says the order came to, and is null for
+ *  an order amended before the app recorded that. Render "not recorded", never
+ *  a guess — the number is the thing they will invoice against.
+ *
+ *  Takes the fields alone, so it serves a PO row, a register row and a
+ *  material's order breakdown without any of them being a full PO. */
+export type SupplierCopy =
+  | { state: "none" }
+  | { state: "current"; issuedAt: string; value: number | null }
+  | { state: "stale"; issuedAt: string; value: number | null; staleSince: string };
+
+export function supplierCopyState(o: {
+  supplier_copy_issued_at?: string | null;
+  supplier_copy_value?: number | null;
+  supplier_copy_stale_since?: string | null;
+}): SupplierCopy {
+  const issuedAt = o.supplier_copy_issued_at;
+  if (!issuedAt) return { state: "none" };
+  const value = o.supplier_copy_value ?? null;
+  const staleSince = o.supplier_copy_stale_since;
+  return staleSince
+    ? { state: "stale", issuedAt, value, staleSince }
+    : { state: "current", issuedAt, value };
+}
+
+/** The supplier is working to a copy we have since changed. */
+export function supplierHasStaleCopy(o: Parameters<typeof supplierCopyState>[0]): boolean {
+  return supplierCopyState(o).state === "stale";
+}
+
 export function poOrderTypeLabel(t: OrderType | undefined): string {
   return t === "framework" ? "Framework" : t === "call_off" ? "Call-off" : "Standard";
 }
