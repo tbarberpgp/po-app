@@ -2,10 +2,9 @@ import { Hono } from "hono";
 import type { Env, Variables } from "../env";
 import { requirePermission } from "../auth";
 import { parsePaymentTerms, expectedDueDate } from "./invoices";
-import { LABOUR_POSITION, PRELIM_LABOUR_BY_PROJECT } from "../labour-expended";
-import { labourOutturn, type LabourPositionRow } from "../../shared/labour-cost";
-import { PLANT_ON_ORDER, PRELIMS_POSITION, PRELIM_LINE, prelimRow } from "../prelims-position";
-import { plantAccrued, plantBeyondOrders, prelimsOutturn, type PlantOnOrder } from "../../shared/prelims-cost";
+import { forecastByProject } from "../project-forecast";
+import { PRELIM_LABOUR_BY_PROJECT } from "../labour-expended";
+import { plantAccrued } from "../../shared/prelims-cost";
 
 // Admin reporting dashboard — org-wide (or single-project) aggregates across
 // projects, POs, commercials, operations and operative compliance.
@@ -284,51 +283,13 @@ reports.get("/dashboard", async (c) => {
   }
 
   // ── Per-project commercial forecast ────────────────────────────────────
-  // Mirrors the project Overview's forecast model so dashboard figures match
-  // each project's own page: FFA = contract value + variation sell; forecast
-  // cost = contract cost + variation cost − material/labour savings + contingency
-  // + unexpected spend (off-BOQ unpriced POs + committed over a line's budget)
-  // + certified labour past its budget (shared/labour-cost.ts).
-  // Savings reuse the "latest applied live price/rate" subqueries from materials.ts.
-  const [contractRows, varSellRows, varMatRows, varLabRows, matSavRows, contRows, labPosRows, prelimLabRows, labPaidRows, unpricedRows, committedItemRows, budgetItemRows, prelimsRows, plantRows] = await Promise.all([
-    db.prepare(
-      `SELECT sn.project_id AS pid, c.value AS value, c.cost AS cost
-         FROM project_commercials c JOIN material_snapshots sn ON sn.id = c.snapshot_id
-        WHERE c.is_total = 1 AND sn.is_active = 1`,
-    ).all<{ pid: string; value: number | null; cost: number | null }>(),
-    db.prepare("SELECT project_id AS pid, COALESCE(SUM(sell_value),0) AS v FROM variations GROUP BY project_id")
-      .all<{ pid: string; v: number }>(),
-    db.prepare("SELECT v.project_id AS pid, COALESCE(SUM(vm.value),0) AS v FROM variation_materials vm JOIN variations v ON v.id = vm.variation_id GROUP BY v.project_id")
-      .all<{ pid: string; v: number }>(),
-    // An absorbed variation's labour is done inside the contract allowance: £0
-    // to the project, as the project page counts it (variations.ts). Summing it
-    // here booked labour the forecast on the project's own page leaves out.
-    db.prepare(
-      `SELECT v.project_id AS pid, COALESCE(SUM(vl.value),0) AS v FROM variation_labour vl JOIN variations v ON v.id = vl.variation_id
-        WHERE COALESCE(v.labour_absorbed, 0) = 0 GROUP BY v.project_id`,
-    ).all<{ pid: string; v: number }>(),
-    db.prepare(
-      `SELECT sn.project_id AS pid,
-              COALESCE(SUM((m.cost - COALESCE((
-                SELECT mlp.unit_price FROM material_live_prices mlp
-                 JOIN materials om ON om.id = mlp.material_id
-                 WHERE mlp.project_id = sn.project_id AND lower(om.item) = lower(m.item) AND mlp.status IN ('applied','approved')
-                   AND mlp.unit_price <= COALESCE(m.cost, mlp.unit_price) * 5
-                 ORDER BY mlp.applied_at DESC LIMIT 1), m.cost)) * COALESCE(m.total_units, 0)), 0) AS sav
-         FROM materials m JOIN material_snapshots sn ON sn.id = m.snapshot_id
-         LEFT JOIN elements e ON e.code = m.element_code
-        WHERE sn.is_active = 1 AND m.cost IS NOT NULL AND NOT ${prelimRow()}
-        GROUP BY sn.project_id`,
-    ).all<{ pid: string; sav: number }>(),
-    db.prepare("SELECT key, value FROM settings WHERE key LIKE 'contingency:%'")
-      .all<{ key: string; value: string }>(),
-    // Labour budget, live-rate saving and certified labour per project and
-    // section — the query the project's Labour subtab and forecast read, so the
-    // dashboard's labour, committed and GP figures are the project page's.
-    db.prepare(LABOUR_POSITION).all<{
-      pid: string; section: string; budget: number; saving: number;
-      boq_expended: number; variation_expended: number; other_expended: number;
-    }>(),
+  // Not computed here. worker/project-forecast.ts assembles the same inputs the
+  // project page sends and calls the SAME computeForecast, so a project's own
+  // page and this table can no longer report different figures for one job —
+  // which they did, on coded PO lines, omissions and substitutions, until the
+  // maths moved into shared/forecast.ts.
+  const [forecasts, prelimLabourRows, labPaidRows] = await Promise.all([
+    forecastByProject(db, today),
     db.prepare(PRELIM_LABOUR_BY_PROJECT).all<{ pid: string; v: number }>(),
     // Labour paid per project, on the portfolio cash position's rule.
     db.prepare(
@@ -337,121 +298,31 @@ reports.get("/dashboard", async (c) => {
         WHERE a.direction = 'incoming_labour' AND (a.status = 'paid' OR a.paid_at IS NOT NULL)
         GROUP BY a.project_id`,
     ).all<{ pid: string; v: number }>(),
-    // Unexpected spend (mirrors the project page): off-BOQ "unpriced" PO spend,
-    // plus committed-above-budget per material line (bulk-joined in JS below).
-    db.prepare(
-      // Exclude call-offs: a framework PO already reserves the value and its
-      // call-offs draw within it (same rule as the committed-value query above).
-      // Counting both would double-book the spend.
-      // Prelim order lines are left out: they draw on the prelims budget and
-      // the pot below measures them against it (see projects.ts's list).
-      `SELECT po.project_id AS pid, COALESCE(SUM(pl.line_total), 0) AS v
-         FROM po_lines pl JOIN purchase_orders po ON po.id = pl.po_id
-        WHERE po.status IN ('approved','issued','pending_approval') AND pl.is_unpriced = 1
-          AND COALESCE(po.order_type,'standard') != 'call_off'
-          AND NOT ${PRELIM_LINE}
-        GROUP BY po.project_id`,
-    ).all<{ pid: string; v: number }>(),
-    db.prepare(
-      `SELECT po.project_id AS pid, lower(pl.item) AS item, COALESCE(SUM(pl.line_total), 0) AS v
-         FROM po_lines pl JOIN purchase_orders po ON po.id = pl.po_id
-        WHERE po.status IN ('approved','issued','pending_approval') AND pl.is_unpriced = 0
-          AND COALESCE(po.order_type,'standard') != 'call_off'
-        GROUP BY po.project_id, lower(pl.item)`,
-    ).all<{ pid: string; item: string; v: number }>(),
-    db.prepare(
-      // Prelim rows carry no material budget here, so spend against them is
-      // never booked as material overspend — the prelims pot measures it.
-      `SELECT sn.project_id AS pid, lower(m.item) AS item, COALESCE(SUM(m.total_units * m.cost), 0) AS v
-         FROM materials m JOIN material_snapshots sn ON sn.id = m.snapshot_id
-         LEFT JOIN elements e ON e.code = m.element_code
-        WHERE sn.is_active = 1 AND m.cost IS NOT NULL AND NOT ${prelimRow()}
-        GROUP BY sn.project_id, lower(m.item)`,
-    ).all<{ pid: string; item: string; v: number }>(),
-    // The prelims pot per project — budget, orders, certified prelim labour —
-    // and plant hire on order, from the definition the project's Prelims tab
-    // and forecast read (worker/prelims-position.ts).
-    db.prepare(PRELIMS_POSITION)
-      .all<{ pid: string; budget: number; row_count: number; orders: number; po_count: number; labour: number }>(),
-    db.prepare(PLANT_ON_ORDER).all<PlantOnOrder & { pid: string }>(),
   ]);
-  const sumMap = (rows: { results: Array<{ pid: string; v: number }> }) => {
-    const m = new Map<string, number>(); for (const r of rows.results) m.set(r.pid, r.v); return m;
-  };
-  const savMap = (rows: { results: Array<{ pid: string; sav: number }> }) => {
-    const m = new Map<string, number>(); for (const r of rows.results) m.set(r.pid, r.sav); return m;
-  };
-  const cValue = new Map<string, number>(), cCost = new Map<string, number>();
-  for (const r of contractRows.results) { cValue.set(r.pid, r.value ?? 0); cCost.set(r.pid, r.cost ?? 0); }
-  const vSell = sumMap(varSellRows), vMat = sumMap(varMatRows), vLab = sumMap(varLabRows);
-  const mSav = savMap(matSavRows);
-  const labourRows = new Map<string, LabourPositionRow[]>();
-  for (const r of labPosRows.results) {
-    const rows = labourRows.get(r.pid) ?? [];
-    rows.push({
-      section: r.section, labour_total: r.budget ?? 0, saving: r.saving ?? 0,
-      boq_expended: r.boq_expended ?? 0, variation_expended: r.variation_expended ?? 0, other_expended: r.other_expended ?? 0,
-    });
-    labourRows.set(r.pid, rows);
-  }
-  const prelimLabour = sumMap(prelimLabRows), labourPaid = sumMap(labPaidRows);
-  const prelimsPot = new Map(prelimsRows.results.map((r) => [r.pid, r]));
-  const plantByPid = new Map<string, PlantOnOrder[]>();
-  for (const r of plantRows.results) plantByPid.set(r.pid, [...(plantByPid.get(r.pid) ?? []), r]);
-  const conting = new Map<string, number>();
-  for (const r of contRows.results) { const n = Number(r.value); conting.set(r.key.slice("contingency:".length), Number.isFinite(n) ? n : 0); }
-  // Unexpected spend per project: off-BOQ unpriced spend + committed-above-budget
-  // per material line (per-line, so an underspend elsewhere doesn't mask it).
-  const unpriced = sumMap(unpricedRows);
-  const budgetByItem = new Map<string, number>();
-  for (const r of budgetItemRows.results) budgetByItem.set(`${r.pid}|${r.item}`, r.v);
-  const overspend = new Map<string, number>();
-  for (const r of committedItemRows.results) {
-    // Only count an over-run where the item actually has a BOQ budget line. A
-    // priced PO line whose name doesn't match the materials sheet (it was raised
-    // against the contract-items BOQ, or the name was edited) is a matching gap,
-    // NOT spend over budget — booking its whole committed value as "overspend"
-    // inflated FFC and flipped the forecast to a phantom loss.
-    const budget = budgetByItem.get(`${r.pid}|${r.item}`);
-    if (budget == null) continue;
-    const over = r.v - budget;
-    if (over > 0) overspend.set(r.pid, (overspend.get(r.pid) ?? 0) + over);
-  }
+  const prelimLabour = new Map(prelimLabourRows.results.map((r) => [r.pid, r.v] as const));
+  const labourPaid = new Map(labPaidRows.results.map((r) => [r.pid, r.v] as const));
   const r2 = (n: number) => Math.round(n * 100) / 100;
   const commercialFor = (id: string) => {
-    const contractValue = cValue.get(id) ?? 0;
-    const contractCost = cCost.get(id) ?? 0;
-    const ffa = contractValue + (vSell.get(id) ?? 0);
-    const unexpected = (unpriced.get(id) ?? 0) + (overspend.get(id) ?? 0);
-    const lRows = labourRows.get(id) ?? [];
-    const lSav = lRows.reduce((s, r) => s + (r.saving ?? 0), 0);
-    const labour = labourOutturn(lRows, vLab.get(id) ?? 0);
-    const pot = prelimsPot.get(id);
-    const prelims = prelimsOutturn({
-      budget: pot?.budget ?? 0, orders: pot?.orders ?? 0, labour: pot?.labour ?? 0,
-      plant: plantBeyondOrders(plantByPid.get(id) ?? [], today),
-    });
-    const ffc = contractCost + (vMat.get(id) ?? 0) + (vLab.get(id) ?? 0) - (mSav.get(id) ?? 0) - lSav + (conting.get(id) ?? 0) + unexpected
-      + labour.overrun + prelims.overrun;
+    const f = forecasts.get(id);
     return {
-      contract_value: r2(contractValue),
-      contract_cost: r2(contractCost),
-      ffa: r2(ffa),
-      ffc: r2(ffc),
-      contract_gp_pct: contractValue > 0 ? (contractValue - contractCost) / contractValue : null,
-      forecast_gp_pct: ffa > 0 ? (ffa - ffc) / ffa : null,
-      labour_budget: r2(labour.budget),
-      labour_expended: r2(labour.certified),
-      labour_overrun: r2(labour.overrun),
+      contract_value: r2(f?.contractValue ?? 0),
+      contract_cost: r2(f?.contractCost ?? 0),
+      ffa: r2(f?.ffa ?? 0),
+      ffc: r2(f?.ffc ?? 0),
+      contract_gp_pct: f && f.contractValue > 0 ? (f.contractValue - f.contractCost) / f.contractValue : null,
+      forecast_gp_pct: f?.forecastGpPct ?? null,
+      labour_budget: r2(f?.labourBudget ?? 0),
+      labour_expended: r2(f?.labourCertified ?? 0),
+      labour_overrun: r2(f?.labourOverrun ?? 0),
       // Labour the job owes: everything certified against the labour budget,
       // plus prelim-tagged claims, which draw on the prelims allowance instead.
-      labour_committed: r2(labour.certified + (prelimLabour.get(id) ?? 0)),
+      labour_committed: r2((f?.labourCertified ?? 0) + (prelimLabour.get(id) ?? 0)),
       // The prelims pot, as the project's Prelims tab shows it: its budget, what
       // has been spent against it, and the part past it that forecast cost carries.
-      prelim_budget: prelims.budget,
-      prelim_committed: prelims.spend,
-      prelims_overrun: prelims.overrun,
-      prelim_po_count: pot?.po_count ?? 0,
+      prelim_budget: r2(f?.prelimsBudget ?? 0),
+      prelim_committed: r2(f?.prelimsSpend ?? 0),
+      prelims_overrun: r2(f?.prelimsOverrun ?? 0),
+      prelim_po_count: f?.prelimPoCount ?? 0,
     };
   };
   const byProjectEnriched = byProject.results.map((p) => {

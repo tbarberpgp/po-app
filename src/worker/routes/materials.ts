@@ -5,7 +5,8 @@ import {
   readPricingWorkbook, reconcileCommercials,
 } from "../../shared/parse-xlsx";
 import type { ParsedMaterial, ParsedCommercialRow, ParsedContractItem, LabourRateLine } from "../../shared/parse-xlsx";
-import type { MaterialOrder, OffBoqMaterial } from "../../shared/types";
+import type { MaterialOrder, MaterialWithCommitment, OffBoqMaterial } from "../../shared/types";
+import { withCodedCommitted } from "../../shared/forecast";
 import { requirePermission } from "../auth";
 import { loadSettings, tierForApproval } from "../approval";
 import { autoTagFromBill, baseProject } from "./programme";
@@ -1090,28 +1091,10 @@ materials.get("/:projectId", async (c) => {
   // Budget is tracked in pack units (col V) since POs are raised in pack units.
   // Deliveries land under whichever wording the PO line used — for a replaced
   // material that's the substitution's name, so count both.
-  // The rate this line is actually BOUGHT at — live quoted price first, else
-  // the substitution's (blended) rate, else BOQ cost. Coded £ folds into
-  // committed_qty at this rate so qty is physical (a £5k order at the £27.58
-  // buy rate is the m² that money really buys) and the client's qty × buy-rate
-  // reproduces the PO's £ exactly instead of understating it.
-  const buyRate = (r: Record<string, unknown>): number => {
-    const cost = Number(r.cost) || 0;
-    const subCost = r.sub_id != null && r.sub_cost != null ? Number(r.sub_cost) : null;
-    const subUnits = Number(r.sub_units);
-    const totalUnits = Number(r.total_units);
-    const blended = subCost == null ? cost
-      : Number.isFinite(subUnits) && subUnits > 0 && Number.isFinite(totalUnits) && totalUnits > 0 && subUnits < totalUnits
-        ? (subUnits * subCost + (totalUnits - subUnits) * cost) / totalUnits
-        : subCost;
-    const live = r.live_unit_price != null ? Number(r.live_unit_price) : null;
-    return live ?? blended;
-  };
   const result = rows.results.map((raw) => {
-    const codedValue = Number((raw as Record<string, unknown>).assigned_committed_value) || 0;
-    const rate = buyRate(raw as Record<string, unknown>);
-    const codedQty = codedValue > 0 && rate > 0 ? Math.round((codedValue / rate) * 1000) / 1000 : 0;
-    const r: typeof raw = { ...raw, committed_qty: (raw.committed_qty ?? 0) + codedQty };
+    // Coded £ folds into committed_qty at the line's buy rate — the shared rule
+    // the forecast uses too, so the two can't value the same order differently.
+    const r: typeof raw = withCodedCommitted(raw as unknown as MaterialWithCommitment) as unknown as typeof raw;
     return {
     ...r,
     // Remaining draws down the budget net of any partial omission.

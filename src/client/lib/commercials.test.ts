@@ -241,7 +241,8 @@ test("re-basing the overspend pulls forecast cost, profit and GP% with it", () =
   // A summed forecast double-counts: 26001's over-run stands even though the
   // site as a whole is under budget on the material.
   const summed: Forecast = {
-    hasContract: true, ffa: 1000, ffc: 900, forecastProfit: 100, forecastGpPct: 0.1, contingency: 0,
+    hasContract: true, contractValue: 1000, contractCost: 900,
+    ffa: 1000, ffc: 900, forecastProfit: 100, forecastGpPct: 0.1, contingency: 0,
     materialSavings: 0, labourSavings: 0, varProfit: 0, omittedValue: 0,
     labourOverrun: 0, labourCertified: 0, labourBudget: 0,
     prelimsOverrun: 0, prelimsSpend: 0, prelimsBudget: 0,
