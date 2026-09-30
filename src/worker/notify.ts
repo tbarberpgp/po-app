@@ -129,12 +129,21 @@ export async function emailApprovers(
   const baseUrl = env.APP_BASE_URL ?? "";
   const link = `${baseUrl}/approvals/${po.id}`;
   const tier = po.approval_tier ? tierLabel[po.approval_tier] : "Approver";
+  // Ordered, not defaulted: the old ladder fell through to "over allowance AND
+  // unpriced" for anything it didn't recognise, so a new reason would have gone
+  // out describing an order that doesn't exist.
   const reason =
     po.approval_reason === "unpriced"
       ? "contains materials not in the priced bill of quantities"
       : po.approval_reason === "over_budget"
         ? "exceeds the priced allowance for one or more materials"
-        : "exceeds priced allowance and contains unpriced materials";
+        : po.approval_reason === "amended"
+          ? "was amended after it had already been approved"
+          : po.approval_reason === "raiser"
+            ? "was raised by someone whose orders are all sent for sign-off"
+            : po.approval_reason === "retrospective"
+              ? "was raised against an invoice for goods already received"
+              : "exceeds priced allowance and contains unpriced materials";
 
   // The project name may arrive equal to the code (callers that only had the
   // code to hand); printing it twice reads as a glitch, so collapse it.

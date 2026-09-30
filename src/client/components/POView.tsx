@@ -1266,6 +1266,25 @@ function ApprovalRouteCard({ po }: { po: PurchaseOrder }) {
 }
 
 function ReasonExplainer({ po }: { po: PurchaseOrder }) {
+  // Reasons that aren't about the LINES. The two lists below read the order's
+  // own lines, so for any of these they both come up empty and the card
+  // renders as a heading with nothing under it — which is what a
+  // "retrospective" order has looked like all along.
+  const notAboutTheLines: Partial<Record<NonNullable<PurchaseOrder["approval_reason"]>, string>> = {
+    amended:
+      "This PO had already been approved and was then amended, so it needs signing off again."
+      + " The Activity list below has who changed it, when, and which lines moved.",
+    retrospective:
+      "This PO was raised against an invoice for goods that had already been received,"
+      + " so it is being signed off after the fact rather than before the order went out.",
+    raiser:
+      "Everything this person raises is sent for sign-off, whatever it contains —"
+      + " nothing about the order itself asked for a signature.",
+  };
+  const plainReason = po.approval_reason ? notAboutTheLines[po.approval_reason] : undefined;
+  if (plainReason) {
+    return <p className="explainer" style={{ margin: 0 }}>{plainReason}</p>;
+  }
   const unpriced = po.lines.filter((l) => l.is_unpriced);
   // Flagged when raised, or over today — an approver deciding now needs to see
   // a line that has gone over since as much as one that was raised over.
@@ -1613,7 +1632,16 @@ function POEditModal({
           ? " The linked Xero PO was updated too."
           : ` But the Xero update failed: ${res.xero.error ?? "unknown error"} — re-push from this page once resolved.`
         : "";
-      onSaved(`PO updated.${xeroMsg}`);
+      const back = res.sent_back_for_approval;
+      onSaved(
+        back
+          ? `PO updated and sent back for approval — it needs signing off again${
+              back.from === "issued"
+                ? ", then re-issuing: the supplier still has the version from before this change."
+                : "."
+            }${po.xero_sync_status === "synced" ? " Xero keeps the approved version until then." : ""}`
+          : `PO updated.${xeroMsg}`,
+      );
     } catch (e) {
       const m = e instanceof Error ? e.message : "save failed";
       setErr(m); onError(m);
@@ -1632,9 +1660,22 @@ function POEditModal({
         </div>
         <div className="card-bd">
           {err && <div className="flash error" style={{ marginBottom: 8 }}>{err}</div>}
+          {(po.status === "approved" || po.status === "issued") && (
+            <div className="flash info" style={{ marginBottom: 8 }}>
+              <b>Saving sends this PO back for approval.</b> It has already been signed off, so any
+              change here — including a date or a note — returns it to the approvals queue and it
+              will need approving again
+              {po.status === "issued" && <> and re-issuing, since the supplier holds the version before your change</>}.
+              {po.xero_sync_status === "synced" && <> Xero keeps the approved version until it is signed off again.</>}
+            </div>
+          )}
           <div className="muted" style={{ fontSize: 12, marginBottom: 12 }}>
-            Amending {po.project_code} {po.project_name}. The project and any framework/call-off link stay as they are, and the PO keeps its current status.
-            {po.xero_sync_status === "synced" && <> Saving will also update the linked Xero draft.</>}
+            Amending {po.project_code} {po.project_name}. The project and any framework/call-off link stay as they are.
+            {po.status !== "approved" && po.status !== "issued" && (
+              <> The PO keeps its current status.
+                {po.xero_sync_status === "synced" && <> Saving will also update the linked Xero draft.</>}
+              </>
+            )}
           </div>
 
           <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>

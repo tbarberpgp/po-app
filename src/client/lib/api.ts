@@ -452,7 +452,16 @@ export const api = {
       method: "POST", body: JSON.stringify({ material_id: materialId }),
     }),
   updatePO: (id: string, input: UpdatePOInput) =>
-    jfetch<{ id: string; total: number; requires_approval: boolean; xero?: { ok: boolean; error?: string } }>(
+    jfetch<{
+      id: string;
+      total: number;
+      status: string;
+      requires_approval: boolean;
+      /** Present when the amendment sent an already-decided order back to the
+       *  approvals queue — `from` is the status it left. */
+      sent_back_for_approval?: { from: string; tier: string | null };
+      xero?: { ok: boolean; error?: string };
+    }>(
       `/api/pos/${id}`,
       { method: "PUT", body: JSON.stringify(input) },
     ),

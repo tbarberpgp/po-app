@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import type { Env, Variables } from "../env";
-import type { ApprovedPo, CreatePOInput, POLine, PoApprovalEvidence, PoDeliveryDrop } from "../../shared/types";
+import type { ApprovalReason, ApprovedPo, CreatePOInput, POLine, PoApprovalEvidence, PoDeliveryDrop } from "../../shared/types";
 import { loadSettings, tierForApproval } from "../approval";
 import { learnAliases } from "../matchMemory";
 import { normText } from "../../shared/line-match";
@@ -1611,10 +1611,9 @@ pos.post("/", async (c) => {
 });
 
 /**
- * Edit an existing PO — header + line items. Admin / superadmin only. Preserves
- * the workflow status (an amend doesn't bounce an approved/issued PO back to
- * pending), recomputes totals + approval flags, writes an audit entry, and
- * re-syncs a Xero-linked PO in place.
+ * Edit an existing PO — header + line items. Admin / superadmin only.
+ * Recomputes totals + approval flags, writes an audit entry, and sends an
+ * already-decided order back for sign-off (see the amendment note below).
  */
 pos.put("/:id", async (c) => {
   const denied = requirePermission(c, "pos.edit");
@@ -1644,6 +1643,7 @@ pos.put("/:id", async (c) => {
     id: string; project_id: string; project_code: string; project_name: string; status: string;
     category: string | null; order_type: string | null; xero_po_id: string | null;
     parent_po_id: string | null; po_number: string;
+    created_at: string; created_by: string;
   }>();
   if (!existing) return c.json({ error: "not found" }, 404);
   if (existing.status === "deleted") return c.json({ error: "Can't edit a deleted PO" }, 409);
@@ -1669,16 +1669,51 @@ pos.put("/:id", async (c) => {
   const { enriched, total, hasUnpriced, hasOverBudget, prelimNeedsApproval, frameworkOverdraws } = enrichRes;
 
   const isPrelim = category === "prelims";
-  const requiresApproval = isPrelim ? prelimNeedsApproval : (hasUnpriced || hasOverBudget);
+  const orderNeedsApproval = isPrelim ? prelimNeedsApproval : (hasUnpriced || hasOverBudget);
+
+  // Amending an order that has already been signed off sends it back for
+  // sign-off.
+  //
+  // This header used to preserve the workflow status, so an approved order
+  // could be changed to any value — supplier, quantities, rates, the lot — and
+  // stay approved, with nothing but an audit row to show for it. Nobody was
+  // told, and it never reappeared in anyone's queue. 22 orders were amended
+  // after approval that way, six of them on an order already issued to the
+  // supplier. So a decided order now returns to 'pending_approval': it has to
+  // be approved again, and — if it had been issued — issued again, which is
+  // what sends the supplier the amended copy.
+  //
+  // Deliberately ANY amendment, not only one that moves the money. A delivery
+  // date, or a note (notes print on the PDF the supplier gets), is a change to
+  // what was signed off; and picking which edits count as "material enough" is
+  // how a gate like this gets argued away a case at a time.
+  //
+  // Editing a PO that is pending or rejected leaves its status alone. Neither
+  // has been signed off, so there is nothing to send back — and a rejected one
+  // must stay rejected for an approver to overturn their own rejection, which
+  // approveGate below still allows.
+  const wasDecided = amendSendsBackForApproval(existing.status);
+  const requiresApproval = orderNeedsApproval || wasDecided;
   const settings = await loadSettings(c.env.DB);
+  // Never NULL while an order sits in the queue: the approvals inbox scopes
+  // rows by tier, so a pending order carrying no tier is invisible to every
+  // approver who isn't a superadmin — it would read as one that vanished.
   const tier = requiresApproval ? tierForApproval(total, isPrelim ? false : hasUnpriced, settings) : null;
-  const reason = !requiresApproval ? null
+  // What the ORDER did comes first, as on the raise path: an amendment that
+  // also busts the budget is an over-budget order to whoever has to sign it.
+  // "amended" is the reason only when nothing about the order itself asked.
+  const reason: ApprovalReason | null = !requiresApproval ? null
+    : !orderNeedsApproval ? "amended"
     : isPrelim ? "over_budget"
     : hasUnpriced && hasOverBudget ? "both"
     : hasUnpriced ? "unpriced" : "over_budget";
   const now = new Date().toISOString();
 
-  // Header — status / approved-by / issued-at deliberately untouched.
+  // Header. A decided order gives up its approval stamps along with its status
+  // — issued_at included, because "approved but never issued" is read off that
+  // column (isApprovedNotIssued), so leaving it set would hide from every list
+  // that the amended order still has to go out to the supplier.
+  //
   // COALESCE on internal_notes, not the plain overwrite the other fields get:
   // an older client, or any caller that simply doesn't send the field, would
   // otherwise silently erase it on every edit. Clearing it is still possible —
@@ -1687,7 +1722,11 @@ pos.put("/:id", async (c) => {
     `UPDATE purchase_orders
         SET supplier = ?, total_value = ?, notes = ?, delivery_date = ?,
             internal_notes = COALESCE(?, internal_notes),
-            requires_approval = ?, approval_tier = ?, approval_reason = ?, category = ?
+            requires_approval = ?, approval_tier = ?, approval_reason = ?, category = ?${
+              wasDecided
+                ? `,
+            status = 'pending_approval', approved_at = NULL, approved_by = NULL, issued_at = NULL`
+                : ""}
       WHERE id = ?`,
   ).bind(
     body.supplier, total, body.notes ?? null, body.delivery_date ?? null,
@@ -1789,6 +1828,9 @@ pos.put("/:id", async (c) => {
     kept: plan.filter((p) => p.keep).length,
     added: plan.filter((p) => !p.keep).length,
     removed: removedIds.length,
+    // What the amendment cost the order: the status it was in, and the tier it
+    // now has to clear. Read back on the PO's activity tab.
+    ...(wasDecided ? { sent_back_for_approval: { from: existing.status, tier } } : {}),
     ...(orphaned && (orphaned.receipts || orphaned.invoice_lines) ? { orphaned } : {}),
   }), now).run();
 
@@ -1799,15 +1841,68 @@ pos.put("/:id", async (c) => {
     );
   }
 
+  // Back in the queue → tell the approvers, exactly as raising it would have.
+  // Without this the order waits silently for someone to happen to look.
+  if (wasDecided && tier && !isSandboxId(project.id)) {
+    const approvers = await c.env.DB.prepare(
+      `SELECT email, name FROM approvers
+       WHERE tier = ? AND (project_id = ? OR project_id IS NULL)
+       ORDER BY project_id IS NULL`,
+    ).bind(tier, project.id).all<{ email: string; name: string | null }>();
+    c.executionCtx.waitUntil(
+      emailApprovers(
+        c.env,
+        {
+          id,
+          po_number: existing.po_number,
+          project_id: project.id,
+          supplier: body.supplier,
+          status: "pending_approval",
+          requires_approval: true,
+          approval_tier: tier,
+          approval_reason: reason,
+          total_value: total,
+          notes: body.notes ?? null,
+          delivery_date: body.delivery_date ?? null,
+          created_at: existing.created_at,
+          created_by: existing.created_by,
+          approved_at: null,
+          approved_by: null,
+          rejected_at: null,
+          rejected_by: null,
+          rejection_reason: null,
+          issued_at: null,
+          lines: enriched,
+        },
+        { code: project.code, name: project.name },
+        approvers.results,
+      ).catch((e) => console.warn("approver email (on amend) failed", e instanceof Error ? e.message : e)),
+    );
+  }
+
   // Keep the linked Xero PO in step — updates in place (no duplicate). Inline so
   // the editor sees whether the re-sync succeeded.
+  //
+  // Skipped for an order just sent back: Xero should hold what was approved,
+  // not an amendment still waiting on a signature. The approve endpoint pushes
+  // on the way through, so re-approval is what carries the change over.
   let xero: { ok: boolean; error?: string } | undefined;
-  if (existing.xero_po_id && c.env.XERO_CLIENT_ID && c.env.XERO_CLIENT_SECRET) {
+  if (!wasDecided && existing.xero_po_id && c.env.XERO_CLIENT_ID && c.env.XERO_CLIENT_SECRET) {
     try { await pushPOToXero(c.env, id); xero = { ok: true }; }
     catch (e) { xero = { ok: false, error: e instanceof Error ? e.message : String(e) }; }
   }
 
-  return c.json({ id, total, requires_approval: requiresApproval, xero, ...(orphaned && (orphaned.receipts || orphaned.invoice_lines) ? { orphaned } : {}) });
+  return c.json({
+    id,
+    total,
+    status: wasDecided ? "pending_approval" : existing.status,
+    requires_approval: requiresApproval,
+    // What the editor needs told: the order left the state it was in, and
+    // (if it had gone out) the supplier's copy is now the stale one.
+    ...(wasDecided ? { sent_back_for_approval: { from: existing.status, tier } } : {}),
+    xero,
+    ...(orphaned && (orphaned.receipts || orphaned.invoice_lines) ? { orphaned } : {}),
+  });
 });
 
 /** Mark a standard PO as a framework/blanket order that call-offs draw against. */
@@ -1963,13 +2058,30 @@ pos.post("/:id/lines/:lineId/assign-budget", async (c) => {
 });
 
 /**
+ * Whether amending a PO in this status sends it back for sign-off.
+ *
+ * 'approved' and 'issued' are the decided states — someone with the authority
+ * put their name to a particular supplier, quantity and price, so changing any
+ * of it means that signature no longer covers the order in front of you.
+ *
+ * 'pending_approval' is already in the queue and 'rejected' has to stay
+ * rejected (see approveGate — approving from rejected is how an approver
+ * overturns their own decision, and that path reads the status). 'draft' has
+ * never been submitted. 'deleted' can't be edited at all.
+ */
+export function amendSendsBackForApproval(status: string): boolean {
+  return status === "approved" || status === "issued";
+}
+
+/**
  * Which statuses the approve endpoint accepts, and whether approving now
  * overturns a rejection.
  *
  * 'pending_approval' is the normal path. 'rejected' is an approver changing
- * their mind: a rejection used to be the end of the road — an amend
- * deliberately preserves workflow status, so nothing could move a rejected PO
- * again and the only way forward was to raise the whole order a second time.
+ * their mind: a rejection used to be the end of the road — amending a rejected
+ * order preserves its status (still true, and see amendSendsBackForApproval
+ * above for why), so nothing could move a rejected PO again and the only way
+ * forward was to raise the whole order a second time.
  * Approving from 'rejected' runs the identical path (same email to the
  * requester, same Xero push) and clears the rejection off the row; the audit
  * trail keeps what was rejected, by whom and why.
