@@ -400,6 +400,20 @@ export type PurchaseOrder = {
   rejected_by: string | null;
   rejection_reason: string | null;
   issued_at: string | null;
+  /** What the SUPPLIER is holding — the outside world, not our workflow.
+   *
+   *  `issued_at` is our status: amending an issued order sends it back for
+   *  approval and clears it (amendSendsBackForApproval). These three don't
+   *  clear, because the supplier's copy doesn't un-send itself. Read them
+   *  through `supplierCopyState` rather than one at a time.
+   *
+   *  `supplier_copy_value` is NULL when the order was amended before anyone
+   *  recorded what had gone out — say so, don't guess a figure. */
+  supplier_copy_issued_at?: string | null;
+  supplier_copy_value?: number | null;
+  /** Set when the order was amended past the copy the supplier holds. NULL
+   *  means they have the current version. */
+  supplier_copy_stale_since?: string | null;
   // Xero push state
   xero_po_id?: string | null;
   xero_po_number?: string | null;

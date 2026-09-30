@@ -7,7 +7,7 @@ import { displayPerson } from "../lib/people";
 import type { CurrentUser, PurchaseOrder } from "../../shared/types";
 import { poDeliveryLabel } from "../../shared/po-delivery-status";
 import { PoRegisterExport } from "./PoRegisterExport";
-import { isApprovedNotIssued } from "../lib/po-register";
+import { isApprovedNotIssued, supplierHasStaleCopy } from "../lib/po-register";
 
 type PickProject = { id: string; code: string; name: string; site_group_name?: string | null };
 
@@ -232,7 +232,18 @@ export function POsList({ me }: { me: CurrentUser | null }) {
                       >
                         {r.status.replace("_", " ")}
                       </span>
-                      {isApprovedNotIssued(r) && (
+                      {/* Stale beats not-issued: an amendment clears issued_at,
+                          so a superseded order matches both, and only one of
+                          them tells you a supplier is acting on wrong figures. */}
+                      {supplierHasStaleCopy(r) ? (
+                        <span
+                          className="pill error"
+                          style={{ fontSize: 10, marginLeft: 4 }}
+                          title={`Amended since it was issued — the supplier is holding the copy from ${fmtDate(r.supplier_copy_issued_at)} and has not been sent this version`}
+                        >
+                          supplier has old version
+                        </span>
+                      ) : isApprovedNotIssued(r) && (
                         <span
                           className="pill warn"
                           style={{ fontSize: 10, marginLeft: 4 }}

@@ -1644,6 +1644,7 @@ pos.put("/:id", async (c) => {
     category: string | null; order_type: string | null; xero_po_id: string | null;
     parent_po_id: string | null; po_number: string;
     created_at: string; created_by: string;
+    supplier_copy_issued_at: string | null; supplier_copy_stale_since: string | null;
   }>();
   if (!existing) return c.json({ error: "not found" }, 404);
   if (existing.status === "deleted") return c.json({ error: "Can't edit a deleted PO" }, 409);
@@ -1680,8 +1681,14 @@ pos.put("/:id", async (c) => {
   // told, and it never reappeared in anyone's queue. 22 orders were amended
   // after approval that way, six of them on an order already issued to the
   // supplier. So a decided order now returns to 'pending_approval': it has to
-  // be approved again, and — if it had been issued — issued again, which is
-  // what sends the supplier the amended copy.
+  // be approved again, and — if it had been issued — issued again.
+  //
+  // Issuing sends the supplier nothing. The PDF is built in the browser and
+  // emailed by a person; /issue is them ticking a box afterwards. So sending
+  // an order back is not enough on its own — the supplier is still holding
+  // the copy they were given, and will deliver and invoice against it. The
+  // supplier_copy_* columns below are what makes that state visible; see
+  // migration 0127 and `supplierCopyState`.
   //
   // Deliberately ANY amendment, not only one that moves the money. A delivery
   // date, or a note (notes print on the PDF the supplier gets), is a change to
@@ -1694,6 +1701,11 @@ pos.put("/:id", async (c) => {
   // approveGate below still allows.
   const wasDecided = amendSendsBackForApproval(existing.status);
   const requiresApproval = orderNeedsApproval || wasDecided;
+  // A copy is out there and this is the amendment that supersedes it. Already
+  // stale stays stale — it doesn't go stale twice, and the editor who made it
+  // stale in the first place has already been told.
+  const supplierCopyWentStale =
+    existing.supplier_copy_issued_at != null && existing.supplier_copy_stale_since == null;
   const settings = await loadSettings(c.env.DB);
   // Never NULL while an order sits in the queue: the approvals inbox scopes
   // rows by tier, so a pending order carrying no tier is invisible to every
@@ -1722,7 +1734,10 @@ pos.put("/:id", async (c) => {
     `UPDATE purchase_orders
         SET supplier = ?, total_value = ?, notes = ?, delivery_date = ?,
             internal_notes = COALESCE(?, internal_notes),
-            requires_approval = ?, approval_tier = ?, approval_reason = ?, category = ?${
+            requires_approval = ?, approval_tier = ?, approval_reason = ?, category = ?,
+            supplier_copy_stale_since = CASE
+              WHEN supplier_copy_issued_at IS NOT NULL THEN COALESCE(supplier_copy_stale_since, ?)
+              ELSE supplier_copy_stale_since END${
               wasDecided
                 ? `,
             status = 'pending_approval', approved_at = NULL, approved_by = NULL, issued_at = NULL`
@@ -1731,7 +1746,13 @@ pos.put("/:id", async (c) => {
   ).bind(
     body.supplier, total, body.notes ?? null, body.delivery_date ?? null,
     body.internal_notes === undefined ? null : (body.internal_notes?.trim() || ""),
-    requiresApproval ? 1 : 0, tier, reason, category, id,
+    requiresApproval ? 1 : 0, tier, reason, category,
+    // Stale from the FIRST amendment past the copy they hold, not the latest:
+    // that is the date from which what they were told stopped being true.
+    // COALESCE, and only where a copy has actually gone out — a no-op
+    // otherwise, so it needs no branch of its own.
+    now,
+    id,
   ).run();
 
   // A changed/custom supplier joins the approved-suppliers register.
@@ -1831,6 +1852,10 @@ pos.put("/:id", async (c) => {
     // What the amendment cost the order: the status it was in, and the tier it
     // now has to clear. Read back on the PO's activity tab.
     ...(wasDecided ? { sent_back_for_approval: { from: existing.status, tier } } : {}),
+    // And what it cost outside: the supplier is now holding a superseded copy.
+    ...(supplierCopyWentStale
+      ? { supplier_copy_superseded: { issued_at: existing.supplier_copy_issued_at } }
+      : {}),
     ...(orphaned && (orphaned.receipts || orphaned.invoice_lines) ? { orphaned } : {}),
   }), now).run();
 
@@ -1900,6 +1925,9 @@ pos.put("/:id", async (c) => {
     // What the editor needs told: the order left the state it was in, and
     // (if it had gone out) the supplier's copy is now the stale one.
     ...(wasDecided ? { sent_back_for_approval: { from: existing.status, tier } } : {}),
+    ...(supplierCopyWentStale
+      ? { supplier_copy_superseded: { issued_at: existing.supplier_copy_issued_at } }
+      : {}),
     xero,
     ...(orphaned && (orphaned.receipts || orphaned.invoice_lines) ? { orphaned } : {}),
   });
@@ -2074,6 +2102,31 @@ export function amendSendsBackForApproval(status: string): boolean {
 }
 
 /**
+ * Whether this order can be recorded as issued to the supplier.
+ *
+ * 'approved' is the normal path: signed off, now send it.
+ *
+ * 'issued' is allowed only while the supplier's copy is stale, and exists for
+ * one situation — the orders amended after issue BEFORE amending sent an order
+ * back (migration 0127 found five). Their status stayed 'issued' through every
+ * amendment, so they carry a superseded supplier copy AND a status this gate
+ * would otherwise refuse: the app would show "the supplier has an older
+ * version" with no action anywhere that could clear it. Re-sending is exactly
+ * what they need, and it is not a way round approval — an amendment now
+ * returns the order to 'pending_approval', so stale-and-still-issued cannot
+ * arise again.
+ */
+export function issueGate(
+  status: string,
+  supplierCopyIsStale: boolean,
+): { ok: true } | { ok: false; error: string } {
+  if (status === "approved") return { ok: true };
+  if (status === "issued" && supplierCopyIsStale) return { ok: true };
+  if (status === "issued") return { ok: false, error: "this PO has already been issued" };
+  return { ok: false, error: `cannot issue a ${status} PO` };
+}
+
+/**
  * Which statuses the approve endpoint accepts, and whether approving now
  * overturns a rejection.
  *
@@ -2244,24 +2297,42 @@ pos.post("/:id/issue", async (c) => {
   if (denied) return denied;
   const id = c.req.param("id");
   const actor = c.get("userEmail");
-  const po = await c.env.DB.prepare("SELECT id, status, created_by, xero_po_id FROM purchase_orders WHERE id = ?")
-    .bind(id)
-    .first<{ id: string; status: string; created_by: string; xero_po_id: string | null }>();
-  if (!po) return c.json({ error: "not found" }, 404);
-  if (po.status !== "approved") {
-    return c.json({ error: `cannot issue a ${po.status} PO` }, 409);
-  }
-  const now = new Date().toISOString();
-  await c.env.DB.prepare(
-    "UPDATE purchase_orders SET status = 'issued', issued_at = ? WHERE id = ?",
+  const po = await c.env.DB.prepare(
+    `SELECT id, status, created_by, xero_po_id, total_value,
+            supplier_copy_issued_at, supplier_copy_stale_since
+       FROM purchase_orders WHERE id = ?`,
   )
-    .bind(now, id)
+    .bind(id)
+    .first<{
+      id: string; status: string; created_by: string; xero_po_id: string | null;
+      total_value: number; supplier_copy_issued_at: string | null;
+      supplier_copy_stale_since: string | null;
+    }>();
+  if (!po) return c.json({ error: "not found" }, 404);
+  const gate = issueGate(po.status, po.supplier_copy_stale_since != null);
+  if (!gate.ok) return c.json({ error: gate.error }, 409);
+  // Re-issuing replaces a copy already out there, rather than sending a first
+  // one. Used for the audit entry and the reply; the columns don't care.
+  const reissue = po.supplier_copy_issued_at != null;
+  const now = new Date().toISOString();
+  // This endpoint doesn't send anything. It is someone recording that THEY
+  // sent the PDF, so it is also the only moment the app learns what the
+  // supplier is now holding: the date, and the total printed on that copy.
+  // Recording the value here is what lets the order say, later, that they are
+  // working to £71,604.70 when it now says £73,120.40.
+  await c.env.DB.prepare(
+    `UPDATE purchase_orders
+        SET status = 'issued', issued_at = ?,
+            supplier_copy_issued_at = ?, supplier_copy_value = ?, supplier_copy_stale_since = NULL
+      WHERE id = ?`,
+  )
+    .bind(now, now, po.total_value, id)
     .run();
   await c.env.DB.prepare(
     `INSERT INTO audit_log (entity_type, entity_id, action, actor, details, created_at)
-     VALUES ('po', ?, 'issued', ?, NULL, ?)`,
+     VALUES ('po', ?, 'issued', ?, ?, ?)`,
   )
-    .bind(id, actor, now)
+    .bind(id, actor, JSON.stringify({ value: po.total_value, ...(reissue ? { reissue: true } : {}) }), now)
     .run();
 
   // Safety net: if this PO never made it into Xero (e.g. Xero was disconnected
@@ -2275,7 +2346,7 @@ pos.post("/:id/issue", async (c) => {
     );
   }
 
-  return c.json({ ok: true });
+  return c.json({ ok: true, reissue });
 });
 
 /**
