@@ -117,6 +117,8 @@ export type PoCandidate = {
 export const api = {
   me: () => jfetch<CurrentUser>("/api/me"),
   settings: () => jfetch<Settings>("/api/settings"),
+  helpdeskChat: (messages: Array<{ role: "user" | "assistant"; content: string }>, page: string) =>
+    jfetch<{ reply: string }>("/api/helpdesk/chat", { method: "POST", body: JSON.stringify({ messages, page }) }),
 
   listProjects: () =>
     jfetch<Array<{ id: string; code: string; name: string; client: string | null; active_snapshot_id: number | null; completed_at?: string | null; is_sandbox?: number }>>(
