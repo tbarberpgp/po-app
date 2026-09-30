@@ -10,8 +10,12 @@ const STARTERS = [
   "What can my role do?",
 ];
 
-/** Floating helpdesk. The conversation lives here in the browser — the server
- *  is stateless and only sees what we send — so closing the tab clears it. */
+/** The helpdesk panel. Opened from the sidebar's "Need help?" button, which
+ *  fires a `helpdesk-open` window event — this component renders at the app
+ *  root, far from the sidebar in the tree.
+ *
+ *  The conversation lives here in the browser — the server is stateless and
+ *  only sees what we send — so closing the tab clears it. */
 export function HelpdeskWidget() {
   const { pathname } = useLocation();
   const [open, setOpen] = useState(false);
@@ -22,6 +26,12 @@ export function HelpdeskWidget() {
   const endRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => { endRef.current?.scrollIntoView({ block: "end" }); }, [msgs, busy, open]);
+
+  useEffect(() => {
+    const onOpen = () => setOpen(true);
+    window.addEventListener("helpdesk-open", onOpen);
+    return () => window.removeEventListener("helpdesk-open", onOpen);
+  }, []);
 
   async function send(text: string) {
     const q = text.trim();
@@ -41,13 +51,7 @@ export function HelpdeskWidget() {
     }
   }
 
-  if (!open) {
-    return (
-      <button className="hd-fab" onClick={() => setOpen(true)} aria-label="Open helpdesk">
-        <span aria-hidden>?</span> Help
-      </button>
-    );
-  }
+  if (!open) return null;
 
   return (
     <section className="hd-panel" role="dialog" aria-label="Helpdesk">
