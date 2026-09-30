@@ -20,6 +20,7 @@ export function Guide({ me }: { me: CurrentUser | null }) {
     ["#start", "Getting started", true],
     ["#delivery", "Delivery", true],
     ["#commercial", "Commercial", canCommercialView],
+    ["#accounts", "Accounts", canCommercialView],
     ["#masterdata", "Master data", canDelivery || canUsers],
     ["#admin", "Admin", isAdmin],
     ["#roles", "Roles", true],
@@ -198,6 +199,56 @@ export function Guide({ me }: { me: CurrentUser | null }) {
                   land in <strong>Approvals</strong> (badge in the sidebar) and by email.
                 </p>
               )}
+            </div>
+          </div>
+        )}
+
+        {canCommercialView && (
+          <div className="card" id="accounts">
+            <div className="card-hd"><h2>Accounts — supplier invoices</h2></div>
+            <div className="card-bd">
+              <p>
+                Supplier invoices arrive by email to the Accounts mailbox or are uploaded by hand. The app reads
+                the document — supplier, invoice number, dates, amounts, lines and the PO number printed on it —
+                and files it in the <strong>Inbox</strong>. The same invoice often arrives twice (the supplier's
+                original and a colleague's forward); duplicates are caught by the document itself as well as by
+                supplier + invoice number.
+              </p>
+
+              <h3>Getting an invoice paid — three acts, three people</h3>
+              <ol>
+                <li><strong>Commit for approval</strong> — Accounts matches the invoice to its purchase order and works through the 3-way match.</li>
+                <li><strong>Approve</strong> — a named release approver signs it off. This is the decision, and the list is people, not a role: being an Admin, or an approver of POs, doesn't put you on it.</li>
+                <li><strong>Push to Xero</strong> — Accounts sends it, which creates the draft bill.</li>
+              </ol>
+              <p className="muted-note">
+                Committing is not approving, and approving is not paying. The app never knows an invoice has been
+                paid — it knows a bill exists in Xero, and Xero pays it.
+              </p>
+
+              <h3>The 3-way match</h3>
+              <ol>
+                <li>The invoice against the PO it quotes, and against the deliveries checked in on that PO. Lines are flagged <em>No PO line</em>, <em>Not yet delivered</em>, <em>Price differs</em>, <em>Total differs</em> or <em>Over ordered qty</em>.</li>
+                <li>Flags don't block. Committing a flagged invoice needs a typed reason, stored with the approval so the override can be read back later.</li>
+                <li>The one thing no reason clears: an invoice coded to one job whose matched PO belongs to another. Approving would post the cost to the wrong job in Xero, so re-code the invoice or attach an order on the right job. A sibling contract in the same site group is still a different job.</li>
+                <li>No PO at all? Attach one, or <em>Raise PO</em> from the invoice to create one retrospectively — it goes through the normal approval chain and links itself back.</li>
+                <li>Collected from a trade counter rather than delivered? <em>Mark as collected</em> logs receipt against the order's outstanding lines, with the invoice standing as the paperwork.</li>
+              </ol>
+
+              <h3>The other routes out</h3>
+              <ol>
+                <li><strong>Send to labour</strong> — a supplier invoice that is really a subcontractor's own application (day-work with CIS) leaves Accounts and becomes a labour application. It shows in <em>Dismissed</em> carrying the application it turned into.</li>
+                {isAdmin
+                  ? <li><strong>Overheads</strong> — company costs with no job. Coded to a nominal account instead of matched to a PO, then approved and pushed the same way. Admin only.</li>
+                  : <li><strong>Overheads</strong> — company costs with no job are handled separately by Admins, and don't appear in your tabs.</li>}
+                <li><strong>Due dates</strong> — the due date printed on the invoice is checked against the supplier's account payment terms, and a disagreement of more than a few days is flagged.</li>
+              </ol>
+
+              <p className="muted-note">
+                The <strong>Help</strong> button can look invoices up for you — by supplier, invoice number,
+                project, or the PO they're billed against — and tell you which stage one is at and who it's
+                waiting on.
+              </p>
             </div>
           </div>
         )}

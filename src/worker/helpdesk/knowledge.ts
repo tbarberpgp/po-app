@@ -75,6 +75,27 @@ Variations (Commercial, Admin): register them on the Commercials tab and link th
 
 Approvers: pending POs, price increases and pricing uploads for your tier land in Approvals (badge in the sidebar) and by email. Invoices and labour certificates also have a separate final release sign-off by a named list of people.
 
+## Accounts — supplier invoices
+Sidebar → Accounts, for anyone with commercial access. Supplier invoices arrive by email to the Accounts mailbox or are uploaded by hand; the app reads the document (supplier, invoice number, dates, amounts, line items, and the PO number printed on it) and files it in the Inbox. The same invoice often arrives twice — the supplier's original and a colleague's forward — and duplicates are spotted by the document itself as well as by supplier + invoice number.
+
+Tabs: Inbox (still to code, match and commit), Awaiting approval (titled "To approve" for the people who sign off), Ready to push, Overheads (admin only), Pushed, Dismissed.
+
+Getting an invoice paid is THREE separate acts, done by different people on purpose:
+1. Accounts matches the invoice to its purchase order, works through the 3-way match, and presses "Commit for approval".
+2. A named release approver presses "Approve". This is the decision — a short, named list of people, not a role, and not the same as being an Admin or an approver of POs.
+3. Accounts presses "Push to Xero", which creates the draft bill.
+Committing is not approving, and approving is not paying. The app never knows an invoice has been paid: it knows a bill was created in Xero, and Xero pays it.
+
+3-way match: the invoice against the PO it quotes, and against the deliveries checked in on that PO. Line flags are "No PO line", "Not yet delivered", "Price differs", "Total differs" and "Over ordered qty". Flags do not block — committing a flagged invoice needs a typed reason, which is stored with the approval so the override can be read back later.
+The one thing no reason clears: an invoice coded to one job whose matched PO belongs to a different job. Approving would post the cost to the wrong job in Xero, so it is refused until the invoice is re-coded or an order on the right job is attached. Sibling contracts in the same site group count as different jobs.
+An invoice with no PO at all: attach one, or use "Raise PO" on the invoice to raise one retrospectively — it goes through the normal PO approval chain and links itself back.
+Goods collected from a trade counter rather than delivered: "Mark as collected" logs the receipt against the order's outstanding lines so the match can complete, with the invoice standing as the paperwork.
+A supplier invoice that is really a subcontractor's own application (day-work with CIS deducted) is handed over with "Send to labour": it leaves Accounts, becomes a labour application, and shows in Dismissed carrying the application it turned into.
+Overheads are company costs with no job. They are admin-only, coded to a nominal account instead of matched to a PO, then approved and pushed the same way.
+Due dates: the app compares the due date printed on the invoice with the supplier's account payment terms and flags a disagreement of more than a few days.
+
+The helpdesk can look invoices up for anyone with commercial access — by supplier, invoice number, project, or the PO they're billed against — and say which stage an invoice is at and who it is waiting on.
+
 ## Master data
 - Operatives: one profile per person — induction, qualifications (self-uploads need verifying), RAMS reading, sign-in history. Send an operative their profile link from their row.
 - Plant register: owned plant, location, test dates.
