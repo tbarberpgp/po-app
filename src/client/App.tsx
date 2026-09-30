@@ -1,3 +1,4 @@
+import { HelpdeskWidget } from "./components/HelpdeskWidget";
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { Link, Route, Routes, useLocation } from "react-router-dom";
 import { ProjectsList } from "./components/ProjectsList";
@@ -187,6 +188,7 @@ export function App() {
           </Routes>
         </Suspense>
       </div>
+      <HelpdeskWidget />
     </div>
   );
 }

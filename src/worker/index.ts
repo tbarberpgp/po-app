@@ -21,6 +21,7 @@ import { operations, runAutoSignouts, runHsPackReleases, runWhatsappTicketScans 
 import { qitp } from "./routes/qitp";
 import { invoices } from "./routes/invoices";
 import { mailboxPull } from "./routes/mailboxPull";
+import { helpdesk } from "./routes/helpdesk";
 import { runMailboxPull } from "./graph";
 import { operatives } from "./routes/operatives";
 import { ownedPlant } from "./routes/ownedPlant";
@@ -124,6 +125,7 @@ app.route("/api/site-reports", siteReports);
 app.route("/api/qitp", qitp);
 app.route("/api/invoices", invoices);
 app.route("/api/mailbox-pull", mailboxPull);
+app.route("/api/helpdesk", helpdesk);
 
 // Public, un-authenticated operative sign-in API. Mounted OUTSIDE /api so the
 // auth middleware (scoped to /api/*) does not gate it. Requires a Cloudflare
