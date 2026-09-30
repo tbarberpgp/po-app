@@ -19,6 +19,7 @@ import {
   isPoClosed,
   poDeliveryLabel,
   poStatusHint,
+  grnCaption,
   type PoDeliveryRow,
   type PoLineRef,
 } from "./po-delivery-status";
@@ -519,5 +520,67 @@ describe("labels", () => {
     // Nothing received and nothing billed is one fact, not two.
     assert.equal(poStatusHint(none, "none"), "nothing received");
     assert.equal(poStatusHint(full, "unknown"), "fully delivered · 1 delivery note");
+  });
+});
+
+describe("grnCaption", () => {
+  const none = { state: "none" as const, lines_delivered: 0, lines_started: 0, lines_total: 1, drops: 0 };
+  const part = { state: "part" as const, lines_delivered: 1, lines_started: 2, lines_total: 4, drops: 1 };
+  const full = { state: "full" as const, lines_delivered: 1, lines_started: 1, lines_total: 1, drops: 1 };
+
+  // The bug this function exists for. SI559362's lines never extracted, so
+  // nothing linked, so ordered-minus-delivered was 0 - 0 = 0 — and the cell
+  // announced "all received" over an order with no receipts on it at all,
+  // £26,523.93 of it already pushed to Xero.
+  test("nothing linked never reads as received — it reports the ORDER", () => {
+    const c = grnCaption({ anyLinked: false, notReceived: 0, delivery: none });
+    assert.equal(c.kind, "order_state");
+    assert.equal(poDeliveryLabel(c.summary!), "nothing received");
+    assert.equal(c.short, true);
+  });
+
+  test("nothing linked and no order state says so rather than guessing", () => {
+    const c = grnCaption({ anyLinked: false, notReceived: 0 });
+    assert.equal(c.kind, "unmeasured");
+    assert.equal(c.short, true);
+  });
+
+  // An unlinked invoice against an order that genuinely arrived is not a
+  // warning — there is just no linkage to put a value through.
+  test("nothing linked on a delivered order reports it without flagging", () => {
+    const c = grnCaption({ anyLinked: false, notReceived: 0, delivery: full });
+    assert.equal(c.kind, "order_state");
+    assert.equal(poDeliveryLabel(c.summary!), "fully delivered · 1 delivery note");
+    assert.equal(c.short, false);
+  });
+
+  test("a linked shortfall still reports the shortfall", () => {
+    const c = grnCaption({ anyLinked: true, notReceived: 4210.5, delivery: part });
+    assert.equal(c.kind, "shortfall");
+    assert.equal(c.short, true);
+  });
+
+  // The invoice's own lines being covered is not the order being covered, and
+  // the cell is read as a statement about the order.
+  test("linked and square, but the order is unfinished, reports the order", () => {
+    const c = grnCaption({ anyLinked: true, notReceived: 0, delivery: part });
+    assert.equal(c.kind, "order_state");
+    assert.equal(poDeliveryLabel(c.summary!), "part delivered · 2 of 4 lines · 1 delivery note");
+    assert.equal(c.short, true);
+  });
+
+  // The one route to the reassuring words: linked, square, and the order is
+  // actually finished.
+  test('"all received" needs all three to be true', () => {
+    const c = grnCaption({ anyLinked: true, notReceived: 0, delivery: full });
+    assert.equal(c.kind, "all_received");
+    assert.equal(c.short, false);
+  });
+
+  // Sub-pence noise on a measured line is not a shortfall — same 50p tolerance
+  // the cell has always used.
+  test("a rounding-sized gap is not a shortfall", () => {
+    assert.equal(grnCaption({ anyLinked: true, notReceived: 0.4, delivery: full }).kind, "all_received");
+    assert.equal(grnCaption({ anyLinked: true, notReceived: 0.6, delivery: full }).kind, "shortfall");
   });
 });

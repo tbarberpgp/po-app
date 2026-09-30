@@ -8,7 +8,7 @@ import { can } from "../../shared/permissions";
 import { Topbar } from "./Shell";
 import type { CurrentUser, Invoice, InvoiceMatch, InvoiceMatchLine, MatchSummary, Project, Supplier } from "../../shared/types";
 import { NON_GOODS_LINE_IDS, PAYMENT_SCHEDULE_LINE_ID, SERVICE_CHARGE_LINE_ID } from "../../shared/line-match";
-import { poStatusHint, poDeliveryLabel } from "../../shared/po-delivery-status";
+import { poStatusHint, poDeliveryLabel, grnCaption } from "../../shared/po-delivery-status";
 import { isAwaitingApproval, isReadyToPush } from "../../shared/payment-release";
 
 // Amounts render in the invoice's OWN currency — a $ or € invoice shown with a
@@ -943,6 +943,19 @@ function MatchPanel({ inv, canEdit, canRelease, busy, onRelease, onReload }: {
   const orderedVal = m ? m.lines.reduce((s, l) => s + (l.po_line_id ? (l.po_qty ?? 0) * (l.po_unit_cost ?? 0) : 0), 0) : 0;
   const deliveredVal = m ? m.lines.reduce((s, l) => s + (l.po_line_id ? (l.delivered_qty ?? 0) * (l.po_unit_cost ?? 0) : 0), 0) : 0;
   const notReceived = Math.max(0, orderedVal - deliveredVal);
+  // Both sums above count only lines that found a PO line, so an invoice with
+  // nothing linked measures 0 ordered against 0 delivered — and that zero then
+  // spoke for the order: "all received" under a £0.00 GRN, on SI559362, whose
+  // order has no receipts at all and £26.5k already in Xero. The decision now
+  // lives with the delivery rule itself, so the two screens that report "has
+  // it arrived" cannot drift on what an unlinked invoice means.
+  const anyLinked = m ? m.lines.some((l) => l.po_line_id) : false;
+  const grn = grnCaption({ anyLinked, notReceived, delivery: m?.matched_po_delivery });
+  const grnNote = !m ? ""
+    : grn.kind === "shortfall" ? `${money(notReceived)} not yet received`
+    : grn.kind === "order_state" ? poDeliveryLabel(grn.summary!)
+    : grn.kind === "unmeasured" ? "no lines linked — not measured"
+    : "all received";
   const billedTotal = m ? (m.lines.reduce((s, l) => s + (l.amount ?? 0), 0) || invNet) : 0;
   // Confidence used to measure only whether each line found SOME PO line, so an
   // invoice pointed at the wrong order with rate and quantity flags all over it
@@ -1031,8 +1044,9 @@ function MatchPanel({ inv, canEdit, canRelease, busy, onRelease, onReload }: {
                 );
               })()}
             </div>
-            <div className="rcell"><div className="rl">Delivered (GRN)</div><div className="rv">{money(deliveredVal)}</div>
-              <div className="rs" style={notReceived > 0.5 ? { color: "var(--warn)", fontWeight: 600 } : undefined}>{notReceived > 0.5 ? `${money(notReceived)} not yet received` : "all received"}</div></div>
+            <div className="rcell"><div className="rl">Delivered (GRN)</div>
+              <div className="rv" title={anyLinked ? undefined : "No invoice line is linked to a PO line, so there is no linkage to value the delivered quantities through."}>{anyLinked ? money(deliveredVal) : "—"}</div>
+              <div className="rs" style={grn.short ? { color: "var(--warn)", fontWeight: 600 } : undefined}>{grnNote}</div></div>
             <div className="rcell match"><div className="rl">Match confidence</div>
               <div className="conf">
                 <div className="confbar"><i style={{ width: `${conf}%`, background: conf >= 80 ? "var(--success)" : conf >= 50 ? "var(--warn)" : "var(--danger)" }} /></div>

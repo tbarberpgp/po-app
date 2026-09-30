@@ -1362,6 +1362,22 @@ export async function computeInvoiceMatch(env: Env, inv: Record<string, unknown>
   const wholePoDelivered = !!(await env.DB.prepare(
     "SELECT 1 AS x FROM site_deliveries WHERE po_id = ? AND po_line_id IS NULL AND completes_po = 1 LIMIT 1",
   ).bind(chosen.id).first());
+
+  // What the ORDER has received, by the same rule the awaiting-deliveries list
+  // uses — carried separately from the per-line figures above because those are
+  // only meaningful once invoice lines actually LINK to PO lines.
+  //
+  // An invoice whose lines never extracted (`lines_json = '[]'`) links nothing,
+  // so the client's ordered-minus-delivered sums are 0 - 0 = 0, and a zero
+  // shortfall read on screen as "all received" sitting beside a £0.00 GRN.
+  // SI559362 said that over an order with no receipts at all, £26.5k already in
+  // Xero. The order's own state cannot be faked that way: no receipts is
+  // "nothing received" however little of the invoice is linked.
+  const poDelRows = (await env.DB.prepare(
+    `SELECT d.po_id, ${PO_DELIVERY_NOTE_COLUMNS}
+       FROM site_deliveries d ${PO_DELIVERY_NOTE_JOIN} WHERE d.po_id = ?`,
+  ).bind(chosen.id).all<PoDeliveryRow>()).results;
+  const poDelivery = summarisePoDeliveries(chosen.id, poLines, poDelRows);
   // The actual delivery records behind those quantities — so the invoice view
   // can show WHICH tickets satisfied the delivered leg, not just the numbers.
   // `orphaned` marks a receipt whose po_line_id points at a line that no longer
@@ -1468,6 +1484,7 @@ export async function computeInvoiceMatch(env: Env, inv: Record<string, unknown>
 
   return {
     matched_po: { id: chosen.id, po_number: chosen.po_number, supplier: chosen.supplier, project_id: chosen.project_id, project_code: chosen.project_code, total: chosen.total_value ?? null, is_stored: !!inv.matched_po_id },
+    matched_po_delivery: poDelivery,
     suggested: filtered,
     closed_omitted: closedOmitted,
     deliveries,

@@ -1919,6 +1919,13 @@ export type InvoiceMatchLine = {
  *  per-line 3-way reconciliation (invoice ↔ PO line ↔ delivered qty). */
 export type InvoiceMatch = {
   matched_po: { id: string; po_number: string; supplier: string | null; project_id: string; project_code: string; total: number | null; is_stored: boolean } | null;
+  /** What the CHOSEN order has received, by the shared `po-delivery-status`
+   *  rule. Separate from the per-line delivered quantities because those only
+   *  exist where an invoice line links to a PO line: with nothing linked, the
+   *  ordered-minus-delivered shortfall is 0 and reads as "all received". This
+   *  answers "has anything actually turned up against this order", which no
+   *  amount of missing linkage can make look satisfied. */
+  matched_po_delivery?: PoDeliverySummary;
   /** Every live PO, best guesses first. `group` says which bucket each came from —
    *  the heuristics order the list, they don't limit what the user can pick. */
   suggested: Array<{

@@ -355,6 +355,62 @@ export function poDeliveryLabel(d: PoDeliverySummary): string {
   return "nothing received";
 }
 
+/**
+ * What the invoice matcher's "Delivered (GRN)" cell should say.
+ *
+ * It used to be one expression: ordered-minus-delivered over the invoice's
+ * lines, and "all received" whenever that came out at zero. Both sums count
+ * only lines that FOUND a PO line, so an invoice with nothing linked measured
+ * 0 against 0 — and the zero was then read as an answer. SI559362 (£26,523.93,
+ * already in Xero) displayed "all received" beside a £0.00 GRN over an order
+ * with no receipts on it whatsoever, because its lines never extracted.
+ *
+ * So the two halves are separated. A VALUE can only be measured through the
+ * linkage; whether anything ARRIVED cannot, and comes off the order's own
+ * delivery state instead. "all received" is now reachable only by a linked
+ * invoice with no shortfall on an order that is itself fully delivered —
+ * every other case names what it doesn't know.
+ *
+ * Money formatting is left to the caller, which is why this returns a kind
+ * rather than a string.
+ */
+export type GrnCaption = {
+  /** `unmeasured` — nothing linked and no delivery state to fall back on.
+   *  `order_state` — report the order's own state (`summary`) instead.
+   *  `shortfall` — linked lines leave a value outstanding.
+   *  `all_received` — linked, nothing outstanding, order complete. */
+  kind: "unmeasured" | "order_state" | "shortfall" | "all_received";
+  summary?: PoDeliverySummary;
+  /** Worth flagging in the warning colour — something is still owed, or the
+   *  question went unanswered. */
+  short: boolean;
+};
+
+export function grnCaption(a: {
+  /** Does any invoice line link to a PO line? Without one, nothing below the
+   *  linkage means anything. */
+  anyLinked: boolean;
+  /** Ordered minus delivered across the LINKED lines, in £. */
+  notReceived: number;
+  /** The chosen order's own delivery state, when the caller has it. */
+  delivery?: PoDeliverySummary | null;
+}): GrnCaption {
+  if (!a.anyLinked) {
+    // Nothing to measure through. Say what the order has had, or say plainly
+    // that the question wasn't answered — never that it was answered well.
+    if (!a.delivery) return { kind: "unmeasured", short: true };
+    return { kind: "order_state", summary: a.delivery, short: a.delivery.state !== "full" };
+  }
+  if (a.notReceived > 0.5) return { kind: "shortfall", short: true };
+  // The invoice's own lines are covered but the ORDER isn't finished. Reporting
+  // "all received" here is true of the invoice and false of the order, and the
+  // cell is read as a statement about the order.
+  if (a.delivery && a.delivery.state !== "full") {
+    return { kind: "order_state", summary: a.delivery, short: true };
+  }
+  return { kind: "all_received", short: false };
+}
+
 /** One line for a picker option: where the goods are, then whether the money
  *  has followed. The billing half is only worth the width when it changes what
  *  the reader would do — "none" on an undelivered order says nothing. */
