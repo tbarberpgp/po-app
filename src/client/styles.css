@@ -155,8 +155,10 @@ a:hover { text-decoration: underline; }
   padding-left: 8px;
   border-left: 1.5px solid var(--line);
 }
-.sidebar nav a {
+.sidebar nav a,
+.sidebar nav .hd-open {
   padding: 8px 10px;
+  line-height: 1.45;
   border-radius: var(--radius-md);
   color: var(--ink);
   font-size: 13.5px;
@@ -165,7 +167,8 @@ a:hover { text-decoration: underline; }
   gap: 10px;
   transition: background var(--motion-fast);
 }
-.sidebar nav a:hover { background: var(--line); text-decoration: none; }
+.sidebar nav a:hover,
+.sidebar nav .hd-open:hover { background: var(--line); text-decoration: none; }
 .sidebar nav a.active { background: var(--accent-soft); color: var(--accent-2); font-weight: 600; }
 .sidebar nav a .badge-count {
   margin-left: auto;
@@ -2208,23 +2211,17 @@ body.rd-printing .rd-linedel, body.rd-printing .rd-addline, body.rd-printing .rd
 .cc-panel .cc-budget b { font-weight: 600; color: var(--ink); }
 
 /* ── Helpdesk ────────────────────────────────────────────────────── */
-/* The trigger lives in the sidebar footer, right above "Guide & help". It is
-   a filled accent button rather than another nav row on purpose — the rows
-   around it are navigation, and this one opens a panel. */
-.hd-open {
-  display: flex; align-items: center; gap: 10px;
-  width: 100%; margin: 0 0 8px; padding: 11px 12px;
-  border: 0; border-radius: var(--radius-md); cursor: pointer;
-  background: var(--accent); color: var(--accent-fg);
-  font: 600 13.5px var(--font-sans); text-align: left;
-  box-shadow: 0 2px 8px rgba(238,93,43,.28);
-  transition: background var(--motion-fast), box-shadow var(--motion-fast);
+/* The trigger is a <button> sitting among NavLinks, so it inherits the row
+   styles above and only has to undo what the global button rule gives it. */
+.sidebar nav .hd-open {
+  width: 100%;
+  border: 0;
+  background: none;
+  font-size: 13.5px;
+  font-weight: 400;
+  text-align: left;
 }
-.hd-open:hover, .hd-open:focus-visible {
-  background: var(--accent-2);
-  box-shadow: 0 4px 14px rgba(238,93,43,.36);
-}
-.hd-open svg { width: 18px; height: 18px; flex-shrink: 0; }
+.sidebar nav .hd-open:active { transform: none; }
 
 /* The panel is fixed to the bottom-left of the content area, clear of the
    240px sidebar. Below 900px the sidebar is off-canvas, so it goes full-bleed. */
