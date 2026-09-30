@@ -135,6 +135,20 @@ export function Sidebar({ me, approvalsCount, onNavigate }: { me: CurrentUser | 
 
       {/* Help & changelog — sits below the working nav, above the user chip. */}
       <nav className="sidebar-foot" onClick={onNavigate}>
+        {/* Opens the helpdesk panel, which lives in <HelpdeskWidget /> at the
+            app root. A window event rather than shared state: the two sit on
+            opposite sides of the tree, and the codebase already talks this way
+            (see the "whatsnew-seen" event). */}
+        <button
+          type="button"
+          className="hd-open"
+          onClick={() => window.dispatchEvent(new Event("helpdesk-open"))}
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
+          </svg>
+          <span>Need help?</span>
+        </button>
         <NavLink to="/guide"><Icon name="guide" /><span>Guide &amp; help</span></NavLink>
         <NavLink to="/whatsnew">
           <Icon name="whatsnew" /><span>What's new</span>
