@@ -1,18 +1,29 @@
 import { useEffect, useRef, useState } from "react";
 import { useLocation } from "react-router-dom";
 import { api } from "../lib/api";
+import { can } from "../../shared/permissions";
+import type { CurrentUser } from "../../shared/types";
 
 type Msg = { role: "user" | "assistant"; content: string };
 
+// Suggestions have to match what the helpdesk can actually look up for THIS
+// user: the invoice lookups are withheld from anyone without commercial access,
+// so offering the question would only earn them a refusal.
 const STARTERS = [
   "How do I check in a delivery?",
   "Why is a PO still pending approval?",
-  "What can my role do?",
+  "What's waiting on me?",
+];
+
+const COMMERCIAL_STARTERS = [
+  "Has this supplier's invoice been paid yet?",
+  "Why is this invoice still held?",
+  "What's waiting on me?",
 ];
 
 /** Floating helpdesk. The conversation lives here in the browser — the server
  *  is stateless and only sees what we send — so closing the tab clears it. */
-export function HelpdeskWidget() {
+export function HelpdeskWidget({ me }: { me: CurrentUser | null }) {
   const { pathname } = useLocation();
   const [open, setOpen] = useState(false);
   const [msgs, setMsgs] = useState<Msg[]>([]);
@@ -60,8 +71,12 @@ export function HelpdeskWidget() {
       <div className="hd-body">
         {msgs.length === 0 && (
           <div className="hd-empty">
-            <p>Ask how to do something in PGP Projects, or where a purchase order is up to.</p>
-            {STARTERS.map((s) => <button key={s} className="hd-chip" onClick={() => send(s)}>{s}</button>)}
+            <p>
+              Ask how to do something in PGP Projects, or where{" "}
+              {can(me, "commercial.view") ? "an order or an invoice" : "a purchase order"} is up to.
+            </p>
+            {(can(me, "commercial.view") ? COMMERCIAL_STARTERS : STARTERS)
+              .map((s) => <button key={s} className="hd-chip" onClick={() => send(s)}>{s}</button>)}
           </div>
         )}
         {msgs.map((m, i) => <div key={i} className={`hd-msg ${m.role}`}>{m.content}</div>)}

@@ -188,7 +188,7 @@ export function App() {
           </Routes>
         </Suspense>
       </div>
-      <HelpdeskWidget />
+      <HelpdeskWidget me={effectiveMe} />
     </div>
   );
 }
