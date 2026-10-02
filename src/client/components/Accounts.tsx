@@ -188,7 +188,7 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
       // moves to Held rather than sitting in the queue looking outstanding.
       else if (!((r.status === "inbox" || r.status === "ready") && !isAwaitingApproval(r) && !isReadyToPush(r))) return false; // inbox
       if (q) {
-        const hay = `${r.supplier_name ?? ""} ${r.matched_supplier_name ?? ""} ${r.invoice_number ?? ""} ${r.project_code ?? ""}`.toLowerCase();
+        const hay = `${r.supplier_name ?? ""} ${r.matched_supplier_name ?? ""} ${r.invoice_number ?? ""} ${r.project_code ?? ""} ${r.supplier_order_ref ?? ""}`.toLowerCase();
         if (!hay.includes(q)) return false;
       }
       return true;
@@ -502,6 +502,10 @@ function InvoiceDetail({ inv, projects, accounts, isAdmin, canEdit, canRelease, 
   const pushed = inv.status === "pushed";
   const dismissed = inv.status === "dismissed";
   const [labourOpen, setLabourOpen] = useState(false);
+  // Kept apart from `f` on purpose: neither of these shapes the Xero bill, so
+  // both survive the push lock below and get their own Save.
+  const [ref, setRef] = useState(inv.supplier_order_ref ?? "");
+  const [localNotes, setLocalNotes] = useState(inv.notes ?? "");
   const isProject = inv.kind === "project";
   const pushBlockedForApproval = isProject && !inv.approved_at;
   const held = isAwaitingApproval(inv);
@@ -577,6 +581,39 @@ function InvoiceDetail({ inv, projects, accounts, isAdmin, canEdit, canRelease, 
               <div className="field money full"><label>Gross {curSymbol(inv.currency)}</label><input type="number" step="0.01" value={f.gross_amount} disabled={disabled} onChange={(e) => setF({ ...f, gross_amount: e.target.value })} /></div>
             </div>
             {!disabled && <div style={{ marginTop: 10 }}><span onClick={saveHeader} style={{ fontSize: 12.5, fontWeight: 600, color: "var(--accent)", cursor: busy ? "default" : "pointer" }}>Save details</span></div>}
+
+            {/* The supplier's own reference and our internal notes. Neither
+                reaches Xero and neither is printed anywhere the supplier sees,
+                so both stay editable after the bill has gone across — which is
+                when they are usually filled in. Where a delivery note never
+                turned up, the supplier's order number is often the only thing
+                tying the invoice to the order it belongs to. */}
+            <div style={{ height: 1, background: "var(--line)", margin: "14px 0" }} />
+            <div className="fgrid">
+              <div className="field full">
+                <label title="The supplier's own sales-order number, as printed on their paperwork — Alumasc call theirs an SOR">
+                  Supplier order ref
+                </label>
+                <input value={ref} disabled={!canEdit} placeholder="e.g. SOR 456694"
+                  onChange={(e) => setRef(e.target.value)} />
+              </div>
+              <div className="field full">
+                <label title="Ours. Never pushed to Xero, never shown to the supplier">
+                  Internal notes <span className="pill neutral" style={{ fontSize: 9.5, marginLeft: 4, verticalAlign: "middle" }}>not on the bill</span>
+                </label>
+                <textarea rows={3} value={localNotes} disabled={!canEdit}
+                  placeholder="Why this is coded the way it is, who confirmed it, what is still outstanding…"
+                  onChange={(e) => setLocalNotes(e.target.value)} />
+              </div>
+            </div>
+            {canEdit && (ref !== (inv.supplier_order_ref ?? "") || localNotes !== (inv.notes ?? "")) && (
+              <div style={{ marginTop: 10 }}>
+                <span onClick={() => onPatch({ supplier_order_ref: ref.trim() || null, notes: localNotes.trim() || null })}
+                  style={{ fontSize: 12.5, fontWeight: 600, color: "var(--accent)", cursor: busy ? "default" : "pointer" }}>
+                  Save reference &amp; notes
+                </span>
+              </div>
+            )}
 
             <div style={{ height: 1, background: "var(--line)", margin: "14px 0" }} />
 

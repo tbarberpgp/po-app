@@ -1835,6 +1835,11 @@ export type Invoice = {
   terms_mismatch?: boolean;
   invoice_number: string | null;
   extracted_po_ref: string | null;   // OUR PO number as printed on the invoice (for matching)
+  /** The SUPPLIER's own order reference (Alumasc call theirs an SOR), entered
+   *  by hand. Where a delivery note is missing it is often the only key tying
+   *  an invoice to the order it belongs to. Not Xero-bound, so it stays
+   *  editable after the bill has been pushed. */
+  supplier_order_ref: string | null;
   invoice_date: string | null;
   due_date: string | null;
   currency: string | null;

@@ -798,7 +798,7 @@ export const api = {
     supplier_id: number | null; supplier_name: string | null; invoice_number: string | null;
     invoice_date: string | null; due_date: string | null;
     net_amount: number | null; vat_amount: number | null; gross_amount: number | null;
-    notes: string | null; status: string;
+    notes: string | null; supplier_order_ref: string | null; status: string;
   }>) => jfetch<{ ok: true }>(`/api/invoices/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   dismissInvoice: (id: number) =>
     jfetch<{ ok: true }>(`/api/invoices/${id}/dismiss`, { method: "POST" }),
