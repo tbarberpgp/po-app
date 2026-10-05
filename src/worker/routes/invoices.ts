@@ -65,6 +65,7 @@ export type ExtractedInvoice = {
   supplier_name: string | null;
   invoice_number: string | null;
   po_number: string | null;
+  supplier_order_ref: string | null;
   invoice_date: string | null;
   due_date: string | null;
   payment_terms: string | null;
@@ -125,6 +126,7 @@ const INVOICE_TOOL = {
       supplier_name: { type: "string", description: "The supplier / vendor issuing the invoice (who we pay)." },
       invoice_number: { type: "string", description: "The supplier's OWN invoice / reference number." },
       po_number: { type: "string", description: "OUR purchase order (PO) number the invoice is raised against, if the invoice quotes one — e.g. 'PO-26001-0014', 'Order No 26001-0014', 'Your Ref: 26001'. This is the customer's PO, NOT the supplier's own invoice number. Null if none is shown." },
+      supplier_order_ref: { type: "string", description: "The SUPPLIER's own sales-order / works-order reference for the goods — their internal number for the order, not ours and not their invoice number. Printed under labels like 'SOR', 'Sales Order', 'Order No' (theirs), 'Our Ref' or 'Document No'. Where their paperwork shows both their reference and ours, this is THEIRS and po_number is OURS. Null if none is shown." },
       invoice_date: { type: "string", description: "Invoice date as YYYY-MM-DD." },
       due_date: { type: "string", description: "Payment due date as YYYY-MM-DD if shown." },
       payment_terms: { type: "string", description: "Payment terms as written on the invoice, if shown — e.g. '30 Days End Of Month', 'Net 14', '28 days from invoice'. Null if none." },
@@ -208,6 +210,7 @@ export async function extractInvoice(
     supplier_name: str(r.supplier_name),
     invoice_number: str(r.invoice_number),
     po_number: str(r.po_number),
+    supplier_order_ref: str(r.supplier_order_ref),
     invoice_date: str(r.invoice_date),
     due_date: str(r.due_date),
     payment_terms: str(r.payment_terms),
@@ -433,15 +436,15 @@ export async function ingestInvoice(
 
   const res = await env.DB.prepare(
     `INSERT INTO invoices
-       (status, supplier_id, supplier_name, invoice_number, extracted_po_ref, invoice_date, due_date, currency,
+       (status, supplier_id, supplier_name, invoice_number, extracted_po_ref, supplier_order_ref, invoice_date, due_date, currency,
         net_amount, vat_amount, gross_amount, lines_json,
         file_key, file_type, file_name, file_sha256, source, sender_email, subject, extract_error,
         kind, project_id, matched_po_id,
         received_at, created_at, created_by, extracted_meta_json)
-     VALUES ('inbox', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     VALUES ('inbox', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      RETURNING id`,
   ).bind(
-    supplierId, ex?.supplier_name ?? null, ex?.invoice_number ?? null, ex?.po_number ?? null, ex?.invoice_date ?? null,
+    supplierId, ex?.supplier_name ?? null, ex?.invoice_number ?? null, ex?.po_number ?? null, ex?.supplier_order_ref ?? null, ex?.invoice_date ?? null,
     ex?.due_date ?? dueDateFromTerms(ex?.invoice_date, ex?.payment_terms), ex?.currency ?? "GBP",
     ex?.net_amount ?? null, ex?.vat_amount ?? null, ex?.gross_amount ?? null, ex ? JSON.stringify(ex.lines) : null,
     fileKey, args.file.type || null, args.file.name || null, fileHash, args.source, args.sender ?? null, args.subject ?? null, extractError,
@@ -652,8 +655,9 @@ invoices.post("/backfill-file-hashes", async (c) => {
 /** The invoice fields a Xero bill is built from — see pushInvoiceBillToXero,
  *  which maps each of these onto the bill it creates. `status` is one of them
  *  because clearing it is how an edit would get past both the UI lock and the
- *  refusal below. Everything else on the invoice (`notes`) is local, and stays
- *  editable after a push. */
+ *  refusal below. Everything else on the invoice (`notes`, `supplier_order_ref`)
+ *  is local, and stays editable after a push — which is exactly when a supplier
+ *  reference tends to be learnt. */
 const XERO_BOUND_FIELDS = ["kind", "project_id", "nominal_code", "supplier_id", "supplier_name",
   "invoice_number", "invoice_date", "due_date", "net_amount", "vat_amount", "gross_amount", "status"] as const;
 
@@ -700,10 +704,12 @@ invoices.patch("/:id", async (c) => {
   const id = c.req.param("id");
   const cur = await c.env.DB.prepare(
     `SELECT kind, project_id, nominal_code, supplier_name, gross_amount,
+            notes, supplier_order_ref,
             status, xero_bill_id, xero_bill_number FROM invoices WHERE id = ?`,
   ).bind(id).first<{
     kind: string | null; project_id: string | null; nominal_code: string | null;
     supplier_name: string | null; gross_amount: number | null;
+    notes: string | null; supplier_order_ref: string | null;
     status: string | null; xero_bill_id: string | null; xero_bill_number: string | null;
   }>();
   if (!cur) return c.json({ error: "not found" }, 404);
@@ -715,7 +721,7 @@ invoices.patch("/:id", async (c) => {
   // Nothing that shaped the Xero bill can change once it's booked.
   const refusal = pushedEditRefusal(cur, body);
   if (refusal) return c.json(refusal, 409);
-  const allowed = [...XERO_BOUND_FIELDS, "notes"] as const;
+  const allowed = [...XERO_BOUND_FIELDS, "notes", "supplier_order_ref"] as const;
   const sets: string[] = [];
   const binds: unknown[] = [];
   for (const k of allowed) {
@@ -887,11 +893,14 @@ invoices.post("/:id/reextract", async (c) => {
     if (!proj && ex.delivery_address) proj = await projectFromDeliveryAddress(c.env, ex.delivery_address);
     await c.env.DB.prepare(
       `UPDATE invoices SET supplier_id = COALESCE(?, supplier_id), supplier_name = ?, invoice_number = ?, extracted_po_ref = ?,
+         -- COALESCE, not a plain set: this reference is usually typed in by
+         -- hand after a call to the supplier, and a re-read must not erase it.
+         supplier_order_ref = COALESCE(supplier_order_ref, ?),
          invoice_date = ?, due_date = ?, currency = ?, net_amount = ?, vat_amount = ?, gross_amount = ?, lines_json = ?, extracted_meta_json = ?,
          kind = COALESCE(kind, ?), project_id = COALESCE(project_id, ?), matched_po_id = COALESCE(matched_po_id, ?), extract_error = NULL
        WHERE id = ?`,
     ).bind(
-      supplierId, ex.supplier_name, ex.invoice_number, ex.po_number, ex.invoice_date,
+      supplierId, ex.supplier_name, ex.invoice_number, ex.po_number, ex.supplier_order_ref, ex.invoice_date,
       ex.due_date ?? dueDateFromTerms(ex.invoice_date, ex.payment_terms), ex.currency ?? "GBP",
       ex.net_amount, ex.vat_amount, ex.gross_amount, JSON.stringify(ex.lines), extractedMetaJson(ex),
       proj ? "project" : null, proj?.id ?? null, refPo?.id ?? null, id,

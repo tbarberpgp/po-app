@@ -68,6 +68,20 @@ describe("pushedEditRefusal", () => {
     assert.equal(pushedEditRefusal(PUSHED, { notes: "queried with the supplier" }), null);
   });
 
+  test("the supplier's order ref stays editable after a push", () => {
+    // The point of the field: it is normally learnt from the supplier LONG
+    // after the bill went across — the Dallas Road Alumasc references came off
+    // a site-manager call three months later, by which time all ten invoices
+    // were pushed. A gate here would refuse every one of them, and the only
+    // record of which order each invoice belongs to would stay in a PDF.
+    assert.equal(pushedEditRefusal(PUSHED, { supplier_order_ref: "SOR 456694" }), null);
+    // Together with the amounts, the amounts still lose.
+    const r = pushedEditRefusal(PUSHED, { supplier_order_ref: "SOR 456694", net_amount: 1 });
+    assert.ok(r, "expected a refusal");
+    assert.match(r.error, /net_amount/);
+    assert.doesNotMatch(r.error, /supplier_order_ref/);
+  });
+
   test("a body carrying no editable field is not refused", () => {
     // An empty PATCH already short-circuits to ok; refusing it would only give
     // a booked invoice a 409 for having asked to change nothing.
