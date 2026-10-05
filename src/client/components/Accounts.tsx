@@ -827,6 +827,24 @@ function MatchPanel({ inv, canEdit, canRelease, busy, onRelease, onReload }: {
   const held = isAwaitingApproval(inv);
   const [releaseNote, setReleaseNote] = useState("");
   const locked = pushed || approved || !canEdit;
+  /**
+   * Which PO an invoice bills against is a different question from whether the
+   * bill has gone to Xero, and `locked` was answering both.
+   *
+   * A wrong PO link is almost always found AFTER the push — the 24 Sep Alumasc
+   * audit on Dallas Road found a dozen invoices sitting on the wrong order, and
+   * every one of them was pushed and approved, so the app offered no way to
+   * correct a single one. The link is ours: it drives committed cost and the
+   * delivery burn-down, and the Xero bill carries the coding, not this. Moving
+   * it diverges nothing, and `/match` has never refused it server-side — only
+   * this panel did.
+   *
+   * Scope is the match and nothing else. Logging a receipt stays behind
+   * `locked`: manufacturing delivery evidence on a booked invoice is the exact
+   * thing the audit was unpicking, and no amount of "it's only a correction"
+   * makes that the same kind of act.
+   */
+  const matchLocked = !canEdit;
 
   useEffect(() => {
     let alive = true;
@@ -1112,13 +1130,22 @@ function MatchPanel({ inv, canEdit, canRelease, busy, onRelease, onReload }: {
                     groups={poGroups}
                     value={m.matched_po?.id ?? ""}
                     onChange={choosePo}
-                    disabled={locked || saving}
+                    disabled={matchLocked || saving}
                     ariaLabel="Purchase order for this invoice"
                     placeholder="— select a purchase order —"
                     searchPlaceholder={`Search ${poCount} PO${poCount === 1 ? "" : "s"} by number, supplier or project…`}
                   />
                 </div>
               : <span className="muted" style={{ fontSize: 12 }}>No purchase orders available</span>}
+            {/* Say plainly that this stays open on a booked invoice, and why.
+                Silence here would read as the push lock having been forgotten. */}
+            {canEdit && locked && !matchLocked && (
+              <span className="muted" style={{ fontSize: 11.5, flexBasis: "100%" }}
+                title="The Xero bill carries the coding and the amounts; it does not carry this link">
+                Still changeable after approval and push — the order link is ours, and moving it
+                doesn't touch the bill in Xero. The change is recorded against the invoice.
+              </span>
+            )}
             {/* Provenance, not a verdict. This pill used to read "Matched" in green
                 whenever a human had saved the link — which says nothing about
                 whether the link is RIGHT, and sat green on invoices pointed at an
@@ -1193,7 +1220,7 @@ function MatchPanel({ inv, canEdit, canRelease, busy, onRelease, onReload }: {
                 <div className={`lrow ${rowCls}`} key={i}>
                   <div className="lname-cell">
                     <div className="lname">{l.description || "—"}</div>
-                    {locked ? (
+                    {matchLocked ? (
                       l.po_line_item
                         ? <div className="muted" style={{ fontSize: 11, marginTop: 3 }}>→ {l.po_line_item}</div>
                         : <div style={{ fontSize: 11, color: "var(--warn)", marginTop: 3 }}>→ not matched to a PO line</div>
