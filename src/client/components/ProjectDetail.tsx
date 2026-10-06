@@ -25,6 +25,7 @@ import { AssignBudgetCell } from "./AssignBudgetCell";
 import { generateMaterialsXlsx } from "../lib/materials-xlsx";
 import { summarisePoRegister, supplierHasStaleCopy } from "../lib/po-register";
 import { PoRegisterExport } from "./PoRegisterExport";
+import { DeliveryDropRow } from "./POView";
 
 type Tab = "overview" | "materials" | "pos" | "commercials" | "programme" | "operations" | "reports" | "quality";
 type CommercialsSubtab = "breakdown" | "prelims" | "schedule" | "applications" | "labour" | "variations" | "contract" | "help";
@@ -1117,9 +1118,105 @@ function MaterialsSubnav({ active, onChange, right }: {
   );
 }
 
+/* ── A PO row's paperwork, opened underneath it ───────────────────── */
+
+/**
+ * What arrived against an order and what was invoiced for it, opened under the
+ * order's own row.
+ *
+ * The register could say an order was raised, approved and pushed without ever
+ * saying which delivery note came with the goods — that answer lived one click
+ * away on the order's page, which is 75 clicks on Dallas Road. Expanding in
+ * place keeps the question and the answer on one screen.
+ *
+ * The drops are read on expand rather than carried by the list: a note brings
+ * its ticket photo, its per-line quantities and its duplicate flags, and
+ * loading all of that for every order to show it for one would be the whole
+ * order book's paperwork fetched to answer nothing.
+ *
+ * `DeliveryDropRow` is the order page's own renderer, imported rather than
+ * reproduced, so a note can't read one way here and another way there.
+ */
+function PoPaperworkPanel({ po, invoiceNumbers }: { po: ProjectPORow; invoiceNumbers: string[] }) {
+  const [detail, setDetail] = useState<Awaited<ReturnType<typeof api.getPO>> | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    setErr(null);
+    api.getPO(po.id)
+      .then((d) => { if (live) setDetail(d); })
+      .catch((e) => { if (live) setErr(e instanceof Error ? e.message : "could not load"); });
+    return () => { live = false; };
+  }, [po.id]);
+
+  const drops = detail?.deliveries ?? [];
+  return (
+    <div style={{ display: "grid", gap: 10, padding: "10px 4px 14px" }}>
+      {/* The invoice first — it is the reason most of these orders are looked
+          up at all, and it comes down with the list, so it is on screen before
+          the deliveries have been fetched. */}
+      {invoiceNumbers.length > 0 && (
+        <div style={{ display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap", padding: "0 10px" }}>
+          <span className="eyebrow" style={{ margin: 0 }}>
+            {invoiceNumbers.length === 1 ? "Invoice" : "Invoices"}
+          </span>
+          <b style={{ fontVariantNumeric: "tabular-nums" }}>{invoiceNumbers.join(", ")}</b>
+          <Link to={`/accounts?po=${encodeURIComponent(po.po_number)}`} className="muted" style={{ fontSize: 12 }}>
+            open in Accounts
+          </Link>
+        </div>
+      )}
+
+      {err ? (
+        <div className="muted" style={{ fontSize: 12.5, padding: "0 10px" }}>
+          Couldn't load the deliveries for this order — {err}.{" "}
+          <Link to={`/pos/${po.id}`}>Open {po.po_number}</Link> instead.
+        </div>
+      ) : detail == null ? (
+        <div className="muted" style={{ fontSize: 12.5, padding: "0 10px" }}>Loading deliveries…</div>
+      ) : drops.length === 0 ? (
+        /* An order with no receipt is not the same as an order nobody has
+           looked at, and "—" would say neither. */
+        <div className="muted" style={{ fontSize: 12.5, padding: "0 10px" }}>
+          Nothing has been booked in against {po.po_number}.
+          {invoiceNumbers.length > 0 && " The invoice above was matched to it without a delivery note."}
+          {" "}Tickets appear here as soon as one is checked in on the{" "}
+          <Link to="/deliveries">Deliveries</Link> screen.
+        </div>
+      ) : (
+        <div style={{ display: "grid", border: "1px solid var(--line)", borderRadius: 8, overflow: "hidden", background: "var(--card)" }}>
+          {drops.map((d, i) => <DeliveryDropRow key={d.key} drop={d} index={i + 1} total={drops.length} />)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** What the disclosure button says before it is opened. A control that reveals
+ *  nothing when clicked is worse than no control, so the counts are on the
+ *  button — and an order with no paperwork at all gets no button. */
+function paperworkSummary(drops: number, invoices: number): string | null {
+  if (drops === 0 && invoices === 0) return null;
+  const bits: string[] = [];
+  if (drops > 0) bits.push(`${drops} note${drops === 1 ? "" : "s"}`);
+  if (invoices > 0) bits.push(`${invoices} invoice${invoices === 1 ? "" : "s"}`);
+  return bits.join(" · ");
+}
+
 /* ── Project POs panel ─────────────────────────────────────────────────── */
 
 function ProjectPOsPanel({ rows }: { rows: ProjectPORow[] }) {
+  // Which rows are open. A Set rather than one id: comparing two orders' notes
+  // side by side is the whole reason to expand in place rather than click
+  // through, and a single-open accordion would close the one you were reading.
+  const [openPaperwork, setOpenPaperwork] = useState<Set<string>>(new Set());
+  const togglePaperwork = (id: string) => setOpenPaperwork((prev) => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+
   if (rows.length === 0) {
     return (
       <div className="card">
@@ -1176,14 +1273,25 @@ function ProjectPOsPanel({ rows }: { rows: ProjectPORow[] }) {
               <th className="num">Value</th>
               <th className="center">Status</th>
               <th className="center">Xero</th>
-              <th>Raised</th>
+              <th>Paperwork</th>
               <th>By</th>
+              <th>Raised</th>
             </tr>
           </thead>
           <tbody>
-            {rows.map((r) => (
-              <tr key={r.id}>
-                <td><Link to={`/pos/${r.id}`}>{r.po_number}</Link></td>
+            {rows.map((r) => {
+              const invs = r.invoice_numbers ?? [];
+              const summary = paperworkSummary(r.delivery_drops ?? 0, invs.length);
+              const open = openPaperwork.has(r.id);
+              return (
+              <Fragment key={r.id}>
+              <tr
+                onClick={summary ? () => togglePaperwork(r.id) : undefined}
+                style={summary ? { cursor: "pointer" } : undefined}
+              >
+                {/* The order's own link must still open the order — a row that
+                    swallowed it would make the number unclickable. */}
+                <td onClick={(e) => e.stopPropagation()}><Link to={`/pos/${r.id}`}>{r.po_number}</Link></td>
                 <td>{r.supplier}</td>
                 <td className="num">{fmtMoney(r.total_value)}</td>
                 <td className="center">
@@ -1204,10 +1312,35 @@ function ProjectPOsPanel({ rows }: { rows: ProjectPORow[] }) {
                     <span className="muted" style={{ fontSize: 11 }}>—</span>
                   )}
                 </td>
-                <td className="muted">{fmtDate(r.created_at)}</td>
+                <td>
+                  {summary ? (
+                    <button
+                      className="ghost tiny"
+                      aria-expanded={open}
+                      onClick={(e) => { e.stopPropagation(); togglePaperwork(r.id); }}
+                      title={`Show the delivery notes and invoice behind ${r.po_number}`}
+                      style={{ display: "inline-flex", gap: 6, alignItems: "center", whiteSpace: "nowrap" }}
+                    >
+                      {summary}<span aria-hidden>{open ? "▾" : "▸"}</span>
+                    </button>
+                  ) : (
+                    <span className="muted" style={{ fontSize: 11 }}
+                      title="No delivery logged against this order and no invoice matched to it">—</span>
+                  )}
+                </td>
                 <td className="muted" title={[r.created_by_name, r.created_by].filter(Boolean).join(" · ") || undefined}>{displayPerson(r.created_by_name, r.created_by)}</td>
+                <td className="muted">{fmtDate(r.created_at)}</td>
               </tr>
-            ))}
+              {open && (
+                <tr>
+                  <td colSpan={8} style={{ background: "var(--card-2)", padding: 0 }}>
+                    <PoPaperworkPanel po={r} invoiceNumbers={invs} />
+                  </td>
+                </tr>
+              )}
+              </Fragment>
+              );
+            })}
           </tbody>
         </table>
       </div>

@@ -1072,7 +1072,11 @@ function DeliveriesCard({ po }: { po: Row }) {
   );
 }
 
-function DeliveryDropRow({ drop, index, total }: { drop: PoDeliveryDrop; index: number; total: number }) {
+/** One delivery note, with its ticket photo and the items it carried. Exported
+ *  because the project's PO register expands a row into these same drops — one
+ *  renderer, so an order's deliveries can't read one way on its own page and
+ *  another way in the list. */
+export function DeliveryDropRow({ drop, index, total }: { drop: PoDeliveryDrop; index: number; total: number }) {
   const [open, setOpen] = useState(total <= 3);
   // A check-in writes its own explanatory preamble ("Checked in from WhatsApp
   // delivery ticket", "MANUAL CHECK-IN — no delivery ticket. Logged by …"),
