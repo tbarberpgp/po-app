@@ -15,7 +15,7 @@ import { fuzzyFindPo } from "../poRef";
 import { learnAliases, aliasMapsBySupplier, normText } from "../matchMemory";
 import { deliveryVariance, matchItemToLine, type VarianceLine, type PriorReceipt } from "../../shared/delivery-variance";
 import { poRefCore, supplierNameOverlap, poNumbersMatch } from "../../shared/line-match";
-import { textConfirms } from "../../shared/doc-fields";
+import { clampRegion, cleanRegion, regionSchema, type ReadRegion } from "../../shared/read-regions";
 import { summarisePoDeliveries, lineReceivedInFull, isDeliverableLine, PO_DELIVERY_NOTE_COLUMNS, PO_DELIVERY_NOTE_JOIN, type PoDeliveryRow } from "../../shared/po-delivery-status";
 
 // Operations — Phase 1 (site-team basics). Authenticated app-side endpoints:
@@ -69,15 +69,6 @@ function nameTokens(s: string): Set<string> {
   return new Set((s || "").toLowerCase().replace(/[^a-z0-9 ]/g, " ").split(/\s+/).filter((t) => t.length > 2));
 }
 
-/** Normalised box on the source image — fractions of width/height, top-left
- *  origin — marking where a field was read. A photo has no text layer to check
- *  a box against, so the reader is asked for the text it believes sits inside
- *  the box as well; a region only survives `cleanRegion` when that text really
- *  does carry the value it is claimed for. An unverified box is discarded, not
- *  drawn faintly — a box over the wrong number invites confirming a delivery
- *  against a value nobody checked, which is the failure this whole path exists
- *  to stop. */
-type ReadRegion = { x: number; y: number; w: number; h: number };
 type ExtractedDelivery = {
   is_delivery_ticket: boolean;
   /** Clockwise degrees needed to make the ticket's text upright — site photos
@@ -104,40 +95,6 @@ type ExtractedDelivery = {
     supplier_invoice_ref?: ReadRegion | null;
   };
 };
-
-/** Clamp a model-supplied region to sane normalized bounds AND verify it is
- *  pointing at the right thing; null when either check fails.
- *
- *  Coordinates alone were tried and withdrawn: the same supplier's letterhead
- *  came back as a wide band on one scan and a tall strip on the next, so boxes
- *  sat over the wrong text. The fix is not to trust the coordinates less but to
- *  make them checkable — the reader states the text inside each box, and the
- *  box is kept only if that text carries `expected`. A box that cannot be
- *  corroborated is dropped, and the field says "couldn't locate" instead. */
-function cleanRegion(r: unknown, expected: string): ReadRegion | null {
-  if (!expected.trim()) return null;
-  const box = clampRegion(r);
-  if (!box) return null;
-  const text = (r as Record<string, unknown>).text;
-  if (!textConfirms(typeof text === "string" ? text : "", expected)) return null;
-  return box;
-}
-
-/** The geometry half on its own — for regions read back out of the database,
- *  which were verified on the way in and carry no transcription to re-check. */
-function clampRegion(r: unknown): ReadRegion | null {
-  if (!r || typeof r !== "object") return null;
-  const o = r as Record<string, unknown>;
-  const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
-  let x = n(o.x), y = n(o.y), w = n(o.w), h = n(o.h);
-  if (x == null || y == null || w == null || h == null) return null;
-  // Some responses use 0-100 instead of 0-1 — normalise.
-  if (x > 1 || y > 1 || w > 1 || h > 1) { x /= 100; y /= 100; w /= 100; h /= 100; }
-  if (w <= 0 || h <= 0 || x < 0 || y < 0 || x > 1 || y > 1) return null;
-  // A box covering most of the page points at nothing in particular.
-  if (w > 0.9 && h > 0.9) return null;
-  return { x: Math.min(1, x), y: Math.min(1, y), w: Math.min(1 - Math.min(1, x), w), h: Math.min(1 - Math.min(1, y), h) };
-}
 
 /** Model sometimes returns placeholder text instead of an empty string for a
  *  field it can't read ("<UNKNOWN>", "N/A", "none"…). Treat those as blank so
@@ -179,26 +136,6 @@ async function extractDeliveryTicketFromUrl(env: Env, url: string): Promise<Extr
     ? { type: "document" as const, source: { type: "url" as const, url } }
     : { type: "image" as const, source: { type: "url" as const, url } };
   return runDeliveryExtraction(env, block);
-}
-
-/** JSON-schema fragment for one read-region. `text` is what makes the box
- *  checkable: the reader transcribes what it believes is printed inside the
- *  box, and the server keeps the box only when that transcription carries the
- *  value the box is claimed for (see cleanRegion). Without it a coordinate is
- *  an unfalsifiable guess. */
-function regionSchema(what: string) {
-  return {
-    type: "object" as const,
-    description: `Where ${what} sits ON THE IMAGE, as a normalized box (fractions of image width/height, top-left origin), together with the text printed inside it. Omit entirely if you cannot localise it — do not guess a position.`,
-    properties: {
-      x: { type: "number", description: "left edge, 0-1 fraction of image width" },
-      y: { type: "number", description: "top edge, 0-1 fraction of image height" },
-      w: { type: "number", description: "width, 0-1 fraction" },
-      h: { type: "number", description: "height, 0-1 fraction" },
-      text: { type: "string", description: "The text printed INSIDE this box, transcribed verbatim from the image. It must actually contain the value this box is for — if the box covers a label rather than the value, move the box." },
-    },
-    required: ["x", "y", "w", "h", "text"],
-  };
 }
 
 /** Shared Claude call + tool parse for delivery-ticket extraction. Takes the

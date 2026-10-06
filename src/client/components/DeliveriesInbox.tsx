@@ -8,6 +8,7 @@ import { Link } from "react-router-dom";
 import { api, fmtQty } from "../lib/api";
 import type { CheckedInTicket, DeliveryTicketCandidate, CurrentUser, VarianceReport } from "../../shared/types";
 import { ConfBar, CandidateCheckIn, usePoLinkReason, needsPoLinkReason } from "./Operations";
+import { RegionBoxes, FieldCrop } from "./ReadRegions";
 import { PdfHighlightViewer } from "./PdfHighlightViewer";
 import { poDeliveryLabel, type PoDeliverySummary } from "../../shared/po-delivery-status";
 
@@ -68,73 +69,16 @@ export function ticketField(c: DeliveryTicketCandidate, key: TicketFieldKey) {
   return { value: (value ?? "").trim() || null, box };
 }
 
-/** Coloured boxes over the photo, marking where each field was read.
- *
- *  Field boxes on photos were withdrawn once, for a good reason: the vision
- *  pass's coordinates were unchecked guesses, the same letterhead came back as
- *  a wide band on one scan and a tall strip on the next, and a box sitting over
- *  the wrong number invites confirming a delivery against a value nobody
- *  verified. They are back because the guess is now checked — the reader has to
- *  transcribe what it believes is inside each box, and the server throws the
- *  box away unless that text really carries the value (cleanRegion). So every
- *  box drawn here has been corroborated, and a field that could not be
- *  corroborated has no box at all and says so beside its value.
- *
- *  The photo itself is rotated for display; these boxes are in the unrotated
- *  image's coordinates, so the overlay takes the SAME transform over the SAME
- *  layout box and the two stay registered. */
+/** Coloured boxes over the ticket photo. Every box drawn here has been
+ *  corroborated server-side; a field that couldn't be is listed without one. */
 function RegionOverlay({ cand, transform }: { cand: DeliveryTicketCandidate; transform?: string }) {
-  const boxes = TICKET_FIELDS
-    .map((f) => ({ ...f, ...ticketField(cand, f.key) }))
-    .filter((f) => f.box && f.value);
-  if (!boxes.length) return null;
   return (
-    <span aria-hidden style={{ position: "absolute", inset: 0, transform, pointerEvents: "none" }}>
-      {boxes.map((b) => (
-        <span key={b.key} title={`${b.label}: ${b.value}`} style={{
-          position: "absolute",
-          left: `${b.box!.x * 100}%`, top: `${b.box!.y * 100}%`,
-          width: `${b.box!.w * 100}%`, height: `${b.box!.h * 100}%`,
-          background: `color-mix(in srgb, ${b.color} 22%, transparent)`,
-          outline: `1.5px solid ${b.color}`, borderRadius: 3,
-        }} />
-      ))}
-    </span>
-  );
-}
-
-/** A zoomed patch of the ticket showing exactly the text a field was read from
- *  — the check a box alone can't give you. Put beside the extracted value, it
- *  turns "the app says PO-26003-0040" into "the paper says PO-26003-0040", and
- *  a crop that comes back showing the letterhead instead is self-evidently not
- *  the PO number. The patch is a piece of the unrotated photo, so it takes the
- *  upright rotation itself. */
-function FieldCrop({ url, box, rot, dims }: {
-  url: string;
-  box: { x: number; y: number; w: number; h: number };
-  rot: number;
-  dims: { w: number; h: number } | null;
-}) {
-  const WIDTH = 168;
-  // Keep the patch's own aspect so the text isn't stretched; fall back to a
-  // squat strip until the photo's natural size is known.
-  const quarter = rot === 90 || rot === 270;
-  const aspect = dims ? (box.h * dims.h) / Math.max(1, box.w * dims.w) : 0.28;
-  const height = Math.max(26, Math.min(120, Math.round(WIDTH * (quarter ? 1 / Math.max(aspect, 0.15) : aspect))));
-  return (
-    <div style={{
-      width: WIDTH, height, overflow: "hidden", position: "relative",
-      border: "1px solid var(--line)", borderRadius: 5, background: "#fff", flex: "0 0 auto",
-    }}>
-      <div style={{
-        position: "absolute", inset: 0,
-        backgroundImage: `url(${url})`,
-        backgroundRepeat: "no-repeat",
-        backgroundSize: `${100 / Math.max(box.w, 0.001)}% ${100 / Math.max(box.h, 0.001)}%`,
-        backgroundPosition: `${(box.x / Math.max(1 - box.w, 0.001)) * 100}% ${(box.y / Math.max(1 - box.h, 0.001)) * 100}%`,
-        transform: rot ? `rotate(${rot}deg)` : undefined,
-      }} />
-    </div>
+    <RegionBoxes
+      transform={transform}
+      regions={TICKET_FIELDS
+        .map((f) => ({ ...f, ...ticketField(cand, f.key) }))
+        .flatMap((f) => (f.box && f.value ? [{ key: f.key, label: f.label, color: f.color, value: f.value, box: f.box }] : []))}
+    />
   );
 }
 

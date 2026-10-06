@@ -1868,6 +1868,19 @@ export type Invoice = {
   subject: string | null;
   notes: string | null;
   extract_error: string | null;
+  /** Where each value sits on the document (normalized 0-1 boxes, top-left
+   *  origin, in the file's own orientation) — for the pickup overlay on files
+   *  with no text layer, i.e. photographed and scanned invoices.
+   *
+   *  Only boxes the reader could corroborate are here: it has to transcribe
+   *  what it believes is inside each box, and the box is dropped unless that
+   *  text carries the value. Dropped again on serving if the field has since
+   *  been edited by hand. So a field with no box here could not be located and
+   *  must say so, rather than be pointed at approximately. */
+  regions?: Partial<Record<
+    "invoice_number" | "po_number" | "supplier_order_ref" | "invoice_date" | "due_date"
+    | "net_amount" | "vat_amount" | "gross_amount",
+    { x: number; y: number; w: number; h: number } | null>> | null;
   xero_bill_id: string | null;
   xero_bill_number: string | null;
   xero_sync_status: string | null;

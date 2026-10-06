@@ -5,6 +5,8 @@
 import { Hono } from "hono";
 import Anthropic from "@anthropic-ai/sdk";
 import type { Env, Variables } from "../env";
+import { cleanRegion, clampRegion, regionSchema, type ReadRegion } from "../../shared/read-regions";
+import { norm } from "../../shared/doc-fields";
 import { isReleaseApprover, requirePermission, subjectOf } from "../auth";
 import { isReleased, needsApprovalBeforeRelease } from "../../shared/payment-release";
 import { can } from "../../shared/permissions";
@@ -84,7 +86,25 @@ export type ExtractedInvoice = {
   vat_amount: number | null;
   gross_amount: number | null;
   lines: Array<{ description: string; quantity: number | null; unit_price: number | null; amount: number | null }>;
+  /** Where each key value sits on the document, for the pickup overlay. Only
+   *  boxes whose transcribed contents were confirmed to carry the value
+   *  survive — see shared/read-regions. */
+  regions: InvoiceRegions;
 };
+
+/** The fields worth pointing at on an invoice: the two references that decide
+ *  WHICH order it belongs to, the supplier's own reference for when it names
+ *  neither, the dates, and the money. */
+export type InvoiceRegionField =
+  "invoice_number" | "po_number" | "supplier_order_ref" | "invoice_date" | "due_date"
+  | "net_amount" | "vat_amount" | "gross_amount";
+/** A stored box keeps `v`, the value it was verified against. Invoice fields
+ *  are editable by hand long after the read — correcting a misread invoice
+ *  number, typing in a supplier reference after a phone call — and those edits
+ *  never touch the stored boxes. Without `v` the box would quietly go on
+ *  pointing at the old value, which is precisely the wrong-highlight problem
+ *  this whole mechanism exists to avoid. */
+export type InvoiceRegions = Partial<Record<InvoiceRegionField, (ReadRegion & { v: string }) | null>>;
 
 /** Fold whatever the reader saw — "£", "Euro", "usd", "GBP " — into a clean
  *  ISO-4217 code. The currency decides what the figures MEAN (and what Xero
@@ -156,6 +176,20 @@ const INVOICE_TOOL = {
           required: ["description"],
         },
       },
+      regions: {
+        type: "object",
+        description: "Where each key field sits ON THE DOCUMENT. Every box must contain the value it is for — a box over a nearby label, over the letterhead, or over a different number is wrong and will be thrown away. Omit any field you cannot confidently localise.",
+        properties: {
+          invoice_number: regionSchema("the supplier's invoice number"),
+          po_number: regionSchema("our purchase-order number"),
+          supplier_order_ref: regionSchema("the supplier's own order reference"),
+          invoice_date: regionSchema("the invoice date"),
+          due_date: regionSchema("the payment due date"),
+          net_amount: regionSchema("the net total"),
+          vat_amount: regionSchema("the VAT total"),
+          gross_amount: regionSchema("the gross total payable"),
+        },
+      },
     },
     required: [],
   },
@@ -206,13 +240,32 @@ export async function extractInvoice(
   const toolUse = response.content.find((b): b is Anthropic.ToolUseBlock => b.type === "tool_use");
   const r = (toolUse?.input ?? {}) as Record<string, unknown>;
   const rawLines = Array.isArray(r.lines) ? (r.lines as Array<Record<string, unknown>>) : [];
-  return {
-    supplier_name: str(r.supplier_name),
+  // Settle the values first — a box is only kept if its transcribed contents
+  // carry the value it is claimed for, so the value has to exist to judge it.
+  const vals = {
     invoice_number: str(r.invoice_number),
     po_number: str(r.po_number),
     supplier_order_ref: str(r.supplier_order_ref),
     invoice_date: str(r.invoice_date),
     due_date: str(r.due_date),
+    net_amount: num(r.net_amount),
+    vat_amount: num(r.vat_amount),
+    gross_amount: num(r.gross_amount),
+  };
+  const rawRegions = (r.regions ?? {}) as Record<string, unknown>;
+  const regions = Object.fromEntries(
+    (Object.keys(vals) as Array<keyof typeof vals>)
+      .map((k) => [k, cleanRegion(rawRegions[k], vals[k]), vals[k]] as const)
+      .filter(([, box, v]) => box && v != null)
+      .map(([k, box, v]) => [k, { ...box!, v: String(v) }]),
+  ) as InvoiceRegions;
+  return {
+    supplier_name: str(r.supplier_name),
+    invoice_number: vals.invoice_number,
+    po_number: vals.po_number,
+    supplier_order_ref: vals.supplier_order_ref,
+    invoice_date: vals.invoice_date,
+    due_date: vals.due_date,
     payment_terms: str(r.payment_terms),
     supplier_address: str(r.supplier_address),
     supplier_vat_number: str(r.supplier_vat_number),
@@ -224,9 +277,10 @@ export async function extractInvoice(
     bank_account_name: str(r.bank_account_name),
     delivery_address: str(r.delivery_address),
     currency: normaliseCurrency(str(r.currency)) ?? "GBP",
-    net_amount: num(r.net_amount),
-    vat_amount: num(r.vat_amount),
-    gross_amount: num(r.gross_amount),
+    net_amount: vals.net_amount,
+    vat_amount: vals.vat_amount,
+    gross_amount: vals.gross_amount,
+    regions,
     lines: rawLines.map((l) => ({
       description: str(l.description) ?? "",
       quantity: num(l.quantity),
@@ -296,10 +350,42 @@ function extractedMetaJson(ex: ExtractedInvoice | null): string | null {
     bank_account_name: ex.bank_account_name,
     delivery_address: ex.delivery_address,
   };
-  return Object.values(meta).some((v) => v != null) ? JSON.stringify(meta) : null;
+  const hasRegions = Object.keys(ex.regions ?? {}).length > 0;
+  if (!Object.values(meta).some((v) => v != null) && !hasRegions) return null;
+  // `regions_verified` tells a later read that these boxes were checked against
+  // the text they claim to cover. Invoices read before the check have none, and
+  // must not be drawn as though they had.
+  return JSON.stringify(hasRegions ? { ...meta, regions: ex.regions, regions_verified: true } : meta);
 }
 type InvoiceMeta = Partial<Record<"supplier_address" | "supplier_vat_number" | "supplier_email" | "supplier_phone"
-  | "payment_terms" | "bank_name" | "bank_sort_code" | "bank_account_number" | "bank_account_name" | "delivery_address", string | null>>;
+  | "payment_terms" | "bank_name" | "bank_sort_code" | "bank_account_number" | "bank_account_name" | "delivery_address", string | null>>
+  & { regions?: InvoiceRegions; regions_verified?: boolean };
+
+/** The verified pickup boxes stored on an invoice, or none.
+ *
+ *  Two things are thrown away here: boxes written before verification existed,
+ *  which were never checked against anything; and boxes whose field has since
+ *  been edited, which were checked against a value the invoice no longer
+ *  carries. Both would point somewhere nobody confirmed. */
+export function invoiceRegions(
+  metaJson: string | null | undefined,
+  current: Partial<Record<InvoiceRegionField, string | number | null>>,
+): InvoiceRegions | null {
+  if (!metaJson) return null;
+  try {
+    const meta = JSON.parse(metaJson) as InvoiceMeta;
+    if (meta.regions_verified !== true || !meta.regions) return null;
+    const out: InvoiceRegions = {};
+    for (const [k, stored] of Object.entries(meta.regions) as Array<[InvoiceRegionField, (ReadRegion & { v?: string }) | null]>) {
+      const box = clampRegion(stored);
+      const now = current[k];
+      if (!box || !stored?.v || now == null) continue;
+      if (norm(String(now)) !== norm(stored.v)) continue;
+      out[k] = { ...box, v: stored.v };
+    }
+    return Object.keys(out).length ? out : null;
+  } catch { return null; }
+}
 
 /** Find an approved supplier for the extracted details — exact name first,
  *  then VAT number (suppliers invoice under trading names; the VAT number is
@@ -565,7 +651,20 @@ invoices.get("/:id", async (c) => {
   if (!inv) return c.json({ error: "not found" }, 404);
   if (inv.kind === "overhead" && !isAdmin(c)) return c.json({ error: "Forbidden: overheads are admin-only" }, 403);
   const [scanned] = await withMatchState(c.env, [inv]);
-  return c.json(withTermsCheck(scanned));
+  // Where each value sits on the document, for the pickup overlay. Checked
+  // against what the invoice says NOW, so a hand-corrected field loses its box
+  // rather than keeping one over the value it used to hold.
+  const regions = invoiceRegions(inv.extracted_meta_json as string | null, {
+    invoice_number: inv.invoice_number as string | null,
+    po_number: inv.extracted_po_ref as string | null,
+    supplier_order_ref: inv.supplier_order_ref as string | null,
+    invoice_date: inv.invoice_date as string | null,
+    due_date: inv.due_date as string | null,
+    net_amount: inv.net_amount as number | null,
+    vat_amount: inv.vat_amount as number | null,
+    gross_amount: inv.gross_amount as number | null,
+  });
+  return c.json({ ...withTermsCheck(scanned), regions });
 });
 
 
