@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { PdfHighlightViewer } from "./PdfHighlightViewer";
+import { RegionBoxes, FieldCrop, type DrawnRegion } from "./ReadRegions";
 import { GroupedCombobox, type ComboGroup, type ComboOption } from "./GroupedCombobox";
 import { api, fmtMoney } from "../lib/api";
 import { isSpreadsheetFile } from "../../shared/file-kind";
@@ -394,6 +395,81 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
   );
 }
 
+/** The values flagged on an invoice, in the colours they are flagged in.
+ *
+ *  Invoice number and PO number lead, and keep the two strongest colours:
+ *  together they are what decides whether this bill belongs to the order it is
+ *  about to be paid against. The supplier's own reference sits with them
+ *  because on drop-shipped goods it is the only reference either document
+ *  shares. */
+const INVOICE_FIELDS = [
+  { key: "invoice_number", label: "Invoice number", color: "#ee5d2b" },
+  { key: "po_number", label: "PO reference", color: "#4353b0" },
+  { key: "supplier_order_ref", label: "Supplier ref (SIR)", color: "#7a4bb8" },
+  { key: "invoice_date", label: "Invoice date", color: "#b06a0e" },
+  { key: "due_date", label: "Due date", color: "#b06a0e" },
+  { key: "net_amount", label: "Net", color: "#2f6f4f" },
+  { key: "vat_amount", label: "VAT", color: "#2f6f4f" },
+  { key: "gross_amount", label: "Gross", color: "#2f6f4f" },
+] as const;
+
+function invoiceFieldValue(inv: Invoice, key: (typeof INVOICE_FIELDS)[number]["key"]): string | null {
+  const v = key === "invoice_number" ? inv.invoice_number
+    : key === "po_number" ? inv.extracted_po_ref
+    : key === "supplier_order_ref" ? inv.supplier_order_ref
+    : key === "invoice_date" ? inv.invoice_date
+    : key === "due_date" ? inv.due_date
+    : key === "net_amount" ? inv.net_amount
+    : key === "vat_amount" ? inv.vat_amount
+    : inv.gross_amount;
+  return v == null || v === "" ? null : String(v);
+}
+
+/** The corroborated boxes for this invoice, ready to draw. */
+function invoiceDrawnRegions(inv: Invoice): DrawnRegion[] {
+  return INVOICE_FIELDS.flatMap((f) => {
+    const box = inv.regions?.[f.key];
+    const value = invoiceFieldValue(inv, f.key);
+    return box && value ? [{ key: f.key, label: f.label, color: f.color, value, box }] : [];
+  });
+}
+
+/** Where the two references that decide this invoice's fate were read from.
+ *
+ *  A PDF with a text layer gets its highlights drawn straight onto the document
+ *  and needs nothing here. A photograph or a scan has no text layer, and used
+ *  to get nothing at all — the figures appeared beside a picture with no way to
+ *  tell where they came from. These are the patches of paper behind the two
+ *  numbers that matter, so the reading can be checked against the document
+ *  rather than taken on trust. */
+function InvoicePickups({ inv, dims }: { inv: Invoice; dims: { w: number; h: number } | null }) {
+  const url = api.invoiceFileUrl(inv.id);
+  const shown = INVOICE_FIELDS.filter((f) => f.key === "invoice_number" || f.key === "po_number" || f.key === "supplier_order_ref");
+  const rows = shown.map((f) => ({ ...f, value: invoiceFieldValue(inv, f.key), box: inv.regions?.[f.key] ?? null }));
+  if (!rows.some((r) => r.value)) return null;
+  return (
+    <div style={{ display: "grid", gap: 7, padding: "10px 12px", borderTop: "1px solid var(--line)" }}>
+      {rows.map((r) => (
+        <div key={r.key} style={{ display: "flex", gap: 11, alignItems: "flex-start" }}>
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <div className="eyebrow" style={{ margin: 0, display: "flex", alignItems: "center", gap: 6 }}>
+              <span style={{ width: 8, height: 8, borderRadius: 2, background: r.color, flex: "0 0 auto" }} />
+              {r.label}
+            </div>
+            <div className="num" style={!r.value ? { color: "var(--muted)" } : undefined}>
+              {r.value ?? (r.key === "po_number" ? "none quoted" : "—")}
+            </div>
+            {r.value && !r.box && (
+              <div className="muted" style={{ fontSize: 11 }}>couldn&rsquo;t be pinpointed on the document — check it against the invoice</div>
+            )}
+          </div>
+          {r.value && r.box && <FieldCrop url={url} box={r.box} dims={dims} />}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /** The invoice document — a framed viewer (PDF in an iframe, images as a scalable
  *  img) with an Expand → fullscreen lightbox, plus Open / Download links. */
 function InvoiceViewer({ inv }: { inv: Invoice }) {
@@ -405,11 +481,17 @@ function InvoiceViewer({ inv }: { inv: Invoice }) {
   const [lb, setLb] = useState(false);
   const [lbZoom, setLbZoom] = useState(false);
   const [hl, setHl] = useState(true);
+  // Natural pixel size of the document image, so each crop keeps its own
+  // proportions instead of stretching the text it is showing.
+  const [imgDims, setImgDims] = useState<{ w: number; h: number } | null>(null);
+  // Boxes the reader could corroborate on a file with no text layer.
+  const drawn = invoiceDrawnRegions(inv);
   // The picked-up fields, colour-coded — drawn over wherever they appear on the
   // document so the extraction is visibly grounded in the paper.
   const targets = [
     ...(inv.invoice_number ? [{ value: inv.invoice_number, color: "#ee5d2b", label: "Invoice number" }] : []),
     ...(inv.extracted_po_ref ? [{ value: inv.extracted_po_ref, color: "#4353b0", label: "PO reference" }] : []),
+    ...(inv.supplier_order_ref ? [{ value: inv.supplier_order_ref, color: "#7a4bb8", label: "Supplier ref (SIR)" }] : []),
     ...(inv.invoice_date ? [{ value: inv.invoice_date, color: "#b06a0e", label: "Invoice date" }] : []),
     ...(inv.due_date ? [{ value: inv.due_date, color: "#b06a0e", label: "Due date" }] : []),
     ...(inv.net_amount != null ? [{ value: String(inv.net_amount), color: "#2f6f4f", label: "Net" }] : []),
@@ -435,7 +517,7 @@ function InvoiceViewer({ inv }: { inv: Invoice }) {
             <button className="vbtn" title="Zoom in" onClick={() => setZ((v) => Math.min(3, +(v + 0.15).toFixed(2)))}>＋</button>
           </>
         )}
-        {isPdf && (
+        {(isPdf || drawn.length > 0) && (
           <button className="vbtn" onClick={() => setHl((v) => !v)}
             title="Show where each picked-up field sits on the document"
             style={hl ? { background: "rgba(238,93,43,.45)" } : undefined}>◈ Highlights</button>
@@ -455,9 +537,18 @@ function InvoiceViewer({ inv }: { inv: Invoice }) {
           ? <div onClick={() => setLb(true)} title="Click to expand" style={{ cursor: "zoom-in", width: "100%" }}>
               <PdfHighlightViewer url={fileUrl} targets={targets} showHighlights={hl} />
             </div>
-          : <img alt="invoice" className="vimg" src={fileUrl} onClick={() => setLb(true)} title="Click to expand"
-              style={{ cursor: "zoom-in", transform: `scale(${z})`, transformOrigin: "top center" }} />}
+          : <span style={{ position: "relative", display: "inline-block", transform: `scale(${z})`, transformOrigin: "top center" }}>
+              <img alt="invoice" className="vimg" src={fileUrl} onClick={() => setLb(true)} title="Click to expand"
+                onLoad={(e) => setImgDims({ w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight })}
+                style={{ cursor: "zoom-in", display: "block" }} />
+              {hl && <RegionBoxes regions={drawn} />}
+            </span>}
       </div>
+      {/* A text-layer PDF already shows where everything came from, drawn on
+          the document itself. A photo or a scan can't, so the two references
+          that decide where this invoice belongs get shown against the paper
+          they were read from. */}
+      {!isPdf && !isSheet && <InvoicePickups inv={inv} dims={imgDims} />}
       {inv.extract_error && <div className="flash" style={{ margin: "10px 12px", background: "var(--warn-soft)", color: "var(--warn)", fontSize: 12 }}>Couldn't auto-read this one — enter the figures by hand.</div>}
 
       {lb && (
@@ -469,14 +560,22 @@ function InvoiceViewer({ inv }: { inv: Invoice }) {
             <button className="lb-vbtn" onClick={() => setLb(false)}>Close ✕</button>
           </div>
           <div className="lb-stage" onClick={(e) => { if (e.target === e.currentTarget) setLb(false); }}>
+            {/* Expanding used to drop the highlights: the inline view drew them
+                and the full-screen view, which is where anybody actually reads
+                the small print, went back to a plain frame. Both draw them. */}
             {isPdf
-              ? <iframe title="invoice-full" className="lb-frame" src={fileUrl} />
-              : <img alt="invoice-full" className="lb-img" src={fileUrl}
+              ? <div className="lb-frame" style={{ overflow: "auto", background: "var(--card-2)" }}>
+                  <PdfHighlightViewer url={fileUrl} targets={targets} showHighlights={hl} />
+                </div>
+              : <span style={{ position: "relative", display: "inline-block" }}>
+                <img alt="invoice-full" className="lb-img" src={fileUrl}
                   onClick={() => setLbZoom((v) => !v)}
                   title={lbZoom ? "Click to fit the screen" : "Click to zoom to full size"}
                   style={lbZoom
-                    ? { maxHeight: "none", maxWidth: "none", width: "auto", cursor: "zoom-out" }
-                    : { maxHeight: "calc(100vh - 110px)", width: "auto", objectFit: "contain", cursor: "zoom-in" }} />}
+                    ? { maxHeight: "none", maxWidth: "none", width: "auto", cursor: "zoom-out", display: "block" }
+                    : { maxHeight: "calc(100vh - 110px)", width: "auto", objectFit: "contain", cursor: "zoom-in", display: "block" }} />
+                {hl && <RegionBoxes regions={drawn} />}
+              </span>}
           </div>
         </div>
       )}

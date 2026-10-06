@@ -277,9 +277,15 @@ function drawTotalsAndNotes(ctx: Ctx, po: Input, subtotal: number): void {
 
 /* ── Order terms ────────────────────────────────────────────────────── */
 
+// The terms asked for this number on invoices and said nothing about delivery
+// notes — which is where it was actually missing. Goods arriving on a note that
+// names no order is what left deliveries to be matched by guesswork, so the
+// note is now asked for by name, first.
 const ORDER_TERMS =
   "Goods supplied against PGP standard purchase terms. Substitutions or price changes " +
-  "must be agreed in writing before delivery. Invoices not quoting this PO number may be returned.";
+  "must be agreed in writing before delivery. This PO number must be quoted on the " +
+  "delivery note accompanying the goods and on the invoice; deliveries and invoices " +
+  "not quoting it may be refused or returned.";
 
 function drawOrderTerms(ctx: Ctx): void {
   if (ctx.y - 50 < FOOTER_TOP) newPage(ctx);

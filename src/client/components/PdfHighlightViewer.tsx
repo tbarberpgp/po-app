@@ -6,6 +6,7 @@
 // they need no stored coordinates. Image files have no text layer — callers
 // keep their <img> path for those.
 import { useEffect, useRef, useState } from "react";
+import { norm, writtenForms } from "../../shared/doc-fields";
 
 export type HighlightTarget = {
   /** The exact value the reader extracted (multiple written forms are derived). */
@@ -15,35 +16,12 @@ export type HighlightTarget = {
   label: string;
 };
 
-/** Lowercased alphanumerics only — tolerant of spacing/commas/currency marks. */
-function norm(s: string): string {
-  return (s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
-}
-
-/** The written forms a value might take on the document. */
+/** The written forms this value might take on the page. The rule lives in the
+ *  shared module: the worker applies the same one when checking that a box on a
+ *  photograph really covers the value it claims to, and the two must agree
+ *  about what counts as the same number written differently. */
 function variants(t: HighlightTarget): string[] {
-  const v = t.value.trim();
-  const out = new Set<string>([norm(v)]);
-  // ISO date → the common UK renderings ("29 June 2026", "29/06/2026", …).
-  const d = v.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (d) {
-    const [, y, m, day] = d;
-    const months = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
-    const mon = months[Number(m) - 1] ?? "";
-    const dayN = String(Number(day));
-    for (const f of [
-      `${dayN} ${mon} ${y}`, `${dayN} ${mon.slice(0, 3)} ${y}`,
-      `${day}/${m}/${y}`, `${dayN}/${Number(m)}/${y}`, `${day}.${m}.${y}`, `${day}-${m}-${y}`,
-      `${y}-${m}-${day}`,
-    ]) out.add(norm(f));
-  }
-  // Amount → with/without thousands separators and decimals.
-  const n = Number(v);
-  if (Number.isFinite(n) && /^[\d,.\s£]+$/.test(v)) {
-    out.add(norm(n.toFixed(2)));
-    out.add(norm(n.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })));
-  }
-  return [...out].filter((x) => x.length >= 4);
+  return writtenForms(t.value);
 }
 
 type Box = { left: number; top: number; width: number; height: number; color: string; label: string };
