@@ -453,6 +453,14 @@ export type PurchaseOrder = {
   /** Lines something has landed against, finished or not. */
   delivery_lines_started?: number;
   delivery_lines_total?: number;
+  /** Invoice numbers of the invoices matched to this order, oldest invoice
+   *  first — dismissed ones left out, and an invoice whose number was never
+   *  read off the document contributes nothing. Set by GET /api/pos only.
+   *
+   *  More than one is ordinary: a part-billed order collects an invoice per
+   *  drop. An empty list is not "unbilled" — an invoice can sit in the inbox
+   *  matched to no order at all. */
+  invoice_numbers?: string[];
   /** The order's delivery register — one entry per delivery NOTE, oldest
    *  first. Set by GET /api/pos/:id only; the list carries the counts, not the
    *  notes themselves. */

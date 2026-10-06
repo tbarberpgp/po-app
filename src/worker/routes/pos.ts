@@ -524,6 +524,34 @@ pos.get("/", async (c) => {
     `SELECT COALESCE(d.po_id, po.id) AS po_id, ${PO_DELIVERY_NOTE_COLUMNS}
        FROM site_deliveries d ${PO_DELIVERY_NOTE_JOIN} ${delScope}`,
   ).bind(...binds).all<PoDeliveryRow>()).results;
+  // The invoice numbers behind each order, so the register can show the
+  // paperwork reference a supplier or the ledger would quote without opening
+  // the order. Dismissed invoices are left out — the convention the matcher's
+  // billed-to-date read already follows — and an invoice whose number was never
+  // extracted contributes nothing rather than an empty string.
+  //
+  // Scoped through the list's own WHERE for the same reason the two reads above
+  // are: binding the returned ids would put an unfiltered register straight into
+  // D1's 100-parameter ceiling, and that failure is silent — the whole list
+  // would come back empty rather than wrong. `where` always carries at least
+  // the deleted-project clause, and the two conditions below are unconditional,
+  // so the WHERE here is never empty.
+  const invRows = (await c.env.DB.prepare(
+    `SELECT i.matched_po_id AS po_id, i.invoice_number
+       FROM invoices i
+       JOIN purchase_orders po ON po.id = i.matched_po_id
+       JOIN projects p ON p.id = po.project_id
+      WHERE ${[...where, "i.status != 'dismissed'", "TRIM(COALESCE(i.invoice_number, '')) != ''"].join(" AND ")}
+      ORDER BY i.invoice_date ASC, i.id ASC`,
+  ).bind(...binds).all<{ po_id: string; invoice_number: string }>()).results;
+  const invByPo = new Map<string, string[]>();
+  for (const r of invRows) {
+    const list = invByPo.get(r.po_id) ?? [];
+    // One invoice number can reach an order twice — the same document booked in
+    // from the mailbox and by hand. Quote it once.
+    if (!list.includes(r.invoice_number.trim())) list.push(r.invoice_number.trim());
+    invByPo.set(r.po_id, list);
+  }
 
   return c.json(withBooleans.map((r) => {
     const d = summarisePoDeliveries(String(r.id), dLines, dDels);
@@ -534,6 +562,7 @@ pos.get("/", async (c) => {
       delivery_lines_delivered: d.lines_delivered,
       delivery_lines_started: d.lines_started,
       delivery_lines_total: d.lines_total,
+      invoice_numbers: invByPo.get(String(r.id)) ?? [],
     };
   }));
 });
