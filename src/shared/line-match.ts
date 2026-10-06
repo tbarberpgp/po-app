@@ -67,6 +67,18 @@ export function poRefCore(s: string | null | undefined): string | null {
 /** Sentinel po_line_id meaning "explicitly a service/misc charge, not a product
  *  line" — a human picked this deliberately, so it counts as matched but is
  *  excluded from qty/value variance checks. */
+/** Tolerant PO-number equality: identical once punctuation and case are
+ *  stripped, or one is a suffix of the other (covering "PO-" prefixes and
+ *  branch codes). Shared so the server's check-in gate and the screen asking
+ *  for a reason agree on when an order is the one PRINTED on the ticket — if
+ *  they disagreed, people would be asked to justify links that were fine, or
+ *  worse, not asked about links that were not. */
+export function poNumbersMatch(a: string | null | undefined, b: string | null | undefined): boolean {
+  const norm = (s: string | null | undefined) => (s || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const x = norm(a), y = norm(b);
+  return !!x && !!y && (x === y || x.endsWith(y) || y.endsWith(x));
+}
+
 export const SERVICE_CHARGE_LINE_ID = -1;
 
 /**

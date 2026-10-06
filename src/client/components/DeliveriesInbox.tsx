@@ -7,7 +7,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, fmtQty } from "../lib/api";
 import type { CheckedInTicket, DeliveryTicketCandidate, CurrentUser, VarianceReport } from "../../shared/types";
-import { ConfBar, CandidateCheckIn } from "./Operations";
+import { ConfBar, CandidateCheckIn, usePoLinkReason, needsPoLinkReason } from "./Operations";
 import { PdfHighlightViewer } from "./PdfHighlightViewer";
 import { poDeliveryLabel, type PoDeliverySummary } from "../../shared/po-delivery-status";
 
@@ -19,8 +19,21 @@ function fmtDate(s: string | null | undefined): string {
 }
 
 /** Match state of a ticket row: matched to a PO, inferred from item codes, or nothing. */
-function state(c: DeliveryTicketCandidate): "po" | "line" | "none" {
-  return (c.method as "po" | "line" | "none") ?? (c.matched_po_id ? "po" : "none");
+/** How firmly this ticket is attached to an order.
+ *
+ *  'po' means the order number is PRINTED on the paper. Everything else is some
+ *  degree of guess: 'supplier' picked the best-scoring order belonging to the
+ *  supplier on the letterhead, 'line' inferred one from the item codes. Those
+ *  two used to be shown as 'po' — a guess wearing a confirmed match's clothes,
+ *  which is how goods came to be booked against orders they never belonged to.
+ *  Keeping them apart here is what keeps them apart on screen. */
+function state(c: DeliveryTicketCandidate): "po" | "supplier" | "line" | "none" {
+  return (c.method as "po" | "supplier" | "line" | "none") ?? (c.matched_po_id ? "po" : "none");
+}
+
+/** Whether the order was confirmed by the paperwork, as opposed to guessed. */
+function isConfirmed(c: DeliveryTicketCandidate): boolean {
+  return state(c) === "po";
 }
 
 /** Photo tickets get NO field boxes. The vision pass will emit coordinates on
@@ -32,8 +45,163 @@ function state(c: DeliveryTicketCandidate): "po" | "line" | "none" {
  *  highlights (those come from the file's real text layer, not a guess).
  *  The regions are still captured on the scan record, so a proper OCR engine
  *  with word-level coordinates can light this up later. */
-function RegionOverlay(_: { cand: DeliveryTicketCandidate }) {
-  return null;
+/** The fields a ticket is read for, in the order they matter for matching, with
+ *  the colour each is flagged in. PO number leads: it is the one value that
+ *  decides which order the goods burn down. */
+export const TICKET_FIELDS = [
+  { key: "po_number", label: "PO number", color: "#4353b0" },
+  { key: "supplier_invoice_ref", label: "Supplier ref (SIR)", color: "#7a4bb8" },
+  { key: "delivery_note_number", label: "Delivery note", color: "#ee5d2b" },
+  { key: "delivery_date", label: "Delivery date", color: "#b06a0e" },
+  { key: "supplier_name", label: "Supplier", color: "#2f6f4f" },
+] as const;
+type TicketFieldKey = (typeof TICKET_FIELDS)[number]["key"];
+
+/** What the reader got for one field, and whether it could point at it. */
+export function ticketField(c: DeliveryTicketCandidate, key: TicketFieldKey) {
+  const value = key === "po_number" ? c.po_number
+    : key === "supplier_invoice_ref" ? (c.supplier_invoice_ref ?? null)
+    : key === "delivery_note_number" ? c.delivery_note_number
+    : key === "delivery_date" ? c.delivery_date
+    : c.supplier_name;
+  const box = c.regions?.[key] ?? null;
+  return { value: (value ?? "").trim() || null, box };
+}
+
+/** Coloured boxes over the photo, marking where each field was read.
+ *
+ *  Field boxes on photos were withdrawn once, for a good reason: the vision
+ *  pass's coordinates were unchecked guesses, the same letterhead came back as
+ *  a wide band on one scan and a tall strip on the next, and a box sitting over
+ *  the wrong number invites confirming a delivery against a value nobody
+ *  verified. They are back because the guess is now checked — the reader has to
+ *  transcribe what it believes is inside each box, and the server throws the
+ *  box away unless that text really carries the value (cleanRegion). So every
+ *  box drawn here has been corroborated, and a field that could not be
+ *  corroborated has no box at all and says so beside its value.
+ *
+ *  The photo itself is rotated for display; these boxes are in the unrotated
+ *  image's coordinates, so the overlay takes the SAME transform over the SAME
+ *  layout box and the two stay registered. */
+function RegionOverlay({ cand, transform }: { cand: DeliveryTicketCandidate; transform?: string }) {
+  const boxes = TICKET_FIELDS
+    .map((f) => ({ ...f, ...ticketField(cand, f.key) }))
+    .filter((f) => f.box && f.value);
+  if (!boxes.length) return null;
+  return (
+    <span aria-hidden style={{ position: "absolute", inset: 0, transform, pointerEvents: "none" }}>
+      {boxes.map((b) => (
+        <span key={b.key} title={`${b.label}: ${b.value}`} style={{
+          position: "absolute",
+          left: `${b.box!.x * 100}%`, top: `${b.box!.y * 100}%`,
+          width: `${b.box!.w * 100}%`, height: `${b.box!.h * 100}%`,
+          background: `color-mix(in srgb, ${b.color} 22%, transparent)`,
+          outline: `1.5px solid ${b.color}`, borderRadius: 3,
+        }} />
+      ))}
+    </span>
+  );
+}
+
+/** A zoomed patch of the ticket showing exactly the text a field was read from
+ *  — the check a box alone can't give you. Put beside the extracted value, it
+ *  turns "the app says PO-26003-0040" into "the paper says PO-26003-0040", and
+ *  a crop that comes back showing the letterhead instead is self-evidently not
+ *  the PO number. The patch is a piece of the unrotated photo, so it takes the
+ *  upright rotation itself. */
+function FieldCrop({ url, box, rot, dims }: {
+  url: string;
+  box: { x: number; y: number; w: number; h: number };
+  rot: number;
+  dims: { w: number; h: number } | null;
+}) {
+  const WIDTH = 168;
+  // Keep the patch's own aspect so the text isn't stretched; fall back to a
+  // squat strip until the photo's natural size is known.
+  const quarter = rot === 90 || rot === 270;
+  const aspect = dims ? (box.h * dims.h) / Math.max(1, box.w * dims.w) : 0.28;
+  const height = Math.max(26, Math.min(120, Math.round(WIDTH * (quarter ? 1 / Math.max(aspect, 0.15) : aspect))));
+  return (
+    <div style={{
+      width: WIDTH, height, overflow: "hidden", position: "relative",
+      border: "1px solid var(--line)", borderRadius: 5, background: "#fff", flex: "0 0 auto",
+    }}>
+      <div style={{
+        position: "absolute", inset: 0,
+        backgroundImage: `url(${url})`,
+        backgroundRepeat: "no-repeat",
+        backgroundSize: `${100 / Math.max(box.w, 0.001)}% ${100 / Math.max(box.h, 0.001)}%`,
+        backgroundPosition: `${(box.x / Math.max(1 - box.w, 0.001)) * 100}% ${(box.y / Math.max(1 - box.h, 0.001)) * 100}%`,
+        transform: rot ? `rotate(${rot}deg)` : undefined,
+      }} />
+    </div>
+  );
+}
+
+/** What the ticket itself says, field by field, each shown against the patch of
+ *  paper it was read from.
+ *
+ *  This panel exists because of what the Alumasc audit turned up: goods pushed
+ *  through against orders nothing on the paperwork named. Two habits caused it
+ *  — suppliers who print no PO number, and matching on our side that filled the
+ *  gap with a guess. The guess is dealt with elsewhere; this is the half that
+ *  makes the paper legible, so "PO on ticket" is never again something nobody
+ *  actually looked at.
+ *
+ *  A field with no crop could not be located on the photo. That is stated, not
+ *  hidden and not papered over with an approximate box. */
+function ReadOffTicket({ cand, rot, dims }: {
+  cand: DeliveryTicketCandidate;
+  rot: number;
+  dims: { w: number; h: number } | null;
+}) {
+  const isPhoto = !/\.pdf(\?|$)/i.test(cand.ticket_url);
+  const fields = TICKET_FIELDS.map((f) => ({ ...f, ...ticketField(cand, f.key) }))
+    // Supplier is on every letterhead and is not what a delivery is matched on;
+    // it earns a row only when the reader actually found it.
+    .filter((f) => f.key !== "supplier_name" || f.value);
+  const noPo = !ticketField(cand, "po_number").value;
+  return (
+    <div style={{ display: "grid", gap: 8 }}>
+      {noPo && (
+        <div style={{
+          display: "flex", gap: 8, alignItems: "baseline", padding: "9px 11px", borderRadius: 8,
+          background: "var(--warn-soft)", border: "1px solid var(--warn)", fontSize: 12.5, lineHeight: 1.45,
+        }}>
+          <strong style={{ color: "var(--warn)" }}>No PO number on this ticket.</strong>
+          <span>
+            Nothing on the paper says which order these goods belong to.
+            {ticketField(cand, "supplier_invoice_ref").value
+              ? " The supplier's own reference is below — quote it when you ask them to put our PO number on the next one."
+              : " Ask the supplier to print our PO number on their delivery notes."}
+          </span>
+        </div>
+      )}
+      <div style={{ display: "grid", gap: 7 }}>
+        {fields.map((f) => (
+          <div key={f.key} style={{ display: "flex", gap: 11, alignItems: "flex-start" }}>
+            <div style={{ minWidth: 0, flex: 1 }}>
+              <div className="eyebrow" style={{ margin: 0, display: "flex", alignItems: "center", gap: 6 }}>
+                <span style={{ width: 8, height: 8, borderRadius: 2, background: f.color, flex: "0 0 auto" }} />
+                {f.label}
+              </div>
+              <div className="num" style={!f.value ? { color: "var(--muted)" } : undefined}>
+                {f.value ?? (f.key === "po_number" ? "not printed" : "—")}
+              </div>
+              {f.value && !f.box && (
+                <div className="muted" style={{ fontSize: 11 }}>
+                  {isPhoto ? "couldn't be pinpointed on the photo — check it against the ticket" : "read from the document"}
+                </div>
+              )}
+            </div>
+            {isPhoto && f.value && f.box && (
+              <FieldCrop url={cand.ticket_url} box={f.box} rot={rot} dims={dims} />
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 /** Site photos are routinely shot sideways. The scan records how far clockwise
@@ -170,6 +338,10 @@ function TicketDetail({ cand, projects, onActioned }: {
   const portRef = useRef<HTMLDivElement>(null);
   const rot = cand.rotation_degrees ?? 0;
   const rotFit = useRotatedFit(rot, portRef);
+  // Natural pixel size of the ticket photo — the crops need it to keep each
+  // patch's own proportions instead of stretching the text.
+  const [imgDims, setImgDims] = useState<{ w: number; h: number } | null>(null);
+  const poLink = usePoLinkReason();
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   useEffect(() => { setCheckingIn(false); setErr(null); setZ(1); setLbZoom(false); }, [cand.id]);
@@ -214,6 +386,14 @@ function TicketDetail({ cand, projects, onActioned }: {
       ? `\n\nThis ticket does NOT match the order:\n${cand.variance.issues.map((i) => `• ${i.headline}`).join("\n")}\n`
       : "";
     if (!window.confirm(`Mark every outstanding line on ${poNum} as fully delivered against this ticket?${vw}`)) return;
+    // Closing every line at once on an order the ticket never names is the most
+    // consequential version of a guess: it marks the whole order delivered. It
+    // gets the same question as any other unprinted link, before anything moves.
+    let linkReason: string | null = null;
+    if (needsPoLinkReason(cand, cand.matched_po_number || cand.guess_po_number)) {
+      linkReason = await poLink.request(poNum, cand);
+      if (linkReason == null) return;
+    }
     setBusy(true); setErr(null);
     try {
       const recon = await api.opsReconcileTicket(projectId, cand.id, poId);
@@ -228,6 +408,7 @@ function TicketDetail({ cand, projects, onActioned }: {
         po_id: poId,
         po_number: cand.matched_po_number || cand.guess_po_number || "",
         supplier: cand.supplier_name || "",
+        ...(linkReason ? { po_link_reason: linkReason } : {}),
         lines,
       });
       onActioned();
@@ -245,10 +426,20 @@ function TicketDetail({ cand, projects, onActioned }: {
 
   return (
     <>
+      {poLink.dialog}
       <div className="a-card a-pad">
         <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 12 }}>
           <h2 style={{ margin: 0, flex: 1, fontSize: 20 }}>{cand.supplier_name || "Unknown supplier"}</h2>
-          {st === "po" && <span className="pill approved">Matched · {cand.matched_po_number}</span>}
+          {st === "po" && <span className="pill approved" title="The order number is printed on this ticket">Matched · {cand.matched_po_number}</span>}
+          {/* Guessed from the letterhead alone. This wore the green "Matched"
+              pill until the Alumasc audit found deliveries sitting against
+              orders nothing on the paperwork named. */}
+          {st === "supplier" && (
+            <span className="pill" title="Nothing on this ticket names an order — this is the best-scoring order for that supplier"
+              style={{ background: "var(--warn-soft)", color: "var(--warn)" }}>
+              Guessed · {cand.matched_po_number} — no PO on the ticket
+            </span>
+          )}
           {st === "line" && <span className="pill" style={{ background: "var(--warn-soft)", color: "var(--warn)" }}>Inferred · {cand.guess_po_number}</span>}
           {st === "none" && <span className="pill" style={{ background: "transparent", border: "1px solid var(--warn)", color: "var(--warn)" }}>Needs a PO</span>}
           {/* Whether the matched order has already been received — the "Matched"
@@ -293,9 +484,10 @@ function TicketDetail({ cand, projects, onActioned }: {
                 <span style={{ position: "relative", display: "inline-block", transform: `scale(${z})`, transformOrigin: "top center" }}>
                   <img alt="Delivery ticket" className="vimg" src={cand.ticket_url}
                     onClick={() => setLb(true)}
+                    onLoad={(e) => setImgDims({ w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight })}
                     title={rot ? "Photo taken sideways — turned upright. Click to expand" : "Click to expand"}
                     style={{ ...rotFit, width: "auto", height: "auto", cursor: "zoom-in", display: "block" }} />
-                  <RegionOverlay cand={cand} />
+                  <RegionOverlay cand={cand} transform={rotFit.transform} />
                 </span>
               )}
             </div>
@@ -303,10 +495,9 @@ function TicketDetail({ cand, projects, onActioned }: {
 
           {/* extracted fields */}
           <div style={{ display: "grid", gap: 10, maxWidth: 720 }}>
+            <ReadOffTicket cand={cand} rot={rot} dims={imgDims} />
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-              <div><div className="eyebrow" style={{ margin: 0 }}>Delivery note</div><div className="num">{cand.delivery_note_number || "—"}</div></div>
               <div><div className="eyebrow" style={{ margin: 0 }}>Date</div><div className="num">{fmtDate(cand.delivery_date || cand.occurred_at)}</div></div>
-              <div><div className="eyebrow" style={{ margin: 0 }}>PO on ticket</div><div className="num">{cand.po_number || "not legible"}</div></div>
               <div><div className="eyebrow" style={{ margin: 0 }}>Quantity read</div><div className="num">{cand.scanned_qty != null ? `${cand.scanned_qty}${cand.scanned_unit ? ` ${cand.scanned_unit}` : ""}` : "—"}</div></div>
             </div>
             {cand.summary && <div className="muted" style={{ fontSize: 12.5 }}>{cand.summary}</div>}
@@ -401,6 +592,7 @@ function TicketDetail({ cand, projects, onActioned }: {
                   says itself here — and says that it is only a default. */}
               <div className="muted" style={{ flexBasis: "100%", fontSize: 11.5 }}>
                 {st === "po" ? <>Opens with <b>{cand.matched_po_number}</b> selected — the order number read off the ticket. Any other order on the site can be chosen instead.</>
+                  : st === "supplier" ? <>Opens with <b>{cand.matched_po_number}</b> selected — chosen only because it is {cand.supplier_name || "that supplier"}&rsquo;s order, not because the ticket says so. Confirming it will ask you why.</>
                   : st === "line" ? <>Opens with <b>{cand.guess_po_number}</b> selected — inferred from the item codes, not printed on the ticket. Check it before confirming.</>
                     : <>No order matched this ticket. The form lists every order on the site, likeliest first.</>}
               </div>
@@ -516,9 +708,9 @@ function TicketSplit({ rows, projects, onReload, emptyHint, checkedIn = [] }: {
   const visible = useMemo(() => {
     return rows.filter((r) => {
       const st = state(r);
-      if (chip === "matched" && st === "none") return false;
+      if (chip === "matched" && st !== "po") return false;
       if (chip === "mismatch" && (r.variance?.ok ?? true)) return false;
-      if (chip === "needs" && st !== "none") return false;
+      if (chip === "needs" && st === "po") return false;
       if (!searching) return true;
       // The materials the reader saw on the ticket are in here too, so you can
       // find a drop by what arrived and not just by who sent it.
@@ -532,7 +724,9 @@ function TicketSplit({ rows, projects, onReload, emptyHint, checkedIn = [] }: {
   }, [rows, chip, terms, searching]);
 
   const sel = visible.find((r) => r.id === selId) ?? visible[0] ?? null;
-  const matchedCount = rows.filter((r) => state(r) !== "none").length;
+  // Only tickets whose order number is printed on them count as matched — a
+  // guess in this column is what the counts were hiding.
+  const matchedCount = rows.filter(isConfirmed).length;
   const mismatchCount = rows.filter((r) => r.variance && !r.variance.ok).length;
   const doneVisible = useMemo(() => {
     if (!searching) return checkedIn;
@@ -559,7 +753,7 @@ function TicketSplit({ rows, projects, onReload, emptyHint, checkedIn = [] }: {
       <aside className="inbox">
         <div className="inbox-hd"><h2>Ticket inbox</h2><span className="count">{searching ? `${shownCount} of ${chipTotal}` : shownCount}</span></div>
         <div style={{ display: "flex", gap: 6, padding: "0 12px 8px", flexWrap: "wrap" }}>
-          {([["all", `All ${rows.length}`], ["matched", `Matched ${matchedCount}`], ["needs", `Needs a PO ${rows.length - matchedCount}`],
+          {([["all", `All ${rows.length}`], ["matched", `Matched ${matchedCount}`], ["needs", `Needs checking ${rows.length - matchedCount}`],
             ...(mismatchCount ? [["mismatch", `Doesn't match ${mismatchCount}`]] : []),
             ...(checkedIn.length ? [["done", `Checked in ${checkedIn.length}`]] : [])] as Array<[Chip, string]>).map(([k, label]) => (
             <button key={k} className={chip === k ? "primary tiny" : "ghost tiny"} onClick={() => setChip(k)}>{label}</button>
@@ -602,7 +796,7 @@ function TicketSplit({ rows, projects, onReload, emptyHint, checkedIn = [] }: {
               </div>
             : visible.map((r) => {
               const st = state(r);
-              const dot = st === "po" ? "matched" : st === "line" ? "review" : "none";
+              const dot = st === "po" ? "matched" : st === "line" || st === "supplier" ? "review" : "none";
               return (
                 <button key={r.id} className={`irow${sel?.id === r.id ? " on" : ""}`} onClick={() => setSelId(r.id)}>
                   <span className={`idot ${dot}`} />
@@ -612,7 +806,9 @@ function TicketSplit({ rows, projects, onReload, emptyHint, checkedIn = [] }: {
                       <span>{r.delivery_note_number ? `DN ${r.delivery_note_number}` : "no DN"} · {fmtDate(r.delivery_date || r.occurred_at)}{r.items?.length ? ` · ${r.items.length} lines` : ""}</span>
                       {r.project_code && <span className="proj">{r.project_code}</span>}
                     </div>
-                    <span className={`istatus ${dot}`}>{st === "po" ? `Matched · ${r.matched_po_number}` : st === "line" ? `Inferred · ${r.guess_po_number}` : "Needs a PO"}</span>
+                    <span className={`istatus ${dot}`}>{st === "po" ? `Matched · ${r.matched_po_number}`
+                      : st === "supplier" ? `Guessed · ${r.matched_po_number}`
+                      : st === "line" ? `Inferred · ${r.guess_po_number}` : "Needs a PO"}</span>
                     {r.variance && !r.variance.ok && (
                       <span className="istatus" style={{ background: "var(--warn-soft)", color: "var(--warn)", marginLeft: 6 }}
                         title={r.variance.headline ?? ""}>

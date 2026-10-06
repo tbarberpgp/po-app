@@ -14,7 +14,8 @@ import { buildHsPack } from "../../shared/hs-pack-pdf";
 import { fuzzyFindPo } from "../poRef";
 import { learnAliases, aliasMapsBySupplier, normText } from "../matchMemory";
 import { deliveryVariance, matchItemToLine, type VarianceLine, type PriorReceipt } from "../../shared/delivery-variance";
-import { poRefCore, supplierNameOverlap } from "../../shared/line-match";
+import { poRefCore, supplierNameOverlap, poNumbersMatch } from "../../shared/line-match";
+import { textConfirms } from "../../shared/doc-fields";
 import { summarisePoDeliveries, lineReceivedInFull, isDeliverableLine, PO_DELIVERY_NOTE_COLUMNS, PO_DELIVERY_NOTE_JOIN, type PoDeliveryRow } from "../../shared/po-delivery-status";
 
 // Operations — Phase 1 (site-team basics). Authenticated app-side endpoints:
@@ -69,7 +70,13 @@ function nameTokens(s: string): Set<string> {
 }
 
 /** Normalised box on the source image — fractions of width/height, top-left
- *  origin — marking roughly where a field was read. Approximate by design. */
+ *  origin — marking where a field was read. A photo has no text layer to check
+ *  a box against, so the reader is asked for the text it believes sits inside
+ *  the box as well; a region only survives `cleanRegion` when that text really
+ *  does carry the value it is claimed for. An unverified box is discarded, not
+ *  drawn faintly — a box over the wrong number invites confirming a delivery
+ *  against a value nobody checked, which is the failure this whole path exists
+ *  to stop. */
 type ReadRegion = { x: number; y: number; w: number; h: number };
 type ExtractedDelivery = {
   is_delivery_ticket: boolean;
@@ -80,18 +87,45 @@ type ExtractedDelivery = {
   supplier_name: string;
   delivery_note_number: string;
   delivery_date: string;
+  /** The supplier's OWN order / works reference (SIR). Suppliers who drop-ship
+   *  quote this and nothing of ours — it is the only thread tying their ticket
+   *  to the invoice that follows, which carries it as supplier_order_ref. */
+  supplier_invoice_ref: string;
   summary: string;
+  /** True on records whose regions passed the text check. Scans taken before
+   *  verification existed carry unchecked boxes and must not be drawn. */
+  regions_verified?: boolean;
   items: Array<{ description: string; qty: number | null; unit: string | null; region?: ReadRegion | null }>;
   regions?: {
     po_number?: ReadRegion | null;
     supplier_name?: ReadRegion | null;
     delivery_note_number?: ReadRegion | null;
     delivery_date?: ReadRegion | null;
+    supplier_invoice_ref?: ReadRegion | null;
   };
 };
 
-/** Clamp a model-supplied region to sane normalized bounds; null when junk. */
-function cleanRegion(r: unknown): ReadRegion | null {
+/** Clamp a model-supplied region to sane normalized bounds AND verify it is
+ *  pointing at the right thing; null when either check fails.
+ *
+ *  Coordinates alone were tried and withdrawn: the same supplier's letterhead
+ *  came back as a wide band on one scan and a tall strip on the next, so boxes
+ *  sat over the wrong text. The fix is not to trust the coordinates less but to
+ *  make them checkable — the reader states the text inside each box, and the
+ *  box is kept only if that text carries `expected`. A box that cannot be
+ *  corroborated is dropped, and the field says "couldn't locate" instead. */
+function cleanRegion(r: unknown, expected: string): ReadRegion | null {
+  if (!expected.trim()) return null;
+  const box = clampRegion(r);
+  if (!box) return null;
+  const text = (r as Record<string, unknown>).text;
+  if (!textConfirms(typeof text === "string" ? text : "", expected)) return null;
+  return box;
+}
+
+/** The geometry half on its own — for regions read back out of the database,
+ *  which were verified on the way in and carry no transcription to re-check. */
+function clampRegion(r: unknown): ReadRegion | null {
   if (!r || typeof r !== "object") return null;
   const o = r as Record<string, unknown>;
   const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
@@ -100,6 +134,8 @@ function cleanRegion(r: unknown): ReadRegion | null {
   // Some responses use 0-100 instead of 0-1 — normalise.
   if (x > 1 || y > 1 || w > 1 || h > 1) { x /= 100; y /= 100; w /= 100; h /= 100; }
   if (w <= 0 || h <= 0 || x < 0 || y < 0 || x > 1 || y > 1) return null;
+  // A box covering most of the page points at nothing in particular.
+  if (w > 0.9 && h > 0.9) return null;
   return { x: Math.min(1, x), y: Math.min(1, y), w: Math.min(1 - Math.min(1, x), w), h: Math.min(1 - Math.min(1, y), h) };
 }
 
@@ -145,6 +181,26 @@ async function extractDeliveryTicketFromUrl(env: Env, url: string): Promise<Extr
   return runDeliveryExtraction(env, block);
 }
 
+/** JSON-schema fragment for one read-region. `text` is what makes the box
+ *  checkable: the reader transcribes what it believes is printed inside the
+ *  box, and the server keeps the box only when that transcription carries the
+ *  value the box is claimed for (see cleanRegion). Without it a coordinate is
+ *  an unfalsifiable guess. */
+function regionSchema(what: string) {
+  return {
+    type: "object" as const,
+    description: `Where ${what} sits ON THE IMAGE, as a normalized box (fractions of image width/height, top-left origin), together with the text printed inside it. Omit entirely if you cannot localise it — do not guess a position.`,
+    properties: {
+      x: { type: "number", description: "left edge, 0-1 fraction of image width" },
+      y: { type: "number", description: "top edge, 0-1 fraction of image height" },
+      w: { type: "number", description: "width, 0-1 fraction" },
+      h: { type: "number", description: "height, 0-1 fraction" },
+      text: { type: "string", description: "The text printed INSIDE this box, transcribed verbatim from the image. It must actually contain the value this box is for — if the box covers a label rather than the value, move the box." },
+    },
+    required: ["x", "y", "w", "h", "text"],
+  };
+}
+
 /** Shared Claude call + tool parse for delivery-ticket extraction. Takes the
  *  already-built content block (base64 upload or URL) so the prompt/schema stay
  *  identical across every entry point. */
@@ -175,6 +231,7 @@ async function runDeliveryExtraction(env: Env, block: DeliveryContentBlock): Pro
               supplier_name: { type: "string", description: "The supplier/company that issued the ticket — usually the letterhead. Empty string if unclear." },
               delivery_note_number: { type: "string", description: "The supplier's own delivery note / advice note number. Empty string if none." },
               delivery_date: { type: "string", description: "Delivery date as YYYY-MM-DD if shown, else empty string." },
+              supplier_invoice_ref: { type: "string", description: "The SUPPLIER's OWN order / works / sales-order reference for this delivery — THEIR number for the job, not ours. Printed under labels like 'Our Ref', 'Order No' (theirs), 'Works Order', 'Sales Order', 'SOR' or 'POR'. Where the ticket shows both their reference and ours, po_number is OURS and this is THEIRS. Empty string if none is shown." },
               summary: { type: "string", description: "A short one-line summary of what was delivered, e.g. '12 pallets insulation board'." },
               items: {
                 type: "array",
@@ -184,64 +241,20 @@ async function runDeliveryExtraction(env: Env, block: DeliveryContentBlock): Pro
                     description: { type: "string" },
                     qty: { type: "number" },
                     unit: { type: "string" },
-                    region: {
-                    type: "object",
-                    properties: {
-                      x: { type: "number", description: "left edge, 0-1 fraction of image width" },
-                      y: { type: "number", description: "top edge, 0-1 fraction of image height" },
-                      w: { type: "number", description: "width, 0-1 fraction" },
-                      h: { type: "number", description: "height, 0-1 fraction" },
-                    },
-                    required: ["x", "y", "w", "h"],
-                  },
+                    region: regionSchema("this line item"),
                   },
                   required: ["description"],
                 },
               },
               regions: {
                 type: "object",
-                description: "Where each extracted field sits ON THE IMAGE, as normalized boxes (fractions of image width/height, top-left origin). Approximate is fine — aim for a box that covers the printed text. Omit a field you can't localise.",
+                description: "Where each extracted field sits ON THE IMAGE. Every box must contain the value it is for — a box over a nearby label or over the letterhead is wrong and will be thrown away. Omit any field you cannot confidently localise.",
                 properties: {
-                  po_number: {
-                    type: "object",
-                    properties: {
-                      x: { type: "number", description: "left edge, 0-1 fraction of image width" },
-                      y: { type: "number", description: "top edge, 0-1 fraction of image height" },
-                      w: { type: "number", description: "width, 0-1 fraction" },
-                      h: { type: "number", description: "height, 0-1 fraction" },
-                    },
-                    required: ["x", "y", "w", "h"],
-                  },
-                  supplier_name: {
-                    type: "object",
-                    properties: {
-                      x: { type: "number", description: "left edge, 0-1 fraction of image width" },
-                      y: { type: "number", description: "top edge, 0-1 fraction of image height" },
-                      w: { type: "number", description: "width, 0-1 fraction" },
-                      h: { type: "number", description: "height, 0-1 fraction" },
-                    },
-                    required: ["x", "y", "w", "h"],
-                  },
-                  delivery_note_number: {
-                    type: "object",
-                    properties: {
-                      x: { type: "number", description: "left edge, 0-1 fraction of image width" },
-                      y: { type: "number", description: "top edge, 0-1 fraction of image height" },
-                      w: { type: "number", description: "width, 0-1 fraction" },
-                      h: { type: "number", description: "height, 0-1 fraction" },
-                    },
-                    required: ["x", "y", "w", "h"],
-                  },
-                  delivery_date: {
-                    type: "object",
-                    properties: {
-                      x: { type: "number", description: "left edge, 0-1 fraction of image width" },
-                      y: { type: "number", description: "top edge, 0-1 fraction of image height" },
-                      w: { type: "number", description: "width, 0-1 fraction" },
-                      h: { type: "number", description: "height, 0-1 fraction" },
-                    },
-                    required: ["x", "y", "w", "h"],
-                  },
+                  po_number: regionSchema("our purchase-order number"),
+                  supplier_name: regionSchema("the supplier's name"),
+                  delivery_note_number: regionSchema("the delivery note number"),
+                  delivery_date: regionSchema("the delivery date"),
+                  supplier_invoice_ref: regionSchema("the supplier's own order reference"),
                 },
               },
             },
@@ -264,38 +277,46 @@ async function runDeliveryExtraction(env: Env, block: DeliveryContentBlock): Pro
   if (!toolUse) return { ok: false, status: 422, error: "Couldn't extract anything from the ticket." };
   const x = toolUse.input as {
     is_delivery_ticket?: boolean; rotation_degrees?: number; po_number?: string; supplier_name?: string; delivery_note_number?: string;
-    delivery_date?: string; summary?: string; items?: Array<{ description?: string; qty?: number; unit?: string; region?: unknown }>;
+    delivery_date?: string; supplier_invoice_ref?: string; summary?: string;
+    items?: Array<{ description?: string; qty?: number; unit?: string; region?: unknown }>;
     regions?: Record<string, unknown>;
   };
+  // Settle the values first: each region is verified against the value it is
+  // claimed for, so the value has to exist before the box can be judged.
+  const poNumber = blankIfPlaceholder(x.po_number ?? "");
+  const supplierName = blankIfPlaceholder(x.supplier_name ?? "");
+  const dnNumber = blankIfPlaceholder(x.delivery_note_number ?? "");
+  const deliveryDate = /^\d{4}-\d{2}-\d{2}$/.test((x.delivery_date ?? "").trim()) ? (x.delivery_date ?? "").trim() : "";
+  const supplierRef = blankIfPlaceholder(x.supplier_invoice_ref ?? "");
   return {
     ok: true,
     extracted: {
       is_delivery_ticket: x.is_delivery_ticket === true,
       rotation_degrees: ([0, 90, 180, 270].includes(Number(x.rotation_degrees)) ? Number(x.rotation_degrees) : 0) as 0 | 90 | 180 | 270,
-      po_number: blankIfPlaceholder(x.po_number ?? ""),
-      supplier_name: blankIfPlaceholder(x.supplier_name ?? ""),
-      delivery_note_number: blankIfPlaceholder(x.delivery_note_number ?? ""),
-      delivery_date: /^\d{4}-\d{2}-\d{2}$/.test((x.delivery_date ?? "").trim()) ? (x.delivery_date ?? "").trim() : "",
+      po_number: poNumber,
+      supplier_name: supplierName,
+      delivery_note_number: dnNumber,
+      delivery_date: deliveryDate,
+      supplier_invoice_ref: supplierRef,
       summary: (x.summary ?? "").trim(),
+      regions_verified: true,
       items: Array.isArray(x.items)
-        ? x.items.filter((i) => i && i.description).map((i) => ({ description: String(i.description).trim(), qty: typeof i.qty === "number" ? i.qty : null, unit: i.unit ? String(i.unit).trim() : null, region: cleanRegion(i.region) }))
+        ? x.items.filter((i) => i && i.description).map((i) => ({ description: String(i.description).trim(), qty: typeof i.qty === "number" ? i.qty : null, unit: i.unit ? String(i.unit).trim() : null, region: cleanRegion(i.region, String(i.description ?? "")) }))
         : [],
       regions: {
-        po_number: cleanRegion(x.regions?.po_number),
-        supplier_name: cleanRegion(x.regions?.supplier_name),
-        delivery_note_number: cleanRegion(x.regions?.delivery_note_number),
-        delivery_date: cleanRegion(x.regions?.delivery_date),
+        po_number: cleanRegion(x.regions?.po_number, poNumber),
+        supplier_name: cleanRegion(x.regions?.supplier_name, supplierName),
+        delivery_note_number: cleanRegion(x.regions?.delivery_note_number, dnNumber),
+        delivery_date: cleanRegion(x.regions?.delivery_date, deliveryDate),
+        supplier_invoice_ref: cleanRegion(x.regions?.supplier_invoice_ref, supplierRef),
       },
     },
   };
 }
 
-/** Tolerant PO-number equality: identical after normalising, or one is a
- *  suffix of the other (covers prefixes like "PO-" / branch codes). */
-function poNoMatches(a: string, b: string): boolean {
-  const x = normPoNo(a), y = normPoNo(b);
-  return !!x && !!y && (x === y || x.endsWith(y) || y.endsWith(x));
-}
+/** Tolerant PO-number equality. The rule lives in the shared module because
+ *  the check-in screen applies the same test to decide whether to ask why. */
+const poNoMatches = poNumbersMatch;
 
 // "The site day". Stored timestamps are UTC ISO; we group by the UTC calendar
 // date. A construction site never signs in at ~01:00 BST, so the rollover
@@ -1613,14 +1634,15 @@ export async function scanWhatsappTicketBatch(
       await env.DB.prepare(
         `INSERT INTO delivery_ticket_scans
            (project_id, update_id, photo_key, is_ticket, po_number, supplier_name,
-            delivery_note_number, delivery_date, summary, extracted_json,
+            delivery_note_number, delivery_date, supplier_invoice_ref, summary, extracted_json,
             matched_po_id, matched_by, status, occurred_at, scanned_at, scanned_by)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
          ON CONFLICT(photo_key) DO NOTHING`,
       ).bind(
         base, p.id, storedKey, isTicket ? 1 : 0,
         ex?.po_number.trim() || null, ex?.supplier_name.trim() || null,
         ex?.delivery_note_number.trim() || null, ex?.delivery_date.trim() || null,
+        ex?.supplier_invoice_ref.trim() || null,
         ex?.summary.trim() || null, ex ? JSON.stringify(ex) : null,
         matchedId, matchedBy, isTicket ? "pending" : "dismissed",
         p.occurred_at || p.created_at, now, actor,
@@ -1702,7 +1724,7 @@ operations.get("/deliveries-inbox", async (c) => {
     const rows = await c.env.DB.prepare(
       `SELECT s.id, s.project_id, pr.code AS project_code, pr.name AS project_name,
               s.photo_key, s.po_number, s.supplier_name, s.delivery_note_number,
-              s.delivery_date, s.summary, s.extracted_json, s.matched_po_id, s.matched_by, s.occurred_at,
+              s.delivery_date, s.supplier_invoice_ref, s.summary, s.extracted_json, s.matched_po_id, s.matched_by, s.occurred_at,
               po.po_number AS matched_po_number, po.supplier AS matched_po_supplier,
               po.order_type AS matched_order_type, po.project_id AS matched_project_id,
               p.code AS matched_project_code
@@ -1744,10 +1766,14 @@ operations.get("/deliveries-inbox", async (c) => {
       let itemRegions: Array<ReadRegion | null> = [];
       let rotation = 0;
       try {
-        const ex = row.extracted_json ? JSON.parse(row.extracted_json) as { items?: Array<{ description?: string; qty?: number | null; unit?: string | null; region?: unknown }>; regions?: Record<string, unknown> } : null;
-        regions = ex?.regions ?? null;
+        const ex = row.extracted_json ? JSON.parse(row.extracted_json) as { items?: Array<{ description?: string; qty?: number | null; unit?: string | null; region?: unknown }>; regions?: Record<string, unknown>; regions_verified?: boolean } : null;
+        // Boxes only leave here if they were checked against the text they
+        // claim to cover. Scans from before that check carry the unreliable
+        // coordinates that had field boxes withdrawn in the first place.
+        const verified = ex?.regions_verified === true;
+        regions = verified ? (ex?.regions ?? null) : null;
         rotation = [0, 90, 180, 270].includes(Number((ex as Record<string, unknown> | null)?.rotation_degrees)) ? Number((ex as Record<string, unknown>).rotation_degrees) : 0;
-        itemRegions = (ex?.items || []).map((i) => cleanRegion(i.region));
+        itemRegions = verified ? (ex?.items || []).map((i) => clampRegion(i.region)) : [];
         items = (ex?.items || []).map((i) => ({ description: String(i.description ?? "").trim(), qty: typeof i.qty === "number" ? i.qty : null, unit: i.unit ? String(i.unit).trim() : null })).filter((i) => i.description);
         const withQty = items.filter((i) => i.qty != null);
         if (withQty.length) {
@@ -1760,10 +1786,14 @@ operations.get("/deliveries-inbox", async (c) => {
       rest.regions = regions;
       rest.item_regions = itemRegions;
       rest.rotation_degrees = rotation;
-      let method: "po" | "line" | "none" = "none", conf = 0;
+      // 'po' is reserved for an order number actually PRINTED on the ticket.
+      // A supplier-name guess is 'supplier' — it picked the best-scoring order
+      // belonging to that supplier and nothing on the paper confirms it, which
+      // is how deliveries came to be matched to orders at random.
+      let method: "po" | "supplier" | "line" | "none" = "none", conf = 0;
       let guess_po_id: string | null = null, guess_po_number: string | null = null, guess_project_code: string | null = null;
       if (rest.matched_po_id) {
-        method = "po";
+        method = rest.matched_by === "supplier" ? "supplier" : "po";
         conf = rest.matched_by === "po_number" ? 96 : rest.matched_by === "supplier" ? 74 : 60;
       } else {
         const icodes = new Set(items.map((i) => materialCode(i.description)).filter((x) => x.length >= 3));
@@ -1947,7 +1977,7 @@ operations.get("/:projectId/deliveries/ticket-candidates", async (c) => {
   try {
     const rows = await c.env.DB.prepare(
       `SELECT s.id, s.photo_key, s.po_number, s.supplier_name, s.delivery_note_number,
-              s.delivery_date, s.summary, s.extracted_json, s.matched_po_id, s.matched_by, s.occurred_at,
+              s.delivery_date, s.supplier_invoice_ref, s.summary, s.extracted_json, s.matched_po_id, s.matched_by, s.occurred_at,
               po.po_number AS matched_po_number, po.supplier AS matched_po_supplier,
               po.order_type AS matched_order_type, po.project_id AS matched_project_id,
               p.code AS matched_project_code
@@ -1991,10 +2021,14 @@ operations.get("/:projectId/deliveries/ticket-candidates", async (c) => {
       let rotation2 = 0;
       let items: Array<{ description: string; qty: number | null; unit: string | null }> = [];
       try {
-        const ex = row.extracted_json ? JSON.parse(row.extracted_json) as { items?: Array<{ description?: string; qty?: number | null; unit?: string | null; region?: unknown }>; regions?: Record<string, unknown> } : null;
-        regions2 = ex?.regions ?? null;
+        const ex = row.extracted_json ? JSON.parse(row.extracted_json) as { items?: Array<{ description?: string; qty?: number | null; unit?: string | null; region?: unknown }>; regions?: Record<string, unknown>; regions_verified?: boolean } : null;
+        // Boxes only leave here if they were checked against the text they
+        // claim to cover. Scans from before that check carry the unreliable
+        // coordinates that had field boxes withdrawn in the first place.
+        const verified2 = ex?.regions_verified === true;
+        regions2 = verified2 ? (ex?.regions ?? null) : null;
         rotation2 = [0, 90, 180, 270].includes(Number((ex as Record<string, unknown> | null)?.rotation_degrees)) ? Number((ex as Record<string, unknown>).rotation_degrees) : 0;
-        itemRegions2 = (ex?.items || []).map((i) => cleanRegion(i.region));
+        itemRegions2 = verified2 ? (ex?.items || []).map((i) => clampRegion(i.region)) : [];
         items = (ex?.items || []).map((i) => ({ description: String(i.description ?? "").trim(), qty: typeof i.qty === "number" ? i.qty : null, unit: i.unit ? String(i.unit).trim() : null })).filter((i) => i.description);
         const withQty = items.filter((i) => i.qty != null);
         if (withQty.length) {
@@ -2007,12 +2041,15 @@ operations.get("/:projectId/deliveries/ticket-candidates", async (c) => {
       rest.regions = regions2;
       rest.item_regions = itemRegions2;
       rest.rotation_degrees = rotation2;
-      // Headline match state for the inbox row: a matched PO → 'po'; else infer a
-      // PO from the ticket's item codes → 'line' (with a guess); else 'none'.
-      let method: "po" | "line" | "none" = "none", conf = 0;
+      // Headline match state for the inbox row.
+      // 'po' is reserved for an order number actually PRINTED on the ticket.
+      // A supplier-name guess is 'supplier' — it picked the best-scoring order
+      // belonging to that supplier and nothing on the paper confirms it, which
+      // is how deliveries came to be matched to orders at random.
+      let method: "po" | "supplier" | "line" | "none" = "none", conf = 0;
       let guess_po_id: string | null = null, guess_po_number: string | null = null, guess_project_code: string | null = null;
       if (rest.matched_po_id) {
-        method = "po";
+        method = rest.matched_by === "supplier" ? "supplier" : "po";
         conf = rest.matched_by === "po_number" ? 96 : rest.matched_by === "supplier" ? 74 : 60;
       } else {
         const icodes = new Set(items.map((i) => materialCode(i.description)).filter((x) => x.length >= 3));
@@ -2262,11 +2299,14 @@ operations.get("/:projectId/deliveries/ticket-candidates/:id/reconcile", async (
   const chosen = pos.find((p) => p.id === chosenId) || null;
 
   // How the match was derived + a headline confidence for the row.
-  let method: "po" | "line" | "none" = "none";
+  let method: "po" | "supplier" | "line" | "none" = "none";
   let conf = 0;
   if (chosen) {
     if (scan.matched_po_id === chosen.id && scan.matched_by === "po_number") { method = "po"; conf = 96; }
-    else if (scan.matched_po_id === chosen.id && scan.matched_by === "supplier") { method = "po"; conf = 74; }
+    // Matched on the supplier's name alone — nothing on the ticket names this
+    // order. It is a suggestion, and saying 'po' here is what dressed it up as
+    // a confirmed match.
+    else if (scan.matched_po_id === chosen.id && scan.matched_by === "supplier") { method = "supplier"; conf = 74; }
     else if (ranked[0]?.po.id === chosen.id && ranked[0].hits > 0) { method = "line"; conf = Math.min(90, 45 + ranked[0].hits * 15); }
     else { method = "po"; conf = 60; }
   }
@@ -2418,11 +2458,11 @@ operations.post("/:projectId/deliveries/rescan", async (c) => {
     if (isTicket) stillTickets++;
     await c.env.DB.prepare(
       `UPDATE delivery_ticket_scans SET is_ticket = ?, po_number = ?, supplier_name = ?, delivery_note_number = ?,
-              delivery_date = ?, summary = ?, extracted_json = ?, matched_po_id = ?, matched_by = ?, status = ?, scanned_at = ?
+              delivery_date = ?, supplier_invoice_ref = ?, summary = ?, extracted_json = ?, matched_po_id = ?, matched_by = ?, status = ?, scanned_at = ?
         WHERE id = ?`,
     ).bind(
       isTicket ? 1 : 0, ex.po_number.trim() || null, ex.supplier_name.trim() || null, ex.delivery_note_number.trim() || null,
-      ex.delivery_date.trim() || null, ex.summary.trim() || null, JSON.stringify(ex), matchedId, matchedBy,
+      ex.delivery_date.trim() || null, ex.supplier_invoice_ref.trim() || null, ex.summary.trim() || null, JSON.stringify(ex), matchedId, matchedBy,
       isTicket ? "pending" : "dismissed", now, s.id,
     ).run();
   }
@@ -2457,13 +2497,14 @@ operations.post("/:projectId/deliveries/ticket-candidates/:id/check-in", async (
   ).bind(c.req.param("id"), base).first<{
     id: number; photo_key: string; po_number: string | null; supplier_name: string | null;
     delivery_note_number: string | null; delivery_date: string | null; summary: string | null;
+    supplier_invoice_ref: string | null;
     matched_po_id: string | null; occurred_at: string | null; status: string;
     m_po_number: string | null; m_project_id: string | null;
   }>();
   if (!scan) return c.json({ error: "not found" }, 404);
   if (scan.status !== "pending") return c.json({ error: "already actioned" }, 409);
 
-  let ov: { supplier?: string; po_number?: string; po_id?: string; description?: string; delivered_at?: string; contract_project_id?: string; target_project_id?: string; completes_po?: string; po_line_id?: string; po_line_desc?: string; received_qty?: string | number; received_unit?: string; part?: string; lines?: Array<{ po_line_id?: string; po_line_desc?: string; received_qty?: string | number; received_unit?: string }> } = {};
+  let ov: { supplier?: string; po_number?: string; po_id?: string; description?: string; delivered_at?: string; contract_project_id?: string; target_project_id?: string; completes_po?: string; po_link_reason?: string; po_line_id?: string; po_line_desc?: string; received_qty?: string | number; received_unit?: string; part?: string; lines?: Array<{ po_line_id?: string; po_line_desc?: string; received_qty?: string | number; received_unit?: string }> } = {};
   try { ov = await c.req.json(); } catch { /* no overrides */ }
   const completesPo = ov.completes_po === "0" ? 0 : 1;
   const poLineId = ov.po_line_id && /^\d+$/.test(ov.po_line_id) ? Number(ov.po_line_id) : null;
@@ -2517,6 +2558,45 @@ operations.post("/:projectId/deliveries/ticket-candidates/:id/check-in", async (
   const supplier = (ov.supplier ?? scan.supplier_name ?? "").trim() || null;
   const poNumber = (ov.po_number ?? scan.po_number ?? scan.m_po_number ?? "").trim() || null;
   const poId = (ov.po_id ?? scan.matched_po_id ?? "").trim() || null;
+  const supplierRef = (scan.supplier_invoice_ref ?? "").trim() || null;
+
+  // Attaching a delivery to an order the paper does not name.
+  //
+  // When no PO number is printed on the note the scanner falls back to the
+  // supplier's name and picks their best-scoring order. That guess used to be
+  // checked in silently and indistinguishably from a real match, which is how
+  // goods ended up burnt down against orders they never belonged to. The link
+  // is still allowed — drop-shipped goods routinely arrive quoting only the
+  // supplier's own reference — but it now has to be owned: whoever makes it
+  // says why, and the delivery carries that answer for the audit.
+  let poLinkBasis: "ticket" | "override" | null = null;
+  let poLinkReason: string | null = null;
+  if (poId) {
+    const chosen = await c.env.DB.prepare("SELECT po_number FROM purchase_orders WHERE id = ?")
+      .bind(poId).first<{ po_number: string | null }>();
+    const ticketPo = (scan.po_number ?? "").trim();
+    const printed = !!ticketPo && !!chosen?.po_number && poNoMatches(ticketPo, chosen.po_number);
+    poLinkBasis = printed ? "ticket" : "override";
+    if (!printed) {
+      const reason = (ov.po_link_reason ?? "").trim().replace(/\s+/g, " ");
+      // A gate that clears on one word is not a gate — "Delivered" typed into
+      // a box has waved invoices through this business before.
+      const words = reason.split(" ").filter((w) => w.length > 1);
+      if (reason.length < 12 || words.length < 3) {
+        return c.json({
+          error: chosen?.po_number
+            ? `No PO number on this ticket names ${chosen.po_number}. Say why this delivery belongs to that order — in a sentence, not a word.`
+            : "No PO number on this ticket names the order you picked. Say why this delivery belongs to it — in a sentence, not a word.",
+          needs_po_link_reason: true,
+          ticket_po_number: ticketPo || null,
+          chosen_po_number: chosen?.po_number ?? null,
+          supplier_invoice_ref: supplierRef,
+        }, 422);
+      }
+      poLinkReason = reason.slice(0, 500);
+    }
+  }
+
   const description = (ov.description || scan.summary
     || (supplier ? `Delivery from ${supplier}` : "WhatsApp delivery ticket")).trim();
   const deliveredAt = (ov.delivered_at || scan.delivery_date || scan.occurred_at || new Date().toISOString()).trim();
@@ -2581,12 +2661,14 @@ operations.post("/:projectId/deliveries/ticket-candidates/:id/check-in", async (
     const res = await c.env.DB.prepare(
       `INSERT INTO site_deliveries
          (project_id, supplier, description, po_number, po_id, po_line_id, po_line_desc, received_qty, received_unit, ticket_key, ticket_type,
-          status, notes, delivered_at, contract_project_id, completes_po, created_at, created_by, scan_id)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`,
+          status, notes, delivered_at, contract_project_id, completes_po, created_at, created_by, scan_id,
+          po_link_basis, po_link_reason, supplier_invoice_ref)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`,
     ).bind(
       destBase, supplier, r.desc, poNumber, poId, r.lineId, r.lineDesc, r.rq, r.ru, ticketKey, ticketType,
       "received", "Checked in from WhatsApp delivery ticket", deliveredAt,
       destContract, r.completes, now, actor, scan.id,
+      poLinkBasis, poLinkReason, supplierRef,
     ).first<{ id: number }>();
     if (res?.id) ids.push(res.id);
   }

@@ -1536,6 +1536,11 @@ export type DeliveryTicketCandidate = {
   supplier_name: string | null;
   delivery_note_number: string | null;
   delivery_date: string | null;
+  /** The supplier's OWN order reference off their ticket (SIR). The same
+   *  reference lands on their invoice as supplier_order_ref, so on drop-shipped
+   *  goods — which quote nothing of ours — it is the only thread tying the
+   *  delivery to the invoice for it. */
+  supplier_invoice_ref?: string | null;
   summary: string | null;
   matched_po_id: string | null;
   matched_by: string | null;
@@ -1554,20 +1559,28 @@ export type DeliveryTicketCandidate = {
    *  photos are routinely shot sideways. 0 on anything scanned before this
    *  was captured (and on tickets that were already the right way up). */
   rotation_degrees?: 0 | 90 | 180 | 270;
-  /** Approximate read-regions on the photo (normalized 0-1 boxes) — where the
-   *  vision pass saw each field. Absent on tickets scanned before regions. */
+  /** Read-regions on the photo (normalized 0-1 boxes) — where the vision pass
+   *  saw each field. Only boxes whose transcribed contents were confirmed to
+   *  carry the extracted value are served, so a box here can be drawn; a field
+   *  with no box could not be located and must say so rather than be pointed
+   *  at vaguely. Absent on tickets scanned before regions were verified. */
   regions?: {
     po_number?: { x: number; y: number; w: number; h: number } | null;
     supplier_name?: { x: number; y: number; w: number; h: number } | null;
     delivery_note_number?: { x: number; y: number; w: number; h: number } | null;
     delivery_date?: { x: number; y: number; w: number; h: number } | null;
+    supplier_invoice_ref?: { x: number; y: number; w: number; h: number } | null;
   } | null;
   item_regions?: Array<{ x: number; y: number; w: number; h: number } | null>;
   /** Headline match state for the inbox row (set by the ticket-candidates list):
-   *  'po' = matched to a PO, 'line' = inferred from item codes (has a guess),
-   *  'none' = nothing matched. `conf` is 0–100. When inferred, guess_* name the
-   *  best-guess PO. */
-  method?: "po" | "line" | "none";
+   *  'po' = the order number is printed on the ticket; 'supplier' = nothing on
+   *  the ticket names an order and it was guessed from the supplier's name
+   *  alone; 'line' = inferred from item codes (has a guess); 'none' = nothing
+   *  matched. `conf` is 0–100. When inferred, guess_* name the best-guess PO.
+   *
+   *  'supplier' used to be reported as 'po', which is how a guess came to be
+   *  shown — and checked in — as a confirmed match. */
+  method?: "po" | "supplier" | "line" | "none";
   conf?: number;
   guess_po_id?: string | null;
   guess_po_number?: string | null;

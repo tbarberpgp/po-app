@@ -11,6 +11,7 @@ import { generateAttendanceXlsx } from "../lib/attendance-xlsx";
 import { generateAttendancePdf, generateHsPackPdf } from "../lib/attendance-pdf";
 import { can } from "../../shared/permissions";
 import { poDeliveryLabel, type PoDeliveryState } from "../../shared/po-delivery-status";
+import { poNumbersMatch } from "../../shared/line-match";
 import { MATRIX_QUAL_TYPES, QUAL_TYPES } from "../lib/quals";
 import { generateTrainingMatrixXlsx } from "../lib/training-matrix-xlsx";
 import type {
@@ -2334,6 +2335,99 @@ function guessProjectId(cand: DeliveryTicketCandidate, projects: Array<{ id: str
   return cand.guess_project_code ? (projects.find((p) => p.code === cand.guess_project_code)?.id ?? null) : null;
 }
 
+/** Why this delivery belongs to an order the ticket never names.
+ *
+ *  The Alumasc audit found goods matched to orders on nothing but the
+ *  supplier's name — the scanner guessed, the screen showed the guess as a
+ *  match, and nobody recorded that a choice had been made. The link is still
+ *  allowed, because drop-shipped goods genuinely arrive quoting only the
+ *  supplier's own reference. What is no longer allowed is making it silently.
+ *
+ *  The reason is a category plus a sentence, not free text alone: free text
+ *  alone is how 46 invoices cleared an approval gate on the word "Delivered".
+ *  Both halves are stored on the delivery, so the overrides can be counted,
+ *  read, and taken back to the suppliers causing them. */
+const PO_LINK_REASONS = [
+  "Supplier quotes only their own reference",
+  "Confirmed with the supplier",
+  "Identified from the items on the note",
+  "Order number handwritten or illegible",
+  "Other",
+] as const;
+
+function PoLinkReasonDialog({ poNumber, cand, busy, onCancel, onConfirm }: {
+  poNumber: string;
+  cand: DeliveryTicketCandidate;
+  busy: boolean;
+  onCancel: () => void;
+  onConfirm: (reason: string) => void;
+}) {
+  const [cat, setCat] = useState<string>(cand.supplier_invoice_ref ? PO_LINK_REASONS[0] : "");
+  const [note, setNote] = useState("");
+  const words = note.trim().split(/\s+/).filter((w) => w.length > 1);
+  const ok = !!cat && note.trim().length >= 12 && words.length >= 3;
+  return (
+    <div className="acctx-lb" onClick={(e) => { if (e.target === e.currentTarget) onCancel(); }}>
+      <div className="a-card a-pad" style={{ maxWidth: 560, width: "92%", margin: "auto" }}>
+        <h3 style={{ marginTop: 0, fontSize: 17 }}>Why does this delivery belong to {poNumber}?</h3>
+        <div className="muted" style={{ fontSize: 12.5, lineHeight: 1.5 }}>
+          {cand.po_number
+            ? <>The ticket shows <b>{cand.po_number}</b>, which isn't {poNumber}.</>
+            : <>No PO number is printed on this ticket, so nothing on the paper connects it to {poNumber}.</>}
+          {cand.supplier_invoice_ref && <> The supplier's own reference on it is <b>{cand.supplier_invoice_ref}</b>.</>}
+          {" "}This is recorded against the delivery.
+        </div>
+        <div style={{ display: "grid", gap: 8, marginTop: 12 }}>
+          <label style={{ display: "grid", gap: 4 }}>
+            <span className="eyebrow" style={{ margin: 0 }}>Why</span>
+            <select value={cat} onChange={(e) => setCat(e.target.value)}>
+              <option value="">Choose…</option>
+              {PO_LINK_REASONS.map((r) => <option key={r} value={r}>{r}</option>)}
+            </select>
+          </label>
+          <label style={{ display: "grid", gap: 4 }}>
+            <span className="eyebrow" style={{ margin: 0 }}>What you checked</span>
+            <textarea rows={3} value={note} onChange={(e) => setNote(e.target.value)}
+              placeholder="e.g. Rang Alumasc, their POR 118204 is our PO-26003-0040 for the Block B standing seam." />
+            {!ok && note.trim().length > 0 && (
+              <span className="muted" style={{ fontSize: 11.5 }}>A sentence, please — enough that someone reading this in six months knows what was checked.</span>
+            )}
+          </label>
+        </div>
+        <div style={{ display: "flex", gap: 8, marginTop: 14, justifyContent: "flex-end" }}>
+          <button className="ghost" onClick={onCancel} disabled={busy}>Cancel</button>
+          <button className="accent" disabled={!ok || busy} onClick={() => onConfirm(`${cat} — ${note.trim()}`)}>
+            Record and check in
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Ask for an override reason mid-submit. Returns the reason, or null if the
+ *  person backed out — in which case nothing is checked in. */
+export function usePoLinkReason() {
+  const [ask, setAsk] = useState<
+    { poNumber: string; cand: DeliveryTicketCandidate; resolve: (r: string | null) => void } | null
+  >(null);
+  const request = (poNumber: string, cand: DeliveryTicketCandidate) =>
+    new Promise<string | null>((resolve) => setAsk({ poNumber, cand, resolve }));
+  const close = (r: string | null) => { ask?.resolve(r); setAsk(null); };
+  const dialog = ask
+    ? <PoLinkReasonDialog poNumber={ask.poNumber} cand={ask.cand} busy={false}
+        onCancel={() => close(null)} onConfirm={(r) => close(r)} />
+    : null;
+  return { request, dialog };
+}
+
+/** True when the order being checked in against is NOT the one printed on the
+ *  ticket — the server will refuse without a reason, and asking here means the
+ *  person is asked before the work rather than after the refusal. */
+export function needsPoLinkReason(cand: DeliveryTicketCandidate, chosenPoNumber: string | null | undefined): boolean {
+  return !poNumbersMatch(cand.po_number, chosenPoNumber);
+}
+
 export function CandidateCheckIn({ projectId, cand, projects, onCancel, onDone }: {
   projectId: string;
   cand: DeliveryTicketCandidate;
@@ -2344,6 +2438,7 @@ export function CandidateCheckIn({ projectId, cand, projects, onCancel, onDone }
   const isMulti = (cand.items?.length ?? 0) > 1;
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const poLink = usePoLinkReason();
   // Even a one-item ticket may have a wrong/missing PO number — fall back to
   // matching the PO from its item code, same as the multi-line note.
   const [initSite, setInitSite] = useState(cand.matched_project_id || guessProjectId(cand, projects) || projectId);
@@ -2377,6 +2472,7 @@ export function CandidateCheckIn({ projectId, cand, projects, onCancel, onDone }
   }
   return (
     <>
+      {poLink.dialog}
       {err && <div className="error" style={{ marginTop: 8 }}>{err}</div>}
       {suggestedPo && <div className="muted" style={{ fontSize: 12, margin: "6px 0 0" }}>PO matched from the ticket's item code.</div>}
       <SitePoChooser
@@ -2393,9 +2489,19 @@ export function CandidateCheckIn({ projectId, cand, projects, onCancel, onDone }
         confirmLabel="Confirm check-in"
         onCancel={onCancel}
         onConfirm={async (v) => {
-          setBusy(true); setErr(null);
+          setErr(null);
+          // Picking an order the ticket doesn't name is allowed, but it is a
+          // decision — so it is made here, on the record, before anything is
+          // written. Backing out of the question checks nothing in.
+          let linkReason: string | null = null;
+          if (v.po_id && needsPoLinkReason(cand, v.po_number)) {
+            linkReason = await poLink.request(v.po_number || "this order", cand);
+            if (linkReason == null) return;
+          }
+          setBusy(true);
           try {
             const ov: Record<string, string> = { target_project_id: v.target_project_id, completes_po: v.completes_po };
+            if (linkReason) ov.po_link_reason = linkReason;
             if (v.po_id) { ov.po_id = v.po_id; ov.po_number = v.po_number; }
             if (v.supplier) ov.supplier = v.supplier;
             if (v.po_line_id) { ov.po_line_id = v.po_line_id; ov.po_line_desc = v.po_line_desc; }
@@ -2435,6 +2541,7 @@ function MultiLineCheckIn({ projectId, cand, projects, onCancel, onDone }: {
   // panel converts packs → the line's own unit so the burn-down compares like
   // with like.
   const [bulkLine, setBulkLine] = useState("");
+  const poLink = usePoLinkReason();
   const [combine, setCombine] = useState(false);
   const [boardsPerPack, setBoardsPerPack] = useState(2);
   const [combinedQty, setCombinedQty] = useState("");
@@ -2532,7 +2639,15 @@ function MultiLineCheckIn({ projectId, cand, projects, onCancel, onDone }: {
   }, [combine, boardsPerPack, schemeLineId, rows.map((r) => `${r.include}:${r.qty}`).join("|")]);
 
   async function confirm() {
-    setBusy(true); setErr(null);
+    setErr(null);
+    // Same rule as the single-item form: an order the ticket doesn't name is a
+    // choice somebody makes and signs for, not a default.
+    let linkReason: string | null = null;
+    if (chosenPo && needsPoLinkReason(cand, chosenPo.po_number)) {
+      linkReason = await poLink.request(chosenPo.po_number, cand);
+      if (linkReason == null) return;
+    }
+    setBusy(true);
     try {
       let lines = rows.filter((r) => r.include && r.lineId).map((r) => {
         const l = poLines.find((x) => String(x.id) === r.lineId);
@@ -2550,6 +2665,7 @@ function MultiLineCheckIn({ projectId, cand, projects, onCancel, onDone }: {
         po_number: chosenPo ? chosenPo.po_number : "",
         supplier: chosenPo?.supplier || cand.supplier_name || "",
         part: part ? "1" : "0",
+        ...(linkReason ? { po_link_reason: linkReason } : {}),
         lines,
       });
       onDone();
@@ -2558,6 +2674,7 @@ function MultiLineCheckIn({ projectId, cand, projects, onCancel, onDone }: {
 
   return (
     <div className="card" style={{ marginTop: 8, padding: 10, display: "grid", gap: 8 }}>
+      {poLink.dialog}
       <label className="field"><span>Site</span>
         <select className="input" value={site} onChange={(e) => { setSite(e.target.value); setPoId(""); }}>
           {projects.filter((p) => !p.completed_at).map((p) => <option key={p.id} value={p.id}>{p.code} — {p.name}</option>)}
