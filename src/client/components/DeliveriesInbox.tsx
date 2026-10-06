@@ -99,20 +99,33 @@ function ReadOffTicket({ cand, rot, dims }: {
   rot: number;
   dims: { w: number; h: number } | null;
 }) {
+  const st = state(cand);
   const isPhoto = !/\.pdf(\?|$)/i.test(cand.ticket_url);
   const fields = TICKET_FIELDS.map((f) => ({ ...f, ...ticketField(cand, f.key) }))
     // Supplier is on every letterhead and is not what a delivery is matched on;
     // it earns a row only when the reader actually found it.
     .filter((f) => f.key !== "supplier_name" || f.value);
-  const noPo = !ticketField(cand, "po_number").value;
+  // "Has a PO number on it" and "has one of OUR order numbers on it" are not the
+  // same question, and the paperwork says so: across the checked-in tickets,
+  // almost every one carried something in this field and barely a sixth of them
+  // resolved to an order. The rest were the supplier's own references — POR,
+  // SOR, sales-order and quote numbers, a site name, once the word DEMO —
+  // printed where ours would go. A reference that names no order of ours leaves
+  // the delivery exactly as unattached as a blank one, so it is said out loud
+  // rather than displayed as though it were a PO number.
+  const printedPo = ticketField(cand, "po_number").value;
+  const unresolved = !!printedPo && st !== "po";
+  const noPo = !printedPo;
   return (
     <div style={{ display: "grid", gap: 8 }}>
-      {noPo && (
+      {(noPo || unresolved) && (
         <div style={{
           display: "flex", gap: 8, alignItems: "baseline", padding: "9px 11px", borderRadius: 8,
           background: "var(--warn-soft)", border: "1px solid var(--warn)", fontSize: 12.5, lineHeight: 1.45,
         }}>
-          <strong style={{ color: "var(--warn)" }}>No PO number on this ticket.</strong>
+          <strong style={{ color: "var(--warn)" }}>
+            {noPo ? "No PO number on this ticket." : `${printedPo} isn't one of our order numbers.`}
+          </strong>
           <span>
             Nothing on the paper says which order these goods belong to.
             {ticketField(cand, "supplier_invoice_ref").value
@@ -132,6 +145,9 @@ function ReadOffTicket({ cand, rot, dims }: {
               <div className="num" style={!f.value ? { color: "var(--muted)" } : undefined}>
                 {f.value ?? (f.key === "po_number" ? "not printed" : "—")}
               </div>
+              {f.key === "po_number" && unresolved && (
+                <div style={{ fontSize: 11, color: "var(--warn)" }}>printed on the ticket, but no order of ours has this number</div>
+              )}
               {f.value && !f.box && (
                 <div className="muted" style={{ fontSize: 11 }}>
                   {isPhoto ? "couldn't be pinpointed on the photo — check it against the ticket" : "read from the document"}
