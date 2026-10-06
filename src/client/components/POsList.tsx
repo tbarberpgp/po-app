@@ -27,13 +27,12 @@ type Row = PurchaseOrder & { project_code: string; project_name: string };
 
 /** Sortable columns. `get` returns a comparable — string (localeCompare) or
  *  number/date-ms (numeric). */
-type SortKey = "po_number" | "project_code" | "supplier" | "total_value" | "status" | "delivery" | "created_at" | "created_by";
+type SortKey = "po_number" | "supplier" | "total_value" | "status" | "delivery" | "created_at" | "created_by";
 // Sorts nothing-received first and fully-delivered last, so clicking the
 // column heading surfaces the orders most likely to need a delivery logged.
 const DELIVERY_RANK: Record<string, number> = { none: 0, part: 1, full: 2 };
 const SORTS: Record<SortKey, (r: Row) => string | number> = {
   po_number: (r) => r.po_number ?? "",
-  project_code: (r) => r.project_code ?? "",
   supplier: (r) => (r.supplier ?? "").toLowerCase(),
   total_value: (r) => r.total_value ?? 0,
   status: (r) => r.status ?? "",
@@ -202,8 +201,11 @@ export function POsList({ me }: { me: CurrentUser | null }) {
             <table>
               <thead>
                 <tr>
+                  {/* No project column: every number is PO-<project>-<seq>, so
+                      the project is already in the PO, and sorting by PO groups
+                      the register by project. Project code and name still feed
+                      the search box and both exports. */}
                   <SortTh k="po_number" label="PO" />
-                  <SortTh k="project_code" label="Project" className="center" />
                   <SortTh k="supplier" label="Supplier" />
                   <SortTh k="total_value" label="Value" className="num" />
                   <SortTh k="status" label="Status" className="center" />
@@ -220,7 +222,6 @@ export function POsList({ me }: { me: CurrentUser | null }) {
                 {shown.map((r) => (
                   <tr key={r.id}>
                     <td><Link to={`/pos/${r.id}`}>{r.po_number}</Link></td>
-                    <td className="center" title={r.project_name}>{r.project_code}</td>
                     <td>{r.supplier}</td>
                     <td className="num">{fmtMoney(r.total_value)}</td>
                     <td className="center">
