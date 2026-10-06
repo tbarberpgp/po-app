@@ -38,3 +38,18 @@ export async function hasColumn(env: Env, table: string, column: string): Promis
 export function signinsCarryOperativeId(env: Env): Promise<boolean> {
   return hasColumn(env, "site_signins", "operative_id");
 }
+
+/** True once migration 0131 has landed and a delivery records HOW it came to be
+ *  attached to its order. Until then the check-in gate still asks the question —
+ *  the discipline is the point — but has nowhere of its own to put the answer,
+ *  so callers fold it into the delivery's notes rather than lose it. */
+export function deliveriesRecordPoLink(env: Env): Promise<boolean> {
+  return hasColumn(env, "site_deliveries", "po_link_basis");
+}
+
+/** True once migration 0131 has landed and a scanned ticket carries the
+ *  supplier's own order reference. Until then it is simply absent — it rides in
+ *  the scan's extracted JSON either way, so nothing is lost by waiting. */
+export function ticketScansCarrySupplierRef(env: Env): Promise<boolean> {
+  return hasColumn(env, "delivery_ticket_scans", "supplier_invoice_ref");
+}

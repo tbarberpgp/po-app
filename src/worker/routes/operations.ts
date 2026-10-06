@@ -8,7 +8,7 @@ import { isSafeMediaUrl } from "../safe-url";
 // be an import cycle now that operatives.ts pulls siteScope from here.
 import { normalisePhone } from "../../shared/operatives-import";
 import { isSandboxId } from "../sandbox";
-import { signinsCarryOperativeId } from "../schema";
+import { signinsCarryOperativeId, deliveriesRecordPoLink, ticketScansCarrySupplierRef } from "../schema";
 import { sendReportEmail, recipientsFor } from "./site-reports";
 import { buildHsPack } from "../../shared/hs-pack-pdf";
 import { fuzzyFindPo } from "../poRef";
@@ -1523,6 +1523,11 @@ export async function scanWhatsappTicketBatch(
       ORDER BY po.created_at DESC`,
   ).bind(...scope.memberIds).all<{ id: string; po_number: string; supplier: string | null; order_type: string | null; project_id: string; project_code: string }>();
 
+  // Migration 0131 may not have reached this database yet — deploys fire from a
+  // push to main and migrations are applied by hand, so new code meets the old
+  // schema for a while. Naming a column that doesn't exist throws, and the insert below
+  // would throw on every photo and the whole scan would quietly do nothing.
+  const hasSupplierRef = await ticketScansCarrySupplierRef(env);
   const now = new Date().toISOString();
   let scanned = 0, tickets = 0;
   for (const p of photos.results) {
@@ -1571,15 +1576,15 @@ export async function scanWhatsappTicketBatch(
       await env.DB.prepare(
         `INSERT INTO delivery_ticket_scans
            (project_id, update_id, photo_key, is_ticket, po_number, supplier_name,
-            delivery_note_number, delivery_date, supplier_invoice_ref, summary, extracted_json,
+            delivery_note_number, delivery_date, ${hasSupplierRef ? "supplier_invoice_ref, " : ""}summary, extracted_json,
             matched_po_id, matched_by, status, occurred_at, scanned_at, scanned_by)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+         VALUES (?,?,?,?,?,?,?,?,${hasSupplierRef ? "?," : ""}?,?,?,?,?,?,?,?)
          ON CONFLICT(photo_key) DO NOTHING`,
       ).bind(
         base, p.id, storedKey, isTicket ? 1 : 0,
         ex?.po_number.trim() || null, ex?.supplier_name.trim() || null,
         ex?.delivery_note_number.trim() || null, ex?.delivery_date.trim() || null,
-        ex?.supplier_invoice_ref.trim() || null,
+        ...(hasSupplierRef ? [ex?.supplier_invoice_ref.trim() || null] : []),
         ex?.summary.trim() || null, ex ? JSON.stringify(ex) : null,
         matchedId, matchedBy, isTicket ? "pending" : "dismissed",
         p.occurred_at || p.created_at, now, actor,
@@ -1656,12 +1661,18 @@ operations.get("/deliveries-inbox", async (c) => {
     ).run();
   } catch { /* table may predate the column */ }
   const today = new Date().toISOString().slice(0, 10);
+  // Migration 0131 may not have reached this database yet — deploys fire from a
+  // push to main and migrations are applied by hand, so new code meets the old
+  // schema for a while. Naming a column that doesn't exist throws, and these
+  // queries sit inside best-effort try/catch where that failure is silent: the
+  // deliveries inbox would simply come back EMPTY, with nobody told why.
+  const supplierRefCol = (await ticketScansCarrySupplierRef(c.env)) ? "s.supplier_invoice_ref, " : "";
   let candidates: unknown[] = [];
   try {
     const rows = await c.env.DB.prepare(
       `SELECT s.id, s.project_id, pr.code AS project_code, pr.name AS project_name,
               s.photo_key, s.po_number, s.supplier_name, s.delivery_note_number,
-              s.delivery_date, s.supplier_invoice_ref, s.summary, s.extracted_json, s.matched_po_id, s.matched_by, s.occurred_at,
+              s.delivery_date, ${supplierRefCol}s.summary, s.extracted_json, s.matched_po_id, s.matched_by, s.occurred_at,
               po.po_number AS matched_po_number, po.supplier AS matched_po_supplier,
               po.order_type AS matched_order_type, po.project_id AS matched_project_id,
               p.code AS matched_project_code
@@ -1910,11 +1921,17 @@ operations.get("/:projectId/deliveries/ticket-candidates", async (c) => {
     unscanned = r?.n ?? 0;
   } catch { /* table may predate migration */ }
 
+  // Migration 0131 may not have reached this database yet — deploys fire from a
+  // push to main and migrations are applied by hand, so new code meets the old
+  // schema for a while. Naming a column that doesn't exist throws, and these
+  // queries sit inside best-effort try/catch where that failure is silent: the
+  // deliveries inbox would simply come back EMPTY, with nobody told why.
+  const supplierRefCol = (await ticketScansCarrySupplierRef(c.env)) ? "s.supplier_invoice_ref, " : "";
   let candidates: unknown[] = [];
   try {
     const rows = await c.env.DB.prepare(
       `SELECT s.id, s.photo_key, s.po_number, s.supplier_name, s.delivery_note_number,
-              s.delivery_date, s.supplier_invoice_ref, s.summary, s.extracted_json, s.matched_po_id, s.matched_by, s.occurred_at,
+              s.delivery_date, ${supplierRefCol}s.summary, s.extracted_json, s.matched_po_id, s.matched_by, s.occurred_at,
               po.po_number AS matched_po_number, po.supplier AS matched_po_supplier,
               po.order_type AS matched_order_type, po.project_id AS matched_project_id,
               p.code AS matched_project_code
@@ -2355,6 +2372,8 @@ operations.post("/:projectId/deliveries/rescan", async (c) => {
       ORDER BY scanned_at ASC LIMIT ?`,
   ).bind(base, before, limit).all<{ id: number; photo_key: string }>();
 
+  // See scanWhatsappTicketBatch: migration 0131 may not have landed yet.
+  const hasSupplierRef = await ticketScansCarrySupplierRef(c.env);
   const now = new Date().toISOString();
   let rescanned = 0, stillTickets = 0;
   for (const s of scans.results) {
@@ -2395,11 +2414,11 @@ operations.post("/:projectId/deliveries/rescan", async (c) => {
     if (isTicket) stillTickets++;
     await c.env.DB.prepare(
       `UPDATE delivery_ticket_scans SET is_ticket = ?, po_number = ?, supplier_name = ?, delivery_note_number = ?,
-              delivery_date = ?, supplier_invoice_ref = ?, summary = ?, extracted_json = ?, matched_po_id = ?, matched_by = ?, status = ?, scanned_at = ?
+              delivery_date = ?, ${hasSupplierRef ? "supplier_invoice_ref = ?, " : ""}summary = ?, extracted_json = ?, matched_po_id = ?, matched_by = ?, status = ?, scanned_at = ?
         WHERE id = ?`,
     ).bind(
       isTicket ? 1 : 0, ex.po_number.trim() || null, ex.supplier_name.trim() || null, ex.delivery_note_number.trim() || null,
-      ex.delivery_date.trim() || null, ex.supplier_invoice_ref.trim() || null, ex.summary.trim() || null, JSON.stringify(ex), matchedId, matchedBy,
+      ex.delivery_date.trim() || null, ...(hasSupplierRef ? [ex.supplier_invoice_ref.trim() || null] : []), ex.summary.trim() || null, JSON.stringify(ex), matchedId, matchedBy,
       isTicket ? "pending" : "dismissed", now, s.id,
     ).run();
   }
@@ -2543,6 +2562,19 @@ operations.post("/:projectId/deliveries/ticket-candidates/:id/check-in", async (
   // One ticket can cover several PO lines (a note with SAVBRF, MG3BASE, …). When
   // `lines` is supplied we log one delivery per line — all sharing this ticket
   // photo — so each burns down its own line. Otherwise it's a single delivery.
+  // Migration 0131 may not have reached this database yet (deploys fire from a
+  // push to main; migrations are applied by hand). The gate above still asks
+  // why — that discipline is the whole point and doesn't depend on a column —
+  // but with nowhere of its own to put the answer, the answer goes into the
+  // delivery's notes rather than being thrown away. An override recorded in
+  // prose is worth more than an override recorded nowhere.
+  const recordsPoLink = await deliveriesRecordPoLink(c.env);
+  const checkInNote = [
+    "Checked in from WhatsApp delivery ticket",
+    !recordsPoLink && poLinkReason ? `PO chosen without one printed on the ticket — ${poLinkReason}` : "",
+    !recordsPoLink && supplierRef ? `Supplier ref ${supplierRef}` : "",
+  ].filter(Boolean).join(". ");
+
   const num = (v: string | number | null | undefined) => v != null && String(v).trim() !== "" && Number.isFinite(Number(v)) ? Number(v) : null;
   const partAll = ov.part === "1";
   type Row = { lineId: number | null; lineDesc: string | null; rq: number | null; ru: string | null; desc: string; completes: number };
@@ -2598,14 +2630,14 @@ operations.post("/:projectId/deliveries/ticket-candidates/:id/check-in", async (
     const res = await c.env.DB.prepare(
       `INSERT INTO site_deliveries
          (project_id, supplier, description, po_number, po_id, po_line_id, po_line_desc, received_qty, received_unit, ticket_key, ticket_type,
-          status, notes, delivered_at, contract_project_id, completes_po, created_at, created_by, scan_id,
-          po_link_basis, po_link_reason, supplier_invoice_ref)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`,
+          status, notes, delivered_at, contract_project_id, completes_po, created_at, created_by, scan_id${
+            recordsPoLink ? ",\n          po_link_basis, po_link_reason, supplier_invoice_ref" : ""})
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?${recordsPoLink ? ",?,?,?" : ""}) RETURNING id`,
     ).bind(
       destBase, supplier, r.desc, poNumber, poId, r.lineId, r.lineDesc, r.rq, r.ru, ticketKey, ticketType,
-      "received", "Checked in from WhatsApp delivery ticket", deliveredAt,
+      "received", checkInNote, deliveredAt,
       destContract, r.completes, now, actor, scan.id,
-      poLinkBasis, poLinkReason, supplierRef,
+      ...(recordsPoLink ? [poLinkBasis, poLinkReason, supplierRef] : []),
     ).first<{ id: number }>();
     if (res?.id) ids.push(res.id);
   }
