@@ -461,3 +461,37 @@ export function looksLikeOurPoNumber(ref: string | null | undefined): boolean {
   const nine = digits.replace(/^0+(?=\d{9})/, "");
   return /^2\d{8}$/.test(nine);
 }
+
+/** A supplier's own order reference, reduced to a key two documents can be
+ *  matched on — or null when the text is not a reference at all.
+ *
+ *  Where a supplier never quotes our PO number, their own reference is the only
+ *  thread running through both the delivery note and the invoice for the same
+ *  goods. Matching on it is worth having. Matching on the wrong thing is how
+ *  deliveries came to be attached to orders at random in the first place, so
+ *  the bar for what counts as a reference is deliberately high — measured
+ *  against what suppliers actually printed in that field:
+ *
+ *    Q164563/AD28/07  a real quote reference               → key
+ *    POR117594        Alumasc's own order reference        → key
+ *    DALLAS ROAD      a site name                          → rejected, no digits
+ *    DALLAS ROAD C2   still a site name                    → rejected, no run of digits
+ *    TBC              a placeholder somebody typed         → rejected, no digits
+ *    PO-26003-0040    ours; it has its own matching path   → rejected
+ *
+ *  A key is evidence, never an automatic link: the reference AD2906 turned up
+ *  on both BOC's and Manutan's paperwork, because it is a delivery-address code
+ *  and not an order number at all. Callers must also require the same supplier,
+ *  and must put what they find in front of a person rather than acting on it. */
+export function supplierRefKey(ref: string | null | undefined): string | null {
+  const raw = (ref ?? "").trim();
+  if (!raw) return null;
+  // Ours is not a supplier's reference, and already matches by its own route.
+  if (looksLikeOurPoNumber(raw)) return null;
+  const key = raw.toUpperCase().replace(/[^A-Z0-9]/g, "");
+  if (key.length < 6) return null;
+  // A reference carries a run of digits. Words — site names, "TBC", "DEMO" —
+  // do not, and a stray single digit in a place name is not a reference either.
+  if (!/\d{3}/.test(key)) return null;
+  return key;
+}

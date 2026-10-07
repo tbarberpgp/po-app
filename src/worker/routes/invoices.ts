@@ -7,7 +7,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import type { Env, Variables } from "../env";
 import { cleanRegion, clampRegion, regionSchema, type ReadRegion } from "../../shared/read-regions";
 import { norm } from "../../shared/doc-fields";
-import { looksLikeOurPoNumber } from "../../shared/line-match";
+import { looksLikeOurPoNumber, supplierRefKey, supplierNameOverlap } from "../../shared/line-match";
 import { isReleaseApprover, requirePermission, subjectOf } from "../auth";
 import { isReleased, needsApprovalBeforeRelease } from "../../shared/payment-release";
 import { can } from "../../shared/permissions";
@@ -1457,7 +1457,7 @@ export async function computeInvoiceMatch(env: Env, inv: Record<string, unknown>
   const closedOmitted = annotated.length - filtered.length;
 
   if (!chosen) {
-    return { matched_po: null, suggested: filtered, closed_omitted: closedOmitted, deliveries: [], lines: invLines.map((l) => ({ description: l.description ?? "", qty: l.qty ?? null, unit_price: l.unit_price ?? null, amount: l.amount ?? null, po_line_id: null, po_line_item: null, po_qty: null, po_unit_cost: null, delivered_qty: null, flags: ["no_po_line"] })), match_status: "no_po" as const, po_ref: poRefOut };
+    return { matched_po: null, suggested: filtered, closed_omitted: closedOmitted, deliveries: [], lines: invLines.map((l) => ({ description: l.description ?? "", qty: l.qty ?? null, unit_price: l.unit_price ?? null, amount: l.amount ?? null, po_line_id: null, po_line_item: null, po_qty: null, po_unit_cost: null, delivered_qty: null, flags: ["no_po_line"] })), match_status: "no_po" as const, po_ref: poRefOut, supplier_ref: await supplierRefEvidence(env, inv) };
   }
 
   const poLines = allLines.filter((l) => l.po_id === chosen.id);
@@ -1587,7 +1587,74 @@ export async function computeInvoiceMatch(env: Env, inv: Record<string, unknown>
     po_billed_other: others?.s ?? 0,
     match_status: (!allMatched ? "partial" : anyFlags ? "flagged" : "ok") as "partial" | "flagged" | "ok",
     po_ref: poRefOut,
+    supplier_ref: await supplierRefEvidence(env, inv),
   };
+}
+
+/** Delivery paperwork carrying the same supplier reference as this invoice.
+ *
+ *  182 of 231 invoices quote no order number of ours, so for most of the book
+ *  there is nothing tying an invoice to the goods it bills for. The supplier's
+ *  own reference is the one thread that does run through both documents — they
+ *  print it on the delivery note and again on the invoice — and following it is
+ *  how you tell "the goods came" from "we were billed for goods".
+ *
+ *  Evidence only. Nothing here links, matches or approves anything: it reports
+ *  what was found and lets a person decide. That restraint is the point — the
+ *  reference AD2906 appears on both BOC's and Manutan's paperwork because it is
+ *  a delivery-address code, so matches are confined to the same supplier and
+ *  anything found under a DIFFERENT supplier is reported as the warning it is.
+ *
+ *  Null when the invoice quotes no usable reference, which is most of them
+ *  until the delivery scanner has been reading supplier references for a while. */
+async function supplierRefEvidence(env: Env, inv: Record<string, unknown>) {
+  const printed = (String(inv.supplier_order_ref ?? "").trim() || String(inv.extracted_po_ref ?? "").trim());
+  const key = supplierRefKey(printed);
+  if (!key) return null;
+  const invSupplier = String(inv.supplier_name ?? "").trim();
+  const sameSupplier = (other: string | null) =>
+    !invSupplier || !other ? false : supplierNameOverlap(invSupplier, other) >= 0.5;
+
+  type Hit = { kind: "ticket" | "delivery"; id: number; label: string; date: string | null; supplier: string | null };
+  const mine: Hit[] = [];
+  let otherSupplier = 0;
+
+  try {
+    const scans = (await env.DB.prepare(
+      `SELECT id, supplier_name, delivery_note_number, delivery_date, occurred_at, po_number, supplier_invoice_ref, status
+         FROM delivery_ticket_scans WHERE is_ticket = 1`,
+    ).all<{ id: number; supplier_name: string | null; delivery_note_number: string | null; delivery_date: string | null; occurred_at: string | null; po_number: string | null; supplier_invoice_ref: string | null; status: string }>()).results;
+    for (const r of scans) {
+      // Tickets scanned before supplier references were captured put the
+      // supplier's own number in po_number, where ours was expected — that is
+      // where most of the history lives, so it is read too.
+      if (supplierRefKey(r.supplier_invoice_ref) !== key && supplierRefKey(r.po_number) !== key) continue;
+      if (!sameSupplier(r.supplier_name)) { otherSupplier++; continue; }
+      mine.push({
+        kind: "ticket", id: r.id, supplier: r.supplier_name,
+        label: r.delivery_note_number ? `DN ${r.delivery_note_number}` : `Ticket #${r.id}`,
+        date: r.delivery_date || r.occurred_at,
+      });
+    }
+  } catch { /* table may predate the column */ }
+
+  try {
+    const dels = (await env.DB.prepare(
+      `SELECT id, supplier, description, delivered_at, po_number, supplier_invoice_ref
+         FROM site_deliveries WHERE supplier_invoice_ref IS NOT NULL AND TRIM(supplier_invoice_ref) != ''`,
+    ).all<{ id: number; supplier: string | null; description: string | null; delivered_at: string | null; po_number: string | null; supplier_invoice_ref: string | null }>()).results;
+    for (const r of dels) {
+      if (supplierRefKey(r.supplier_invoice_ref) !== key) continue;
+      if (!sameSupplier(r.supplier)) { otherSupplier++; continue; }
+      mine.push({
+        kind: "delivery", id: r.id, supplier: r.supplier,
+        label: r.description?.trim() || `Delivery #${r.id}`,
+        date: r.delivered_at,
+      });
+    }
+  } catch { /* column arrives with 0131 */ }
+
+  return { ref: printed, matches: mine, other_supplier_matches: otherSupplier };
 }
 
 invoices.get("/:id/match", async (c) => {

@@ -2024,6 +2024,23 @@ export type InvoiceMatch = {
   po_lines?: Array<{ id: number; item: string; qty: number | null; unit: string | null; unit_cost: number | null }>;
   // Net £ already billed to the chosen PO by OTHER invoices (over-billing check).
   po_billed_other?: number;
+  /** Delivery paperwork carrying the same SUPPLIER reference as this invoice.
+   *
+   *  Most invoices quote no order number of ours, so for most of the book
+   *  nothing ties an invoice to the goods it bills for. The supplier's own
+   *  reference runs through both their documents, and following it is how you
+   *  tell "the goods came" from "we were billed for goods".
+   *
+   *  Evidence, never a link: matches are confined to the same supplier, and
+   *  `other_supplier_matches` counts paperwork carrying the same reference
+   *  under a DIFFERENT supplier — which happens, because a code like AD2906
+   *  turns out to be a delivery address rather than an order number. Null when
+   *  the invoice quotes no usable reference. */
+  supplier_ref?: {
+    ref: string;
+    matches: Array<{ kind: "ticket" | "delivery"; id: number; label: string; date: string | null; supplier: string | null }>;
+    other_supplier_matches: number;
+  } | null;
   match_status: "no_po" | "partial" | "unmatched" | "flagged" | "ok";
   /** The PO number printed on the invoice, and whether it resolved to an order we
    *  can bill against. `framework` marks the case where it resolved to a framework
