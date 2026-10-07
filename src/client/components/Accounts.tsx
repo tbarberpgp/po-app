@@ -1232,6 +1232,34 @@ function MatchPanel({ inv, canEdit, canRelease, busy, onRelease, onReload }: {
                 );
               })()}
             </div>
+            {/* The supplier's own reference, followed into the delivery
+                paperwork. For most invoices this is the only thread there is:
+                they quote no order number of ours, so "did these goods arrive"
+                has had no answer anywhere on this screen. Evidence, not a link
+                — nothing here matches or approves anything, because the same
+                reference has turned up under two different suppliers. */}
+            {m.supplier_ref && (
+              <div className="rcell">
+                <div className="rl">Supplier ref</div>
+                <div className="rv" style={{ fontSize: 15 }}>{m.supplier_ref.ref}</div>
+                <div className="rs" style={m.supplier_ref.matches.length ? { color: "var(--success)", fontWeight: 600 } : { color: "var(--warn)", fontWeight: 600 }}>
+                  {m.supplier_ref.matches.length
+                    ? `on ${m.supplier_ref.matches.length} delivery ${m.supplier_ref.matches.length === 1 ? "record" : "records"}`
+                    : "no delivery paperwork quotes it"}
+                </div>
+                {m.supplier_ref.matches.slice(0, 3).map((h) => (
+                  <div key={`${h.kind}-${h.id}`} className="muted" style={{ fontSize: 11 }}>
+                    {h.label}{h.date ? ` · ${h.date.slice(0, 10)}` : ""}
+                  </div>
+                ))}
+                {m.supplier_ref.other_supplier_matches > 0 && (
+                  <div style={{ fontSize: 11, color: "var(--warn)" }}
+                    title="The same reference appears on another supplier's paperwork, so it is probably a delivery-address or account code rather than an order number">
+                    also on {m.supplier_ref.other_supplier_matches} other supplier&rsquo;s record{m.supplier_ref.other_supplier_matches === 1 ? "" : "s"} — treat with care
+                  </div>
+                )}
+              </div>
+            )}
             <div className="rcell"><div className="rl">Delivered (GRN)</div><div className="rv">{money(deliveredVal)}</div>
               <div className="rs" style={notReceived > 0.5 ? { color: "var(--warn)", fontWeight: 600 } : undefined}>{notReceived > 0.5 ? `${money(notReceived)} not yet received` : "all received"}</div></div>
             <div className="rcell match"><div className="rl">Match confidence</div>
