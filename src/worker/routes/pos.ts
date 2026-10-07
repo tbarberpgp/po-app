@@ -2321,6 +2321,79 @@ pos.post("/:id/reject", async (c) => {
   return c.json({ ok: true });
 });
 
+/**
+ * Which statuses can have their approval withdrawn.
+ *
+ * Only 'approved': signed off but not yet sent. Once 'issued' the supplier is
+ * holding the order, and taking the approval back wouldn't take their copy
+ * back — amending it is the route there, which already returns it to
+ * 'pending_approval' and marks the supplier's copy stale.
+ */
+export function unapproveGate(
+  status: string,
+): { ok: true } | { ok: false; error: string } {
+  if (status === "approved") return { ok: true };
+  if (status === "issued") {
+    return { ok: false, error: "this PO has already been issued to the supplier — amend it instead" };
+  }
+  return { ok: false, error: `cannot unapprove a ${status} PO` };
+}
+
+/**
+ * Withdraw an approval: back to 'pending_approval', stamps cleared, so it sits
+ * in the approvers' queue again and has to be signed off afresh. Same
+ * authority as approving it. Xero keeps the approved copy until it is
+ * re-approved (pushPOToXero only pushes approved/issued), as with an amendment.
+ */
+pos.post("/:id/unapprove", async (c) => {
+  const id = c.req.param("id");
+  const actor = c.get("userEmail");
+  const body = await c.req.json<{ reason?: string }>().catch(() => ({ reason: undefined }));
+  const reason = (body.reason ?? "").trim();
+  if (!reason) return c.json({ error: "a reason is required" }, 400);
+  const po = await c.env.DB.prepare(
+    `SELECT id, status, approval_tier, total_value, approved_at, approved_by
+       FROM purchase_orders WHERE id = ?`,
+  )
+    .bind(id)
+    .first<{
+      id: string; status: string; approval_tier: string | null; total_value: number;
+      approved_at: string | null; approved_by: string | null;
+    }>();
+  if (!po) return c.json({ error: "not found" }, 404);
+  const gate = unapproveGate(po.status);
+  if (!gate.ok) return c.json({ error: gate.error }, 409);
+  const approver = po.approval_tier
+    ? await c.env.DB.prepare(
+        "SELECT 1 AS ok FROM approvers WHERE lower(email) = ? AND tier = ? LIMIT 1",
+      ).bind(actor, po.approval_tier).first()
+    : await c.env.DB.prepare(
+        "SELECT 1 AS ok FROM approvers WHERE lower(email) = ? LIMIT 1",
+      ).bind(actor).first();
+  if (!approver) {
+    return c.json({ error: "you are not an approver for this tier" }, 403);
+  }
+  // An order that auto-approved never had a tier. A pending order with none is
+  // invisible in the approvals inbox, so give it the value-band tier.
+  const tier = po.approval_tier ?? tierForApproval(po.total_value, false, await loadSettings(c.env.DB));
+  const now = new Date().toISOString();
+  await c.env.DB.prepare(
+    `UPDATE purchase_orders
+        SET status = 'pending_approval', approved_at = NULL, approved_by = NULL,
+            requires_approval = 1, approval_tier = ?
+      WHERE id = ? AND status = 'approved'`,
+  )
+    .bind(tier, id)
+    .run();
+  await c.env.DB.prepare(
+    `INSERT INTO audit_log (entity_type, entity_id, action, actor, details, created_at)
+     VALUES ('po', ?, 'unapproved', ?, ?, ?)`,
+  )
+    .bind(id, actor, JSON.stringify({ reason, approved_by: po.approved_by, approved_at: po.approved_at }), now)
+    .run();
+  return c.json({ ok: true });
+});
+
 pos.post("/:id/issue", async (c) => {
   const denied = requirePermission(c, "pos.issue");
   if (denied) return denied;

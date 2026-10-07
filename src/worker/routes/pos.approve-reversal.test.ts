@@ -15,7 +15,7 @@
 // deleted one must stay dead.
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { approveGate } from "./pos";
+import { approveGate, unapproveGate } from "./pos";
 
 describe("approveGate", () => {
   test("a pending PO approves, and isn't a reversal", () => {
@@ -34,6 +34,24 @@ describe("approveGate", () => {
         gate.ok === false ? gate.error : "",
         `cannot approve a ${status} PO`,
       );
+    }
+  });
+});
+
+describe("unapproveGate", () => {
+  test("an approved PO can be unapproved", () => {
+    assert.deepEqual(unapproveGate("approved"), { ok: true });
+  });
+
+  test("an issued PO is refused and pointed at amending", () => {
+    const gate = unapproveGate("issued");
+    assert.equal(gate.ok, false);
+    assert.match(gate.ok === false ? gate.error : "", /amend/);
+  });
+
+  test("nothing else can be unapproved", () => {
+    for (const status of ["draft", "pending_approval", "rejected", "deleted"]) {
+      assert.equal(unapproveGate(status).ok, false, `${status} must not be unapprovable`);
     }
   });
 });
