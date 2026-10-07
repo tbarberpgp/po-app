@@ -30,6 +30,8 @@ export function POView({ me }: { me: CurrentUser | null }) {
   const [rejectReason, setRejectReason] = useState("");
   const [showReject, setShowReject] = useState(false);
   const [approveNote, setApproveNote] = useState("");
+  const [showUnapprove, setShowUnapprove] = useState(false);
+  const [unapproveReason, setUnapproveReason] = useState("");
   const [showDelete, setShowDelete] = useState(false);
   const [deleteReason, setDeleteReason] = useState("");
   const [showEdit, setShowEdit] = useState(false);
@@ -164,6 +166,9 @@ export function POView({ me }: { me: CurrentUser | null }) {
     (po.status === "pending_approval" || wasRejected) &&
     me?.is_approver &&
     holdsTier;
+  // Mirrors unapproveGate: approved but not yet issued, by someone who could
+  // have approved it. Once issued, amending is the way back.
+  const canUnapprove = po.status === "approved" && me?.is_approver && holdsTier;
   const supplierCopy = supplierCopyState(po);
   // Mirrors issueGate on the worker: 'approved' normally, plus an order left
   // 'issued' while the supplier's copy is stale — the pre-0127 orders, which
@@ -865,6 +870,48 @@ export function POView({ me }: { me: CurrentUser | null }) {
               </div>
             )}
 
+            {canUnapprove && (
+              <div className="card">
+                {showUnapprove ? (
+                  <>
+                    <div className="card-hd"><h3>Unapprove {po.po_number}</h3></div>
+                    <div className="card-bd">
+                      <p className="explainer">
+                        It goes back to <b>pending approval</b> and has to be approved again before it can be issued.
+                      </p>
+                      <label>Reason</label>
+                      <textarea
+                        value={unapproveReason}
+                        onChange={(e) => setUnapproveReason(e.target.value)}
+                        rows={3}
+                        placeholder="Why is the approval being withdrawn?"
+                        style={{ resize: "vertical" }}
+                      />
+                      <div className="row" style={{ marginTop: 12 }}>
+                        <button
+                          className="danger"
+                          disabled={busy || !unapproveReason.trim()}
+                          onClick={() => act(async () => {
+                            await api.unapprovePO(po.id, unapproveReason);
+                            setShowUnapprove(false); setUnapproveReason("");
+                          })}
+                        >
+                          Confirm unapprove
+                        </button>
+                        <button className="ghost" onClick={() => setShowUnapprove(false)}>Cancel</button>
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <div className="card-bd">
+                    <button className="ghost" disabled={busy} onClick={() => setShowUnapprove(true)} style={{ width: "100%", justifyContent: "center" }}>
+                      Unapprove
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+
             <ApprovalRouteCard po={po} />
 
             {po.requires_approval && po.approval_reason && (
@@ -1418,6 +1465,7 @@ function actionVerb(a: string): string {
     case "created": return "raised";
     case "approved": return "approved";
     case "rejected": return "rejected";
+    case "unapproved": return "withdrew approval for";
     case "issued": return "marked as issued for";
     default: return a;
   }

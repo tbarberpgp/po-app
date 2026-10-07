@@ -477,6 +477,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ reason }),
     }),
+  unapprovePO: (id: string, reason: string) =>
+    jfetch<{ ok: true }>(`/api/pos/${id}/unapprove`, {
+      method: "POST",
+      body: JSON.stringify({ reason }),
+    }),
   /** `reissue` is true when a copy had already gone out — the supplier was
    *  holding a superseded version and this send replaces it. */
   issuePO: (id: string) => jfetch<{ ok: true; reissue: boolean }>(`/api/pos/${id}/issue`, { method: "POST" }),
