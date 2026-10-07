@@ -431,3 +431,33 @@ export function scanLineMatch(
   const excess = issues.reduce((s2, i2) => s2 + (i2.kind === "over" ? i2.excess : 0), 0);
   return { state: issues.length ? "unmatched" : "matched", issues, excess };
 }
+
+/** Is this reference one of OUR purchase-order numbers?
+ *
+ *  Ours are PO- a five-digit job number beginning 2 - a four-digit sequence,
+ *  optionally a call-off suffix: PO-26003-0040, PO-26001-0013-C1. Job 25008
+ *  exists, so the second digit is not always 6.
+ *
+ *  Suppliers write their own references into the same space on their paperwork
+ *  and the reader faithfully picks them up: POR117594, SOR458448, sales order
+ *  1204155, quote Q164563/AD28/07, the site name DALLAS ROAD, the word DEMO.
+ *  Across 231 live invoices only 49 carry a reference of ours — and nothing
+ *  told anybody about the other 182. This is the test that lets them be told.
+ *
+ *  Deliberately tolerant of how the number is WRITTEN, not of what it is: the
+ *  digits are what identify the order, so "026003-0020" and "PO 26003 0020"
+ *  are ours written carelessly, while "DALLAS ROAD C2" is not ours however it
+ *  is punctuated. */
+export function looksLikeOurPoNumber(ref: string | null | undefined): boolean {
+  const t = (ref ?? "").toUpperCase();
+  if (!t.trim()) return false;
+  // Reject anything carrying letters beyond an optional PO prefix / C suffix —
+  // that is how a supplier's own alphanumeric reference gets in.
+  const core = t.replace(/^\s*P\.?\s*O\.?\s*[-–—:#]?\s*/, "").trim();
+  if (/[A-Z]/.test(core.replace(/-?C\s*\d+\s*$/, ""))) return false;
+  const digits = core.replace(/-?C\s*\d+\s*$/, "").replace(/[^0-9]/g, "");
+  // Five-digit job starting 2, then a four-digit sequence. A leading zero is a
+  // transcription artefact ("026003-0020"), not a different number.
+  const nine = digits.replace(/^0+(?=\d{9})/, "");
+  return /^2\d{8}$/.test(nine);
+}

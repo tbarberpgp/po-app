@@ -7,6 +7,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import type { Env, Variables } from "../env";
 import { cleanRegion, clampRegion, regionSchema, type ReadRegion } from "../../shared/read-regions";
 import { norm } from "../../shared/doc-fields";
+import { looksLikeOurPoNumber } from "../../shared/line-match";
 import { isReleaseApprover, requirePermission, subjectOf } from "../auth";
 import { isReleased, needsApprovalBeforeRelease } from "../../shared/payment-release";
 import { can } from "../../shared/permissions";
@@ -1707,6 +1708,29 @@ invoices.post("/:id/approve", async (c) => {
   }
 
   const note = (body.note || "").trim();
+
+  // Soft gate: nothing on this invoice names an order of OURS.
+  //
+  // 182 of 231 live invoices are in this state — 108 quoting nothing, 74
+  // quoting the supplier's own reference where ours goes — and every one of
+  // them was approved without the question being put. It stays approvable,
+  // because stopping four invoices in five would stop the business, but the
+  // answer has to be a sentence. A one-word reason is the hole this is closing,
+  // not a shape to copy: "Delivered" has cleared 46 approvals already.
+  if (inv.kind === "project" && !looksLikeOurPoNumber(inv.extracted_po_ref as string | null)) {
+    const words = note.split(/\s+/).filter((w) => w.length > 1);
+    if (note.length < 12 || words.length < 3) {
+      const quoted = String(inv.extracted_po_ref ?? "").trim();
+      return c.json({
+        error: quoted
+          ? `This invoice quotes "${quoted}", which is not one of our order numbers (ours look like PO-26003-0040). Say in a sentence why it should be approved and which order it belongs to.`
+          : "This invoice quotes no PO number of ours. Say in a sentence why it should be approved and which order it belongs to.",
+        needs_po_reason: true,
+        quoted_ref: quoted || null,
+      }, 400);
+    }
+  }
+
   if (inv.kind === "project" && !note) {
     const m = await computeInvoiceMatch(c.env, inv);
     if (m.match_status !== "ok") {
@@ -1728,6 +1752,9 @@ invoices.post("/:id/approve", async (c) => {
   // approving over. 82 invoices were cleared this way and the failure had to be
   // reconstructed months later from delivery counts. Store it with the approval.
   let overrode: string[] | undefined;
+  // Approving without an order number of ours is itself an override, and is the
+  // commonest one — it belongs in the record whether or not a PO is linked.
+  const noOurPoRef = inv.kind === "project" && !looksLikeOurPoNumber(inv.extracted_po_ref as string | null);
   if (note) {
     try {
       const poLines = inv.matched_po_id
@@ -1752,6 +1779,9 @@ invoices.post("/:id/approve", async (c) => {
         }).issues.map((i) => i.kind))];
       }
     } catch { /* never block an approval to write its own audit line */ }
+    // Recorded even when no PO is linked at all, which is exactly when the
+    // line-level scan has nothing to say and the audit used to come back empty.
+    if (noOurPoRef) overrode = [...new Set([...(overrode ?? []), "no_our_po_ref"])];
   }
   await logInvoice(c.env, c.req.param("id"), "approved", c.get("userEmail"), {
     gross: inv.gross_amount ?? null,
