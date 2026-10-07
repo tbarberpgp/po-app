@@ -7,7 +7,7 @@ import { Topbar } from "./Shell";
 import { ProjectProgramme } from "./Programme";
 import { ProjectReports } from "./ProjectReports";
 import { ProjectOperations } from "./Operations";
-import { ForecastDashboard, Glance, DateCard, moneyTone, PrelimsTab, PortfolioCalendarPanel, ValuationScheduleUpload, LabourBreakdown, CommercialsHelpPanel, ProjectSettingsBlock, type ForecastDrill } from "./ProjectDetail";
+import { ForecastDashboard, Glance, DateCard, PrelimsTab, PortfolioCalendarPanel, ValuationScheduleUpload, LabourBreakdown, CommercialsHelpPanel, ProjectSettingsBlock, type ForecastDrill } from "./ProjectDetail";
 import { DrillPanel, DrillKpi, type DrillData } from "./DrillPanel";
 import { AssignBudgetCell } from "./AssignBudgetCell";
 import {
@@ -1139,21 +1139,15 @@ function GroupOverview({ scopeMembers, data, fc, contract, baseId, scopeLabel, o
   const recent = acts.slice(0, 6);
   const fmtAct = (iso: string) => new Date(iso).toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
 
-  const profitDelta = fc.forecastProfit - contract.gp;
-  const up = profitDelta >= 0;
-  const marginDeltaPts = fc.forecastGpPct != null && contract.gpPct != null ? (fc.forecastGpPct - contract.gpPct) * 100 : null;
-
   return (
     <>
-      <div className="eyebrow" style={{ marginBottom: 6 }}>{scopeLabel}</div>
-      <div className="kpis">
-        <DrillKpi label="Forecast final account" value={fmtMoney(fc.ffa)} sub={`Contract ${fmtMoney(contract.value)}`} />
-        <DrillKpi label="Forecast final cost" value={fmtMoney(fc.ffc)} sub={`Budget ${fmtMoney(contract.cost)}`} />
-        <DrillKpi label="Forecast profit" value={fmtMoney(fc.forecastProfit)} tone={moneyTone(fc.forecastProfit)} sub={`${up ? "▲ +" : "▼ "}${fmtMoney(profitDelta)} vs contract`} />
-        <DrillKpi label="Forecast GP margin" value={fc.forecastGpPct != null ? `${(fc.forecastGpPct * 100).toFixed(1)}%` : "—"} tone={(fc.forecastGpPct ?? 0) >= 0.1 ? "success" : (fc.forecastGpPct ?? 0) < 0 ? "danger" : "warn"} sub={marginDeltaPts != null ? `${marginDeltaPts >= 0 ? "+" : ""}${marginDeltaPts.toFixed(1)} pts vs contract` : undefined} />
-      </div>
-
-      <ForecastDashboard f={fc} sections={["levers"]} onDrill={openForecastDrill} />
+      {/* Outturn tiles + levers now come from ForecastDashboard for both pages,
+          so a project Overview and this one can't drift apart in wording or
+          sub-lines. `forecastLabel` keeps this page's scope eyebrow ("Whole site
+          (combined)" / "Block 26001") where a project page says "Forecast
+          outturn". */}
+      <ForecastDashboard f={fc} sections={["forecast", "levers"]} contract={contract}
+        forecastLabel={scopeLabel} onDrill={openForecastDrill} />
 
       <div className="dash-grid" style={{ marginTop: 16 }}>
         {/* LEFT */}

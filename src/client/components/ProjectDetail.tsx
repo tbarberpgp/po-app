@@ -262,6 +262,20 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
     [commercials, variations, contractItems, afps, mats, contingency, summary, labour, prelims],
   );
 
+  // The base contract the Overview's outturn tiles are read against. Same
+  // figures the Commercials tab prints as its headline row, folded into the
+  // tiles' sub-lines so the Overview reads like the group page. Undefined when
+  // the workbook came through with no calculated total, which drops the tiles
+  // back to their plain form rather than printing "vs contract" against zero.
+  const contractContext = useMemo((): ContractContext | undefined => {
+    const total = commercials.find((r) => r.is_total === 1);
+    if (!total) return undefined;
+    const ct = contractTotals(commercials);
+    const value = ct?.value ?? (total.value ?? 0);
+    const cost = ct?.cost ?? (total.cost ?? 0);
+    return { value, cost, gp: value - cost, gpPct: value > 0 ? (value - cost) / value : null };
+  }, [commercials]);
+
   // Open the slide-over listing exactly what makes up a forecast lever / applied
   // figure (the same builders the group page uses).
   const forecastDrill = (m: ForecastDrill) => {
@@ -535,16 +549,15 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
         )}
         {(mats.length > 0 || (tab === "materials" && offBoqRows.length > 0)) && (
           <>
+            {/* Reads like the group page's Overview: outturn tiles carrying
+                their own "Contract £… / Budget £… / vs contract" sub-lines, then
+                the profit levers. The separate contract KPI row that used to sit
+                above is gone — it printed the same four numbers the sub-lines now
+                carry. Levers include Unexpected spend, the one lever nothing else
+                on this page flags; it used to be a tab away under Commercials. */}
             {tab === "overview" && commercials.length > 0 && canViewCommercial && (
-              <CommercialsHeadlineKpis rows={commercials} />
-            )}
-            {/* Profit levers sit here as well as on Commercials → Overview. A
-                grouped site shows them on its own Overview (GroupPage), so a
-                standalone project that hid them was the odd one out: Unexpected
-                spend — the one lever nothing else on this page flags — was only
-                reachable a tab away. Same component, same drill handler. */}
-            {tab === "overview" && commercials.length > 0 && canViewCommercial && (
-              <ForecastDashboard f={forecast} sections={["forecast", "levers"]} onDrill={forecastDrill} />
+              <ForecastDashboard f={forecast} sections={["forecast", "levers"]}
+                contract={contractContext} onDrill={forecastDrill} />
             )}
             {tab === "overview" && commercials.length > 0 && canViewCommercial && (
               <CostToDate forecast={forecast} ordersCommitted={summarisePoRegister(projectPOs).committed} prelimLabour={prelimLabourCertified(afps)} />
@@ -1734,14 +1747,39 @@ function CostToDate({ forecast: f, ordersCommitted, prelimLabour }: { forecast: 
  */
 type ForecastSection = "forecast" | "levers" | "applied";
 export type ForecastDrill = "materials" | "labour" | "prelims" | "variations" | "unexpected" | "applied" | "certified";
-export function ForecastDashboard({ f, sections = ["forecast", "levers", "applied"], onDrill }: { f: Forecast; sections?: ForecastSection[]; onDrill?: (m: ForecastDrill) => void }) {
+/** The base contract a forecast is read against. Given one, the outturn tiles
+ *  carry the group page's "vs contract" sub-lines — contract value and budget
+ *  fold into the tiles themselves, so the separate contract KPI row above them
+ *  becomes redundant. Without one the tiles keep their plain form (the
+ *  Commercials tab, which prints the contract row right above). */
+export type ContractContext = { value: number; cost: number; gp: number; gpPct: number | null };
+export function ForecastDashboard({ f, sections = ["forecast", "levers", "applied"], contract, forecastLabel = "Forecast outturn", onDrill }: { f: Forecast; sections?: ForecastSection[]; contract?: ContractContext; forecastLabel?: string; onDrill?: (m: ForecastDrill) => void }) {
+  // vs-contract deltas, only meaningful with a contract to compare against.
+  const profitDelta = contract ? f.forecastProfit - contract.gp : 0;
+  const up = profitDelta >= 0;
+  const marginDeltaPts = contract && f.forecastGpPct != null && contract.gpPct != null ? (f.forecastGpPct - contract.gpPct) * 100 : null;
   // With a drill handler the lever/applied figures become clickable and open the
   // slide-over listing exactly what made them up. Same tile otherwise.
   const D = ({ metric, ...p }: { metric: ForecastDrill; label: string; value: string; sub?: string; tone?: "default" | "success" | "danger" | "warn" }) =>
     onDrill ? <DrillKpi {...p} onOpen={() => onDrill(metric)} /> : <Kpi {...p} />;
   return (
     <>
-      {sections.includes("forecast") && (
+      {sections.includes("forecast") && contract && (
+        <>
+          <div className="eyebrow" style={{ marginBottom: 6 }}>{forecastLabel}</div>
+          <div className="kpis">
+            <Kpi label="Forecast final account" value={fmtMoney(f.ffa)} sub={`Contract ${fmtMoney(contract.value)}`} />
+            <Kpi label="Forecast final cost" value={fmtMoney(f.ffc)} sub={`Budget ${fmtMoney(contract.cost)}`} />
+            <Kpi label="Forecast profit" value={fmtMoney(f.forecastProfit)} tone={moneyTone(f.forecastProfit)}
+              sub={`${up ? "▲ +" : "▼ "}${fmtMoney(profitDelta)} vs contract`} />
+            <Kpi label="Forecast GP margin" value={f.forecastGpPct != null ? `${(f.forecastGpPct * 100).toFixed(1)}%` : "—"}
+              tone={(f.forecastGpPct ?? 0) >= 0.1 ? "success" : (f.forecastGpPct ?? 0) < 0 ? "danger" : "warn"}
+              sub={marginDeltaPts != null ? `${marginDeltaPts >= 0 ? "+" : ""}${marginDeltaPts.toFixed(1)} pts vs contract` : undefined} />
+          </div>
+        </>
+      )}
+
+      {sections.includes("forecast") && !contract && (
         <>
           <div className="eyebrow" style={{ marginTop: 4 }}>Forecast outturn</div>
           <div className="kpis">
