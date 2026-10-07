@@ -904,7 +904,7 @@ export function POView({ me }: { me: CurrentUser | null }) {
                   </>
                 ) : (
                   <div className="card-bd">
-                    <button className="ghost" disabled={busy} onClick={() => setShowUnapprove(true)} style={{ width: "100%", justifyContent: "center" }}>
+                    <button className="accent" disabled={busy} onClick={() => setShowUnapprove(true)} style={{ width: "100%", justifyContent: "center" }}>
                       Unapprove
                     </button>
                   </div>
