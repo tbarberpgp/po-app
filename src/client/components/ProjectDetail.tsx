@@ -538,7 +538,14 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
             {tab === "overview" && commercials.length > 0 && canViewCommercial && (
               <CommercialsHeadlineKpis rows={commercials} />
             )}
-            {tab === "overview" && commercials.length > 0 && canViewCommercial && <ForecastDashboard f={forecast} sections={["forecast"]} />}
+            {/* Profit levers sit here as well as on Commercials → Overview. A
+                grouped site shows them on its own Overview (GroupPage), so a
+                standalone project that hid them was the odd one out: Unexpected
+                spend — the one lever nothing else on this page flags — was only
+                reachable a tab away. Same component, same drill handler. */}
+            {tab === "overview" && commercials.length > 0 && canViewCommercial && (
+              <ForecastDashboard f={forecast} sections={["forecast", "levers"]} onDrill={forecastDrill} />
+            )}
             {tab === "overview" && commercials.length > 0 && canViewCommercial && (
               <CostToDate forecast={forecast} ordersCommitted={summarisePoRegister(projectPOs).committed} prelimLabour={prelimLabourCertified(afps)} />
             )}
