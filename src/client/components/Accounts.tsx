@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { PdfHighlightViewer } from "./PdfHighlightViewer";
 import { RegionBoxes, FieldCrop, type DrawnRegion } from "./ReadRegions";
+import { looksLikeOurPoNumber } from "../../shared/line-match";
 import { GroupedCombobox, type ComboGroup, type ComboOption } from "./GroupedCombobox";
 import { api, fmtMoney } from "../lib/api";
 import { isSpreadsheetFile } from "../../shared/file-kind";
@@ -22,7 +23,22 @@ const curSymbol = (cur: string | null | undefined) => CUR_SYMBOL[(cur || "GBP").
 const qtyFmt = (n: number | null | undefined) =>
   (n == null ? "—" : Number(n).toLocaleString(undefined, { maximumFractionDigits: 2 }));
 
-type Tab = "inbox" | "held" | "ready" | "overheads" | "pushed" | "dismissed";
+/** Does this invoice quote one of OUR order numbers?
+ *
+ *  Of 231 live invoices, 49 do. 108 quote nothing at all and 74 quote something
+ *  that is not ours — POR117594, SOR458448, a sales-order number, a quote
+ *  reference, the site name DALLAS ROAD. None of it was ever flagged, so an
+ *  invoice naming no order of ours looked exactly like one that did, right up
+ *  to the point it was approved and posted.
+ *
+ *  'none' = nothing quoted; 'theirs' = a reference, but not ours; 'ours' = ours. */
+function poRefState(inv: { extracted_po_ref?: string | null }): "ours" | "theirs" | "none" {
+  const ref = (inv.extracted_po_ref ?? "").trim();
+  if (!ref) return "none";
+  return looksLikeOurPoNumber(ref) ? "ours" : "theirs";
+}
+
+type Tab = "inbox" | "held" | "ready" | "no-po" | "overheads" | "pushed" | "dismissed";
 
 /** Row status for the inbox dot/chip. The three live states of the flow are
  *  distinct because they belong to different people: awaiting approval is the
@@ -182,6 +198,9 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
       if (tab === "overheads") { if (!(r.kind === "overhead" && r.status !== "dismissed")) return false; }
       else if (tab === "held") { if (!isAwaitingApproval(r)) return false; }
       else if (tab === "ready") { if (!isReadyToPush(r)) return false; }
+      // Every live invoice naming no order of ours, whatever stage it is at —
+      // the point is to see the pile, and most of it is already approved.
+      else if (tab === "no-po") { if (r.status === "dismissed" || poRefState(r) === "ours") return false; }
       else if (tab === "pushed") { if (r.status !== "pushed") return false; }
       else if (tab === "dismissed") { if (r.status !== "dismissed") return false; }
       // Inbox is what still needs coding, matching or approving. A held invoice
@@ -277,6 +296,7 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
     finally { setBusy(false); }
   }
 
+  const noPoCount = rows.filter((r) => r.status !== "dismissed" && poRefState(r) !== "ours").length;
   const TABS: Array<[Tab, string, number | null]> = [
     ["inbox", "Inbox", inboxCount],
     // Both queues are counted for everyone. Accounts needs to see what it is
@@ -285,6 +305,7 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
     ["held", canRelease ? "To approve" : "Awaiting approval", heldCount],
     // The queue Accounts works from: approved, not yet posted.
     ["ready", "Ready to push", readyCount],
+    ["no-po", "No PO of ours", noPoCount],
     ...(isAdmin ? [["overheads", "Overheads", null] as [Tab, string, null]] : []),
     ["pushed", "Pushed", null],
     ["dismissed", "Dismissed", null],
@@ -344,6 +365,16 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
                             {r.kind !== "overhead" && r.project_code && <span className="proj">{r.project_code}</span>}
                             {r.source === "email" && <span title="received by email">✉</span>}
                             {r.extract_error && <span title="couldn't auto-read">⚠</span>}
+                            {/* Said on the row, because this is decided long
+                                before anyone opens the invoice. */}
+                            {poRefState(r) !== "ours" && (
+                              <span style={{ color: "var(--danger)", fontWeight: 600 }}
+                                title={poRefState(r) === "none"
+                                  ? "No purchase-order number is quoted on this invoice"
+                                  : `This invoice quotes "${r.extracted_po_ref}", which is not one of our order numbers`}>
+                                ⚠ {poRefState(r) === "none" ? "no PO" : "not our PO"}
+                              </span>
+                            )}
                             {r.terms_mismatch && <span style={{ color: "var(--warn)" }} title={`Invoice due ${r.due_date ?? "?"} but the account is ${r.supplier_payment_terms ?? "on other terms"} ⇒ ${r.expected_due_date ?? "?"}`}>⚠ terms</span>}
                             {/* Stays on the row after approval — a mismatch that was
                                 approved anyway still needs chasing with the supplier. */}
@@ -649,6 +680,19 @@ function InvoiceDetail({ inv, projects, accounts, isAdmin, canEdit, canRelease, 
             {/* A foreign-currency invoice must be SEEN as such before it's
                 approved: the figures aren't sterling, and the Xero bill will be
                 raised in this currency. Sterling needs no announcement. */}
+            {/* Nothing on this invoice names an order of ours. Said here, at the
+                top, because everything below it — the coding, the match, the
+                approval — rests on knowing which order the money belongs to,
+                and 182 of 231 invoices got all the way through without it. */}
+            {poRefState(inv) !== "ours" && (
+              <div className="flash" style={{ background: "var(--danger-soft, var(--warn-soft))", color: "var(--danger)", marginBottom: 10, fontSize: 12.5, lineHeight: 1.45 }}>
+                <b>{poRefState(inv) === "none" ? "No PO number on this invoice." : `“${inv.extracted_po_ref}” is not one of our order numbers.`}</b>{" "}
+                Ours look like <b>PO-26003-0040</b>.{" "}
+                {inv.supplier_order_ref
+                  ? <>That reference is the supplier&rsquo;s own ({inv.supplier_order_ref}) — quote it when you ask them to put ours on the next one.</>
+                  : <>Ask the supplier to quote our PO number, and check the order below is really the one these goods belong to.</>}
+              </div>
+            )}
             {inv.currency && inv.currency.toUpperCase() !== "GBP" && (
               <div className="flash" style={{ background: "var(--warn-soft)", color: "var(--warn)", marginBottom: 10, fontSize: 12.5, lineHeight: 1.4 }}>
                 <b>{inv.currency.toUpperCase()} invoice</b> — the amounts below are in {inv.currency.toUpperCase()}, not sterling, and it will go to Xero as a {inv.currency.toUpperCase()} bill.
@@ -666,7 +710,10 @@ function InvoiceDetail({ inv, projects, accounts, isAdmin, canEdit, canRelease, 
                     }}>+ Add to approved suppliers</button>
                 )}</div>
               <div className="field"><label>Invoice #</label><input value={f.invoice_number} disabled={disabled} onChange={(e) => setF({ ...f, invoice_number: e.target.value })} /></div>
-              <div className="field"><label>Order ref / PO</label><div className="ro">{inv.extracted_po_ref || "—"}</div></div>
+              <div className="field"><label>Order ref / PO</label>
+                <div className="ro" style={poRefState(inv) === "theirs" ? { color: "var(--danger)" } : undefined}>{inv.extracted_po_ref || "—"}</div>
+                {poRefState(inv) === "theirs" && <span className="muted" style={{ fontSize: 11, color: "var(--danger)" }}>not one of our order numbers</span>}
+              </div>
               <div className="field"><label>Invoice date</label><input type="date" value={f.invoice_date} disabled={disabled} onChange={(e) => setF({ ...f, invoice_date: e.target.value })} /></div>
               <div className="field"><label>Due date</label><input type="date" value={f.due_date} disabled={disabled} onChange={(e) => setF({ ...f, due_date: e.target.value })} />
                 {inv.terms_mismatch && (
