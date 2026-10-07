@@ -1790,8 +1790,8 @@ invoices.post("/:id/approve", async (c) => {
       const quoted = String(inv.extracted_po_ref ?? "").trim();
       return c.json({
         error: quoted
-          ? `This invoice quotes "${quoted}", which is not one of our order numbers (ours look like PO-26003-0040). Say in a sentence why it should be approved and which order it belongs to.`
-          : "This invoice quotes no PO number of ours. Say in a sentence why it should be approved and which order it belongs to.",
+          ? `This invoice quotes "${quoted}", which is not one of our PO references (ours look like PO-26003-0040). Say in a sentence why it should be approved and which order it belongs to.`
+          : "This invoice quotes no PO reference of ours. Say in a sentence why it should be approved and which order it belongs to.",
         needs_po_reason: true,
         quoted_ref: quoted || null,
       }, 400);

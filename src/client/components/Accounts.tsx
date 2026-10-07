@@ -305,7 +305,7 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
     ["held", canRelease ? "To approve" : "Awaiting approval", heldCount],
     // The queue Accounts works from: approved, not yet posted.
     ["ready", "Ready to push", readyCount],
-    ["no-po", "No PO of ours", noPoCount],
+    ["no-po", "Awaiting PO reference", noPoCount],
     ...(isAdmin ? [["overheads", "Overheads", null] as [Tab, string, null]] : []),
     ["pushed", "Pushed", null],
     ["dismissed", "Dismissed", null],
@@ -370,9 +370,9 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
                             {poRefState(r) !== "ours" && (
                               <span style={{ color: "var(--danger)", fontWeight: 600 }}
                                 title={poRefState(r) === "none"
-                                  ? "No purchase-order number is quoted on this invoice"
-                                  : `This invoice quotes "${r.extracted_po_ref}", which is not one of our order numbers`}>
-                                ⚠ {poRefState(r) === "none" ? "no PO" : "not our PO"}
+                                  ? "No PO reference is quoted on this invoice"
+                                  : `This invoice quotes "${r.extracted_po_ref}", which is not one of our PO references`}>
+                                ⚠ {poRefState(r) === "none" ? "no PO reference" : "PO reference not ours"}
                               </span>
                             )}
                             {r.terms_mismatch && <span style={{ color: "var(--warn)" }} title={`Invoice due ${r.due_date ?? "?"} but the account is ${r.supplier_payment_terms ?? "on other terms"} ⇒ ${r.expected_due_date ?? "?"}`}>⚠ terms</span>}
@@ -686,11 +686,11 @@ function InvoiceDetail({ inv, projects, accounts, isAdmin, canEdit, canRelease, 
                 and 182 of 231 invoices got all the way through without it. */}
             {poRefState(inv) !== "ours" && (
               <div className="flash" style={{ background: "var(--danger-soft, var(--warn-soft))", color: "var(--danger)", marginBottom: 10, fontSize: 12.5, lineHeight: 1.45 }}>
-                <b>{poRefState(inv) === "none" ? "No PO number on this invoice." : `“${inv.extracted_po_ref}” is not one of our order numbers.`}</b>{" "}
+                <b>{poRefState(inv) === "none" ? "No PO reference on this invoice." : `“${inv.extracted_po_ref}” is not one of our PO references.`}</b>{" "}
                 Ours look like <b>PO-26003-0040</b>.{" "}
                 {inv.supplier_order_ref
-                  ? <>That reference is the supplier&rsquo;s own ({inv.supplier_order_ref}) — quote it when you ask them to put ours on the next one.</>
-                  : <>Ask the supplier to quote our PO number, and check the order below is really the one these goods belong to.</>}
+                  ? <>That reference is the supplier&rsquo;s own ({inv.supplier_order_ref}) — quote it when requesting that ours appears on the next invoice.</>
+                  : <>Ask the supplier to quote our PO reference, and check the order below is really the one these goods belong to.</>}
               </div>
             )}
             {inv.currency && inv.currency.toUpperCase() !== "GBP" && (
@@ -712,7 +712,7 @@ function InvoiceDetail({ inv, projects, accounts, isAdmin, canEdit, canRelease, 
               <div className="field"><label>Invoice #</label><input value={f.invoice_number} disabled={disabled} onChange={(e) => setF({ ...f, invoice_number: e.target.value })} /></div>
               <div className="field"><label>Order ref / PO</label>
                 <div className="ro" style={poRefState(inv) === "theirs" ? { color: "var(--danger)" } : undefined}>{inv.extracted_po_ref || "—"}</div>
-                {poRefState(inv) === "theirs" && <span className="muted" style={{ fontSize: 11, color: "var(--danger)" }}>not one of our order numbers</span>}
+                {poRefState(inv) === "theirs" && <span className="muted" style={{ fontSize: 11, color: "var(--danger)" }}>not one of our PO references</span>}
               </div>
               <div className="field"><label>Invoice date</label><input type="date" value={f.invoice_date} disabled={disabled} onChange={(e) => setF({ ...f, invoice_date: e.target.value })} /></div>
               <div className="field"><label>Due date</label><input type="date" value={f.due_date} disabled={disabled} onChange={(e) => setF({ ...f, due_date: e.target.value })} />
@@ -1188,7 +1188,7 @@ function MatchPanel({ inv, canEdit, canRelease, busy, onRelease, onReload }: {
             </span>
           : m.po_ref.superseded
           ? <span className="pill" style={{ fontSize: 10, background: "transparent", border: "1px solid var(--warn)", color: "var(--warn)" }} title={`${m.po_ref.quoted} is one of our numbers but was deleted, and nothing was raised to replace it. Pick the order this really bills against.`}>quotes {m.po_ref.quoted} · deleted, no replacement</span>
-          : <span className="pill" style={{ fontSize: 10, background: "transparent", border: "1px solid var(--warn)", color: "var(--warn)" }} title="This PO number is printed on the invoice but isn't one of ours — it may never have been raised.">quotes {m.po_ref.quoted} · not one of our orders</span>)}
+          : <span className="pill" style={{ fontSize: 10, background: "transparent", border: "1px solid var(--warn)", color: "var(--warn)" }} title="This reference is printed on the invoice but is not one of our PO references — it may never have been raised.">quotes {m.po_ref.quoted} · not one of our PO references</span>)}
       </div>
 
       {/* A match that fails to load used to render as nothing: the error state
