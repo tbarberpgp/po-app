@@ -50,7 +50,7 @@ function isConfirmed(c: DeliveryTicketCandidate): boolean {
  *  the colour each is flagged in. PO number leads: it is the one value that
  *  decides which order the goods burn down. */
 export const TICKET_FIELDS = [
-  { key: "po_number", label: "PO number", color: "#4353b0" },
+  { key: "po_number", label: "PO reference", color: "#4353b0" },
   { key: "supplier_invoice_ref", label: "Supplier ref (SIR)", color: "#7a4bb8" },
   { key: "delivery_note_number", label: "Delivery note", color: "#ee5d2b" },
   { key: "delivery_date", label: "Delivery date", color: "#b06a0e" },
@@ -124,13 +124,13 @@ function ReadOffTicket({ cand, rot, dims }: {
           background: "var(--warn-soft)", border: "1px solid var(--warn)", fontSize: 12.5, lineHeight: 1.45,
         }}>
           <strong style={{ color: "var(--warn)" }}>
-            {noPo ? "No PO number on this ticket." : `${printedPo} isn't one of our order numbers.`}
+            {noPo ? "No PO reference on this ticket." : `“${printedPo}” is not one of our PO references.`}
           </strong>
           <span>
             Nothing on the paper says which order these goods belong to.
             {ticketField(cand, "supplier_invoice_ref").value
-              ? " The supplier's own reference is below — quote it when you ask them to put our PO number on the next one."
-              : " Ask the supplier to print our PO number on their delivery notes."}
+              ? " The supplier's own reference is below — quote it when requesting that ours appears on the next delivery note."
+              : " Ask the supplier to print our PO reference on their delivery notes."}
           </span>
         </div>
       )}
@@ -390,14 +390,14 @@ function TicketDetail({ cand, projects, onActioned }: {
       <div className="a-card a-pad">
         <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 12 }}>
           <h2 style={{ margin: 0, flex: 1, fontSize: 20 }}>{cand.supplier_name || "Unknown supplier"}</h2>
-          {st === "po" && <span className="pill approved" title="The order number is printed on this ticket">Matched · {cand.matched_po_number}</span>}
+          {st === "po" && <span className="pill approved" title="Our PO reference is printed on this ticket">Matched · {cand.matched_po_number}</span>}
           {/* Guessed from the letterhead alone. This wore the green "Matched"
               pill until the Alumasc audit found deliveries sitting against
               orders nothing on the paperwork named. */}
           {st === "supplier" && (
             <span className="pill" title="Nothing on this ticket names an order — this is the best-scoring order for that supplier"
               style={{ background: "var(--warn-soft)", color: "var(--warn)" }}>
-              Guessed · {cand.matched_po_number} — no PO on the ticket
+              Guessed · {cand.matched_po_number} — no PO reference on the ticket
             </span>
           )}
           {st === "line" && <span className="pill" style={{ background: "var(--warn-soft)", color: "var(--warn)" }}>Inferred · {cand.guess_po_number}</span>}
