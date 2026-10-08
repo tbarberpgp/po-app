@@ -34,6 +34,33 @@ async function hasEmergencyContact(env: Env): Promise<boolean> {
   return emergencyContactColumn;
 }
 
+// operative_extra_sites (migration 0132): extra sites an operative also signs in
+// at, beside their one home site. Same deploy-before-migrate guard as above —
+// until the table exists every query below falls back to home-site-only, so the
+// sign-in list never breaks for a missing table. Positive result memoised only.
+let extraSitesTable = false;
+export async function hasExtraSites(env: Env): Promise<boolean> {
+  if (extraSitesTable) return true;
+  try {
+    const r = await env.DB.prepare("SELECT 1 AS x FROM sqlite_master WHERE type = 'table' AND name = 'operative_extra_sites'").first<{ x: number }>();
+    extraSitesTable = !!r;
+  } catch { /* leave false; re-check next request */ }
+  return extraSitesTable;
+}
+
+/** SQL predicate on alias `o`: the operative works at one of `ids` — as their
+ *  home site, or as an extra site when `extra` (the 0132 table exists). Every
+ *  query that decides who is "on a site" for sign-in purposes goes through this,
+ *  so the picker, the gate and the roster can't disagree. */
+export function worksAt(ids: string[], extra: boolean): { sql: string; binds: string[] } {
+  const ph = ids.map(() => "?").join(",");
+  if (!extra) return { sql: `o.assigned_project_id IN (${ph})`, binds: ids };
+  return {
+    sql: `(o.assigned_project_id IN (${ph}) OR o.id IN (SELECT x.operative_id FROM operative_extra_sites x WHERE x.project_id IN (${ph})))`,
+    binds: [...ids, ...ids],
+  };
+}
+
 function sanitizeName(name: string): string {
   return name.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 80);
 }
@@ -54,9 +81,14 @@ function qualStatus(expiry: string | null, verifiedAt: string | null): "pending"
 operatives.get("/", async (c) => {
   const denied = requirePermission(c, "masterdata.read");
   if (denied) return denied;
+  const extraCols = (await hasExtraSites(c.env))
+    ? `(SELECT GROUP_CONCAT(x.project_id) FROM operative_extra_sites x WHERE x.operative_id = o.id) AS extra_project_ids,
+            (SELECT GROUP_CONCAT(p.code, ', ') FROM operative_extra_sites x JOIN projects p ON p.id = x.project_id WHERE x.operative_id = o.id) AS extra_project_codes,`
+    : "NULL AS extra_project_ids, NULL AS extra_project_codes,";
   const rows = await c.env.DB.prepare(
     `SELECT o.*,
             (SELECT code FROM projects WHERE id = o.assigned_project_id) AS assigned_project_code,
+            ${extraCols}
             (SELECT COUNT(*) FROM operative_quals q WHERE q.operative_id = o.id) AS qual_count,
             (SELECT COUNT(*) FROM operative_rams_signs r WHERE r.operative_id = o.id AND r.signed_at IS NULL) AS rams_pending
        FROM operatives o
@@ -69,7 +101,8 @@ operatives.get("/", async (c) => {
   const grouped = await groupQualsByOperative(c.env, "WHERE o.archived_at IS NULL");
   const out = (rows.results as Array<Record<string, unknown>>).map((o) => {
     const { worst, pending } = summariseQuals(grouped.get(o.id as string) ?? []);
-    return { ...o, qual_worst: worst, quals_pending: pending };
+    const extraIds = o.extra_project_ids ? String(o.extra_project_ids).split(",") : [];
+    return { ...o, extra_project_ids: extraIds, qual_worst: worst, quals_pending: pending };
   });
   return c.json(out);
 });
@@ -524,14 +557,22 @@ operatives.get("/by-project/:projectId", async (c) => {
   // base. Without this, opening a non-base block shows an empty crew — so RAMS
   // and toolbox distribution had nobody to send to. Ungrouped → itself.
   const scope = await siteScope(c.env, pid);
-  const memberPh = scope.memberIds.map(() => "?").join(",");
+  // The crew includes anyone with this site as an EXTRA site (0132) — they sign
+  // in here, so RAMS and toolbox talks have to reach them too.
+  const extra = await hasExtraSites(c.env);
+  const here = worksAt(scope.memberIds, extra);
+  const extraCodes = extra
+    ? `,
+            (SELECT GROUP_CONCAT(p.code, ', ') FROM operative_extra_sites x JOIN projects p ON p.id = x.project_id WHERE x.operative_id = o.id) AS extra_project_codes`
+    : ", NULL AS extra_project_codes";
   // RAMS must be (re)signed for the CURRENT site within the last month. So
   // "pending" = active RAMS docs on this project that this operative hasn't
   // freshly signed — which means a newly-assigned operative shows everything
   // outstanding until they re-sign, and stale signatures (>1 month) re-open.
   const monthAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
   const selectCore = `SELECT o.id, o.name, o.company, o.trade, o.phone, o.phone_norm, o.email,
-            o.induction_done, o.assigned_at,
+            o.induction_done, o.assigned_at, o.assigned_project_id,
+            (SELECT code FROM projects WHERE id = o.assigned_project_id) AS home_project_code${extraCodes},
             (SELECT COUNT(*) FROM operative_quals q WHERE q.operative_id = o.id) AS qual_count,
             (SELECT COUNT(*) FROM rams_documents d
               WHERE d.project_id = ? AND d.active = 1
@@ -540,7 +581,7 @@ operatives.get("/by-project/:projectId", async (c) => {
                    WHERE s.operative_id = o.id AND s.rams_id = d.id
                      AND s.signed_at IS NOT NULL AND s.signed_at >= ?
                 )) AS rams_pending`;
-  const fromWhere = `FROM operatives o WHERE o.archived_at IS NULL AND o.assigned_project_id IN (${memberPh}) ORDER BY o.name`;
+  const fromWhere = `FROM operatives o WHERE o.archived_at IS NULL AND ${here.sql} ORDER BY o.name`;
   let rows: { results: Record<string, unknown>[] };
   try {
     rows = await c.env.DB.prepare(
@@ -548,11 +589,11 @@ operatives.get("/by-project/:projectId", async (c) => {
             EXISTS(SELECT 1 FROM site_inductions si WHERE si.project_id = ? AND si.operative_id = o.id) AS site_inducted,
             (SELECT si2.inducted_at FROM site_inductions si2 WHERE si2.project_id = ? AND si2.operative_id = o.id) AS site_inducted_at
        ${fromWhere}`,
-    ).bind(scope.baseId, monthAgo, scope.baseId, scope.baseId, ...scope.memberIds).all<Record<string, unknown>>();
+    ).bind(scope.baseId, monthAgo, scope.baseId, scope.baseId, ...here.binds).all<Record<string, unknown>>();
   } catch {
     // site_inductions migration not yet applied on this DB — serve without it.
     rows = await c.env.DB.prepare(`${selectCore} ${fromWhere}`)
-      .bind(scope.baseId, monthAgo, ...scope.memberIds).all<Record<string, unknown>>();
+      .bind(scope.baseId, monthAgo, ...here.binds).all<Record<string, unknown>>();
   }
   // Today's sign-ins, matched to the operative by normalised phone (the same way
   // the sign-in gate matches). Two distinct questions, one query:
@@ -567,12 +608,14 @@ operatives.get("/by-project/:projectId", async (c) => {
   const onSite = new Set(signins.results.filter((s) => !s.signed_out_at).map((s) => normalisePhone(s.phone)).filter(Boolean));
   // One grouped quals query for everyone on this site (no N+1 per operative).
   const grouped = await groupQualsByOperative(
-    c.env, `WHERE o.archived_at IS NULL AND o.assigned_project_id IN (${memberPh})`, ...scope.memberIds);
+    c.env, `WHERE o.archived_at IS NULL AND ${here.sql}`, ...here.binds);
   const out = rows.results.map((o) => {
     const { worst, pending } = summariseQuals(grouped.get(o.id as string) ?? []);
     const quals = (grouped.get(o.id as string) ?? []).map((q) => ({ type: q.qual_type, status: qualStatus(q.expiry_date, q.verified_at) }));
     return {
       ...o, qual_worst: worst, quals_pending: pending, quals,
+      // Here on an extra site, not their home one — Remove drops only this site.
+      extra_here: !scope.memberIds.includes(o.assigned_project_id as string),
       on_site: o.phone_norm ? onSite.has(o.phone_norm as string) : false,
       signed_in_today: o.phone_norm ? hereToday.has(o.phone_norm as string) : false,
     };
@@ -600,7 +643,40 @@ operatives.post("/:id/site-induction", async (c) => {
   return c.json({ ok: true, site_inducted: true });
 });
 
-// Assign (or reassign) an operative to a single site. Reassigning off another
+/** Hand an operative the RAMS for a site they've just been put on (home or
+ *  extra): open a pending request for every active RAMS doc there, re-open any
+ *  signature older than a month, and email/SMS their profile link so they
+ *  actually receive them. No RAMS on the site → nothing to do. */
+async function openSiteRams(env: Env, id: string, projectId: string, actor: string): Promise<void> {
+  const now = new Date().toISOString();
+  const monthAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+  const docs = await env.DB.prepare(
+    "SELECT id FROM rams_documents WHERE project_id = ? AND active = 1",
+  ).bind(projectId).all<{ id: number }>();
+  if (!docs.results.length) return;
+  const stmts = docs.results.map((d) =>
+    env.DB.prepare(
+      `INSERT INTO operative_rams_signs (id, operative_id, rams_id, project_id, requested_at, requested_by)
+       VALUES (?,?,?,?,?,?) ON CONFLICT(operative_id, rams_id) DO NOTHING`,
+    ).bind(crypto.randomUUID(), id, d.id, projectId, now, actor),
+  );
+  // Re-open stale/unsigned requests for this site so they must sign afresh.
+  stmts.push(
+    env.DB.prepare(
+      `UPDATE operative_rams_signs SET signed_at = NULL, signature = NULL, requested_at = ?, requested_by = ?
+        WHERE operative_id = ? AND project_id = ? AND (signed_at IS NULL OR signed_at < ?)`,
+    ).bind(now, actor, id, projectId, monthAgo),
+  );
+  await env.DB.batch(stmts);
+  try {
+    const full = await env.DB.prepare(
+      "SELECT id, name, email, phone, token FROM operatives WHERE id = ?",
+    ).bind(id).first<{ id: string; name: string; email: string | null; phone: string | null; token: string }>();
+    if (full) await inviteOperative(env, full);
+  } catch (e) { console.error("assign RAMS notify failed:", e instanceof Error ? e.message : e); }
+}
+
+// Assign (or reassign) an operative to their home site. Reassigning off another
 // site notifies that site's manager.
 operatives.post("/:id/assign", async (c) => {
   const denied = requirePermission(c, "delivery.edit");
@@ -623,39 +699,13 @@ operatives.post("/:id/assign", async (c) => {
     "UPDATE operatives SET assigned_project_id = ?, assigned_at = ?, assigned_by = ? WHERE id = ?",
   ).bind(toP.id, now, actor, id).run();
 
-  // RAMS must be (re)signed for the site they're now on. Open a pending request
-  // for every active RAMS doc on the new site, and re-open any signature older
-  // than a month so it has to be signed again.
-  const monthAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
-  const docs = await c.env.DB.prepare(
-    "SELECT id FROM rams_documents WHERE project_id = ? AND active = 1",
-  ).bind(toP.id).all<{ id: number }>();
-  if (docs.results.length) {
-    const stmts = docs.results.map((d) =>
-      c.env.DB.prepare(
-        `INSERT INTO operative_rams_signs (id, operative_id, rams_id, project_id, requested_at, requested_by)
-         VALUES (?,?,?,?,?,?) ON CONFLICT(operative_id, rams_id) DO NOTHING`,
-      ).bind(crypto.randomUUID(), id, d.id, toP.id, now, actor),
-    );
-    // Re-open stale/unsigned requests for this site so they must sign afresh.
-    stmts.push(
-      c.env.DB.prepare(
-        `UPDATE operative_rams_signs SET signed_at = NULL, signature = NULL, requested_at = ?, requested_by = ?
-          WHERE operative_id = ? AND project_id = ? AND (signed_at IS NULL OR signed_at < ?)`,
-      ).bind(now, actor, id, toP.id, monthAgo),
-    );
-    await c.env.DB.batch(stmts);
-  }
-
-  // Email/SMS the operative their profile link so they actually receive the new
-  // site's RAMS to sign (only worth it when the site has RAMS).
-  if (docs.results.length) {
-    try {
-      const full = await c.env.DB.prepare(
-        "SELECT id, name, email, phone, token FROM operatives WHERE id = ?",
-      ).bind(id).first<{ id: string; name: string; email: string | null; phone: string | null; token: string }>();
-      if (full) await inviteOperative(c.env, full);
-    } catch (e) { console.error("assign RAMS notify failed:", e instanceof Error ? e.message : e); }
+  await openSiteRams(c.env, id, toP.id, actor);
+  // Their new home site makes any extra-site row for the same site redundant.
+  if (await hasExtraSites(c.env)) {
+    const scope = await siteScope(c.env, toP.id);
+    await c.env.DB.prepare(
+      `DELETE FROM operative_extra_sites WHERE operative_id = ? AND project_id IN (${scope.memberIds.map(() => "?").join(",")})`,
+    ).bind(id, ...scope.memberIds).run();
   }
 
   const reassigned = !!(prev && prev !== toP.id);
@@ -683,6 +733,55 @@ operatives.post("/:id/unassign", async (c) => {
   await c.env.DB.prepare(
     "UPDATE operatives SET assigned_project_id = NULL, assigned_at = NULL, assigned_by = NULL WHERE id = ?",
   ).bind(c.req.param("id")).run();
+  return c.json({ ok: true });
+});
+
+// Let an operative ALSO sign in at another site, keeping their home site. For
+// crews split across two jobs in the same week, where moving them back and
+// forth meant the wrong list on the wrong day. The home site's manager isn't
+// alerted — nobody is leaving their roster.
+operatives.post("/:id/extra-sites", async (c) => {
+  const denied = requirePermission(c, "delivery.edit");
+  if (denied) return denied;
+  if (!(await hasExtraSites(c.env))) return c.json({ error: "Extra sites aren't set up yet (migration 0132)." }, 503);
+  const id = c.req.param("id");
+  const body = await c.req.json<{ project_id?: string }>().catch(() => ({} as { project_id?: string }));
+  if (!body.project_id) return c.json({ error: "project_id required" }, 400);
+  const op = await c.env.DB.prepare(
+    "SELECT id, assigned_project_id FROM operatives WHERE id = ? AND archived_at IS NULL",
+  ).bind(id).first<{ id: string; assigned_project_id: string | null }>();
+  if (!op) return c.json({ error: "not found" }, 404);
+  if (!op.assigned_project_id) return c.json({ error: "They have no home site yet — assign them to this site instead." }, 400);
+  const toP = await c.env.DB.prepare(
+    "SELECT id FROM projects WHERE id = ? AND deleted_at IS NULL",
+  ).bind(body.project_id).first<{ id: string }>();
+  if (!toP) return c.json({ error: "project not found" }, 400);
+  // A grouped site is one sign-in list: already covered by home or an existing extra.
+  const scope = await siteScope(c.env, toP.id);
+  if (scope.memberIds.includes(op.assigned_project_id)) return c.json({ error: "That's already their home site." }, 400);
+  const ph = scope.memberIds.map(() => "?").join(",");
+  const have = await c.env.DB.prepare(
+    `SELECT 1 AS x FROM operative_extra_sites WHERE operative_id = ? AND project_id IN (${ph})`,
+  ).bind(id, ...scope.memberIds).first<{ x: number }>();
+  if (have) return c.json({ ok: true, added: false });
+  const actor = c.get("userEmail");
+  await c.env.DB.prepare(
+    "INSERT INTO operative_extra_sites (operative_id, project_id, added_at, added_by) VALUES (?,?,?,?)",
+  ).bind(id, toP.id, new Date().toISOString(), actor).run();
+  await openSiteRams(c.env, id, toP.id, actor);
+  return c.json({ ok: true, added: true });
+});
+
+// Stop an operative signing in at an extra site. Clears the whole site (every
+// contract in its group), so Remove works from whichever block it's pressed on.
+operatives.delete("/:id/extra-sites/:projectId", async (c) => {
+  const denied = requirePermission(c, "delivery.edit");
+  if (denied) return denied;
+  if (!(await hasExtraSites(c.env))) return c.json({ ok: true });
+  const scope = await siteScope(c.env, c.req.param("projectId"));
+  await c.env.DB.prepare(
+    `DELETE FROM operative_extra_sites WHERE operative_id = ? AND project_id IN (${scope.memberIds.map(() => "?").join(",")})`,
+  ).bind(c.req.param("id"), ...scope.memberIds).run();
   return c.json({ ok: true });
 });
 

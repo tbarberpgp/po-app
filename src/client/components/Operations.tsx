@@ -756,8 +756,10 @@ function HsPackScheduleCard({ projectId, canEdit, project }: { projectId: string
 }
 
 // ── Operatives assigned to this site ─────────────────────────────────────────
-// An operative is on one site at a time (like a PO belongs to one project).
-// Assigning someone already on another site moves them and notifies that site.
+// An operative has one HOME site (like a PO belongs to one project). Assigning
+// someone whose home is elsewhere either moves them (notifying that site) or,
+// for crews split across two jobs, adds this as an extra site they also sign in
+// at — they then show on both rosters and both sign-in lists.
 function OperativesPanel({ projectId, canEdit, project }: { projectId: string; canEdit: boolean; project: Project | null }) {
   const [rows, setRows] = useState<Awaited<ReturnType<typeof api.operativesByProject>>>([]);
   const [all, setAll] = useState<Awaited<ReturnType<typeof api.operatives>>>([]);
@@ -795,7 +797,29 @@ function OperativesPanel({ projectId, canEdit, project }: { projectId: string; c
   }, [projectId, canEdit]);
 
   // Everyone not already on this site can be assigned (moving them if needed).
-  const assignable = all.filter((o) => o.assigned_project_id !== projectId);
+  const assignable = all.filter((o) => o.assigned_project_id !== projectId && !rows.some((r) => r.id === o.id && r.extra_here));
+  // Home is on another site (not a sibling block of this one) → offer "also sign in here".
+  const picked = all.find((o) => o.id === pick);
+  const canAddExtra = !!picked?.assigned_project_id && !rows.some((r) => r.id === pick);
+
+  async function addExtra() {
+    if (!pick) return;
+    setBusy(true); setErr(null); setMsg(null);
+    try {
+      await api.addOperativeExtraSite(pick, projectId);
+      setMsg(`Added — they stay on ${picked?.assigned_project_code ?? "their home site"} and can sign in here too.`);
+      setPick("");
+      setTimeout(() => setMsg(null), 5000);
+      refresh(); refreshAll();
+    } catch (e) { setErr(e instanceof Error ? e.message : "couldn't add"); }
+    finally { setBusy(false); }
+  }
+  async function removeExtra(id: string, name: string, home: string | null) {
+    if (!confirm(`Stop ${name} signing in at this site? They stay on their home site${home ? ` (${home})` : ""}.`)) return;
+    setErr(null);
+    try { await api.removeOperativeExtraSite(id, projectId); refresh(); refreshAll(); }
+    catch (e) { setErr(e instanceof Error ? e.message : "couldn't remove"); }
+  }
 
   async function assign() {
     if (!pick) return;
@@ -925,7 +949,7 @@ function OperativesPanel({ projectId, canEdit, project }: { projectId: string; c
         {canEdit && showAssign && (
           <div style={{ padding: "10px 16px 14px", borderBottom: "1px solid var(--line)" }}>
             <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>
-              Each operative is on one site at a time — assigning someone who's on another site moves them here and emails that site's manager.
+              Someone on another site can be moved here (their old site's manager is emailed), or kept there and also allowed to sign in here — for crews working two sites.
             </div>
             <div className="row" style={{ flexWrap: "wrap", gap: 8, alignItems: "center" }}>
               <select value={pick} onChange={(e) => setPick(e.target.value)} style={{ maxWidth: 340 }}>
@@ -934,7 +958,14 @@ function OperativesPanel({ projectId, canEdit, project }: { projectId: string; c
                   <option key={o.id} value={o.id}>{o.name}{o.assigned_project_code ? ` (on ${o.assigned_project_code})` : ""}</option>
                 ))}
               </select>
-              <button className="accent tiny" onClick={assign} disabled={!pick || busy}>{busy ? "Assigning…" : "Assign to site"}</button>
+              {canAddExtra ? (
+                <>
+                  <button className="accent tiny" onClick={addExtra} disabled={busy} title={`Keep them on ${picked?.assigned_project_code ?? "their site"} and let them sign in here too`}>{busy ? "Adding…" : "Also sign in here"}</button>
+                  <button className="ghost tiny" onClick={assign} disabled={busy} title={`Take them off ${picked?.assigned_project_code ?? "their site"} and make this their site`}>Move here</button>
+                </>
+              ) : (
+                <button className="accent tiny" onClick={assign} disabled={!pick || busy}>{busy ? "Assigning…" : "Assign to site"}</button>
+              )}
               <Link to="/operatives" className="ghost tiny" style={{ textDecoration: "none" }}>Open register</Link>
               {msg && <span className="muted" style={{ fontSize: 12 }}>{msg}</span>}
             </div>
@@ -1004,6 +1035,9 @@ function OperativesPanel({ projectId, canEdit, project }: { projectId: string; c
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ color: "var(--muted)", flexShrink: 0, transition: "transform 120ms", transform: open ? "rotate(90deg)" : "none" }}><path d="M9 6l6 6-6 6" /></svg>
                       <span className="avatar" style={{ width: 28, height: 28, fontSize: 11, flexShrink: 0 }}>{o.name.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join("").toUpperCase()}</span>
                       <b>{o.name}</b>
+                      {o.extra_here
+                        ? <span className="pill neutral" title={`Home site ${o.home_project_code ?? "elsewhere"} — also signs in here`}>from {o.home_project_code ?? "another site"}</span>
+                        : o.extra_project_codes && <span className="pill neutral" title="Also signs in at these sites">also {o.extra_project_codes}</span>}
                     </div>
                   </td>
                   <td className="muted" data-label="Company">{o.company || "—"}</td>
@@ -1036,7 +1070,7 @@ function OperativesPanel({ projectId, canEdit, project }: { projectId: string; c
                     <td className="ops-table-actions" style={{ textAlign: "right" }}>
                       <button className="ghost tiny" title="Upload a qualification card for this operative" onClick={() => setUploadFor({ id: o.id, name: o.name })}>Upload card</button>
                       {o.rams_pending > 0 && ramsDocs[0] && <button className="ghost tiny" onClick={() => setDistributeDoc(ramsDocs[0])}>Send RAMS</button>}
-                      <button className="ghost tiny danger" onClick={() => unassign(o.id, o.name)}>Remove</button>
+                      <button className="ghost tiny danger" onClick={() => o.extra_here ? removeExtra(o.id, o.name, o.home_project_code) : unassign(o.id, o.name)}>Remove</button>
                     </td>
                   )}
                 </tr>

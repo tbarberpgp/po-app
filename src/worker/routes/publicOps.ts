@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import type { Env, Variables } from "../env";
 import { normalisePhone } from "../../shared/operatives-import";
 import { signinsCarryOperativeId } from "../schema";
-import { extractQualCard } from "./operatives";
+import { extractQualCard, hasExtraSites, worksAt } from "./operatives";
 import { computeQualityRollup, qualityDashboardHtml } from "./quality-dashboard";
 import { isSafeMediaUrl } from "../safe-url";
 import { renderCabinQitpPdf } from "./qitp-pdf";
@@ -250,11 +250,13 @@ async function operativeGate(
     }
     if (!op) return { block: { type: "unregistered" }, op: null }; // must be registered before starting
 
-    // Must be assigned to this site (or any contract in its group) to sign in.
+    // Must work at this site (or any contract in its group) to sign in — as
+    // their home site, or as an extra site (0132).
     const memberIds = await siteMemberIds(env, projectId);
-    if (!op.assigned_project_id || !memberIds.includes(op.assigned_project_id)) {
-      return { block: { type: "unassigned" }, op };
-    }
+    const here = worksAt(memberIds, await hasExtraSites(env));
+    const allowed = await env.DB.prepare(`SELECT 1 AS x FROM operatives o WHERE o.id = ? AND ${here.sql}`)
+      .bind(op.id, ...here.binds).first<{ x: number }>();
+    if (!allowed) return { block: { type: "unassigned" }, op };
 
     const activeRams = await env.DB.prepare(
       "SELECT id FROM rams_documents WHERE project_id = ? AND active = 1",
@@ -315,18 +317,19 @@ publicOps.get("/site/:token", async (c) => {
       WHERE project_id = ? AND active = 1 AND notice_date = ?
       ORDER BY type, created_at`,
   ).bind(site.project_id, today()).all();
-  // Operatives for the sign-in picker — only those ASSIGNED to this site (or any
-  // contract in its group). Minimal fields only (no phone / email / token).
+  // Operatives for the sign-in picker — only those who work at this site (or any
+  // contract in its group), as home or extra site. Must match the gate exactly:
+  // anyone listed here can sign in. Minimal fields only (no phone / email / token).
   // Fails open to [] if the operatives table isn't present yet.
   let operatives: Array<{ id: string; name: string; company: string | null; trade: string | null }> = [];
   try {
     const memberIds = await siteMemberIds(c.env, site.project_id);
-    const ph = memberIds.map(() => "?").join(",");
+    const here = worksAt(memberIds, await hasExtraSites(c.env));
     const ops = await c.env.DB.prepare(
-      `SELECT id, name, company, trade FROM operatives
-        WHERE archived_at IS NULL AND assigned_project_id IN (${ph})
-        ORDER BY name COLLATE NOCASE`,
-    ).bind(...memberIds).all<{ id: string; name: string; company: string | null; trade: string | null }>();
+      `SELECT o.id, o.name, o.company, o.trade FROM operatives o
+        WHERE o.archived_at IS NULL AND ${here.sql}
+        ORDER BY o.name COLLATE NOCASE`,
+    ).bind(...here.binds).all<{ id: string; name: string; company: string | null; trade: string | null }>();
     operatives = ops.results;
   } catch (e) {
     console.warn("operatives list skipped:", e instanceof Error ? e.message : e);
