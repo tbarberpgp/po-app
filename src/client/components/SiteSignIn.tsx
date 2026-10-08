@@ -31,7 +31,7 @@ export function SiteSignIn() {
 
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const [signedIn, setSignedIn] = useState<{ id: number; name: string } | null>(null);
+  const [signedIn, setSignedIn] = useState<{ id: number; name: string; at?: string; already?: boolean; movedFrom?: string | null } | null>(null);
 
   const storeKey = `pgp-site-signin:${token}`;
 
@@ -92,7 +92,7 @@ export function SiteSignIn() {
         briefing_ack: briefingAck,
       });
       localStorage.setItem(storeKey, JSON.stringify({ id: res.id, name: name.trim(), date: todayISO() }));
-      setSignedIn({ id: res.id, name: name.trim() });
+      setSignedIn({ id: res.id, name: name.trim(), at: res.signed_in_at, already: res.already_signed_in, movedFrom: res.moved_from });
     } catch (e) { setErr((e as Error).message); }
     finally { setBusy(false); }
   }
@@ -145,8 +145,10 @@ export function SiteSignIn() {
         {signedIn ? (
           <div className="card site-done">
             <div className="site-tick">✓</div>
-            <h2 style={{ margin: "8px 0 4px" }}>You're signed in</h2>
-            <p className="muted">{signedIn.name} · {new Date().toLocaleString("en-GB", { weekday: "short", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}</p>
+            <h2 style={{ margin: "8px 0 4px" }}>{signedIn.already ? "You're already signed in" : "You're signed in"}</h2>
+            <p className="muted">{signedIn.name} · {signedIn.already ? "since " : ""}{new Date(signedIn.at ?? Date.now()).toLocaleString("en-GB", { weekday: "short", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}</p>
+            {signedIn.already && <p className="muted" style={{ fontSize: 13 }}>Nothing new was recorded. Sign out below when you leave site.</p>}
+            {signedIn.movedFrom && <p className="muted" style={{ fontSize: 13 }}>You've been signed out of {signedIn.movedFrom}.</p>}
             <p className="muted" style={{ fontSize: 13 }}>Remember to sign out at the end of your shift.</p>
             {err && <div className="flash error">{err}</div>}
             <button className="primary" style={{ width: "100%", marginTop: 8 }} onClick={signOut} disabled={busy}>
