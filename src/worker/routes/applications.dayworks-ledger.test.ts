@@ -13,7 +13,7 @@
 // expenses.
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { periodNet, priorAnchor } from "./applications";
+import { periodNet, priorAnchor, isPrelimClaimRow } from "./applications";
 
 const nil = { certified_amount: null, cumulative_value: null, expenses_amount: null, dayworks_amount: null };
 
@@ -107,5 +107,30 @@ describe("periodNet", () => {
       periodNet({ cumulative: 9676.8, previousCertified: 2196, expensesAmount: 0, dayworksAmount: 3300 }),
       9676.8 - 2196 + 3300,
     );
+  });
+});
+
+// A prelims drawdown is not a measured claim: its single claimed amount IS its
+// value, and recalcTotals reads none of its lines. So no path may ADD a line to
+// one. Asgaard's Block D #1 was tagged "Site management" with £2,100 claimed —
+// someone had already assigned that day's work to the prelims allowance.
+// Re-reading the source filed the same line again as a £2,100 daywork and the
+// application went to £4,200: the same day paid twice, out of two budgets.
+describe("isPrelimClaimRow", () => {
+  test("a tagged drawdown with a claimed amount is one", () => {
+    assert.equal(isPrelimClaimRow({ prelim_heading: "Site management", claimed_amount: 2100 }), true);
+  });
+
+  test("a £0 drawdown still counts — it is the tag plus a figure, not the figure's size", () => {
+    assert.equal(isPrelimClaimRow({ prelim_heading: "Site management", claimed_amount: 0 }), true);
+  });
+
+  test("a heading with no amount is not yet a drawdown", () => {
+    assert.equal(isPrelimClaimRow({ prelim_heading: "Site management", claimed_amount: null }), false);
+  });
+
+  test("an ordinary measured application is not one", () => {
+    assert.equal(isPrelimClaimRow({ prelim_heading: null, claimed_amount: null }), false);
+    assert.equal(isPrelimClaimRow({ prelim_heading: null, claimed_amount: 2100 }), false);
   });
 });

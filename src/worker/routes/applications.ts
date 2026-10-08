@@ -107,6 +107,15 @@ export function periodNet(a: {
   return Math.max(0, a.cumulative - a.previousCertified) + a.expensesAmount + a.dayworksAmount;
 }
 
+/** True when an application is a standalone prelims drawdown rather than a
+ *  measured claim: its single claimed amount IS its value, and recalcTotals
+ *  reads none of its lines. The same test recalcTotals applies, exported so
+ *  every path that would ADD a line can refuse to — adding one to a prelim
+ *  claim counts the same money twice. */
+export function isPrelimClaimRow(a: { prelim_heading: string | null; claimed_amount: number | null }): boolean {
+  return a.prelim_heading != null && a.claimed_amount != null;
+}
+
 export type PriorRow = {
   certified_amount: number | null;
   cumulative_value: number | null;
@@ -179,7 +188,7 @@ async function recalcTotals(
   // time never matches BOQ lines), and it neither anchors on prior apps nor
   // counts as "previously certified" for later BOQ apps — each claim stands
   // alone and the allowance tracks the running total.
-  const isPrelimClaim = afp.prelim_heading != null && afp.claimed_amount != null;
+  const isPrelimClaim = isPrelimClaimRow(afp);
   // The cumulative measured position — everything but the standalone claims.
   const cumulative = isPrelimClaim
     ? (afp.claimed_amount ?? 0)
@@ -274,7 +283,7 @@ async function autoSubmitIfReady(db: D1Database, afpId: number, actor: string): 
   if (!afp || afp.status !== "draft") return false;
   // A prelim claim's value is its single claimed amount — line matching (and
   // therefore reconciling the unmatched list) doesn't apply.
-  const isPrelimClaim = afp.prelim_heading != null && afp.claimed_amount != null;
+  const isPrelimClaim = isPrelimClaimRow(afp);
   if (afp.unmatched_lines_json && !isPrelimClaim) return false;                                 // still needs reconciling
   // Only incoming labour auto-submits (the subbie already sent it — reconciling
   // completes the record). An OUTGOING application is ours to send: it stays a
@@ -2349,6 +2358,7 @@ applications.post("/repair-labour-ledger", async (c) => {
 
   const apps = (await c.env.DB.prepare(
     `SELECT id, project_id, app_number, status, counterparty_supplier_id,
+            prelim_heading, claimed_amount,
             unmatched_lines_json, resolved_lines_json,
             cumulative_value, amount_due, total_invoice, certified_amount
        FROM applications_for_payment
@@ -2357,6 +2367,7 @@ applications.post("/repair-labour-ledger", async (c) => {
   ).all<{
     id: number; project_id: string; app_number: number; status: Status;
     counterparty_supplier_id: number | null;
+    prelim_heading: string | null; claimed_amount: number | null;
     unmatched_lines_json: string | null; resolved_lines_json: string | null;
     cumulative_value: number | null; amount_due: number | null;
     total_invoice: number | null; certified_amount: number | null;
@@ -2369,6 +2380,17 @@ applications.post("/repair-labour-ledger", async (c) => {
 
   for (const a of apps) {
     const before = { cumulative_value: a.cumulative_value, amount_due: a.amount_due, total_invoice: a.total_invoice };
+
+    // A prelims drawdown's value is its claimed amount; its lines are not read.
+    // Moving its stranded lines into a bucket would add the same money again.
+    if (isPrelimClaimRow(a)) {
+      needsReview.push({
+        afp_id: a.id, app_number: a.app_number, status: a.status,
+        reason: "prelims drawdown — its claimed amount is its value, so its lines are left alone",
+        prelim_heading: a.prelim_heading, claimed_amount: a.claimed_amount,
+      });
+      continue;
+    }
 
     if (a.status !== "draft" && a.status !== "submitted") {
       // Historical: report the gap, change nothing.
@@ -2868,11 +2890,13 @@ applications.post("/:id/reread-source", async (c) => {
   const id = Number(c.req.param("id"));
   const afp = await c.env.DB.prepare(
     `SELECT id, project_id, direction, status, counterparty_supplier_id,
+            prelim_heading, claimed_amount,
             source_file_key, source_file_name, source_file_type
        FROM applications_for_payment WHERE id = ?`,
   ).bind(id).first<{
     id: number; project_id: string; direction: Direction; status: Status;
     counterparty_supplier_id: number | null;
+    prelim_heading: string | null; claimed_amount: number | null;
     source_file_key: string | null; source_file_name: string | null; source_file_type: string | null;
   }>();
   if (!afp) return c.json({ error: "not found" }, 404);
@@ -2894,6 +2918,13 @@ applications.post("/:id/reread-source", async (c) => {
   }
 
   const isLabour = afp.direction === "incoming_labour";
+  // A prelim-tagged application is a standalone drawdown: its value IS
+  // `claimed_amount`, and recalcTotals ignores its lines entirely. Filing its
+  // claimed lines as dayworks or expenses therefore adds the same money a
+  // second time — Asgaard's Block D #1 went from £2,100 to £4,200 that way on
+  // 2026-10-08, its one day of site management counted both as the prelims
+  // drawdown someone had already assigned it to and as a fresh daywork.
+  const routeAdhoc = isLabour && !isPrelimClaimRow(afp);
   const snap = await c.env.DB.prepare(
     "SELECT id FROM material_snapshots WHERE project_id = ? AND is_active = 1",
   ).bind(afp.project_id).first<{ id: number }>();
@@ -2961,8 +2992,8 @@ applications.post("/:id/reread-source", async (c) => {
       // where a hotel bill and a day of site management are worth nothing and
       // will never match a BOQ item. Route them the way ingest does — expenses
       // first, because some expense wording reads as time.
-      if (isLabour && looksLikeExpenseLine(line.description) && await upsertAdhoc(EXPENSES_SECTION, line)) continue;
-      if (isLabour && looksLikeDayworkLine(line.description) && await upsertAdhoc(DAYWORKS_SECTION, line)) continue;
+      if (routeAdhoc && looksLikeExpenseLine(line.description) && await upsertAdhoc(EXPENSES_SECTION, line)) continue;
+      if (routeAdhoc && looksLikeDayworkLine(line.description) && await upsertAdhoc(DAYWORKS_SECTION, line)) continue;
       unmatched.push({
         raw_line_no: unmatched.length + 1, description: line.description,
         qty: line.qty, unit: line.unit,
