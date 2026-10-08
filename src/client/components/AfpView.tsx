@@ -15,6 +15,7 @@ import { parseMoney, parsePositiveMoney } from "../../shared/money";
 import type { AfpDetail, AfpLine, AfpStatus, CurrentUser, ApplicationForPayment } from "../../shared/types";
 import { isCertAwaitingApproval } from "../../shared/payment-release";
 import { isExpenseSection } from "../../shared/afp-expenses";
+import { isDayworkSection } from "../../shared/afp-dayworks";
 
 export function AfpView({ me }: { me: CurrentUser | null }) {
   const { id } = useParams<{ id: string }>();
@@ -90,7 +91,9 @@ export function AfpView({ me }: { me: CurrentUser | null }) {
   // Expenses are a disbursement, not labour: outside the budget on both sides,
   // matching lineBudgetStatus on the server. Counting a hotel bill as claimed
   // against a budget it was never in put the application in front of a
-  // director. Variations still count — those are labour beyond the budget.
+  // director. Variations still count — those are labour beyond the budget, and
+  // so do dayworks: time worked off the BOQ is exactly the unbudgeted labour
+  // this gate exists to put in front of someone.
   const budgetLines = lines.filter((l) => !(l.is_adhoc && isExpenseSection(l.section)));
   const labourBudget = budgetLines.filter((l) => !l.is_adhoc).reduce((s, l) => s + (l.contract_value ?? 0), 0);
   // The over-budget gate judges the CLAIM (cumulative), not the certified
@@ -936,17 +939,21 @@ function LinesTable({
   // Two-level grouping: category (Prelims / Measured / Ancil / Variations),
   // then section within each — mirroring the cost-sheet structure.
   const categories = useMemo(() => {
-    const CAT_ORDER = ["prelims", "measured", "ancil", "variations", "expenses", "materials_on_site"] as const;
+    const CAT_ORDER = ["prelims", "measured", "ancil", "variations", "dayworks", "expenses", "materials_on_site"] as const;
     const CAT_LABEL: Record<string, string> = {
       prelims: "Preliminaries", measured: "Measured works", ancil: "Ancil Items",
-      variations: "Variations", expenses: "Expenses", materials_on_site: "Materials on Site",
+      variations: "Variations", dayworks: "Dayworks", expenses: "Expenses",
+      materials_on_site: "Materials on Site",
     };
     const byCat = new Map<string, AfpLine[]>();
     for (const l of lines) {
-      // Ad-hoc lines split by section: Expenses / Materials on Site / Variations;
-      // legacy null category → Measured works.
+      // Ad-hoc lines split by section: Expenses / Materials on Site / Dayworks
+      // / Variations; legacy null category → Measured works.
       const key = l.is_adhoc
-        ? (isMosSection(l.section) ? "materials_on_site" : isExpenseSection(l.section) ? "expenses" : "variations")
+        ? (isMosSection(l.section) ? "materials_on_site"
+          : isExpenseSection(l.section) ? "expenses"
+          : isDayworkSection(l.section) ? "dayworks"
+          : "variations")
         : (l.category ?? "measured");
       (byCat.get(key) ?? byCat.set(key, []).get(key)!).push(l);
     }
@@ -1052,7 +1059,7 @@ function Group({
       <tr style={{ background: "var(--card-2)" }}>
         <td colSpan={cols} style={{ fontWeight: 600, fontSize: 12, textTransform: "uppercase", letterSpacing: "0.06em" }}>
           {group.section}
-          {group.lines.some((l) => l.is_adhoc) && !isMosSection(group.section) && !isExpenseSection(group.section) && (
+          {group.lines.some((l) => l.is_adhoc) && !isMosSection(group.section) && !isExpenseSection(group.section) && !isDayworkSection(group.section) && (
             <span className="badge unpriced" style={{ marginLeft: 8 }}>variation</span>
           )}
         </td>
@@ -1134,7 +1141,7 @@ function LineRow({
     <tr>
       <td>
         {line.description}
-        {line.is_adhoc && !isMosSection(line.section) ? <span className="badge unpriced" style={{ marginLeft: 6, fontSize: 10 }}>{isExpenseSection(line.section) ? "expense" : "variation"}</span> : null}
+        {line.is_adhoc && !isMosSection(line.section) ? <span className="badge unpriced" style={{ marginLeft: 6, fontSize: 10 }}>{isExpenseSection(line.section) ? "expense" : isDayworkSection(line.section) ? "daywork" : "variation"}</span> : null}
       </td>
       <td className="num">{fmtQty(line.qty)}</td>
       <td className="center">{line.unit ?? "—"}</td>

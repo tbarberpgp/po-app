@@ -884,6 +884,12 @@ export type ApplicationForPayment = {
    *  per-application claim, never carried forward, so it sits outside the
    *  cumulative position and is added to this application's net on its own. */
   expenses_amount: number | null;
+  /** Dayworks claimed on this application alone — time rather than measure:
+   *  a week of operative hours, a day of site management. Like expenses it is
+   *  a per-application claim that never carries forward, so it sits outside
+   *  the cumulative position; unlike expenses it is labour, and counts inside
+   *  the labour budget and against the over-budget gate. */
+  dayworks_amount: number | null;
   previous_certified: number | null;
   this_period_net: number | null;
   retention_amount: number | null;
@@ -985,6 +991,12 @@ export type ApplicationListItem = {
    *  per-application claim, never carried forward, so it sits outside the
    *  cumulative position and is added to this application's net on its own. */
   expenses_amount: number | null;
+  /** Dayworks claimed on this application alone — time rather than measure:
+   *  a week of operative hours, a day of site management. Like expenses it is
+   *  a per-application claim that never carries forward, so it sits outside
+   *  the cumulative position; unlike expenses it is labour, and counts inside
+   *  the labour budget and against the over-budget gate. */
+  dayworks_amount: number | null;
   created_at: string;
   created_by: string;
   has_unmatched: number;   // 0/1 from SQLite
