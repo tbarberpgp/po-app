@@ -1785,7 +1785,7 @@ function UnmatchedLinesBanner({
   // Only show BOQ-derived seeded lines as assign candidates (variations would be a re-entry)
   const candidates = seededLines.filter((l) => l.contract_item_id != null && !l.is_adhoc);
 
-  async function act(rawLineNo: number, action: "assign" | "dismiss" | "add_as_variation" | "add_as_expense" | "add_as_adjustment", contractItemId?: number) {
+  async function act(rawLineNo: number, action: "assign" | "dismiss" | "add_as_variation" | "add_as_expense" | "add_as_daywork" | "add_as_adjustment", contractItemId?: number) {
     setBusy(true); setErr(null);
     try {
       await api.resolveUnmatchedLine(afpId, rawLineNo, {
@@ -1838,7 +1838,8 @@ function UnmatchedLinesBanner({
   const RES_LABEL: Record<string, string> = {
     assign: "→ assigned to a BOQ line", assign_split: "→ split over BOQ lines",
     add_as_variation: "→ added as a variation",
-    add_as_expense: "→ added as an expense", add_as_adjustment: "→ added as a contract adjustment", dismiss: "→ dismissed",
+    add_as_expense: "→ added as an expense", add_as_daywork: "→ added as dayworks",
+    add_as_adjustment: "→ added as a contract adjustment", dismiss: "→ dismissed",
   };
 
   return (
@@ -1910,6 +1911,7 @@ function UnmatchedLinesBanner({
                       )}
                       <button className="ghost tiny" onClick={() => act(u.raw_line_no, "add_as_variation")} disabled={busy}>+ Variation</button>
                       <button className="ghost tiny" onClick={() => act(u.raw_line_no, "add_as_expense")} disabled={busy} title="Add as a claimed expense (own bucket, outside the measured labour budget)">+ Expense</button>
+                      <button className="ghost tiny" onClick={() => act(u.raw_line_no, "add_as_daywork")} disabled={busy} title="Add as dayworks — time worked off the BOQ (hours, a day rate, site management). Counts inside the labour budget, but claimed for this period only and never carried forward.">+ Daywork</button>
                       <button className="ghost tiny" onClick={() => act(u.raw_line_no, "dismiss")} disabled={busy}>Dismiss</button>
                     </div>
                     {splitFor === u.raw_line_no && (
