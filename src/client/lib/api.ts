@@ -1342,7 +1342,13 @@ export const api = {
     name: string; company?: string; trade?: string; phone?: string;
     signature?: string; lat?: number; lng?: number; accuracy?: number;
     ack_notice_ids?: number[]; briefing_ack?: boolean;
-  }) => jfetch<{ id: number }>(`/pub/site/${token}/signin`, { method: "POST", body: JSON.stringify(input) }),
+  }) => jfetch<{
+    id: number;
+    /** They were already signed in here (e.g. from another phone) — `id` is that sign-in, nothing new was recorded. */
+    already_signed_in?: boolean; signed_in_at?: string;
+    /** Site code they were still signed in at, now signed out of. */
+    moved_from?: string | null;
+  }>(`/pub/site/${token}/signin`, { method: "POST", body: JSON.stringify(input) }),
   pubSignOut: (token: string, signinId: number) =>
     jfetch<{ ok: true }>(`/pub/site/${token}/signout`, { method: "POST", body: JSON.stringify({ signin_id: signinId }) }),
 

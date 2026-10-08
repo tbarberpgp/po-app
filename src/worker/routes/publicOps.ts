@@ -406,6 +406,33 @@ publicOps.post("/site/:token/signin", async (c) => {
   const phone = op ? op.phone : (body.phone?.trim() || null);
   const now = new Date().toISOString();
   const withOperative = await signinsCarryOperativeId(c.env);
+
+  // One open sign-in per person. The phone that signed someone in remembers it,
+  // but nothing else did: picking the same name again on another phone (a
+  // manager's, or their own after clearing it) put them on the register twice.
+  // Still signed in HERE → hand back that sign-in instead of a second one.
+  // Still signed in at ANOTHER site → they've left it; close it as of now.
+  // Every open row is today's: the hourly sweep closes anything past 19:00, so
+  // the 20-hour window only keeps the query off old rows.
+  let movedFrom: string | null = null;
+  if (op && withOperative) {
+    const open = await c.env.DB.prepare(
+      `SELECT s.id, s.project_id, s.signed_in_at, p.code
+         FROM site_signins s JOIN projects p ON p.id = s.project_id
+        WHERE s.operative_id = ? AND s.signed_out_at IS NULL AND s.signed_in_at >= ?
+        ORDER BY s.signed_in_at`,
+    ).bind(op.id, new Date(Date.now() - 20 * 3600_000).toISOString())
+      .all<{ id: number; project_id: string; signed_in_at: string; code: string }>();
+    const memberIds = await siteMemberIds(c.env, site.project_id);
+    const here = open.results.find((r) => memberIds.includes(r.project_id));
+    if (here) return c.json({ id: here.id, already_signed_in: true, signed_in_at: here.signed_in_at });
+    if (open.results.length) {
+      await c.env.DB.prepare(
+        `UPDATE site_signins SET signed_out_at = ? WHERE id IN (${open.results.map(() => "?").join(",")}) AND signed_out_at IS NULL`,
+      ).bind(now, ...open.results.map((r) => r.id)).run();
+      movedFrom = open.results[open.results.length - 1].code;
+    }
+  }
   const res = await c.env.DB.prepare(
     // Who signed in, not just what they were called. The picker already
     // resolved the operative above; storing only their name meant every
@@ -453,7 +480,7 @@ publicOps.post("/site/:token/signin", async (c) => {
       );
     }
   }
-  return c.json({ id: signinId });
+  return c.json({ id: signinId, moved_from: movedFrom });
 });
 
 // Operative signs out (end of shift). The device remembers its own signin id.
@@ -462,10 +489,13 @@ publicOps.post("/site/:token/signout", async (c) => {
   if (!site) return c.json({ error: "This sign-in link is no longer valid." }, 404);
   const body = await c.req.json<{ signin_id?: number }>();
   if (!body.signin_id) return c.json({ error: "signin_id required" }, 400);
+  // Any contract in the site's group: the sign-in handed back as "already signed
+  // in" may have been made through a sibling block's link.
+  const memberIds = await siteMemberIds(c.env, site.project_id);
   await c.env.DB.prepare(
     `UPDATE site_signins SET signed_out_at = ?
-      WHERE id = ? AND project_id = ? AND signed_out_at IS NULL`,
-  ).bind(new Date().toISOString(), body.signin_id, site.project_id).run();
+      WHERE id = ? AND project_id IN (${memberIds.map(() => "?").join(",")}) AND signed_out_at IS NULL`,
+  ).bind(new Date().toISOString(), body.signin_id, ...memberIds).run();
   return c.json({ ok: true });
 });
 
