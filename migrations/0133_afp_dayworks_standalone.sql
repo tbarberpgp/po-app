@@ -1,0 +1,25 @@
+-- 0133: dayworks on a labour application are a standalone, per-application
+-- claim — the same treatment 0126 gave expenses, for the same reason.
+--
+-- Two of our labour subcontractors invoice time rather than measure: "2 x
+-- Operatives x 10 Hours per Shift @ £33.00 P/H", "Management on site -
+-- DALLAS ROAD (17/08/2026)". Those describe no BOQ item, so they now land as
+-- ad-hoc lines in the "Dayworks" section instead of stranding in the unmatched
+-- tray, where £40,818 of real claims was holding itself out of every total.
+--
+-- A week of dayworks is claimed once and never carried forward — next week is
+-- a fresh line on a fresh application. Folding it into cumulative_value would
+-- make the NEXT application subtract it as previously-certified, so each week
+-- would cancel the last and the series would net to nothing: exactly the
+-- failure 0126 fixed for expenses.
+--
+-- Unlike expenses, dayworks ARE labour: they stay inside the labour budget and
+-- in front of the over-budget gate, because unbudgeted labour is precisely
+-- what that gate exists to catch. Only the cumulative ledger holds them apart.
+--
+-- Additive; existing rows read 0 via COALESCE.
+--
+-- NOTE on numbering: 0132 is taken. `0132_operative_extra_sites` is applied on
+-- production but has never reached main, so the next free number in the live
+-- d1_migrations ledger is 0133, not 0132.
+ALTER TABLE applications_for_payment ADD COLUMN dayworks_amount REAL;
