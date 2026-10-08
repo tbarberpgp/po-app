@@ -312,7 +312,15 @@ function DashboardBody({ d, onPickProject, scopeLabel }: { d: Report; onPickProj
   async function openLabourDrill(p: { id: string; code: string; name: string; labour_budget: number; labour_expended: number }) {
     try {
       const afps = await api.listAfps(p.id, "incoming_labour");
-      const rows = [...afps]
+      // Drafts stay off the dashboard. A draft is a document the reader has
+      // had a go at and nobody has agreed yet: its figures move whenever a
+      // line is resolved or the source is re-read, and reporting them beside
+      // certified money invites someone to add the two together. It earns a
+      // row once it has been sent. Nothing here expends the budget either way
+      // — the headline above counts certified work only.
+      const sent = afps.filter((a) => a.status !== "draft");
+      const draftsHidden = afps.length - sent.length;
+      const rows = [...sent]
         .sort((a, b) => a.app_number - b.app_number)
         .map((a) => ({
           app: `App #${a.app_number}`,
@@ -337,7 +345,7 @@ function DashboardBody({ d, onPickProject, scopeLabel }: { d: Report; onPickProj
           { key: "certified", label: "Certified", align: "right", fmt: (v) => (v == null ? "—" : fmtMoney(Number(v))) },
         ],
         rows: rows as unknown as Array<Record<string, unknown>>,
-        note: "Claimed to date is each subcontractor's cumulative position, so the figure above is their LATEST certified application — not the sum of that column. Dayworks and expenses are claimed per application and do add up. Only certified applications expend the budget; drafts and submitted claims are listed for context.",
+        note: `Claimed to date is each subcontractor's cumulative position, so the figure above is their LATEST certified application — not the sum of that column. Dayworks and expenses are claimed per application and do add up. Only certified applications expend the budget; submitted claims are listed for context.${draftsHidden > 0 ? ` ${draftsHidden} draft ${draftsHidden === 1 ? "application is" : "applications are"} not shown — a draft is not agreed and its figures still move.` : ""}`,
       });
     } catch { /* leave closed on fetch failure */ }
   }
