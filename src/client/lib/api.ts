@@ -1457,7 +1457,7 @@ export const api = {
 
   // ── Operatives register (manager-facing) ──────────────────────────────────
   operatives: () =>
-    jfetch<Array<import("../../shared/types").Operative & { qual_count: number; rams_pending: number; qual_worst: string; quals_pending: number; assigned_project_code: string | null }>>(
+    jfetch<Array<import("../../shared/types").Operative & { qual_count: number; rams_pending: number; qual_worst: string; quals_pending: number; assigned_project_code: string | null; extra_project_ids: string[]; extra_project_codes: string | null }>>(
       "/api/operatives",
     ),
   /** Operatives currently assigned to one site, for the project's Operatives tab. */
@@ -1467,6 +1467,11 @@ export const api = {
       phone: string | null; email: string | null; induction_done: number;
       assigned_at: string | null; qual_count: number; rams_pending: number;
       qual_worst: string; quals_pending: number; on_site: boolean;
+      assigned_project_id: string | null; home_project_code: string | null;
+      /** Other sites they also sign in at (comma-separated codes), if any. */
+      extra_project_codes: string | null;
+      /** On this roster through an extra site, not their home one. */
+      extra_here: boolean;
       /** Signed in today at all, even if they've since signed out — the crew a
        *  toolbox talk delivered today covers. `on_site` is only who's here now. */
       signed_in_today: boolean;
@@ -1485,6 +1490,13 @@ export const api = {
     }),
   unassignOperative: (id: string) =>
     jfetch<{ ok: true }>(`/api/operatives/${id}/unassign`, { method: "POST" }),
+  /** Let an operative also sign in at this site, keeping their home site. */
+  addOperativeExtraSite: (id: string, projectId: string) =>
+    jfetch<{ ok: true; added: boolean }>(`/api/operatives/${id}/extra-sites`, {
+      method: "POST", body: JSON.stringify({ project_id: projectId }),
+    }),
+  removeOperativeExtraSite: (id: string, projectId: string) =>
+    jfetch<{ ok: true }>(`/api/operatives/${id}/extra-sites/${projectId}`, { method: "DELETE" }),
   operative: (id: string) =>
     jfetch<{
       operative: import("../../shared/types").Operative;
