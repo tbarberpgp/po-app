@@ -707,8 +707,14 @@ applications.get("/:id", async (c) => {
   // Previously certified PER bill line — sum, over prior (submitted/certified/paid)
   // apps in this direction, of each line's certified (or applied) value for the
   // same contract_item. So the UI can show this period = cumulative − previously.
+  // Same scope as recalcTotals' previous_certified: a labour application only
+  // counts its own subcontractor's priors (pooled, Cladders' cert 28 showed
+  // £165,850 "used" on a £48,000 line — mostly another subbie's claims), and
+  // prelims drawdowns are out because their lines aren't their value.
   const prevByItem = new Map<number, number>();
   try {
+    const a = afp as AfpRow;
+    const perSupplier = a.direction === "incoming_labour";
     const prevLines = await c.env.DB.prepare(
       `SELECT al.contract_item_id AS cid,
               COALESCE(SUM(COALESCE(al.certified_percent / 100.0 * al.contract_value, al.cumulative_value)), 0) AS prev
@@ -716,8 +722,14 @@ applications.get("/:id", async (c) => {
          JOIN applications_for_payment a2 ON a2.id = al.afp_id
         WHERE a2.project_id = ? AND a2.direction = ? AND a2.app_number < ?
           AND a2.status IN ('submitted','certified','paid') AND al.contract_item_id IS NOT NULL
+          AND a2.prelim_heading IS NULL
+          ${perSupplier ? "AND a2.counterparty_supplier_id IS ?" : ""}
         GROUP BY al.contract_item_id`,
-    ).bind((afp as AfpRow).project_id, (afp as AfpRow).direction, (afp as AfpRow).app_number)
+    ).bind(
+      ...(perSupplier
+        ? [a.project_id, a.direction, a.app_number, a.counterparty_supplier_id]
+        : [a.project_id, a.direction, a.app_number]),
+    )
       .all<{ cid: number; prev: number }>();
     for (const r of prevLines.results) prevByItem.set(Number(r.cid), r.prev ?? 0);
   } catch { /* pre-existing schemas — skip */ }
