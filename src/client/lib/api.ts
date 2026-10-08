@@ -1040,7 +1040,7 @@ export const api = {
     afpId: number,
     rawLineNo: number,
     body: {
-      action: "assign" | "assign_split" | "dismiss" | "add_as_variation" | "add_as_expense" | "add_as_adjustment";
+      action: "assign" | "assign_split" | "dismiss" | "add_as_variation" | "add_as_expense" | "add_as_daywork" | "add_as_adjustment";
       contract_item_id?: number;
       /** assign_split: the line's cost portioned over several BOQ lines. */
       parts?: Array<{ contract_item_id: number; value: number }>;

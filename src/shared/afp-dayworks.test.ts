@@ -84,6 +84,29 @@ test("expenses are claimed first, so a hotel bill never lands in dayworks", () =
   }
 });
 
+test("no real expense line also reads as time", () => {
+  // Three readers now ask these two questions in the same order — ingest, the
+  // re-reader and the repair — and all three claim expenses first. That order
+  // is a guard, not the thing keeping them apart: on every expense wording
+  // live on 2026-10-07 the two tests are genuinely disjoint. If a future
+  // daywork pattern starts catching hotel bills, this fails before a
+  // disbursement gets counted inside the labour budget.
+  const liveExpenseWording = [
+    "Expenses - Premier Inn + breakfast and evening meal x 3",
+    "Expenses - Premier Inn + breakfast and evening meal x 4",
+    "Expenses - Premier Inn + breakfast and evening meal x 4 x 4",
+    "Expenses - The Nook hotel + breakfast and evening meal x 4",
+    "Expenses Premier Inn + breakfast and evening meal x 4",
+    "Mileage - See Expenses Spreadsheet",
+    // A priced BOQ line on these very projects, not a claim — it must read as
+    // neither once the matcher has had its go.
+    "Accommodation:  £60/night",
+  ];
+  for (const d of liveExpenseWording) {
+    assert.equal(looksLikeDayworkLine(d), false, `expense wording must not read as time: ${d}`);
+  }
+});
+
 test("blank and missing descriptions are not dayworks", () => {
   assert.equal(looksLikeDayworkLine(""), false);
   assert.equal(looksLikeDayworkLine("   "), false);

@@ -2910,12 +2910,46 @@ applications.post("/:id/reread-source", async (c) => {
     : null;
   const matches = matchLines(normalLines, items, await aliasMap(c.env.DB, "afp_line", supplierName));
 
-  // Reset every line before re-applying, so a re-read is idempotent rather
-  // than stacking on top of the previous read.
-  await c.env.DB.prepare("UPDATE afp_lines SET percent_complete = 0, cumulative_value = 0 WHERE afp_id = ?").bind(id).run();
+  // Reset the MEASURED lines before re-applying, so a re-read is idempotent
+  // rather than stacking on top of the previous read. Ad-hoc lines are not
+  // re-matched and must not be swept up in that: zeroing them wiped whatever
+  // expenses the application had already claimed, and would now wipe its
+  // dayworks too. They are rebuilt by description below instead.
+  await c.env.DB.prepare("UPDATE afp_lines SET percent_complete = 0, cumulative_value = 0 WHERE afp_id = ? AND is_adhoc = 0").bind(id).run();
   const itemById = new Map(items.map((it) => [it.id, it]));
   let matched = 0;
+  let adhocWritten = 0;
   const unmatched: Array<Record<string, unknown>> = [];
+
+  /** Rebuild one reader-produced ad-hoc line. Keyed on (section, description)
+   *  so a second re-read updates the line it made last time rather than
+   *  stacking a duplicate — and so a line someone added by hand, which the
+   *  reader will not produce again, is left exactly where it is. */
+  const upsertAdhoc = async (section: string, line: { description: string; unit: string | null; qty: number | null; cumulative_value: number | null; this_period_value: number | null }) => {
+    const v = line.cumulative_value ?? line.this_period_value ?? 0;
+    if (!Number.isFinite(v) || v === 0) return false;
+    const existing = await c.env.DB.prepare(
+      "SELECT id FROM afp_lines WHERE afp_id = ? AND is_adhoc = 1 AND section = ? AND description = ?",
+    ).bind(id, section, line.description).first<{ id: number }>();
+    if (existing) {
+      await c.env.DB.prepare(
+        "UPDATE afp_lines SET unit = ?, qty = ?, rate = ?, contract_value = ?, percent_complete = 100, cumulative_value = ? WHERE id = ?",
+      ).bind(line.unit ?? null, line.qty ?? 1, v, v, v, existing.id).run();
+    } else {
+      const maxOrder = await c.env.DB.prepare(
+        "SELECT COALESCE(MAX(display_order), 0) AS n FROM afp_lines WHERE afp_id = ?",
+      ).bind(id).first<{ n: number }>();
+      await c.env.DB.prepare(
+        `INSERT INTO afp_lines
+           (afp_id, section, description, unit, qty, rate, contract_value,
+            percent_complete, cumulative_value, is_adhoc, display_order)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 100, ?, 1, ?)`,
+      ).bind(id, section, line.description, line.unit ?? null, line.qty ?? 1, v, v, v, (maxOrder?.n ?? 0) + 1).run();
+    }
+    adhocWritten += 1;
+    return true;
+  };
+
   for (const line of normalLines) {
     const m = matches.get(line.line_no);
     const it = m ? itemById.get(m.contract_item_id) : null;
@@ -2923,6 +2957,12 @@ applications.post("/:id/reread-source", async (c) => {
       : line.this_period_value != null ? line.this_period_value
       : (line.cumulative_pct != null && it && it.total !== 0 ? line.cumulative_pct / 100 * it.total : null);
     if (!m || !it || lineVal == null) {
+      // The reader used to drop every unmatched line straight into the tray,
+      // where a hotel bill and a day of site management are worth nothing and
+      // will never match a BOQ item. Route them the way ingest does — expenses
+      // first, because some expense wording reads as time.
+      if (isLabour && looksLikeExpenseLine(line.description) && await upsertAdhoc(EXPENSES_SECTION, line)) continue;
+      if (isLabour && looksLikeDayworkLine(line.description) && await upsertAdhoc(DAYWORKS_SECTION, line)) continue;
       unmatched.push({
         raw_line_no: unmatched.length + 1, description: line.description,
         qty: line.qty, unit: line.unit,
@@ -2943,12 +2983,12 @@ applications.post("/:id/reread-source", async (c) => {
   await c.env.DB.prepare(
     `INSERT INTO audit_log (entity_type, entity_id, action, actor, details, created_at)
      VALUES ('afp', ?, 'source_reread', ?, ?, ?)`,
-  ).bind(String(id), c.get("userEmail"), JSON.stringify({ extracted: normalLines.length, matched, unmatched: unmatched.length }), new Date().toISOString()).run();
+  ).bind(String(id), c.get("userEmail"), JSON.stringify({ extracted: normalLines.length, matched, adhoc: adhocWritten, unmatched: unmatched.length }), new Date().toISOString()).run();
 
   const after = await c.env.DB.prepare(
     "SELECT cumulative_value, amount_due FROM applications_for_payment WHERE id = ?",
   ).bind(id).first<{ cumulative_value: number; amount_due: number }>();
-  return c.json({ ok: true, extracted: normalLines.length, matched, unmatched: unmatched.length, cumulative_value: after?.cumulative_value ?? 0, amount_due: after?.amount_due ?? 0 });
+  return c.json({ ok: true, extracted: normalLines.length, matched, adhoc: adhocWritten, unmatched: unmatched.length, cumulative_value: after?.cumulative_value ?? 0, amount_due: after?.amount_due ?? 0 });
 });
 
 applications.post("/:id/rebuild-combined", async (c) => {
@@ -3087,7 +3127,7 @@ applications.post("/:id/unmatched/:rawLineNo/resolve", async (c) => {
   const id = Number(c.req.param("id"));
   const rawLineNo = Number(c.req.param("rawLineNo"));
   const body = await c.req.json<{
-    action: "assign" | "assign_split" | "dismiss" | "add_as_variation" | "add_as_expense" | "add_as_adjustment";
+    action: "assign" | "assign_split" | "dismiss" | "add_as_variation" | "add_as_expense" | "add_as_daywork" | "add_as_adjustment";
     /** Required for action="assign" — the contract_item_id to apply the value to. */
     contract_item_id?: number;
     /** action="assign_split": the line's cost portioned over several BOQ lines. */
@@ -3227,10 +3267,14 @@ applications.post("/:id/unmatched/:rawLineNo/resolve", async (c) => {
       contractVal, contractVal, pct ?? 100, v, (maxOrder?.n ?? 0) + 1,
     ).first<{ id: number }>();
     resolution = { action: body.action, afp_line_id: ins!.id };
-  } else if (body.action === "add_as_variation" || body.action === "add_as_expense") {
-    // Add as an ad-hoc line (100% complete, value = the claimed £). "Expenses"
-    // sit in their own bucket; both are excluded from the measured labour budget.
-    const section = body.action === "add_as_expense" ? "Expenses" : "Variations";
+  } else if (body.action === "add_as_variation" || body.action === "add_as_expense" || body.action === "add_as_daywork") {
+    // Add as an ad-hoc line (100% complete, value = the claimed £). Each goes
+    // to its own bucket, and the bucket decides what the money then counts as:
+    // an expense is a disbursement outside the labour budget, a daywork is
+    // labour inside it, a variation is labour against the variations budget.
+    const section = body.action === "add_as_expense" ? EXPENSES_SECTION
+      : body.action === "add_as_daywork" ? DAYWORKS_SECTION
+      : "Variations";
     const v = typeof line.cumulative_value === "number" ? line.cumulative_value
       : typeof line.this_period_value === "number" ? line.this_period_value : 0;
     const maxOrder = await c.env.DB.prepare(
@@ -3336,7 +3380,8 @@ applications.post("/:id/resolved/:rawLineNo/undo", async (c) => {
         p.prev_cum, Number(p.afp_line_id), id,
       ).run();
     }
-  } else if (res.action === "add_as_variation" || res.action === "add_as_expense" || res.action === "add_as_adjustment") {
+  } else if (res.action === "add_as_variation" || res.action === "add_as_expense"
+             || res.action === "add_as_daywork" || res.action === "add_as_adjustment") {
     await c.env.DB.prepare("DELETE FROM afp_lines WHERE id = ? AND afp_id = ? AND is_adhoc = 1").bind(Number(res.afp_line_id), id).run();
   }
   // dismiss: nothing to reverse.
