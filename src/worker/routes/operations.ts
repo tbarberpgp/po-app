@@ -8,7 +8,8 @@ import { isSafeMediaUrl } from "../safe-url";
 // be an import cycle now that operatives.ts pulls siteScope from here.
 import { normalisePhone } from "../../shared/operatives-import";
 import { isSandboxId } from "../sandbox";
-import { signinsCarryOperativeId, deliveriesRecordPoLink, ticketScansCarrySupplierRef } from "../schema";
+import { signinsCarryOperativeId, deliveriesRecordPoLink, ticketScansCarrySupplierRef, deliveriesCarryNoteNumber } from "../schema";
+import { deliveryNoteDigits, deliveryNoteFromNotes, deliveryNoteKey, isSameDeliveryNote } from "../../shared/delivery-note";
 import { sendReportEmail, recipientsFor } from "./site-reports";
 import { buildHsPack } from "../../shared/hs-pack-pdf";
 import { fuzzyFindPo } from "../poRef";
@@ -2442,6 +2443,41 @@ operations.post("/:projectId/deliveries/ticket-candidates/:id/dismiss", async (c
 /** Turn a scanned ticket into a logged delivery: copy the WhatsApp photo into
  *  the deliveries bucket, insert the site_delivery, and mark the scan actioned.
  *  Optional JSON body overrides the auto-derived supplier / PO / contract. */
+/** Where a delivery note has already been booked, as a refusal to show the
+ *  person trying to book it again — or null when it hasn't been.
+ *
+ *  A note belongs to one order and is booked once; a PO taking several notes is
+ *  a part-delivery and fine. Looks in all three places a note number lives: the
+ *  scan a ticket check-in came from, the column hand-logged deliveries now
+ *  carry, and the prose those deliveries carried before it. */
+async function deliveryNoteAlreadyBooked(env: Env, note: string | null | undefined, supplier: string | null | undefined): Promise<string | null> {
+  const digits = deliveryNoteDigits(note);
+  if (!digits) return null;
+  const hasCol = await deliveriesCarryNoteNumber(env);
+  const like = `%${digits}%`;
+  const rows = (await env.DB.prepare(
+    `SELECT d.id, d.supplier, d.notes, d.delivered_at, d.created_by, d.scan_id,
+            COALESCE(po.po_number, d.po_number) AS po_number,
+            s.delivery_note_number AS scan_dn${hasCol ? ", d.delivery_note_number AS own_dn" : ""}
+       FROM site_deliveries d
+       LEFT JOIN delivery_ticket_scans s ON s.id = d.scan_id
+       LEFT JOIN purchase_orders po ON po.id = d.po_id
+      WHERE s.delivery_note_number LIKE ?${hasCol ? " OR d.delivery_note_number LIKE ?" : ""} OR d.notes LIKE ?
+      ORDER BY d.id LIMIT 50`,
+  ).bind(...(hasCol ? [like, like, like] : [like, like])).all<{
+    id: number; supplier: string | null; notes: string | null; delivered_at: string | null; created_by: string | null;
+    scan_id: number | null; po_number: string | null; scan_dn: string | null; own_dn?: string | null;
+  }>()).results;
+  const hit = rows.find((r) => [r.scan_dn, r.own_dn, deliveryNoteFromNotes(r.notes)]
+    .some((dn) => isSameDeliveryNote({ note, supplier }, { note: dn, supplier: r.supplier })));
+  if (!hit) return null;
+  const when = (hit.delivered_at ?? "").slice(0, 10);
+  const detail = [when && `delivered ${when}`, hit.created_by && `booked by ${hit.created_by}`].filter(Boolean).join(", ");
+  return `Delivery note ${String(note).trim()} is already booked${hit.po_number ? ` on ${hit.po_number}` : ""}${detail ? ` (${detail})` : ""}. `
+    + "A delivery note can only be booked once. If the earlier booking is on the wrong order, move or delete it first; "
+    + "if this is the same ticket sent twice, dismiss this copy.";
+}
+
 operations.post("/:projectId/deliveries/ticket-candidates/:id/check-in", async (c) => {
   const scope = await siteScope(c.env, c.req.param("projectId"));
   const base = scope.baseId;
@@ -2462,6 +2498,8 @@ operations.post("/:projectId/deliveries/ticket-candidates/:id/check-in", async (
 
   let ov: { supplier?: string; po_number?: string; po_id?: string; description?: string; delivered_at?: string; contract_project_id?: string; target_project_id?: string; completes_po?: string; po_link_reason?: string; po_line_id?: string; po_line_desc?: string; received_qty?: string | number; received_unit?: string; part?: string; lines?: Array<{ po_line_id?: string; po_line_desc?: string; received_qty?: string | number; received_unit?: string }> } = {};
   try { ov = await c.req.json(); } catch { /* no overrides */ }
+  const booked = await deliveryNoteAlreadyBooked(c.env, scan.delivery_note_number, ov.supplier ?? scan.supplier_name);
+  if (booked) return c.json({ error: booked }, 409);
   const completesPo = ov.completes_po === "0" ? 0 : 1;
   const poLineId = ov.po_line_id && /^\d+$/.test(ov.po_line_id) ? Number(ov.po_line_id) : null;
   const poLineDesc = (ov.po_line_desc || "").trim() || null;
@@ -2834,6 +2872,13 @@ operations.post("/:projectId/deliveries", async (c) => {
   const form = await c.req.formData();
   const description = String(form.get("description") ?? "").trim();
   if (!description) return c.json({ error: "description required" }, 400);
+  // The note number the form read off the ticket (or the person typed), else
+  // the one written into the notes. Checked before the photo is stored.
+  const noteNumber = deliveryNoteKey(String(form.get("delivery_note_number") ?? ""))
+    ? String(form.get("delivery_note_number")).trim()
+    : deliveryNoteFromNotes(String(form.get("notes") ?? ""));
+  const booked = await deliveryNoteAlreadyBooked(c.env, noteNumber, String(form.get("supplier") ?? "").trim() || null);
+  if (booked) return c.json({ error: booked }, 409);
 
   let ticketKey: string | null = null;
   let ticketType: string | null = null;
@@ -2855,7 +2900,7 @@ operations.post("/:projectId/deliveries", async (c) => {
   const poNumber = String(form.get("po_number") ?? "").trim() || null;
   const poId = String(form.get("po_id") ?? "").trim() || null;
   const signedBy = String(form.get("signed_by") ?? "").trim() || null;
-  const notes = String(form.get("notes") ?? "").trim() || null;
+  let notes = String(form.get("notes") ?? "").trim() || null;
   const deliveredAt = String(form.get("delivered_at") ?? "").trim() || now;
   const expected = numOrNull("expected_qty");
   const received = numOrNull("received_qty");
@@ -2870,17 +2915,24 @@ operations.post("/:projectId/deliveries", async (c) => {
   const poLineId = /^\d+$/.test(poLineIdRaw) ? Number(poLineIdRaw) : null;
   const poLineDesc = String(form.get("po_line_desc") ?? "").trim() || null;
   const receivedUnit = String(form.get("received_unit") ?? "").trim() || null;
+  const recordsNote = await deliveriesCarryNoteNumber(c.env);
+  // Before 0134 the notes are the only place the number can live, and the
+  // guard reads it back from there — so it goes in rather than being lost.
+  if (!recordsNote && noteNumber && !deliveryNoteFromNotes(notes)) {
+    notes = [notes, `Delivery note ${noteNumber}`].filter(Boolean).join(". ");
+  }
   try {
     const res = await c.env.DB.prepare(
       `INSERT INTO site_deliveries
          (project_id, supplier, description, po_number, po_id, po_line_id, po_line_desc, ticket_key, ticket_type,
           signed_by, signature, status, notes, delivered_at, expected_qty, received_qty, received_unit,
-          contract_project_id, completes_po, created_at, created_by)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`,
+          contract_project_id, completes_po, created_at, created_by${recordsNote ? ", delivery_note_number" : ""})
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?${recordsNote ? ",?" : ""}) RETURNING id`,
     ).bind(
       projectId, supplier, description, poNumber, poId, poLineId, poLineDesc, ticketKey, ticketType,
       signedBy, signature, status, notes, deliveredAt, expected, received, receivedUnit,
       contractProjectId, completesPo, now, actor,
+      ...(recordsNote ? [noteNumber] : []),
     ).first<{ id: number }>();
     return c.json({ id: res!.id });
   } catch (e) {

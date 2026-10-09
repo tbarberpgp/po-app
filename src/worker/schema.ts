@@ -53,3 +53,10 @@ export function deliveriesRecordPoLink(env: Env): Promise<boolean> {
 export function ticketScansCarrySupplierRef(env: Env): Promise<boolean> {
   return hasColumn(env, "delivery_ticket_scans", "supplier_invoice_ref");
 }
+
+/** True once migration 0134 has landed and a hand-logged delivery records the
+ *  note number it was booked from. Until then the number is still checked, and
+ *  still written into the delivery's notes, where the guard also looks. */
+export function deliveriesCarryNoteNumber(env: Env): Promise<boolean> {
+  return hasColumn(env, "site_deliveries", "delivery_note_number");
+}

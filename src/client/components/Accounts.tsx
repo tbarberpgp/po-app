@@ -44,7 +44,7 @@ function wantsOurPoRef(inv: { kind?: string | null; extracted_po_ref?: string | 
   return inv.kind !== "overhead" && poRefState(inv) !== "ours";
 }
 
-type Tab = "inbox" | "held" | "ready" | "no-po" | "overheads" | "pushed" | "dismissed";
+type Tab = "inbox" | "held" | "ready" | "overheads" | "pushed" | "dismissed";
 
 /** Row status for the inbox dot/chip. The three live states of the flow are
  *  distinct because they belong to different people: awaiting approval is the
@@ -204,9 +204,6 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
       if (tab === "overheads") { if (!(r.kind === "overhead" && r.status !== "dismissed")) return false; }
       else if (tab === "held") { if (!isAwaitingApproval(r)) return false; }
       else if (tab === "ready") { if (!isReadyToPush(r)) return false; }
-      // Every live invoice naming no order of ours, whatever stage it is at —
-      // the point is to see the pile, and most of it is already approved.
-      else if (tab === "no-po") { if (r.status === "dismissed" || !wantsOurPoRef(r)) return false; }
       else if (tab === "pushed") { if (r.status !== "pushed") return false; }
       else if (tab === "dismissed") { if (r.status !== "dismissed") return false; }
       // Inbox is what still needs coding, matching or approving. A held invoice
@@ -302,7 +299,6 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
     finally { setBusy(false); }
   }
 
-  const noPoCount = rows.filter((r) => r.status !== "dismissed" && wantsOurPoRef(r)).length;
   const TABS: Array<[Tab, string, number | null]> = [
     ["inbox", "Inbox", inboxCount],
     // Both queues are counted for everyone. Accounts needs to see what it is
@@ -311,7 +307,6 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
     ["held", canRelease ? "To approve" : "Awaiting approval", heldCount],
     // The queue Accounts works from: approved, not yet posted.
     ["ready", "Ready to push", readyCount],
-    ["no-po", "Awaiting PO reference", noPoCount],
     ...(isAdmin ? [["overheads", "Overheads", null] as [Tab, string, null]] : []),
     ["pushed", "Pushed", null],
     ["dismissed", "Dismissed", null],
