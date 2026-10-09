@@ -38,6 +38,12 @@ function poRefState(inv: { extracted_po_ref?: string | null }): "ours" | "theirs
   return looksLikeOurPoNumber(ref) ? "ours" : "theirs";
 }
 
+/** An overhead (subscriptions, utilities, rent) is never bought on a PO, so a
+ *  missing reference on one is expected rather than something to chase. */
+function wantsOurPoRef(inv: { kind?: string | null; extracted_po_ref?: string | null }): boolean {
+  return inv.kind !== "overhead" && poRefState(inv) !== "ours";
+}
+
 type Tab = "inbox" | "held" | "ready" | "no-po" | "overheads" | "pushed" | "dismissed";
 
 /** Row status for the inbox dot/chip. The three live states of the flow are
@@ -200,7 +206,7 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
       else if (tab === "ready") { if (!isReadyToPush(r)) return false; }
       // Every live invoice naming no order of ours, whatever stage it is at —
       // the point is to see the pile, and most of it is already approved.
-      else if (tab === "no-po") { if (r.status === "dismissed" || poRefState(r) === "ours") return false; }
+      else if (tab === "no-po") { if (r.status === "dismissed" || !wantsOurPoRef(r)) return false; }
       else if (tab === "pushed") { if (r.status !== "pushed") return false; }
       else if (tab === "dismissed") { if (r.status !== "dismissed") return false; }
       // Inbox is what still needs coding, matching or approving. A held invoice
@@ -296,7 +302,7 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
     finally { setBusy(false); }
   }
 
-  const noPoCount = rows.filter((r) => r.status !== "dismissed" && poRefState(r) !== "ours").length;
+  const noPoCount = rows.filter((r) => r.status !== "dismissed" && wantsOurPoRef(r)).length;
   const TABS: Array<[Tab, string, number | null]> = [
     ["inbox", "Inbox", inboxCount],
     // Both queues are counted for everyone. Accounts needs to see what it is
@@ -367,7 +373,7 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
                             {r.extract_error && <span title="couldn't auto-read">⚠</span>}
                             {/* Said on the row, because this is decided long
                                 before anyone opens the invoice. */}
-                            {poRefState(r) !== "ours" && (
+                            {wantsOurPoRef(r) && (
                               <span style={{ color: "var(--danger)", fontWeight: 600 }}
                                 title={poRefState(r) === "none"
                                   ? "No PO reference is quoted on this invoice"
@@ -684,7 +690,7 @@ function InvoiceDetail({ inv, projects, accounts, isAdmin, canEdit, canRelease, 
                 top, because everything below it — the coding, the match, the
                 approval — rests on knowing which order the money belongs to,
                 and 182 of 231 invoices got all the way through without it. */}
-            {poRefState(inv) !== "ours" && (
+            {wantsOurPoRef(inv) && (
               <div className="flash" style={{ background: "var(--danger-soft, var(--warn-soft))", color: "var(--danger)", marginBottom: 10, fontSize: 12.5, lineHeight: 1.45 }}>
                 <b>{poRefState(inv) === "none" ? "No PO reference on this invoice." : `“${inv.extracted_po_ref}” is not one of our PO references.`}</b>{" "}
                 Ours look like <b>PO-26003-0040</b>.{" "}
