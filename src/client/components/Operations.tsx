@@ -2877,6 +2877,7 @@ function DeliveriesPanel({ projectId, canEdit, autoOpen, onAutoOpenConsumed }: {
   const [status, setStatus] = useState<SiteDelivery["status"]>("received");
   const [deliveredAt, setDeliveredAt] = useState(todayISO());
   const [notes, setNotes] = useState("");
+  const [noteNo, setNoteNo] = useState("");
   const [signature, setSignature] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [scanMsg, setScanMsg] = useState<string | null>(null);
@@ -2893,7 +2894,7 @@ function DeliveriesPanel({ projectId, canEdit, autoOpen, onAutoOpenConsumed }: {
   const ticketRef = useRef<HTMLInputElement>(null);
   function resetFields() {
     setDescription(""); setSupplier(""); setPoNumber(""); setPoId(""); setStatus("received");
-    setDeliveredAt(todayISO()); setNotes(""); setSignature(null); setScanMsg(null);
+    setDeliveredAt(todayISO()); setNotes(""); setNoteNo(""); setSignature(null); setScanMsg(null);
     setLines([]); setMatchPct(null); setExtracted(null); setContractId(""); setPartial(false); setPoLineId(""); setDropUnit("");
     if (ticketRef.current) ticketRef.current.value = "";
   }
@@ -2944,7 +2945,7 @@ function DeliveriesPanel({ projectId, canEdit, autoOpen, onAutoOpenConsumed }: {
       const sup = r.matched_po?.supplier || x.supplier_name;
       if (sup) setSupplier(sup);
       if (x.delivery_date) setDeliveredAt(x.delivery_date);
-      if (x.delivery_note_number) setNotes((n) => n.trim() ? n : `Delivery note ${x.delivery_note_number}`);
+      if (x.delivery_note_number) setNoteNo(x.delivery_note_number);
       if (r.matched_po) { setPoId(r.matched_po.id); setPoNumber(r.matched_po.po_number); }
       // Auto-tag the delivery to the matched PO's contract on a grouped site.
       if (r.matched_po?.project_id) setContractId(r.matched_po.project_id);
@@ -3005,6 +3006,7 @@ function DeliveriesPanel({ projectId, canEdit, autoOpen, onAutoOpenConsumed }: {
         if (dropUnit.trim()) fd.append("received_unit", dropUnit.trim());
       }
       if (combinedNotes) fd.append("notes", combinedNotes);
+      if (noteNo.trim()) fd.append("delivery_note_number", noteNo.trim());
       // Persist expected-vs-received totals (from the reconciled lines) so the
       // Received list can show the bar and the shortfall sticks.
       const qtyLines = lines.filter((l) => l.expected != null);
@@ -3190,6 +3192,7 @@ function DeliveriesPanel({ projectId, canEdit, autoOpen, onAutoOpenConsumed }: {
                     <label className="field"><span>What was delivered</span><input className="input" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="e.g. 12 × pallets insulation board" /></label>
                   )}
 
+                  <label className="field"><span>Delivery note no.</span><input className="input" value={noteNo} onChange={(e) => setNoteNo(e.target.value)} placeholder="from the ticket — a note can only be booked once" /></label>
                   <label className="field"><span>Notes <span className="muted" style={{ textTransform: "none", letterSpacing: 0, fontWeight: 400 }}>· optional</span></span><input className="input" value={notes} onChange={(e) => setNotes(e.target.value)} /></label>
                   {poId && poLines.length > 0 && (
                     <label className="field"><span>PO line item <span className="muted" style={{ textTransform: "none", letterSpacing: 0, fontWeight: 400 }}>· optional</span></span>
@@ -3492,6 +3495,7 @@ export function GlobalDeliveryCheckIn({ onClose, onDone }: { onClose: () => void
   const [supplier, setSupplier] = useState("");
   const [description, setDescription] = useState("");
   const [notes, setNotes] = useState("");
+  const [noteNo, setNoteNo] = useState("");
   const [deliveredAt, setDeliveredAt] = useState(todayISO());
   const [matchPct, setMatchPct] = useState<number | null>(null);
   const [lines, setLines] = useState<DeliveryLine[]>([]);
@@ -3515,7 +3519,7 @@ export function GlobalDeliveryCheckIn({ onClose, onDone }: { onClose: () => void
 
   function resetAll() {
     setProjectId(""); setProjectLabel(""); setPoId(""); setPoNumber(""); setSupplier("");
-    setDescription(""); setNotes(""); setDeliveredAt(todayISO()); setMatchPct(null);
+    setDescription(""); setNotes(""); setNoteNo(""); setDeliveredAt(todayISO()); setMatchPct(null);
     setLines([]); setExtracted(null); setScanMsg(null); setCandidates([]); setPosForProject([]);
     setErr(null); setDoneSummary(null);
     if (ticketRef.current) ticketRef.current.value = "";
@@ -3533,7 +3537,7 @@ export function GlobalDeliveryCheckIn({ onClose, onDone }: { onClose: () => void
       const sup = r.matched_po?.supplier || x.supplier_name;
       if (sup) setSupplier(sup);
       if (x.delivery_date) setDeliveredAt(x.delivery_date);
-      if (x.delivery_note_number) setNotes((n) => (n.trim() ? n : `Delivery note ${x.delivery_note_number}`));
+      if (x.delivery_note_number) setNoteNo(x.delivery_note_number);
       setCandidates(r.candidates);
       if (r.matched_po) {
         setProjectId(r.matched_po.project_id);
@@ -3587,6 +3591,7 @@ export function GlobalDeliveryCheckIn({ onClose, onDone }: { onClose: () => void
       fd.append("status", shortLines.length > 0 ? "partial" : "received");
       fd.append("delivered_at", deliveredAt);
       if (combinedNotes) fd.append("notes", combinedNotes);
+      if (noteNo.trim()) fd.append("delivery_note_number", noteNo.trim());
       const qtyLines = lines.filter((l) => l.expected != null);
       if (qtyLines.length > 0) {
         fd.append("expected_qty", String(qtyLines.reduce((s, l) => s + (l.expected ?? 0), 0)));
@@ -3754,6 +3759,7 @@ export function GlobalDeliveryCheckIn({ onClose, onDone }: { onClose: () => void
                 <label className="field"><span>What was delivered</span><input className="input" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="e.g. 12 × pallets insulation board" /></label>
               )}
 
+              <label className="field"><span>Delivery note no.</span><input className="input" value={noteNo} onChange={(e) => setNoteNo(e.target.value)} placeholder="from the ticket — a note can only be booked once" /></label>
               <label className="field"><span>Notes <span className="muted" style={{ textTransform: "none", letterSpacing: 0, fontWeight: 400 }}>· optional</span></span><input className="input" value={notes} onChange={(e) => setNotes(e.target.value)} /></label>
             </>
           )}
