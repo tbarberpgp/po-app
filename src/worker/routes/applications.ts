@@ -17,6 +17,7 @@ import type { AfpCisPreview } from "../../shared/types";
 import { isSandboxId } from "../sandbox";
 import { EXPENSES_SECTION, isExpenseSection, looksLikeExpenseLine } from "../../shared/afp-expenses";
 import { DAYWORKS_SECTION, isDayworkSection, looksLikeDayworkLine } from "../../shared/afp-dayworks";
+import { normaliseAttentionNote } from "../../shared/afp-attention";
 import { amountsArePeriod as inferPeriodBasis } from "../../shared/afp-claim-basis";
 
 export const applications = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -3508,6 +3509,34 @@ applications.patch("/:id", async (c) => {
   let sent = false;
   if (body.counterparty_supplier_id) sent = await autoSubmitIfReady(c.env.DB, id, c.get("userEmail"));
   return c.json({ ok: true, status: sent ? "submitted" : undefined });
+});
+
+/** Flag an application for attention, or clear the flag (note: null or "").
+ *
+ *  For problems only a person can see — an app figure that disagrees with the
+ *  invoice it came from, a document uploaded twice. The note shows on the
+ *  application and under the dashboard's Needs attention. It is a marker, not
+ *  an edit: any status, no recalculation, figures untouched. */
+applications.put("/:id/attention", async (c) => {
+  const denied = requirePermission(c, "commercial.edit");
+  if (denied) return denied;
+  const id = Number(c.req.param("id"));
+  const body = await c.req.json<{ note?: string | null }>().catch(() => ({} as { note?: string | null }));
+  const note = normaliseAttentionNote(body.note);
+  const cur = await c.env.DB.prepare("SELECT id FROM applications_for_payment WHERE id = ?").bind(id).first();
+  if (!cur) return c.json({ error: "not found" }, 404);
+  const actor = c.get("userEmail");
+  const now = new Date().toISOString();
+  await c.env.DB.prepare(
+    `UPDATE applications_for_payment
+        SET attention_note = ?, attention_note_by = ?, attention_note_at = ?
+      WHERE id = ?`,
+  ).bind(note, note ? actor : null, note ? now : null, id).run();
+  await c.env.DB.prepare(
+    `INSERT INTO audit_log (entity_type, entity_id, action, actor, details, created_at)
+     VALUES ('afp', ?, ?, ?, ?, ?)`,
+  ).bind(String(id), note ? "attention_flagged" : "attention_cleared", actor, JSON.stringify({ note }), now).run();
+  return c.json({ ok: true, attention_note: note });
 });
 
 /** Set percent_complete on a line (and recompute the AfP totals). */

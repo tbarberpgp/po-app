@@ -875,6 +875,11 @@ export type ApplicationForPayment = {
   app_number: number;
   period_end: string;
   notes: string | null;
+  /** Hand-raised "needs attention" flag (migration 0135): what is wrong, who
+   *  raised it and when. Null when not flagged. Never changes the figures. */
+  attention_note?: string | null;
+  attention_note_by?: string | null;
+  attention_note_at?: string | null;
   retention_pct: number;
   vat_pct: number;
   contract_sum: number | null;

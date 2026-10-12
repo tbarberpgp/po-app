@@ -1059,6 +1059,12 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(body),
     }),
+  /** Flag an application for attention, or clear the flag with null. */
+  setAfpAttention: (id: number, note: string | null) =>
+    jfetch<{ ok: true; attention_note: string | null }>(`/api/applications/${id}/attention`, {
+      method: "PUT",
+      body: JSON.stringify({ note }),
+    }),
   updateAfpLine: (
     lineId: number,
     body: { percent_complete?: number; certified_percent?: number; description?: string; qty?: number; unit?: string; rate?: number },
@@ -1548,6 +1554,11 @@ export const api = {
       compliance: { operatives: number; inducted: number; cards: { valid: number; expiring: number; expired: number; pending: number; worst_label: string | null }; rams: { signed: number; awaiting: number }; plant_tests: { valid: number; expiring: number; expired: number } };
       xero: { connected: boolean; tenant: string | null; pos_synced: number; pos_unsynced: number; pos_failed: number; invoices_raised: number };
       signals: { variations_pending: number; afp_awaiting_cert: number; framework_overdrawn: number };
+      /** Applications flagged for attention by hand (0135), newest first. */
+      flagged_applications?: Array<{
+        id: number; app_number: number; direction: "outgoing" | "incoming_labour"; project_id: string; project_code: string;
+        counterparty: string | null; note: string; flagged_by: string | null; flagged_at: string | null;
+      }>;
       by_project: Array<{
         id: string; code: string; name: string; completed_at: string | null; client_retention_pct: number;
         committed: number; paid: number; pending: number; applied: number; certified: number; on_site: number;

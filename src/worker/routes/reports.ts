@@ -472,6 +472,27 @@ reports.get("/dashboard", async (c) => {
     revenue: r2(revMap.get(m) ?? 0),
   }));
 
+  // Applications someone has flagged for attention by hand (migration 0135) —
+  // problems no automatic check can see, like an app figure that disagrees
+  // with the invoice it was read from. Newest flag first.
+  let flaggedApplications: Array<{
+    id: number; app_number: number; direction: string; project_id: string; project_code: string;
+    counterparty: string | null; note: string; flagged_by: string | null; flagged_at: string | null;
+  }> = [];
+  try {
+    flaggedApplications = (await c.env.DB.prepare(
+      `SELECT a.id, a.app_number, a.direction, a.project_id, p.code AS project_code,
+              s.name AS counterparty, a.attention_note AS note,
+              a.attention_note_by AS flagged_by, a.attention_note_at AS flagged_at
+         FROM applications_for_payment a
+         JOIN projects p ON p.id = a.project_id
+         LEFT JOIN suppliers s ON s.id = a.counterparty_supplier_id
+        WHERE p.deleted_at IS NULL AND p.id <> 'sandbox'
+          AND a.attention_note IS NOT NULL AND TRIM(a.attention_note) <> '' ${aProj}
+        ORDER BY a.attention_note_at DESC`,
+    ).bind(...b()).all<typeof flaggedApplications[number]>()).results;
+  } catch { /* pre-0135 DBs */ }
+
   return c.json({
     filter: { project_id: pid, months },
     projects: { active: proj?.active ?? 0, completed: proj?.completed ?? 0, with_boq: withBoq?.n ?? 0 },
@@ -512,6 +533,7 @@ reports.get("/dashboard", async (c) => {
       afp_awaiting_cert: signals?.afp_awaiting ?? 0,
       framework_overdrawn: signals?.framework_overdrawn ?? 0,
     },
+    flagged_applications: flaggedApplications,
     by_project: byProjectEnriched,
     key_dates: keyDates.results,
     cash_monthly: cashMonthly,

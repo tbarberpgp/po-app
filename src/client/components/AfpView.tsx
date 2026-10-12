@@ -16,6 +16,7 @@ import type { AfpDetail, AfpLine, AfpStatus, CurrentUser, ApplicationForPayment 
 import { isCertAwaitingApproval } from "../../shared/payment-release";
 import { isExpenseSection } from "../../shared/afp-expenses";
 import { isDayworkSection } from "../../shared/afp-dayworks";
+import { ATTENTION_NOTE_MAX } from "../../shared/afp-attention";
 
 export function AfpView({ me }: { me: CurrentUser | null }) {
   const { id } = useParams<{ id: string }>();
@@ -353,6 +354,11 @@ export function AfpView({ me }: { me: CurrentUser | null }) {
       />
       <main>
         {err && <div className="flash error">{err}</div>}
+
+        {/* A hand-raised flag (0135): someone has found a problem with this
+            application that no automatic check sees. Shown to everyone, at
+            any status, so whoever certifies it reads it first. */}
+        <AttentionBanner afp={afp} canEdit={canEdit} onChanged={refresh} />
 
         {/* Assign-subcontractor banner — shown when an incoming-labour draft
             arrived (typically via a forwarded email) without a supplier. */}
@@ -2064,5 +2070,69 @@ function LabourAllocationsPanel({ projectId, canEdit }: { projectId: string; can
         )}
       </div>
     </details>
+  );
+}
+
+/** The "needs attention" flag on an application: the note, who raised it and
+ *  when, and — for editors — raise, change or clear it. A marker only: it never
+ *  changes the application's figures, and works at any status. */
+function AttentionBanner({ afp, canEdit, onChanged }: {
+  afp: Pick<ApplicationForPayment, "id" | "attention_note" | "attention_note_by" | "attention_note_at">;
+  canEdit: boolean;
+  onChanged: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [text, setText] = useState(afp.attention_note ?? "");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const flagged = !!afp.attention_note?.trim();
+
+  async function save(note: string | null) {
+    setBusy(true); setErr(null);
+    try { await api.setAfpAttention(afp.id, note); setEditing(false); onChanged(); }
+    catch (e) { setErr(e instanceof Error ? e.message : String(e)); }
+    finally { setBusy(false); }
+  }
+
+  if (!flagged && !editing) {
+    return canEdit ? (
+      <div className="no-print" style={{ margin: "4px 0 10px" }}>
+        <button className="ghost tiny" onClick={() => { setText(""); setEditing(true); }}>⚑ Flag for attention…</button>
+      </div>
+    ) : null;
+  }
+
+  return (
+    <div className="flash error" style={{ marginBottom: 12 }}>
+      {editing ? (
+        <>
+          <div style={{ fontWeight: 600, marginBottom: 6 }}>⚑ Needs attention</div>
+          <textarea value={text} onChange={(e) => setText(e.target.value)} rows={3} maxLength={ATTENTION_NOTE_MAX}
+            placeholder="What is wrong, and what needs doing — e.g. the invoice says £3,850, the app says £6,046."
+            style={{ width: "100%", fontSize: 13 }} />
+          {err && <div style={{ marginTop: 6 }}>{err}</div>}
+          <div className="row" style={{ gap: 8, marginTop: 8 }}>
+            <button className="primary tiny" disabled={busy || !text.trim()} onClick={() => save(text)}>Save flag</button>
+            <button className="ghost tiny" disabled={busy} onClick={() => { setEditing(false); setText(afp.attention_note ?? ""); }}>Cancel</button>
+          </div>
+        </>
+      ) : (
+        <>
+          <div style={{ fontWeight: 600 }}>⚑ Needs attention</div>
+          <div style={{ marginTop: 4, whiteSpace: "pre-wrap" }}>{afp.attention_note}</div>
+          <div className="muted" style={{ marginTop: 4, fontSize: 12 }}>
+            Flagged{afp.attention_note_by ? ` by ${afp.attention_note_by}` : ""}{afp.attention_note_at ? ` on ${fmtDate(afp.attention_note_at)}` : ""}.
+            This flag does not change the application's figures.
+          </div>
+          {err && <div style={{ marginTop: 6 }}>{err}</div>}
+          {canEdit && (
+            <div className="row no-print" style={{ gap: 8, marginTop: 8 }}>
+              <button className="ghost tiny" disabled={busy} onClick={() => { setText(afp.attention_note ?? ""); setEditing(true); }}>Edit</button>
+              <button className="ghost tiny" disabled={busy} onClick={() => save(null)}>Clear flag</button>
+            </div>
+          )}
+        </>
+      )}
+    </div>
   );
 }
