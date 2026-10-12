@@ -10,7 +10,8 @@ function db() {
     CREATE TABLE applications_for_payment (
       id INTEGER PRIMARY KEY, project_id TEXT, direction TEXT, app_number INTEGER,
       status TEXT, counterparty_supplier_id INTEGER,
-      prelim_heading TEXT, claimed_amount REAL, cumulative_value REAL);
+      prelim_heading TEXT, claimed_amount REAL, cumulative_value REAL,
+      claim_basis TEXT);
     CREATE TABLE afp_lines (
       id INTEGER PRIMARY KEY, afp_id INTEGER, section TEXT,
       cumulative_value REAL, is_adhoc INTEGER DEFAULT 0, variation_id INTEGER);

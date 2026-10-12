@@ -1,0 +1,20 @@
+-- 0136: how an application's claim is meant to be read.
+--
+--   'period'      the document claims THIS period only — a week of site
+--                 management, a week of hours. The application is worth its own
+--                 lines: nothing from earlier applications is added in or taken
+--                 off. Every labour subcontractor we have invoices this way.
+--   'cumulative'  the document states a position to date. The application is
+--                 worth that position less what was counted before it.
+--   NULL          an application created before this column: read as it always
+--                 was (cumulative). Nothing existing changes until an
+--                 application is deliberately set.
+--
+-- Why: Paul Garbutt bills one week at a time, but every application was read as
+-- a running total less everything before it, so his weekly invoices cancelled
+-- each other out — £39,050 of invoices from July to October read £9,346 in the
+-- app. Seeding each new application from earlier ones also carried a stray
+-- £2,196 of Cladders' work, picked up by an old pooling bug, into Garbutt's
+-- figures and doubled it on every application after (#23 £2,196, #25 £4,392,
+-- #27 £8,784).
+ALTER TABLE applications_for_payment ADD COLUMN claim_basis TEXT;
