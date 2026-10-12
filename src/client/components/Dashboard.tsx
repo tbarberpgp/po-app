@@ -397,6 +397,13 @@ function DashboardBody({ d, onPickProject, scopeLabel }: { d: Report; onPickProj
   // Lightweight "needs attention" from signals we already aggregate. (Variations
   // / AfP-certification flags arrive with the commercials pass.)
   const flags: Array<{ tone: "warn" | "danger"; text: string; to: string; action: string }> = [];
+  // Hand-raised flags first: someone read a document and found something no
+  // automatic check can, so they are the most specific thing on this list.
+  for (const f of d.flagged_applications ?? []) {
+    const who = f.counterparty ? `${f.counterparty} ` : "";
+    const kind = f.direction === "incoming_labour" ? "labour application" : "application";
+    flags.push({ tone: "danger", text: `${f.project_code} — ${who}${kind} #${f.app_number}: ${f.note}`, to: `/applications/${f.id}`, action: "Open" });
+  }
   if (d.signals.variations_pending > 0) flags.push({ tone: "warn", text: `${d.signals.variations_pending} variation${d.signals.variations_pending === 1 ? "" : "s"} pending director approval`, to: "/", action: "Review" });
   if (d.signals.afp_awaiting_cert > 0) flags.push({ tone: "warn", text: `${d.signals.afp_awaiting_cert} application${d.signals.afp_awaiting_cert === 1 ? "" : "s"} submitted, awaiting certification`, to: "/applications", action: "View" });
   if (d.signals.framework_overdrawn > 0) flags.push({ tone: "danger", text: `${d.signals.framework_overdrawn} framework line${d.signals.framework_overdrawn === 1 ? "" : "s"} overdrawn — call-offs exceed the agreed qty or cost`, to: "/pos", action: "View" });
