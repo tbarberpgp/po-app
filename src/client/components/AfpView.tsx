@@ -12,7 +12,8 @@ import { generateAfpPdf } from "../lib/afp-pdf";
 import { generateAfpXlsx } from "../lib/afp-xlsx";
 import { afpDocLabel } from "../../shared/types";
 import { parseMoney, parsePositiveMoney } from "../../shared/money";
-import type { AfpDetail, AfpLine, AfpStatus, CurrentUser, ApplicationForPayment } from "../../shared/types";
+import type { AfpDetail, AfpLine, AfpStatus, CurrentUser, ApplicationForPayment, AfpSigninDays } from "../../shared/types";
+import { daysDisagree, daysLine } from "../../shared/signin-days";
 import { isCertAwaitingApproval } from "../../shared/payment-release";
 import { isExpenseSection } from "../../shared/afp-expenses";
 import { isDayworkSection } from "../../shared/afp-dayworks";
@@ -186,10 +187,10 @@ export function AfpView({ me }: { me: CurrentUser | null }) {
   /** Commit the certified figure. The amount is always explicit now — the panel
    *  pre-fills it with the claimed amount due, which is what the server used to
    *  default to when the old prompt was left blank. */
-  async function certify(amount: number) {
+  async function certify(amount: number, days: CertifyDays | null) {
     setBusy(true); setErr(null);
     try {
-      await api.certifyAfp(afp.id, { certified_amount: amount });
+      await api.certifyAfp(afp.id, { certified_amount: amount, ...(days ?? {}) });
       setCertifyOpen(false);
       refresh();
     }
@@ -432,6 +433,12 @@ export function AfpView({ me }: { me: CurrentUser | null }) {
             onApplyAll={() => applyLiveRate()}
             onSignOff={signOffRate}
           />
+        )}
+
+        {/* Days on site as the QS saw them when certifying — read by whoever
+            approves the payment next. */}
+        {!isOutgoing && afp.invoiced_days != null && afp.signin_days != null && (
+          <RecordedDaysCard afp={afp} />
         )}
 
         {/* Labour: approve the certified certificate for payment before it can
@@ -784,7 +791,7 @@ function CertifyPanel({
   cisRate: number | null;
   busy: boolean;
   onCancel: () => void;
-  onCertify: (amount: number) => void;
+  onCertify: (amount: number, days: CertifyDays | null) => void;
 }) {
   const claimed = afp.amount_due ?? 0;
   const retPct = afp.retention_pct ?? 0;
@@ -821,8 +828,23 @@ function CertifyPanel({
   const who = isOutgoing ? "the client" : "PowerGrid";
   const label = afpDocLabel(afp.direction, afp.status);
 
+  // Days on site — labour only. Optional: blank means no days check is recorded.
+  const [days, setDays] = useState<DaysState>({ invoicedRaw: "", from: "", to: "", note: "", summary: null });
+  const invoicedDays = parseDays(days.invoicedRaw);
+  const daysInvalid = days.invoicedRaw.trim() !== "" && invoicedDays == null;
+  const daysMismatch = invoicedDays != null && days.summary != null && daysDisagree(invoicedDays, days.summary.person_days);
+  const needsNote = daysMismatch && !days.note.trim();
+  // Days given but the register not yet read (loading, or the period just
+  // changed): wait, or the certificate would go through with no check recorded.
+  const daysPending = !isOutgoing && invoicedDays != null && days.summary == null;
+  const canCommit = valid && !daysInvalid && !needsNote && !daysPending;
+
   function commit() {
-    if (valid && !busy) onCertify(amount);
+    if (!canCommit || busy) return;
+    const recorded: CertifyDays | null = !isOutgoing && invoicedDays != null && days.summary
+      ? { invoiced_days: invoicedDays, signin_from: days.summary.from, signin_to: days.summary.to, signin_note: days.note.trim() || undefined }
+      : null;
+    onCertify(amount, recorded);
   }
 
   return (
@@ -903,6 +925,8 @@ function CertifyPanel({
         />
       </div>
 
+      {!isOutgoing && <DaysOnSite afpId={afp.id} state={days} onChange={setDays} invoicedDays={invoicedDays} invalid={daysInvalid} mismatch={daysMismatch} />}
+
       {cisRate != null && cisRate > 0 && (
         <div className="card-bd" style={{ borderTop: "1px solid var(--line)" }}>
           <div className="muted" style={{ fontSize: 12.5 }}>
@@ -914,13 +938,153 @@ function CertifyPanel({
       )}
 
       <div className="card-bd" style={{ borderTop: "1px solid var(--line)", display: "flex", gap: 8, flexWrap: "wrap" }}>
-        <button className="accent" onClick={commit} disabled={busy || !valid}>
+        <button className="accent" onClick={commit} disabled={busy || !canCommit}
+          title={needsNote ? "The days on the invoice don't match the sign-in register — add a note first" : undefined}>
           {busy ? "Certifying…" : valid ? `Certify ${fmtMoney(amount)}` : "Certify"}
         </button>
         <button className="ghost" onClick={onCancel} disabled={busy}>Cancel</button>
         <span className="muted" style={{ fontSize: 12, alignSelf: "center" }}>
           This freezes the certified figure and emails whoever sent the application.
         </span>
+      </div>
+    </div>
+  );
+}
+
+type CertifyDays = { invoiced_days: number; signin_from: string; signin_to: string; signin_note?: string };
+type DaysState = { invoicedRaw: string; from: string; to: string; note: string; summary: AfpSigninDays | null };
+
+/** "5", "4.5", "4½" → days. Whole or half days; null when it isn't a number. */
+function parseDays(raw: string): number | null {
+  const t = raw.trim().replace("½", ".5").replace(/days?$/i, "").trim();
+  if (!t) return null;
+  const n = Number(t);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
+const fmtDay = (ymd: string) =>
+  new Date(`${ymd}T12:00:00Z`).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", timeZone: "UTC" });
+
+/**
+ * Days on site, inside the certify panel. A day-rate subcontractor bills
+ * "N days × £rate"; the site sign-in register says which days they were
+ * actually there. The QS types N off the invoice and the two sit side by side.
+ * A disagreement wants a note, not a director — a day off site on the job is
+ * legitimate — and the server re-reads the register rather than trusting this.
+ */
+function DaysOnSite({ afpId, state, onChange, invoicedDays, invalid, mismatch }: {
+  afpId: number;
+  state: DaysState;
+  onChange: React.Dispatch<React.SetStateAction<DaysState>>;
+  invoicedDays: number | null;
+  invalid: boolean;
+  mismatch: boolean;
+}) {
+  const [loadErr, setLoadErr] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const { summary } = state;
+
+  function load(range?: { from?: string; to?: string }) {
+    setLoading(true); setLoadErr(null);
+    api.afpSigninDays(afpId, range)
+      .then((r) => onChange((prev) => ({ ...prev, from: r.from, to: r.to, summary: r })))
+      .catch((e) => setLoadErr(e instanceof Error ? e.message : "Couldn't read the sign-in register"))
+      .finally(() => setLoading(false));
+  }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, [afpId]);
+
+  const multi = (summary?.people.length ?? 0) > 1;
+  const signed = summary?.person_days ?? 0;
+
+  return (
+    <div className="card-bd" style={{ borderTop: "1px solid var(--line)" }}>
+      <div className="eyebrow">Days on site</div>
+      {loadErr && <div className="flash error" style={{ marginTop: 6 }}>{loadErr}</div>}
+
+      <div style={{ display: "flex", gap: 12, alignItems: "flex-end", flexWrap: "wrap", marginTop: 6 }}>
+        <div>
+          <label htmlFor="days-from" style={{ fontSize: 12 }}>From</label>
+          <input id="days-from" type="date" value={state.from} max={state.to || undefined}
+            onChange={(e) => { const from = e.target.value; onChange((prev) => ({ ...prev, from, summary: null })); if (from) load({ from, to: state.to }); }} />
+        </div>
+        <div>
+          <label htmlFor="days-to" style={{ fontSize: 12 }}>To</label>
+          <input id="days-to" type="date" value={state.to} min={state.from || undefined}
+            onChange={(e) => { const to = e.target.value; onChange((prev) => ({ ...prev, to, summary: null })); if (to) load({ from: state.from, to }); }} />
+        </div>
+        <div>
+          <label htmlFor="days-invoiced" style={{ fontSize: 12 }}>{multi ? "Person-days on the invoice" : "Days on the invoice"}</label>
+          <input id="days-invoiced" className="num" inputMode="decimal" placeholder="e.g. 5" style={{ width: 110 }}
+            value={state.invoicedRaw} aria-invalid={invalid}
+            onChange={(e) => { const invoicedRaw = e.target.value; onChange((prev) => ({ ...prev, invoicedRaw })); }} />
+        </div>
+        {summary && !loading && (
+          <span className={`pill ${invoicedDays == null ? "navy" : mismatch ? "rejected" : "approved"}`} style={{ alignSelf: "center" }}>
+            {daysLine(invoicedDays, signed, multi ? 2 : 1)}
+          </span>
+        )}
+      </div>
+
+      {loading && <div className="muted" style={{ fontSize: 12.5, marginTop: 8 }}>Reading the sign-in register…</div>}
+
+      {summary && !loading && (
+        <div style={{ fontSize: 12.5, marginTop: 8 }}>
+          {summary.days.length > 0 ? (
+            <>
+              <span className="muted">Signed in at {summary.site_label}: </span>
+              {summary.days.map((d, i) => (
+                <span key={d.date} title={d.people.join(", ")}>
+                  {i > 0 && " · "}{fmtDay(d.date)}{d.people.length > 1 ? ` (${d.people.length})` : ""}
+                </span>
+              ))}
+              {multi && <div className="muted" style={{ marginTop: 2 }}>{summary.people.join(", ")}</div>}
+            </>
+          ) : (
+            <span style={{ color: "#b45309" }}>
+              {!summary.supplier_name
+                ? "No subcontractor is set on this application, so there's no one to look for in the register."
+                : `Nobody from ${summary.supplier_name} signed in at ${summary.site_label} between ${fmtDay(summary.from)} and ${fmtDay(summary.to)}.`}
+              {summary.supplier_name && (summary.registered.length
+                ? ` On the register: ${summary.registered.join(", ")} — they need to sign in with the site QR code each day.`
+                : " No one from them is on the operative register either.")}
+            </span>
+          )}
+        </div>
+      )}
+
+      {invalid && <div className="muted" style={{ fontSize: 12.5, marginTop: 6, color: "#b91c1c" }}>Days must be a number, e.g. 5 or 4.5.</div>}
+
+      {mismatch && summary && (
+        <div className="flash info" style={{ marginTop: 10 }}>
+          <div style={{ marginBottom: 6 }}>
+            The invoice and the sign-in register disagree. You can still certify — say why (e.g. a day off site on the job, forgot to sign in on Tuesday).
+          </div>
+          <textarea rows={2} style={{ width: "100%" }} placeholder="Why the days differ"
+            value={state.note} onChange={(e) => { const note = e.target.value; onChange((prev) => ({ ...prev, note })); }} />
+        </div>
+      )}
+
+      {invoicedDays == null && !invalid && (
+        <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+          For day-rate work, enter the days on the invoice to check them against the register. Leave blank for measured work.
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** The days check as recorded at certification (0137). */
+function RecordedDaysCard({ afp }: { afp: ApplicationForPayment }) {
+  const mismatch = daysDisagree(afp.invoiced_days ?? 0, afp.signin_days ?? 0);
+  return (
+    <div className="card" style={{ marginTop: 16, borderLeft: `4px solid ${mismatch ? "#f59e0b" : "#16a34a"}` }}>
+      <div className="card-bd">
+        <b>{daysLine(afp.invoiced_days ?? null, afp.signin_days ?? 0)}</b>
+        {afp.signin_from && afp.signin_to && (
+          <span className="muted"> — sign-in register, {fmtDay(afp.signin_from)} to {fmtDay(afp.signin_to)}</span>
+        )}
+        {afp.signin_note && <div style={{ marginTop: 4, fontSize: 13 }}>Note from {afp.certified_by ?? "the QS"}: {afp.signin_note}</div>}
       </div>
     </div>
   );

@@ -883,6 +883,14 @@ export type ApplicationForPayment = {
   /** How the claim is read (0136): 'period' = worth its own lines; 'cumulative'
    *  = a position to date less what came before; null = pre-0136, cumulative. */
   claim_basis?: "period" | "cumulative" | null;
+  /** Days on site, recorded at certification (0137): the days on the invoice
+   *  as the QS read them, the person-days the sign-in register showed over
+   *  signin_from..signin_to, and the QS's note when the two disagree. */
+  invoiced_days?: number | null;
+  signin_days?: number | null;
+  signin_from?: string | null;
+  signin_to?: string | null;
+  signin_note?: string | null;
   retention_pct: number;
   vat_pct: number;
   contract_sum: number | null;
@@ -1131,6 +1139,17 @@ export type AfpLine = {
 /** The CIS deduction a labour certificate will carry when pushed to Xero.
  *  null on the detail payload = no CIS (client AfP, no subbie, or a 0%/unset
  *  rate). Computed from the labour element only — expenses sit outside CIS. */
+/** GET /api/applications/:id/signin-days — the sign-in register read against
+ *  a labour application's period (see shared/signin-days.ts). */
+export type AfpSigninDays = import("./signin-days").SigninSummary & {
+  supplier_name: string | null;
+  /** Where the register was read: the project, or every block of its site. */
+  site_label: string;
+  /** Register entries for the subcontractor, signed in or not — so "nobody
+   *  signed in" can say whether anyone was even set up to. */
+  registered: string[];
+};
+
 export type AfpCisPreview = {
   supplier_name: string;
   rate: number;

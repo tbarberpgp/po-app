@@ -46,6 +46,7 @@ import type {
 import type { ReconcileRow, ReconcileSummary } from "../../shared/bill-reconcile";
 import type { Role, Permission } from "../../shared/permissions";
 import type { RamsDoc } from "../../shared/rams";
+import type { AfpSigninDays } from "../../shared/types";
 
 /** Programme rows from an upload: PDFs go through the worker's Claude
  *  extraction; Excel files parse in the browser as before. Both return the
@@ -1091,7 +1092,19 @@ export const api = {
     jfetch<{ ok: true }>(`/api/applications/${id}/unsubmit`, { method: "POST" }),
   submitAfp: (id: number) =>
     jfetch<{ ok: true }>(`/api/applications/${id}/submit`, { method: "POST" }),
-  certifyAfp: (id: number, body?: { certified_amount?: number; notes?: string }) =>
+  /** Who from the subcontractor signed in on site over the application's
+   *  period — the default period unless from/to are given. */
+  afpSigninDays: (id: number, range?: { from?: string; to?: string }) => {
+    const q = new URLSearchParams();
+    if (range?.from) q.set("from", range.from);
+    if (range?.to) q.set("to", range.to);
+    const qs = q.toString();
+    return jfetch<AfpSigninDays>(`/api/applications/${id}/signin-days${qs ? `?${qs}` : ""}`);
+  },
+  certifyAfp: (id: number, body?: {
+    certified_amount?: number; notes?: string;
+    invoiced_days?: number | null; signin_from?: string; signin_to?: string; signin_note?: string;
+  }) =>
     jfetch<{ ok: true; certified_amount: number }>(`/api/applications/${id}/certify`, {
       method: "POST",
       body: JSON.stringify(body ?? {}),

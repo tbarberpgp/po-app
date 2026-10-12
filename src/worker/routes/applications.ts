@@ -23,8 +23,78 @@ import {
   planRestatement, lineWrites, settleWrites,
   type RestateRequest, type RestateAppRow, type RestateLineRow, type Sql,
 } from "../labour-restatement";
+import { belongsTo, daysDisagree, defaultPeriod, normaliseParty, summariseSignins, addDays, type SigninRow } from "../../shared/signin-days";
+import type { AfpSigninDays } from "../../shared/types";
 
 export const applications = new Hono<{ Bindings: Env; Variables: Variables }>();
+
+const YMD = /^\d{4}-\d{2}-\d{2}$/;
+
+/** The sign-in register read against a labour application — who from the
+ *  subcontractor signed in on site over the period. Read at the project and
+ *  every block that shares its site (0046), because a sibling block's QR code
+ *  is the same site gate. Returns null when the application isn't labour. */
+async function readSigninDays(
+  db: D1Database, afpId: number, fromArg?: string | null, toArg?: string | null,
+): Promise<AfpSigninDays | null> {
+  const afp = await db.prepare(
+    `SELECT a.id, a.project_id, a.period_end, a.direction, a.counterparty_supplier_id,
+            s.name AS supplier_name, p.site_group_id, p.code AS project_code, g.name AS group_name,
+            (SELECT MAX(b.period_end) FROM applications_for_payment b
+              WHERE b.project_id = a.project_id AND b.direction = 'incoming_labour'
+                AND b.counterparty_supplier_id IS a.counterparty_supplier_id
+                AND b.id != a.id AND b.status != 'draft' AND b.period_end < a.period_end) AS prev_end
+       FROM applications_for_payment a
+       JOIN projects p ON p.id = a.project_id
+       LEFT JOIN suppliers s ON s.id = a.counterparty_supplier_id
+       LEFT JOIN site_groups g ON g.id = p.site_group_id
+      WHERE a.id = ?`,
+  ).bind(afpId).first<{
+    id: number; project_id: string; period_end: string; direction: string; counterparty_supplier_id: number | null;
+    supplier_name: string | null; site_group_id: string | null; project_code: string; group_name: string | null; prev_end: string | null;
+  }>();
+  if (!afp || afp.direction !== "incoming_labour") return null;
+
+  const dflt = defaultPeriod(afp.period_end, afp.prev_end);
+  const from = fromArg && YMD.test(fromArg) ? fromArg : dflt.from;
+  const to = toArg && YMD.test(toArg) ? toArg : dflt.to;
+  const siteLabel = afp.site_group_id && afp.group_name ? afp.group_name : afp.project_code;
+  const supplier = afp.supplier_name ?? "";
+  if (!normaliseParty(supplier) || from > to) {
+    return { ...summariseSignins([], supplier, from, to), supplier_name: afp.supplier_name, site_label: siteLabel, registered: [] };
+  }
+
+  // Stored timestamps are UTC; widen by a day either side and let
+  // summariseSignins keep only the UK dates inside the period.
+  const rows = await db.prepare(
+    `SELECT s.signed_in_at, s.name, s.company, o.name AS op_name, o.company AS op_company
+       FROM site_signins s
+       LEFT JOIN operatives o ON o.id = s.operative_id
+      WHERE s.project_id IN (
+              SELECT id FROM projects WHERE id = ?1
+               OR (?2 IS NOT NULL AND site_group_id = ?2))
+        AND s.signed_in_at >= ?3 AND s.signed_in_at < ?4`,
+  ).bind(afp.project_id, afp.site_group_id, addDays(from, -1), addDays(to, 2)).all<SigninRow>();
+
+  const ops = await db.prepare(
+    "SELECT name, company FROM operatives WHERE archived_at IS NULL",
+  ).all<{ name: string; company: string | null }>();
+  const registered = ops.results
+    .filter((o) => belongsTo(supplier, { signed_in_at: "", name: o.name, company: o.company }))
+    .map((o) => o.name)
+    .sort();
+
+  return { ...summariseSignins(rows.results, supplier, from, to), supplier_name: afp.supplier_name, site_label: siteLabel, registered };
+}
+
+/** Days on site for the certify panel. `from`/`to` override the default period. */
+applications.get("/:id/signin-days", async (c) => {
+  const denied = requirePermission(c, "commercial.view");
+  if (denied) return denied;
+  const out = await readSigninDays(c.env.DB, Number(c.req.param("id")), c.req.query("from"), c.req.query("to"));
+  if (!out) return c.json({ error: "Days on site are only read for labour applications." }, 404);
+  return c.json(out);
+});
 
 type Direction = "outgoing" | "incoming_labour";
 type Status = "draft" | "pending_approval" | "submitted" | "certified" | "paid";
@@ -4001,9 +4071,11 @@ applications.post("/:id/certify", async (c) => {
   const denied = requirePermission(c, "commercial.edit");
   if (denied) return denied;
   const id = Number(c.req.param("id"));
-  const body = await c.req
-    .json<{ certified_amount?: number; notes?: string }>()
-    .catch(() => ({} as { certified_amount?: number; notes?: string }));
+  type CertifyBody = {
+    certified_amount?: number; notes?: string;
+    invoiced_days?: number | null; signin_from?: string | null; signin_to?: string | null; signin_note?: string | null;
+  };
+  const body = await c.req.json<CertifyBody>().catch(() => ({} as CertifyBody));
   const afp = await c.env.DB.prepare(
     "SELECT id, status, amount_due, direction, approved_at, project_id, rate_override_at FROM applications_for_payment WHERE id = ?",
   )
@@ -4033,15 +4105,40 @@ applications.post("/:id/certify", async (c) => {
       }, 409);
     }
   }
+  // Days on site (0137). Optional — measured work isn't billed by the day — but
+  // once the QS gives the days on the invoice, the register is re-read HERE
+  // rather than trusted from the panel, and a disagreement needs a note. Flag,
+  // don't block: the note is the whole requirement.
+  let signin: { invoiced: number; signedIn: number; from: string; to: string; note: string | null } | null = null;
+  if (afp.direction === "incoming_labour" && body.invoiced_days != null) {
+    const invoiced = Number(body.invoiced_days);
+    if (!Number.isFinite(invoiced) || invoiced < 0) {
+      return c.json({ error: "Days on the invoice must be a number of days, e.g. 5 or 4.5." }, 400);
+    }
+    const read = await readSigninDays(c.env.DB, id, body.signin_from, body.signin_to);
+    if (!read) return c.json({ error: "Couldn't read the sign-in register for this application." }, 500);
+    const note = (body.signin_note ?? "").trim() || null;
+    if (daysDisagree(invoiced, read.person_days) && !note) {
+      return c.json({
+        error: `The invoice is for ${invoiced} day${invoiced === 1 ? "" : "s"} but the sign-in register shows ${read.person_days} `
+          + `between ${read.from} and ${read.to}. Add a note saying why before certifying.`,
+      }, 409);
+    }
+    signin = { invoiced, signedIn: read.person_days, from: read.from, to: read.to, note };
+  }
+
   const certified = body.certified_amount ?? afp.amount_due ?? 0;
   const now = new Date().toISOString();
   const actor = c.get("userEmail");
   await c.env.DB.prepare(
     `UPDATE applications_for_payment
-     SET status = 'certified', certified_at = ?, certified_by = ?, certified_amount = ?
+     SET status = 'certified', certified_at = ?, certified_by = ?, certified_amount = ?,
+         invoiced_days = ?, signin_days = ?, signin_from = ?, signin_to = ?, signin_note = ?
      WHERE id = ?`,
   )
-    .bind(now, actor, certified, id)
+    .bind(now, actor, certified,
+      signin?.invoiced ?? null, signin?.signedIn ?? null, signin?.from ?? null, signin?.to ?? null, signin?.note ?? null,
+      id)
     .run();
 
   // Email the raiser that the AfP was certified
