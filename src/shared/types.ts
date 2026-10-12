@@ -1005,6 +1005,8 @@ export type ApplicationListItem = {
   created_at: string;
   created_by: string;
   has_unmatched: number;   // 0/1 from SQLite
+  /** Hand-raised "needs attention" note (0135), null when not flagged. */
+  attention_note?: string | null;
 };
 
 /** A labour application received by email that couldn't be auto-routed to a
