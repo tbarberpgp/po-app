@@ -26,6 +26,7 @@ import { generateMaterialsXlsx } from "../lib/materials-xlsx";
 import { summarisePoRegister, supplierHasStaleCopy } from "../lib/po-register";
 import { PoRegisterExport } from "./PoRegisterExport";
 import { DeliveryDropRow } from "./POView";
+import { invoiceRefOf, filterAndSortAfps, countBy, type AfpSort } from "../../shared/afp-list";
 
 type Tab = "overview" | "materials" | "pos" | "commercials" | "programme" | "operations" | "reports" | "quality";
 type CommercialsSubtab = "breakdown" | "prelims" | "schedule" | "applications" | "labour" | "variations" | "contract" | "help";
@@ -2525,6 +2526,10 @@ function AfpListPanel({
   const [periodMode, setPeriodMode] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // List filters. The subcontractor filter only applies to incoming labour.
+  const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [subbieFilter, setSubbieFilter] = useState<number | "all">("all");
+  const [sortOrder, setSortOrder] = useState<AfpSort>("newest");
 
   useEffect(() => {
     if (direction === "incoming_labour" && suppliers.length === 0) {
@@ -2604,8 +2609,32 @@ function AfpListPanel({
     }
   }
 
-  // Filter AfPs to the selected direction
-  const filtered = afps.filter((a) => a.direction === direction);
+  // The selected direction, then the list filters. KPIs follow the filters, so
+  // picking one subcontractor shows that subcontractor's totals.
+  const isLabour = direction === "incoming_labour";
+  const inDirection = afps.filter((a) => a.direction === direction);
+  const filtered = filterAndSortAfps(inDirection, {
+    status: statusFilter,
+    supplierId: isLabour ? subbieFilter : "all",
+    sort: sortOrder,
+  });
+  const filtersOn = statusFilter !== "all" || (isLabour && subbieFilter !== "all") || sortOrder !== "newest";
+  const supplierName = (id: number | null) =>
+    id == null ? "Unassigned" : suppliers.find((s) => s.id === id)?.name ?? `Subcontractor #${id}`;
+  const STATUS_ORDER = ["draft", "pending_approval", "submitted", "certified", "paid"];
+  const STATUS_LABEL: Record<string, string> = {
+    draft: "Draft", pending_approval: "Pending approval", submitted: "Submitted", certified: "Certified", paid: "Paid",
+  };
+  const statusCounts = countBy(
+    isLabour && subbieFilter !== "all" ? inDirection.filter((a) => a.counterparty_supplier_id === subbieFilter) : inDirection,
+    (a) => a.status as string,
+  );
+  const subbieCounts = countBy(
+    statusFilter === "all" ? inDirection : inDirection.filter((a) => a.status === statusFilter),
+    (a) => a.counterparty_supplier_id,
+  );
+  const subbieOptions = [...countBy(inDirection, (a) => a.counterparty_supplier_id).keys()]
+    .sort((x, y) => supplierName(x).localeCompare(supplierName(y)));
   const totals = filtered.reduce(
     (acc, a) => {
       acc.invoiced += a.total_invoice ?? 0;
@@ -2620,7 +2649,11 @@ function AfpListPanel({
   return (
     <>
       <div className="kpis">
-        <Kpi label="Apps to date" value={String(filtered.length)} sub={filtered.length > 0 ? `Latest #${filtered[0].app_number}` : "None yet"} />
+        <Kpi
+          label={filtersOn ? "Apps shown" : "Apps to date"}
+          value={String(filtered.length)}
+          sub={filtersOn ? `of ${inDirection.length}` : filtered.length > 0 ? `Latest #${filtered[0].app_number}` : "None yet"}
+        />
         <Kpi label={direction === "outgoing" ? "Total invoiced" : "Total claimed"} value={fmtMoney(totals.invoiced)} sub="incl VAT" />
         <Kpi label="Certified" value={fmtMoney(totals.certified)} tone={totals.certified > 0 ? "success" : "default"} />
         <Kpi label="Paid" value={fmtMoney(totals.paid)} tone={totals.paid > 0 ? "success" : "default"} />
@@ -2751,13 +2784,65 @@ function AfpListPanel({
             </div>
           </div>
         )}
-        {filtered.length === 0 ? (
+        {inDirection.length > 0 && (
+          <div className="card-bd" style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end", borderBottom: "1px solid var(--line)" }}>
+            <div>
+              <label htmlFor="afp-filter-status">Status</label>
+              <select id="afp-filter-status" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+                <option value="all">All statuses ({[...statusCounts.values()].reduce((t, n) => t + n, 0)})</option>
+                {STATUS_ORDER.filter((st) => statusCounts.has(st) || st === statusFilter).map((st) => (
+                  <option key={st} value={st}>{STATUS_LABEL[st] ?? st} ({statusCounts.get(st) ?? 0})</option>
+                ))}
+              </select>
+            </div>
+            {isLabour && (
+              <div>
+                <label htmlFor="afp-filter-subbie">Subcontractor</label>
+                <select
+                  id="afp-filter-subbie"
+                  value={subbieFilter === "all" ? "all" : String(subbieFilter)}
+                  onChange={(e) => setSubbieFilter(e.target.value === "all" ? "all" : Number(e.target.value))}
+                  style={{ minWidth: 200 }}
+                >
+                  <option value="all">All subcontractors ({[...subbieCounts.values()].reduce((t, n) => t + n, 0)})</option>
+                  {subbieOptions.map((id) => (
+                    <option key={String(id)} value={id == null ? "all" : String(id)} disabled={id == null}>
+                      {supplierName(id)} ({subbieCounts.get(id) ?? 0})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+            <div>
+              <label htmlFor="afp-sort">Order</label>
+              <select id="afp-sort" value={sortOrder} onChange={(e) => setSortOrder(e.target.value as AfpSort)}>
+                <option value="newest">Period end — newest first</option>
+                <option value="oldest">Period end — oldest first</option>
+              </select>
+            </div>
+            {filtersOn && (
+              <button
+                type="button"
+                className="ghost tiny"
+                onClick={() => { setStatusFilter("all"); setSubbieFilter("all"); setSortOrder("newest"); }}
+              >Clear filters</button>
+            )}
+            <div className="muted" style={{ marginLeft: "auto", fontSize: 12, alignSelf: "center" }}>
+              Showing {filtered.length} of {inDirection.length}
+            </div>
+          </div>
+        )}
+        {inDirection.length === 0 ? (
           <div className="card-bd"><div className="empty">No {dirLabel.toLowerCase()} applications yet.</div></div>
+        ) : filtered.length === 0 ? (
+          <div className="card-bd"><div className="empty">No applications match these filters.</div></div>
         ) : (
           <table>
             <thead>
               <tr>
                 <th className="center">#</th>
+                {isLabour && <th>Invoice</th>}
+                {isLabour && <th>Subcontractor</th>}
                 <th>Period ending</th>
                 <th className="center">Status</th>
                 <th className="num">Cumulative</th>
@@ -2776,6 +2861,17 @@ function AfpListPanel({
                       <span title={`Needs attention: ${a.attention_note}`} style={{ color: "var(--danger)", marginLeft: 4, cursor: "help" }}>⚑</span>
                     )}
                   </td>
+                  {isLabour && (() => {
+                    const ref = invoiceRefOf(a);
+                    return (
+                      <td title={a.source_file_name ?? undefined}>
+                        {ref
+                          ? <strong style={{ fontWeight: 600 }}>{ref}</strong>
+                          : <span className="muted" style={{ fontSize: 12 }}>{a.source_file_name ?? "—"}</span>}
+                      </td>
+                    );
+                  })()}
+                  {isLabour && <td>{supplierName(a.counterparty_supplier_id)}</td>}
                   <td>{fmtDate(a.period_end)}</td>
                   <td className="center">
                     <span className={`pill ${afpStatusPill(a.status)}`} style={{ fontSize: 10 }}>{a.status}</span>
