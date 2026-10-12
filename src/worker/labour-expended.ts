@@ -32,6 +32,21 @@
  * £0 behind a line-less PM claim.
  */
 
+/** A labour application awaiting certification: sent to us (submitted), not yet
+ *  certified or paid. The one rule every "labour applied" figure uses.
+ *
+ *  Drafts are left out on purpose. A draft is a document the reader has had a
+ *  go at and nobody has agreed — its figures still move when a line is
+ *  resolved or the source re-read — so it is reported nowhere in the money.
+ *  Certified and paid applications have moved on to labour expended. What is
+ *  left is money a subcontractor has asked for that we have not yet agreed:
+ *  owed, so it counts in committed, but not yet cost, so forecast cost and
+ *  profit wait for certification.
+ *
+ *  Its client-side twin is `isLabourAwaitingCertification` in
+ *  shared/forecast.ts — change both together. */
+export const LABOUR_AWAITING_CERT = "(a.direction = 'incoming_labour' AND a.status = 'submitted')";
+
 /** An application that is a standalone prelims drawdown, not a measured claim.
  *  The same test recalcTotals applies (`isPrelimClaim`). */
 export const PRELIM_CLAIM = "(a.prelim_heading IS NOT NULL AND a.claimed_amount IS NOT NULL)";

@@ -345,7 +345,7 @@ function DashboardBody({ d, onPickProject, scopeLabel }: { d: Report; onPickProj
           { key: "certified", label: "Certified", align: "right", fmt: (v) => (v == null ? "—" : fmtMoney(Number(v))) },
         ],
         rows: rows as unknown as Array<Record<string, unknown>>,
-        note: `Claimed to date is each subcontractor's cumulative position, so the figure above is their LATEST certified application — not the sum of that column. Dayworks and expenses are claimed per application and do add up. Only certified applications expend the budget; submitted claims are listed for context.${draftsHidden > 0 ? ` ${draftsHidden} draft ${draftsHidden === 1 ? "application is" : "applications are"} not shown — a draft is not agreed and its figures still move.` : ""}`,
+        note: `Claimed to date is each subcontractor's cumulative position, so the figure above is their LATEST certified application — not the sum of that column. Dayworks and expenses are claimed per application and do add up. Only certified applications expend the budget. Submitted claims are owed, so they count in committed, but they stay out of forecast cost until certified.${draftsHidden > 0 ? ` ${draftsHidden} draft ${draftsHidden === 1 ? "application is" : "applications are"} not shown — a draft is not agreed and its figures still move.` : ""}`,
       });
     } catch { /* leave closed on fetch failure */ }
   }
@@ -392,7 +392,7 @@ function DashboardBody({ d, onPickProject, scopeLabel }: { d: Report; onPickProj
   // Applied/certified bars scale against the forecast final account (fall back to
   // applied if no priced contract exists, so the bars aren't empty).
   const ffaDenom = port.ffa > 0 ? port.ffa : applied;
-  const labourRows = d.by_project.filter((p) => p.labour_budget > 0 || p.labour_expended > 0);
+  const labourRows = d.by_project.filter((p) => p.labour_budget > 0 || p.labour_expended > 0 || (p.labour_awaiting ?? 0) > 0);
 
   // Lightweight "needs attention" from signals we already aggregate. (Variations
   // / AfP-certification flags arrive with the commercials pass.)
@@ -507,10 +507,10 @@ function DashboardBody({ d, onPickProject, scopeLabel }: { d: Report; onPickProj
                     <td>
                       <Bar pctWidth={cPct} color={cPct >= 90 ? "var(--warn)" : undefined} />
                       <div className="muted num" style={{ fontSize: 12, marginTop: 3 }}
-                        title={`${money(p.po_committed ?? p.committed)} purchase orders · ${money(p.labour_committed ?? 0)} certified labour`}>
+                        title={`${money(p.po_committed ?? p.committed)} purchase orders · ${money(p.labour_committed ?? 0)} certified labour · ${money(p.labour_awaiting ?? 0)} labour awaiting certification`}>
                         {p.ffc > 0 ? `${cPct}% · ` : ""}{moneyK(p.committed)}
                       </div>
-                      {(p.labour_committed ?? 0) > 0.5 && <div className="muted num" style={{ fontSize: 11.5 }}>incl. {moneyK(p.labour_committed)} labour</div>}
+                      {(p.labour_committed ?? 0) + (p.labour_awaiting ?? 0) > 0.5 && <div className="muted num" style={{ fontSize: 11.5 }}>incl. {moneyK((p.labour_committed ?? 0) + (p.labour_awaiting ?? 0))} labour</div>}
                     </td>
                     <td>
                       {p.labour_budget > 0 || p.labour_expended > 0 ? (
@@ -518,6 +518,7 @@ function DashboardBody({ d, onPickProject, scopeLabel }: { d: Report; onPickProj
                           <Bar pctWidth={p.labour_budget > 0 ? pct(p.labour_expended, p.labour_budget) : 100} color="var(--success)" />
                           <div className="muted num" style={{ fontSize: 12, marginTop: 3 }}>{p.labour_budget > 0 ? `${pct(p.labour_expended, p.labour_budget)}% · ` : ""}{moneyK(p.labour_expended)}</div>
                           {(p.labour_overrun ?? 0) > 0.5 && <div className="num" style={{ fontSize: 11.5, color: "var(--danger)" }}>{moneyK(p.labour_overrun)} over budget</div>}
+                          {(p.labour_awaiting ?? 0) > 0.5 && <div className="muted num" style={{ fontSize: 11.5 }} title={`${p.labour_awaiting_count} submitted labour application${p.labour_awaiting_count === 1 ? "" : "s"}, not yet certified — owed, not yet cost`}>+ {moneyK(p.labour_awaiting)} awaiting cert</div>}
                         </>
                       ) : <span className="muted">—</span>}
                     </td>
@@ -595,7 +596,7 @@ function DashboardBody({ d, onPickProject, scopeLabel }: { d: Report; onPickProj
         <div className="card card-padded">
           <div className="card-hd" style={{ padding: 0, marginBottom: 12, alignItems: "baseline" }}>
             <h3 style={{ margin: 0, fontSize: 14 }}>Labour expenditure by project</h3>
-            <span className="muted" style={{ fontSize: 11, marginLeft: 8 }}>certified vs BOQ</span>
+            <span className="muted" style={{ fontSize: 11, marginLeft: 8 }}>certified vs BOQ · plus what is awaiting certification</span>
           </div>
           {labourRows.length === 0 ? <div className="muted" style={{ fontSize: 13 }}>No labour budget yet.</div> : (
             <div style={{ display: "flex", flexDirection: "column", gap: 11 }}>
@@ -608,7 +609,10 @@ function DashboardBody({ d, onPickProject, scopeLabel }: { d: Report; onPickProj
                     onKeyDown={(e) => { if (e.key === "Enter") void openLabourDrill(p); }}>
                     <div className="row" style={{ justifyContent: "space-between", marginBottom: 4 }}>
                       <span style={{ fontSize: 13 }}>{p.code} <span className="muted">{p.name}</span><span className="muted" style={{ fontSize: 11.5 }}> · {moneyK(p.labour_budget)} budget</span></span>
-                      <span className="num muted" style={{ fontSize: 12 }}>{moneyK(p.labour_expended)} · {lp}%</span>
+                      <span className="num muted" style={{ fontSize: 12 }}>
+                        {moneyK(p.labour_expended)} · {lp}%
+                        {(p.labour_awaiting ?? 0) > 0.5 && <> · <span title="Submitted, not yet certified — owed, not yet cost">+{moneyK(p.labour_awaiting)} awaiting cert</span></>}
+                      </span>
                     </div>
                     <Bar pctWidth={lp} color={lp >= 100 ? "var(--danger)" : "var(--success)"} />
                   </div>
@@ -1087,7 +1091,7 @@ function downloadCsv(d: Report, scopeLabel: string, months: number) {
     ["Client certified", d.applications.client.certified],
     ["Client paid (cash in)", d.applications.client.paid],
     ["Net cash position", d.applications.client.paid - d.pos.paid_value - d.applications.labour.paid],
-    ["Labour applied", d.applications.labour.applied],
+    ["Labour awaiting certification", d.applications.labour.applied],
     ["Labour certified", d.applications.labour.certified],
     ["Labour paid", d.applications.labour.paid],
     ["On site now", d.operations.on_site_now],
@@ -1109,10 +1113,10 @@ function downloadCsv(d: Report, scopeLabel: string, months: number) {
   for (const [k, v] of kpis) lines.push(`${esc(k)},${esc(v)}`);
   lines.push("");
   lines.push("By project");
-  lines.push("Code,Name,Status,Forecast final account,Committed,PO committed,Labour committed,Labour budget,Labour expended,Labour over budget,Prelims budget,Prelims spent,Prelims over budget,Contract GP%,Forecast GP%,Forecast GP £,Applied,Certified,Paid,Pending POs,On site");
+  lines.push("Code,Name,Status,Forecast final account,Committed,PO committed,Labour committed,Labour awaiting certification,Labour budget,Labour expended,Labour over budget,Prelims budget,Prelims spent,Prelims over budget,Contract GP%,Forecast GP%,Forecast GP £,Applied,Certified,Paid,Pending POs,On site");
   const gpCsv = (f: number | null) => (f == null ? "" : (f * 100).toFixed(1));
   for (const p of d.by_project) {
-    lines.push([p.code, p.name, p.completed_at ? "Complete" : "Active", p.ffa, p.committed, p.po_committed, p.labour_committed, p.labour_budget, p.labour_expended, p.labour_overrun, p.prelim_budget, p.prelim_committed, p.prelims_overrun, gpCsv(p.contract_gp_pct), gpCsv(p.forecast_gp_pct), p.ffa > 0 ? Math.round((p.ffa - p.ffc) * 100) / 100 : "", p.applied, p.certified, p.paid, p.pending, p.on_site].map(esc).join(","));
+    lines.push([p.code, p.name, p.completed_at ? "Complete" : "Active", p.ffa, p.committed, p.po_committed, p.labour_committed, p.labour_awaiting, p.labour_budget, p.labour_expended, p.labour_overrun, p.prelim_budget, p.prelim_committed, p.prelims_overrun, gpCsv(p.contract_gp_pct), gpCsv(p.forecast_gp_pct), p.ffa > 0 ? Math.round((p.ffa - p.ffc) * 100) / 100 : "", p.applied, p.certified, p.paid, p.pending, p.on_site].map(esc).join(","));
   }
   const blob = new Blob(["﻿" + lines.join("\r\n")], { type: "text/csv;charset=utf-8;" });
   const url = URL.createObjectURL(blob);

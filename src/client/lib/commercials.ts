@@ -25,7 +25,7 @@ export {
   withoutPrelims, withCodedCommitted, matSupplier, materialSpendCost, effectiveSpendRate, netUnits,
   oneScope, accumulateMaterials, isPrelimMaterial, materialOverspendOf, summariseMaterials,
   contractTotals, quoteSavingsOf, omittedMaterialValue, variationLabourBudget,
-  prelimsOf, prelimLabourCertified,
+  prelimsOf, prelimLabourCertified, labourAwaitingCertification, isLabourAwaitingCertification,
   computeForecast, totalChange, labourProfit, addForecasts, sumForecasts, withCombinedOverspend,
 } from "../../shared/forecast";
 export type {

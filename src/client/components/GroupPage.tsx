@@ -13,6 +13,7 @@ import { AssignBudgetCell } from "./AssignBudgetCell";
 import {
   summariseMaterials, computeForecast, sumForecasts, withCombinedOverspend, contractTotals, effectiveSpendRate, matSupplier, netUnits, quoteSavingsOf,
   pricedBudgetDrill, committedDrill, materialSavingsDrill, labourDrill, labourProfit, prelimsDrill, type PrelimsSummary,
+  labourAwaitingCertification,
   variationProfitDrill, unpricedDrill, combinedUnexpectedSpendDrill, applicationsDrill, combineDrill,
   offBoqRow, materialAddedAt, materialModifiedAt, materialOrders,
   type Forecast, type UnpricedLine, type DrillBody, type MatRow, type MaterialScope,
@@ -36,6 +37,9 @@ type BlockData = {
   variations: Variation[];
   contractItems: ContractItem[];
   afps: ApplicationForPayment[];
+  /** This block's incoming labour applications. Held apart from `afps`, which
+   *  the forecast and activity reads take as client applications only. */
+  labourAfps: ApplicationForPayment[];
   mats: MaterialWithCommitment[];
   /** Materials ordered on this block's POs under wording that isn't in its
    *  BOQ — including ones coded to a budget line, tagged with which one. Held
@@ -159,8 +163,9 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
           api.listOffBoqMaterials(m.id).catch(() => [] as OffBoqMaterial[]),
           api.listLabourByCostCode(m.id).catch(() => [] as LabourByCostCode[]),
           api.prelimsSummary(m.id).catch(() => null),
-        ]).then(([commercials, variations, contractItems, afps, mats, contingency, summary, offBoq, labour, prelims]) => {
-          setData((p) => ({ ...p, [m.id]: { commercials, variations, contractItems, afps, mats, contingency, unpricedLines: summary.lines, unpricedSpend: summary.spend, offBoq, labour, prelims } }));
+          api.listAfps(m.id, "incoming_labour").catch(() => [] as ApplicationForPayment[]),
+        ]).then(([commercials, variations, contractItems, afps, mats, contingency, summary, offBoq, labour, prelims, labourAfps]) => {
+          setData((p) => ({ ...p, [m.id]: { commercials, variations, contractItems, afps, labourAfps, mats, contingency, unpricedLines: summary.lines, unpricedSpend: summary.spend, offBoq, labour, prelims } }));
         }).catch(() => {});
       });
     }).catch((e) => setErr(e.message));
@@ -663,7 +668,8 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
             })()}
             {cSub === "labour" && block !== "all" && (
               <LabourBreakdown rows={labourRows} contractItems={data[block]?.contractItems ?? []} canRaiseApp={canEditCommercial}
-                canApprove={isDirector} projectId={block} onRefresh={load} liveRates={labourLive} refreshLive={refreshBlockLive} />
+                canApprove={isDirector} projectId={block} onRefresh={load} liveRates={labourLive} refreshLive={refreshBlockLive}
+                awaiting={labourAwaitingCertification(data[block]?.labourAfps ?? [])} />
             )}
             {cSub === "help" && <CommercialsHelpPanel />}
             {cSub === "overview" && (

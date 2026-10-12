@@ -15,7 +15,7 @@ import { QitpDashboard } from "./QitpDashboard";
 import { SubBadge, SubstituteAction } from "./MaterialSubstitute";
 import type { ApplicationForPayment, CurrentUser, LabourByCostCode, MaterialWithCommitment, OffBoqMaterial, Project, ProjectCommercial, PurchaseOrder } from "../../shared/types";
 import {
-  summariseMaterials, computeForecast, totalChange, labourProfit, prelimLabourCertified, matSupplier, contractTotals, effectiveSpendRate, quoteSavingsOf,
+  summariseMaterials, computeForecast, totalChange, labourProfit, prelimLabourCertified, labourAwaitingCertification, matSupplier, contractTotals, effectiveSpendRate, quoteSavingsOf,
   pricedBudgetDrill, committedDrill, materialSavingsDrill,
   labourDrill, prelimsDrill, variationProfitDrill, unpricedDrill, unexpectedSpendDrill, applicationsDrill,
   offBoqRow, materialAddedAt, materialModifiedAt, type Forecast, type MatRow,
@@ -547,7 +547,7 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
               <ForecastDashboard f={forecast} sections={["forecast", "levers"]} onDrill={forecastDrill} />
             )}
             {tab === "overview" && commercials.length > 0 && canViewCommercial && (
-              <CostToDate forecast={forecast} ordersCommitted={summarisePoRegister(projectPOs).committed} prelimLabour={prelimLabourCertified(afps)} />
+              <CostToDate forecast={forecast} ordersCommitted={summarisePoRegister(projectPOs).committed} prelimLabour={prelimLabourCertified(afps)} labourAwaiting={labourAwaitingCertification(afps)} />
             )}
             {tab === "overview" && commercials.length > 0 && canViewCommercial && (
               <OverviewAtAGlance projectId={id ?? ""} forecast={forecast} commercials={commercials} afps={afps} variations={variations} projectPOs={projectPOs} canViewCommercial={canViewCommercial} overdrawnFrameworkCount={poSummary?.overdrawn_framework_lines?.length ?? 0} onJump={setTab} />
@@ -1705,10 +1705,18 @@ export const moneyTone = (n: number): "success" | "danger" | "default" => (n > 0
  *  dashboard's figure — not the Materials tab's, which only sees lines it can
  *  match to a BOQ item and so reads £0 on a job whose orders are worded
  *  differently from its bill. Together with labour this is the dashboard's
- *  Committed for the project, to the penny. */
-function CostToDate({ forecast: f, ordersCommitted, prelimLabour }: { forecast: Forecast; ordersCommitted: number; prelimLabour: number }) {
+ *  Committed for the project, to the penny.
+ *
+ *  Labour comes in two layers. Certified labour is cost. Labour a subcontractor
+ *  has applied for and we have not yet certified is owed but not yet agreed, so
+ *  it counts in Committed to date and stays out of forecast cost and profit
+ *  until it is certified. Drafts count nowhere. */
+function CostToDate({ forecast: f, ordersCommitted, prelimLabour, labourAwaiting }: {
+  forecast: Forecast; ordersCommitted: number; prelimLabour: number;
+  labourAwaiting: { total: number; count: number };
+}) {
   const labour = f.labourCertified + prelimLabour;
-  const total = ordersCommitted + labour;
+  const total = ordersCommitted + labour + labourAwaiting.total;
   const labourSub = [
     f.labourBudget > 0 ? `${((f.labourCertified / f.labourBudget) * 100).toFixed(0)}% of ${fmtMoney(f.labourBudget)} labour budget` : null,
     prelimLabour > 0.005 ? `+ ${fmtMoney(prelimLabour)} against prelims` : null,
@@ -1720,6 +1728,10 @@ function CostToDate({ forecast: f, ordersCommitted, prelimLabour }: { forecast: 
         <Kpi label="Orders committed" value={fmtMoney(ordersCommitted)} sub="purchase orders — approved, issued or awaiting approval" />
         <Kpi label="Labour certified" value={fmtMoney(labour)} sub={labourSub || "subcontractor applications"}
           tone={f.labourOverrun > 0.005 ? "danger" : "default"} />
+        <Kpi label="Labour awaiting certification" value={fmtMoney(labourAwaiting.total)}
+          sub={labourAwaiting.count > 0
+            ? `${labourAwaiting.count} submitted application${labourAwaiting.count === 1 ? "" : "s"} — owed, not yet in forecast cost`
+            : "nothing submitted and waiting"} />
         <Kpi label="Committed to date" value={fmtMoney(total)}
           sub={f.ffc > 0 ? `${((total / f.ffc) * 100).toFixed(0)}% of forecast final cost` : undefined} />
       </div>
@@ -2235,7 +2247,7 @@ function CommercialsBreakdown({
         <AfpListPanel projectId={projectId} afps={afps} canCreate={canEdit} onRefresh={onAfpsRefresh} />
       )}
       {subtab === "labour" && (
-        <LabourBreakdown rows={labour} contractItems={contractItems} canRaiseApp={canEdit} canApprove={canApprove} projectId={projectId} onRefresh={onAfpsRefresh} liveRates={liveRates} refreshLive={refreshLive} />
+        <LabourBreakdown rows={labour} contractItems={contractItems} canRaiseApp={canEdit} canApprove={canApprove} projectId={projectId} onRefresh={onAfpsRefresh} liveRates={liveRates} refreshLive={refreshLive} awaiting={labourAwaitingCertification(afps)} />
       )}
       {subtab === "variations" && (
         <VariationsView projectId={projectId} canEdit={canEdit} canApprove={canApprove} contractValue={rows.find((r) => r.is_total === 1)?.value ?? 0} />
@@ -2905,9 +2917,11 @@ function UnmatchedLabourCard({ projectId, canEdit, unmatched, options, onChanged
 }
 
 export function LabourBreakdown({
-  rows, contractItems, canRaiseApp, canApprove, projectId, onRefresh, liveRates, refreshLive,
+  rows, contractItems, canRaiseApp, canApprove, projectId, onRefresh, liveRates, refreshLive, awaiting,
 }: {
   rows: LabourByCostCode[];
+  /** Submitted labour applications not yet certified (labourAwaitingCertification). */
+  awaiting: { total: number; count: number };
   contractItems: import("../../shared/types").ContractItem[];
   canRaiseApp: boolean;
   canApprove: boolean;
@@ -2966,6 +2980,8 @@ export function LabourBreakdown({
     <div className="kpis" style={{ marginBottom: 16 }}>
       <Kpi label="Total labour" value={fmtMoney(totalLabour)} sub="from BOQ" />
       <Kpi label="Amount expended" value={fmtMoney(totalExpended)} sub="certified so far" />
+      <Kpi label="Awaiting certification" value={fmtMoney(awaiting.total)}
+        sub={awaiting.count > 0 ? `${awaiting.count} submitted, not yet certified` : "nothing waiting"} />
       <Kpi
         label="% expended"
         value={totalLabour > 0 ? `${((totalExpended / totalLabour) * 100).toFixed(1)}%` : "—"}

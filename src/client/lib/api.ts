@@ -1558,6 +1558,9 @@ export const api = {
         labour_overrun: number;
         /** `committed` and `paid` are the whole job's — these are their halves. */
         po_committed: number; labour_committed: number;
+        /** Labour applied for and not yet certified (submitted applications).
+         *  Inside `committed`; outside `ffc` until certified. */
+        labour_awaiting: number; labour_awaiting_count: number;
         po_paid: number; labour_paid: number;
         /** The prelims pot: budget, spend against it, and the part past it
          *  that `ffc` carries. */

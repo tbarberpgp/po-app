@@ -331,6 +331,28 @@ export function prelimLabourCertified(afps: ApplicationForPayment[]): number {
     .reduce((s, a) => s + (a.cumulative_value ?? a.claimed_amount ?? 0), 0);
 }
 
+/** A labour application awaiting certification: submitted, not yet certified.
+ *  Drafts are not agreed and stay out of the money; certified and paid ones are
+ *  labour expended. The twin of LABOUR_AWAITING_CERT in worker/labour-expended.ts
+ *  — change both together. */
+export const isLabourAwaitingCertification = (a: Pick<ApplicationForPayment, "direction" | "status">): boolean =>
+  a.direction === "incoming_labour" && a.status === "submitted";
+
+/** Labour a subcontractor has applied for and we have not yet certified: each
+ *  such application's claim for its own period. Owed, so it counts in committed;
+ *  not yet cost, so forecast cost and profit move only on certification.
+ *
+ *  Valued at `this_period_net` — the period's claim before retention, which is
+ *  still owed. Summing it across a series cannot double-count: each application
+ *  carries only its advance on the one before. */
+export function labourAwaitingCertification(
+  afps: Array<Pick<ApplicationForPayment, "direction" | "status" | "this_period_net">>,
+): { total: number; count: number } {
+  const awaiting = afps.filter(isLabourAwaitingCertification);
+  const total = awaiting.reduce((s, a) => s + (a.this_period_net ?? 0), 0);
+  return { total: Math.round(total * 100) / 100, count: awaiting.length };
+}
+
 export function computeForecast(input: {
   commercials: ProjectCommercial[];
   variations: Variation[];

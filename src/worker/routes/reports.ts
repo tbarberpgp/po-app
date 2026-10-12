@@ -3,7 +3,7 @@ import type { Env, Variables } from "../env";
 import { requirePermission } from "../auth";
 import { parsePaymentTerms, expectedDueDate } from "./invoices";
 import { forecastByProject } from "../project-forecast";
-import { PRELIM_LABOUR_BY_PROJECT } from "../labour-expended";
+import { PRELIM_LABOUR_BY_PROJECT, LABOUR_AWAITING_CERT } from "../labour-expended";
 import { plantAccrued } from "../../shared/prelims-cost";
 
 // Admin reporting dashboard — org-wide (or single-project) aggregates across
@@ -288,7 +288,7 @@ reports.get("/dashboard", async (c) => {
   // page and this table can no longer report different figures for one job —
   // which they did, on coded PO lines, omissions and substitutions, until the
   // maths moved into shared/forecast.ts.
-  const [forecasts, prelimLabourRows, labPaidRows] = await Promise.all([
+  const [forecasts, prelimLabourRows, labPaidRows, labAwaitingRows] = await Promise.all([
     forecastByProject(db, today),
     db.prepare(PRELIM_LABOUR_BY_PROJECT).all<{ pid: string; v: number }>(),
     // Labour paid per project, on the portfolio cash position's rule.
@@ -298,8 +298,16 @@ reports.get("/dashboard", async (c) => {
         WHERE a.direction = 'incoming_labour' AND (a.status = 'paid' OR a.paid_at IS NOT NULL)
         GROUP BY a.project_id`,
     ).all<{ pid: string; v: number }>(),
+    // Labour applied for and not yet certified, per project (LABOUR_AWAITING_CERT).
+    db.prepare(
+      `SELECT a.project_id AS pid, COUNT(*) AS n, COALESCE(SUM(COALESCE(a.this_period_net, 0)), 0) AS v
+         FROM applications_for_payment a
+        WHERE ${LABOUR_AWAITING_CERT}
+        GROUP BY a.project_id`,
+    ).all<{ pid: string; n: number; v: number }>(),
   ]);
   const prelimLabour = new Map(prelimLabourRows.results.map((r) => [r.pid, r.v] as const));
+  const labourAwaiting = new Map(labAwaitingRows.results.map((r) => [r.pid, r] as const));
   const labourPaid = new Map(labPaidRows.results.map((r) => [r.pid, r.v] as const));
   const r2 = (n: number) => Math.round(n * 100) / 100;
   const commercialFor = (id: string) => {
@@ -317,6 +325,10 @@ reports.get("/dashboard", async (c) => {
       // Labour the job owes: everything certified against the labour budget,
       // plus prelim-tagged claims, which draw on the prelims allowance instead.
       labour_committed: r2((f?.labourCertified ?? 0) + (prelimLabour.get(id) ?? 0)),
+      // Labour applied for and not yet certified. Owed, so it is in committed
+      // below; not yet cost, so ffc and GP leave it out until certification.
+      labour_awaiting: r2(labourAwaiting.get(id)?.v ?? 0),
+      labour_awaiting_count: labourAwaiting.get(id)?.n ?? 0,
       // The prelims pot, as the project's Prelims tab shows it: its budget, what
       // has been spent against it, and the part past it that forecast cost carries.
       prelim_budget: r2(f?.prelimsBudget ?? 0),
@@ -335,7 +347,7 @@ reports.get("/dashboard", async (c) => {
       // orders against a forecast cost that holds the labour too, and the budget
       // watch couldn't see a job whose labour had run away.
       po_committed: p.committed,
-      committed: r2(p.committed + com.labour_committed),
+      committed: r2(p.committed + com.labour_committed + com.labour_awaiting),
       po_paid: p.paid,
       labour_paid: lPaid,
       paid: r2(p.paid + lPaid),
@@ -410,8 +422,9 @@ reports.get("/dashboard", async (c) => {
     ).bind(...b()).all<{ month: string; v: number }>();
     for (const r of lab.results) if (r.month) labourDueMap.set(r.month, r.v);
   } catch { /* pre-migration DBs */ }
-  // Labour applied — subcontractor claims not yet certified (draft/submitted):
-  // the softest layer of the pipeline. Valued at this-period NET (amount_due,
+  // Labour applied — subcontractor claims sent and not yet certified
+  // (LABOUR_AWAITING_CERT; drafts are not agreed and stay out): the softest
+  // layer of the pipeline. Valued at this-period NET (amount_due,
   // i.e. the claim less previously-certified) so re-sent or cumulative claims
   // don't double-count money already counted under Labour due / Cash out.
   const labourAppliedMap = new Map<string, number>();
@@ -420,11 +433,24 @@ reports.get("/dashboard", async (c) => {
       `SELECT substr(COALESCE(a.period_end, a.created_at), 1, 7) AS month,
               COALESCE(SUM(COALESCE(a.amount_due, 0)), 0) AS v
          FROM applications_for_payment a JOIN projects p ON p.id = a.project_id
-        WHERE p.deleted_at IS NULL AND p.id <> 'sandbox' AND a.direction = 'incoming_labour'
-          AND a.status IN ('draft', 'submitted') AND a.paid_at IS NULL ${aProj}
+        WHERE p.deleted_at IS NULL AND p.id <> 'sandbox' AND ${LABOUR_AWAITING_CERT}
+          AND a.paid_at IS NULL ${aProj}
         GROUP BY month`,
     ).bind(...b()).all<{ month: string; v: number }>();
     for (const r of lab.results) if (r.month && r.v > 0) labourAppliedMap.set(r.month, r.v);
+  } catch { /* pre-migration DBs */ }
+  // Labour awaiting certification across the portfolio (or the one project).
+  // Replaces the old "labour applied", which summed every labour application's
+  // cumulative position — a series of restated positions — so the same work was
+  // counted once per application that repeated it.
+  let labourAwaitingTotal = 0;
+  try {
+    const row = await c.env.DB.prepare(
+      `SELECT COALESCE(SUM(COALESCE(a.this_period_net, 0)), 0) AS v
+         FROM applications_for_payment a JOIN projects p ON p.id = a.project_id
+        WHERE p.deleted_at IS NULL AND p.id <> 'sandbox' AND ${LABOUR_AWAITING_CERT} ${aProj}`,
+    ).bind(...b()).first<{ v: number }>();
+    labourAwaitingTotal = r2(row?.v ?? 0);
   } catch { /* pre-migration DBs */ }
   // Expected cash IN — certified client applications not yet paid, keyed by
   // their contractual receipt month: the valuation schedule's final date for
@@ -485,7 +511,11 @@ reports.get("/dashboard", async (c) => {
       monthly: poMonthly.results,
     },
     prelims: { budget: r2(prelimTotals.budget), committed: r2(prelimTotals.spent), po_count: prelimTotals.pos, plant_accrued: r2(plantAccruedTotal) },
-    applications: { client: appByDir("outgoing"), labour: appByDir("incoming_labour") },
+    applications: {
+      client: appByDir("outgoing"),
+      // Labour's "applied" is what is awaiting certification, on the one rule.
+      labour: { ...appByDir("incoming_labour"), applied: labourAwaitingTotal },
+    },
     operations: {
       on_site_now: ops?.on_site_now ?? 0,
       signins_today: ops?.signins_today ?? 0,
@@ -604,13 +634,13 @@ reports.get("/cash-detail", async (c) => {
     rows.push({ kind: "Labour due", detail: `${r.code} · labour application #${r.app_number} certified — awaiting payment`, date: r.d?.slice(0, 10) ?? null, amount: r.v });
   }
 
-  // Labour applied — claims not yet certified, at this-period net value.
+  // Labour applied — claims sent and not yet certified (LABOUR_AWAITING_CERT).
   const labApplied = await db.prepare(
     `SELECT a.app_number, a.status, COALESCE(a.period_end, a.created_at) AS d,
             COALESCE(a.amount_due, 0) AS v, p.code
        FROM applications_for_payment a JOIN projects p ON p.id = a.project_id
-      WHERE p.deleted_at IS NULL AND p.id <> 'sandbox' AND a.direction = 'incoming_labour'
-        AND a.status IN ('draft', 'submitted') AND a.paid_at IS NULL
+      WHERE p.deleted_at IS NULL AND p.id <> 'sandbox' AND ${LABOUR_AWAITING_CERT}
+        AND a.paid_at IS NULL
         AND substr(COALESCE(a.period_end, a.created_at), 1, 7) = ? ${aProj}`,
   ).bind(...b(month)).all<{ app_number: number; status: string; d: string; v: number; code: string }>();
   for (const r of labApplied.results) {
