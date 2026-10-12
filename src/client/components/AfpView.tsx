@@ -480,8 +480,19 @@ export function AfpView({ me }: { me: CurrentUser | null }) {
           <div className="card-hd"><h2 style={{ flex: 1 }}>This application</h2></div>
           <div className="card-bd" style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 24 }}>
             <Field label="Contract sum" value={fmtMoney(afp.contract_sum ?? 0)} />
-            <Field label="Cumulative value of works" value={fmtMoney(afp.cumulative_value ?? 0)} />
-            <Field label="Previously certified" value={fmtMoney(afp.previous_certified ?? 0)} />
+            {afp.claim_basis === "period" ? (
+              // A period claim is worth its own lines: what came before is shown
+              // for the running position, but nothing is taken off this claim.
+              <>
+                <Field label="Measured work this period" value={fmtMoney(afp.cumulative_value ?? 0)} />
+                <Field label="Counted before (not deducted)" value={fmtMoney(afp.previous_certified ?? 0)} />
+              </>
+            ) : (
+              <>
+                <Field label="Cumulative value of works" value={fmtMoney(afp.cumulative_value ?? 0)} />
+                <Field label="Previously certified" value={fmtMoney(afp.previous_certified ?? 0)} />
+              </>
+            )}
             <Field label="This period (net)" value={fmtMoney(afp.this_period_net ?? 0)} />
           </div>
           <div className="card-bd" style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 24, borderTop: "1px solid var(--line)" }}>

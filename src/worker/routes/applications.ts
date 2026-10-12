@@ -95,17 +95,33 @@ export function priorAnchor(p: PriorRow): number {
   return Math.max(0, measured - (p.expenses_amount ?? 0) - (p.dayworks_amount ?? 0));
 }
 
+/** How an application's claim is meant to be read (migration 0136).
+ *  'period'      the document claims this period only: the application is worth
+ *                its own lines.
+ *  'cumulative'  the document states a position to date: the application is
+ *                worth that position less what was counted before it.
+ *  null          created before 0136 — read as cumulative, as it always was. */
+export type ClaimBasis = "period" | "cumulative" | null;
+
 /** What an application is worth this period.
  *
- *  Movement in the measured position since the last application, plus this
- *  application's own standalone claims. The max(0,…) floor applies to the
- *  measured movement alone: an over-certified position must not swallow a
- *  hotel bill or a week of hours claimed now. */
+ *  Measured work, plus this application's own standalone claims (expenses,
+ *  dayworks). For a cumulative claim the measured work is the movement since the
+ *  last application; for a period claim it is the application's own lines —
+ *  nothing earlier is added in or taken off, so a subcontractor who bills one
+ *  week at a time is paid what each week's invoice says. Reading Paul Garbutt's
+ *  weekly invoices as running totals made each one cancel the last: £39,050 of
+ *  invoices read £9,346.
+ *
+ *  The max(0,…) floor applies to the measured part alone: an over-certified
+ *  position must not swallow a hotel bill or a week of hours claimed now. */
 export function periodNet(a: {
   cumulative: number; previousCertified: number;
   expensesAmount: number; dayworksAmount: number;
+  basis?: ClaimBasis;
 }): number {
-  return Math.max(0, a.cumulative - a.previousCertified) + a.expensesAmount + a.dayworksAmount;
+  const measured = a.basis === "period" ? a.cumulative : a.cumulative - a.previousCertified;
+  return Math.max(0, measured) + a.expensesAmount + a.dayworksAmount;
 }
 
 /** True when an application is a standalone prelims drawdown rather than a
@@ -141,7 +157,7 @@ async function recalcTotals(
   const afp = await db
     .prepare(
       `SELECT id, project_id, direction, app_number, retention_pct, vat_pct, status,
-              prelim_heading, claimed_amount, counterparty_supplier_id
+              prelim_heading, claimed_amount, counterparty_supplier_id, claim_basis
        FROM applications_for_payment WHERE id = ?`,
     )
     .bind(afpId)
@@ -149,7 +165,7 @@ async function recalcTotals(
       id: number; project_id: string; direction: Direction; app_number: number;
       retention_pct: number; vat_pct: number; status: Status;
       prelim_heading: string | null; claimed_amount: number | null;
-      counterparty_supplier_id: number | null;
+      counterparty_supplier_id: number | null; claim_basis: ClaimBasis;
     }>();
   if (!afp || (afp.status !== "draft" && !opts.force)) return;
 
@@ -238,7 +254,10 @@ async function recalcTotals(
   // expenses and dayworks. The max(0,…) floor applies to the measured movement
   // alone — an over-certified position must not swallow a hotel bill or a
   // week of hours claimed this period.
-  const thisPeriodNet = r2(periodNet({ cumulative, previousCertified, expensesAmount, dayworksAmount }));
+  // previous_certified is still worked out and stored for a period claim: it is
+  // the subcontractor's position before this application, which the screen
+  // shows and the over-budget gate needs. It just isn't subtracted.
+  const thisPeriodNet = r2(periodNet({ cumulative, previousCertified, expensesAmount, dayworksAmount, basis: afp.claim_basis }));
   const retentionAmount = r2(thisPeriodNet * (afp.retention_pct / 100));
   const amountDue = r2(thisPeriodNet - retentionAmount);
   const vatAmount = r2(amountDue * (afp.vat_pct / 100));
@@ -314,11 +333,18 @@ async function autoSubmitIfReady(db: D1Database, afpId: number, actor: string): 
  * and a director must sign it off before it can be certified.
  */
 async function lineBudgetStatus(db: D1Database, afpId: number): Promise<{ budget: number; claimed: number; over: boolean; overBy: number }> {
+  // A period claim holds one period's work, so on its own it would almost never
+  // reach the budget. Judge it on the subcontractor's running total instead:
+  // what was counted before it plus what it claims now.
+  const head = await db
+    .prepare("SELECT claim_basis, previous_certified FROM applications_for_payment WHERE id = ?")
+    .bind(afpId)
+    .first<{ claim_basis: ClaimBasis; previous_certified: number | null }>();
   const rows = await db
     .prepare("SELECT is_adhoc, section, contract_value, cumulative_value FROM afp_lines WHERE afp_id = ?")
     .bind(afpId)
     .all<{ is_adhoc: 0 | 1; section: string | null; contract_value: number; cumulative_value: number }>();
-  let budget = 0, claimed = 0;
+  let budget = 0, claimed = head?.claim_basis === "period" ? (head.previous_certified ?? 0) : 0;
   for (const l of rows.results) {
     // Expenses are a disbursement, not labour: they sit outside the budget on
     // BOTH sides. Counting them as claimed against a budget they were never in
@@ -1845,14 +1871,23 @@ export async function createAfpFromLines(env: Env, args: {
   const appNumber = nextN!.n;
   const now = new Date().toISOString();
 
+  // A labour application read as a period claim is worth its own lines (see
+  // periodNet). It is recorded as such, and it is NOT seeded from earlier
+  // applications: seeding added every earlier application's lines into this
+  // one, which carried mistakes forward and doubled them each time — a stray
+  // £2,196 on Paul Garbutt's #3 became £4,392 on #25 and £8,784 on #27. Client
+  // applications keep their behaviour exactly.
+  const periodLabour = isLabour && amountsArePeriod;
+  const claimBasis: ClaimBasis = isLabour ? (amountsArePeriod ? "period" : "cumulative") : null;
   const inserted = await env.DB.prepare(
     `INSERT INTO applications_for_payment
        (project_id, direction, app_number, period_end, notes, retention_pct, vat_pct,
-        counterparty_supplier_id, status, created_at, created_by)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?) RETURNING id`,
+        counterparty_supplier_id, status, created_at, created_by, claim_basis)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?) RETURNING id`,
   ).bind(
     args.projectId, args.direction, appNumber, args.periodEnd, args.notes,
     terms.retention_pct, terms.vat_pct, isLabour ? (args.counterpartySupplierId ?? null) : null, now, args.actor,
+    claimBasis,
   ).first<{ id: number }>();
   const afpId = inserted!.id;
 
@@ -1862,7 +1897,7 @@ export async function createAfpFromLines(env: Env, args: {
   // subbie didn't claim this period carries forward, not zero), claimed lines
   // then add their period value on top.
   const prevByItem = new Map<number, number>();
-  if (amountsArePeriod) {
+  if (amountsArePeriod && !periodLabour) {
     // Scoped to this subcontractor for labour: another subbie's position on the
     // same BOQ line is their contract, not this one's starting point.
     const prev = await env.DB.prepare(
@@ -1937,11 +1972,16 @@ export async function createAfpFromLines(env: Env, args: {
       : (line.cumulative_pct != null && itemTotal !== 0 ? line.cumulative_pct / 100 * itemTotal : null);
     if (lineVal == null) continue;
 
-    // Cumulative mode: the line value IS the to-date total. Period mode: add it
-    // on top of what's already been certified (capped at the line's contract).
-    const cumVal = amountsArePeriod
-      ? Math.min((prevByItem.get(m.contract_item_id) ?? 0) + lineVal, itemTotal || (prevByItem.get(m.contract_item_id) ?? 0) + lineVal)
-      : lineVal;
+    // Cumulative mode: the line value IS the to-date total. A period labour
+    // claim: the line is worth exactly what this period claims — uncapped, so a
+    // week past the line's budget is caught by the over-budget gate instead of
+    // silently cut (the cap is what took Garbutt's #25 and #27 to £0). Any other
+    // period claim: add it on top of what's already been certified, capped at
+    // the line's contract.
+    const cumVal = periodLabour ? lineVal
+      : amountsArePeriod
+        ? Math.min((prevByItem.get(m.contract_item_id) ?? 0) + lineVal, itemTotal || (prevByItem.get(m.contract_item_id) ?? 0) + lineVal)
+        : lineVal;
     // itemTotal !== 0, not > 0: deduction lines (negative qty/rate, e.g. a
     // "week not needed" prelim credit) apply like any other — a negative value
     // over a negative total is a positive % and the credit flows through.
@@ -2372,7 +2412,7 @@ applications.post("/repair-labour-ledger", async (c) => {
 
   const apps = (await c.env.DB.prepare(
     `SELECT id, project_id, app_number, status, counterparty_supplier_id,
-            prelim_heading, claimed_amount,
+            prelim_heading, claimed_amount, claim_basis,
             unmatched_lines_json, resolved_lines_json,
             cumulative_value, amount_due, total_invoice, certified_amount
        FROM applications_for_payment
@@ -2381,7 +2421,7 @@ applications.post("/repair-labour-ledger", async (c) => {
   ).all<{
     id: number; project_id: string; app_number: number; status: Status;
     counterparty_supplier_id: number | null;
-    prelim_heading: string | null; claimed_amount: number | null;
+    prelim_heading: string | null; claimed_amount: number | null; claim_basis: ClaimBasis;
     unmatched_lines_json: string | null; resolved_lines_json: string | null;
     cumulative_value: number | null; amount_due: number | null;
     total_invoice: number | null; certified_amount: number | null;
@@ -2488,7 +2528,9 @@ applications.post("/repair-labour-ledger", async (c) => {
           AND p.counterparty_supplier_id IS ? AND p.app_number < ?
           AND l.contract_item_id IS NOT NULL`,
     ).bind(a.project_id, a.counterparty_supplier_id, a.app_number).first<{ top: number }>();
-    if ((advance?.top ?? 0) > 0 && (advance?.top ?? 0) <= (peer?.top ?? 0) + 0.005) {
+    // A period claim is worth its own lines, so "no advance on the earlier
+    // position" is not a fault for it — it is the point.
+    if (a.claim_basis !== "period" && (advance?.top ?? 0) > 0 && (advance?.top ?? 0) <= (peer?.top ?? 0) + 0.005) {
       needsReview.push({
         afp_id: a.id, app_number: a.app_number, status: a.status,
         reason: "claim states no advance on this subcontractor's earlier position — likely a weekly invoice filed as a cumulative one",

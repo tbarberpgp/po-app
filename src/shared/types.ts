@@ -880,6 +880,9 @@ export type ApplicationForPayment = {
   attention_note?: string | null;
   attention_note_by?: string | null;
   attention_note_at?: string | null;
+  /** How the claim is read (0136): 'period' = worth its own lines; 'cumulative'
+   *  = a position to date less what came before; null = pre-0136, cumulative. */
+  claim_basis?: "period" | "cumulative" | null;
   retention_pct: number;
   vat_pct: number;
   contract_sum: number | null;

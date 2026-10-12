@@ -10,9 +10,11 @@
  *
  * The rule, in one place:
  *
- *   BOQ lines are a CUMULATIVE position. A subcontractor's application restates
- *   where they have got to, so only their latest certified application counts —
- *   summing the series double-counts everything before it.
+ *   BOQ lines on a RUNNING-TOTAL application are a cumulative position: it
+ *   restates where the subcontractor has got to, so only their latest certified
+ *   one counts — summing the series double-counts everything before it. BOQ
+ *   lines on a PERIOD claim (claim_basis 'period', migration 0136) are that
+ *   period's work alone, so every certified one counts. See COUNTED_BOQ_APPS.
  *
  *   Ad-hoc lines (expenses, variations) are a PER-APPLICATION claim. They are
  *   never carried forward into the next application, so they sum across the
@@ -51,17 +53,40 @@ export const LABOUR_AWAITING_CERT = "(a.direction = 'incoming_labour' AND a.stat
  *  The same test recalcTotals applies (`isPrelimClaim`). */
 export const PRELIM_CLAIM = "(a.prelim_heading IS NOT NULL AND a.claimed_amount IS NOT NULL)";
 
-/** Applications whose position counts: the newest certified/paid one per
- *  subcontractor on each project. */
-const LATEST_PER_SUPPLIER = `
-  SELECT a.id, a.project_id,
-         ROW_NUMBER() OVER (
-           PARTITION BY a.project_id, a.counterparty_supplier_id
-           ORDER BY a.app_number DESC
-         ) AS rn
+/** PRELIM_CLAIM for a table alias other than `a`. */
+const prelimClaimOf = (t: string) => `(${t}.prelim_heading IS NOT NULL AND ${t}.claimed_amount IS NOT NULL)`;
+
+/** The number of the newest certified/paid RUNNING-TOTAL application for the
+ *  same project and subcontractor as `a` (claim_basis 'cumulative', or NULL for
+ *  anything created before 0136), or NULL if there is none. */
+const LATEST_CUMULATIVE_NO = `(
+  SELECT MAX(b.app_number) FROM applications_for_payment b
+   WHERE b.project_id = a.project_id AND b.direction = 'incoming_labour'
+     AND b.counterparty_supplier_id IS a.counterparty_supplier_id
+     AND b.status IN ('certified', 'paid') AND NOT ${prelimClaimOf("b")}
+     AND COALESCE(b.claim_basis, 'cumulative') <> 'period')`;
+
+/** The applications whose BOQ lines count towards labour expended.
+ *
+ *  A running-total application restates the subcontractor's position, so only
+ *  the newest certified one counts — adding up the series would count every
+ *  earlier week again. A period claim holds one period's work, so every
+ *  certified one counts — taking only the newest would drop all but the last
+ *  week. When a subcontractor has both, the newest running total counts plus
+ *  every period claim certified after it.
+ *
+ *  Everything created before 0136 has claim_basis NULL and is read as a running
+ *  total, so this picks exactly the rows it always did until an application is
+ *  deliberately set to 'period'. */
+const COUNTED_BOQ_APPS = `
+  SELECT a.id, a.project_id
     FROM applications_for_payment a
    WHERE a.direction = 'incoming_labour' AND a.status IN ('certified', 'paid')
-     AND NOT ${PRELIM_CLAIM}`;
+     AND NOT ${PRELIM_CLAIM}
+     AND (
+       (COALESCE(a.claim_basis, 'cumulative') <> 'period' AND a.app_number = ${LATEST_CUMULATIVE_NO})
+       OR (a.claim_basis = 'period' AND a.app_number > COALESCE(${LATEST_CUMULATIVE_NO}, 0))
+     )`;
 
 /** An ad-hoc line claimed against a variation. Its budget is the variation's
  *  labour budget, which forecast cost already carries — so it is measured
@@ -77,8 +102,9 @@ const VARIATION_LINE = "(al.variation_id IS NOT NULL OR lower(COALESCE(al.sectio
  *   budget / line_count   the labour BOQ (active snapshot)
  *   saving                live subcontract rates vs BOQ, on the same "latest
  *                         applied rate" rule as the Profit/Loss from Labour lever
- *   boq_expended          the cumulative measured position, latest application
- *                         per subcontractor
+ *   boq_expended          the measured position per subcontractor: their newest
+ *                         certified running total, plus every certified period
+ *                         claim after it (COUNTED_BOQ_APPS)
  *   variation_expended    ad-hoc claims against variations, across the series
  *   other_expended        every other ad-hoc claim — expenses, daywork — which
  *                         has no budget line anywhere
@@ -113,7 +139,7 @@ export const LABOUR_POSITION = `
       SELECT l.project_id, COALESCE(NULLIF(TRIM(al.section), ''), 'Other'),
              0, 0, 0, COALESCE(al.cumulative_value, 0), 0, 0
         FROM afp_lines al
-        JOIN (${LATEST_PER_SUPPLIER}) l ON l.id = al.afp_id AND l.rn = 1
+        JOIN (${COUNTED_BOQ_APPS}) l ON l.id = al.afp_id
        WHERE al.is_adhoc = 0
       UNION ALL
       SELECT a.project_id, COALESCE(NULLIF(TRIM(al.section), ''), 'Other'),
