@@ -19,6 +19,10 @@ import { EXPENSES_SECTION, isExpenseSection, looksLikeExpenseLine } from "../../
 import { DAYWORKS_SECTION, isDayworkSection, looksLikeDayworkLine } from "../../shared/afp-dayworks";
 import { normaliseAttentionNote } from "../../shared/afp-attention";
 import { amountsArePeriod as inferPeriodBasis } from "../../shared/afp-claim-basis";
+import {
+  planRestatement, lineWrites, settleWrites,
+  type RestateRequest, type RestateAppRow, type RestateLineRow, type Sql,
+} from "../labour-restatement";
 
 export const applications = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -2581,6 +2585,76 @@ function strandedTotals(unmatchedJson: string | null): { expenses: number; daywo
   }
   return { expenses, dayworks };
 }
+
+/**
+ * Restate one subcontractor's labour applications from their invoices, and
+ * record the ones Xero has already paid. See labour-restatement.ts for why and
+ * exactly what it writes. Superadmin only: it rewrites submitted and certified
+ * applications, which nothing else may.
+ *
+ * Pass ?dry=1 to get the plan — every application before and after — without
+ * writing. Never sends anything to Xero.
+ */
+applications.post("/restate-from-invoices", async (c) => {
+  const denied = requirePermission(c, "projects.delete");
+  if (denied) return denied;
+  const dry = c.req.query("dry") === "1";
+  const req = await c.req.json<RestateRequest>().catch(() => null);
+  if (!req || typeof req !== "object") return c.json({ error: "JSON body required" }, 400);
+
+  const db = c.env.DB;
+  const scope = `project_id = ? AND direction = 'incoming_labour' AND counterparty_supplier_id = ?`;
+  const apps = (await db.prepare(
+    `SELECT id, project_id, direction, app_number, status, counterparty_supplier_id,
+            prelim_heading, claimed_amount, claim_basis, xero_po_id, retention_pct, vat_pct,
+            cumulative_value, this_period_net, certified_amount, attention_note,
+            unmatched_lines_json, resolved_lines_json
+       FROM applications_for_payment WHERE ${scope}`,
+  ).bind(req.project_id, req.supplier_id).all<RestateAppRow>()).results;
+  // A subquery, not an id list: a long series would pass D1's 100-parameter cap.
+  const lines = (await db.prepare(
+    `SELECT id, afp_id, contract_item_id, section, description, contract_value,
+            cumulative_value, is_adhoc, variation_id, display_order
+       FROM afp_lines WHERE afp_id IN (SELECT id FROM applications_for_payment WHERE ${scope})`,
+  ).bind(req.project_id, req.supplier_id).all<RestateLineRow>()).results;
+
+  const plan = planRestatement(req, apps, lines);
+  if (!plan.ok) return c.json({ dry, ok: false, errors: plan.errors }, 409);
+  if (dry) return c.json({ dry: true, ok: true, steps: plan.steps, totals: plan.totals });
+
+  const actor = c.get("userEmail");
+  const now = new Date().toISOString();
+  const run = (ws: Sql[]) => ws.length
+    ? db.batch(ws.map((w) => db.prepare(w.sql).bind(...w.params)))
+    : Promise.resolve([]);
+  const current = new Map(apps.map((a) => [a.id, a]));
+
+  // 1. Lines and basis — one atomic batch per application.
+  for (const s of plan.steps) {
+    const a = current.get(s.afp_id)!;
+    await run(lineWrites(s, req.works_item_id, actor, now, a));
+  }
+  // 2. Recompute every application's figures from its new lines.
+  for (const s of plan.steps) await recalcTotals(db, s.afp_id, { force: true });
+  // 3. Settle status from the recomputed figure — never paid at a value the
+  //    invoice doesn't carry.
+  const settleErrors: string[] = [];
+  for (const s of plan.steps) {
+    const row = await db.prepare("SELECT amount_due FROM applications_for_payment WHERE id = ?")
+      .bind(s.afp_id).first<{ amount_due: number | null }>();
+    const settled = settleWrites(s, row?.amount_due ?? 0, actor, now);
+    if (settled.error) { settleErrors.push(settled.error); continue; }
+    await run(settled.writes);
+  }
+  // 4. Once more, so "previously certified" reads the settled certificates.
+  for (const s of plan.steps) await recalcTotals(db, s.afp_id, { force: true });
+
+  const after = (await db.prepare(
+    `SELECT id, app_number, status, claim_basis, this_period_net, certified_amount, payment_reference
+       FROM applications_for_payment WHERE ${scope} ORDER BY app_number`,
+  ).bind(req.project_id, req.supplier_id).all()).results;
+  return c.json({ dry: false, ok: settleErrors.length === 0, errors: settleErrors, totals: plan.totals, after });
+});
 
 applications.post("/backfill-source-hashes", async (c) => {
   const denied = requirePermission(c, "commercial.edit");
