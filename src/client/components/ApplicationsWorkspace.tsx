@@ -224,6 +224,9 @@ export function ApplicationsWorkspace({ me }: { me: CurrentUser | null }) {
                         {r.has_unmatched === 1 && (
                           <span className="pill pending" style={{ marginLeft: 6, fontSize: 10 }} title="Some uploaded lines still need review">review</span>
                         )}
+                        {r.attention_note?.trim() && (
+                          <span className="pill danger" style={{ marginLeft: 6, fontSize: 10, cursor: "help" }} title={`Needs attention: ${r.attention_note}`}>⚑ attention</span>
+                        )}
                       </td>
                       <td className="num">{fmtMoney(value)}</td>
                       <td className="muted" style={{ fontSize: 12 }}>

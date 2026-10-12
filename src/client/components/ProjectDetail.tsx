@@ -1956,8 +1956,15 @@ function OverviewAtAGlance({ projectId, forecast: f, commercials, afps, variatio
 
   // ── Needs attention ───────────────────────────────────────────────────
   // Commercial flags (applications/variations) only surface for commercial roles.
-  const flags: Array<{ text: string; tab: Tab; tone: string }> = [];
+  const flags: Array<{ text: string; tab: Tab; tone: string; to?: string }> = [];
   if (canViewCommercial) {
+    // Applications someone has flagged by hand (0135) — a problem found by
+    // reading the source document, held for audit before anyone corrects or
+    // certifies it. First on the list: the most specific thing here.
+    for (const a of afps.filter((x) => x.attention_note?.trim())) {
+      const kind = a.direction === "incoming_labour" ? "Labour application" : "AfP";
+      flags.push({ text: `⚑ ${kind} #${a.app_number}: ${a.attention_note}`, tab: "commercials", tone: "var(--danger)", to: `/applications/${a.id}` });
+    }
     for (const a of afps.filter((x) => x.direction === "outgoing" && x.status === "submitted")) {
       flags.push({ text: `AfP #${a.app_number} awaiting certification`, tab: "commercials", tone: "var(--warn)" });
     }
@@ -2065,7 +2072,9 @@ function OverviewAtAGlance({ projectId, forecast: f, commercials, afps, variatio
                 <div key={i} className="row" style={{ alignItems: "center", gap: 10 }}>
                   <span style={{ width: 8, height: 8, borderRadius: 999, background: fl.tone, flex: "0 0 auto" }} />
                   <span style={{ flex: 1, fontSize: 13 }}>{fl.text}</span>
-                  <button onClick={() => onJump(fl.tab)} style={{ background: "none", border: "none", color: "var(--accent)", cursor: "pointer", fontSize: 13, padding: 0, minHeight: 0, width: "auto" }}>View</button>
+                  {fl.to
+                    ? <Link to={fl.to} style={{ fontSize: 13 }}>Open</Link>
+                    : <button onClick={() => onJump(fl.tab)} style={{ background: "none", border: "none", color: "var(--accent)", cursor: "pointer", fontSize: 13, padding: 0, minHeight: 0, width: "auto" }}>View</button>}
                 </div>
               ))}
             </div>
@@ -2749,7 +2758,12 @@ function AfpListPanel({
             <tbody>
               {filtered.map((a) => (
                 <tr key={a.id}>
-                  <td className="center"><Link to={`/applications/${a.id}`}>#{a.app_number}</Link></td>
+                  <td className="center">
+                    <Link to={`/applications/${a.id}`}>#{a.app_number}</Link>
+                    {a.attention_note?.trim() && (
+                      <span title={`Needs attention: ${a.attention_note}`} style={{ color: "var(--danger)", marginLeft: 4, cursor: "help" }}>⚑</span>
+                    )}
+                  </td>
                   <td>{fmtDate(a.period_end)}</td>
                   <td className="center">
                     <span className={`pill ${afpStatusPill(a.status)}`} style={{ fontSize: 10 }}>{a.status}</span>
