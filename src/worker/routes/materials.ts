@@ -10,7 +10,7 @@ import { withCodedCommitted } from "../../shared/forecast";
 import { requirePermission } from "../auth";
 import { loadSettings, tierForApproval } from "../approval";
 import { autoTagFromBill, baseProject } from "./programme";
-import { LABOUR_POSITION, PRELIM_CLAIM } from "../labour-expended";
+import { LABOUR_POSITION, LABOUR_SPENT_BY_ITEM, PRELIM_CLAIM } from "../labour-expended";
 import { PLANT_ON_ORDER, PRELIMS_POSITION, PRELIM_LINE, PRELIM_ROW_BUDGET, prelimRow } from "../prelims-position";
 import { plantAccrued, plantBeyondOrders, prelimsOutturn, type PlantHire, type PlantOnOrder } from "../../shared/prelims-cost";
 
@@ -328,6 +328,15 @@ async function persistParsedWorkbook(
     contract_items: parsed.contract_items.length,
   };
 }
+
+/** Certified labour per BOQ line (LABOUR_SPENT_BY_ITEM). `contract_item_id`
+ *  is null for a measured line claimed against no BOQ item. */
+materials.get("/:projectId/labour-spent-by-line", async (c) => {
+  const rows = await c.env.DB.prepare(`SELECT contract_item_id, spent FROM (${LABOUR_SPENT_BY_ITEM}) WHERE pid = ?`)
+    .bind(c.req.param("projectId"))
+    .all<{ contract_item_id: number | null; spent: number }>();
+  return c.json(rows.results.map((r) => ({ contract_item_id: r.contract_item_id, spent: Math.round((r.spent ?? 0) * 100) / 100 })));
+});
 
 /**
  * Aggregate labour cost for the active snapshot, grouped by element code so

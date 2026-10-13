@@ -154,6 +154,25 @@ export const LABOUR_POSITION = `
    GROUP BY pid, section`;
 
 /**
+ * Certified labour per BOQ line — the Labour BOQ's "Spent to date" column.
+ *
+ * The same measured position LABOUR_POSITION adds up per section (the lines of
+ * COUNTED_BOQ_APPS), kept apart by the contract item each line was claimed
+ * against, so a section's lines add up to its BOQ expended. Ad-hoc lines
+ * (expenses, dayworks, variations) have no BOQ line and stay out. A line whose
+ * contract item belongs to an earlier BOQ upload keeps its id here; the screen
+ * reports what it cannot place rather than guessing by description (Blyth's BOQ
+ * repeats "Supply and Install new Ridge Flashing" under two sections).
+ * Returns `pid`, `contract_item_id`, `spent`; takes no binds.
+ */
+export const LABOUR_SPENT_BY_ITEM = `
+  SELECT l.project_id AS pid, al.contract_item_id, SUM(COALESCE(al.cumulative_value, 0)) AS spent
+    FROM afp_lines al
+    JOIN (${COUNTED_BOQ_APPS}) l ON l.id = al.afp_id
+   WHERE al.is_adhoc = 0
+   GROUP BY l.project_id, al.contract_item_id`;
+
+/**
  * Certified prelim-tagged labour claims per project — labour cost that draws on
  * the Preliminaries allowance instead of the labour BOQ. Not part of labour
  * expended (that is measured against the labour budget), but it is money the
