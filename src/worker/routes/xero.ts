@@ -19,6 +19,9 @@ import {
   updatePurchaseOrder,
   createSalesInvoice,
   uploadAttachment,
+  getBill,
+  listInvoiceAttachments,
+  downloadInvoiceAttachment,
   findContactByName,
   findContactsByName,
   findProjectTracking,
@@ -31,6 +34,7 @@ import {
 } from "../xero/client";
 import type { XeroContact, XeroPOInput, XeroInvoiceInput } from "../xero/client";
 import { encryptToken } from "../xero/crypto";
+import { summariseBill } from "../xero/bill-detail";
 import { recheckPaidStatus } from "../xero/paid";
 import { isSandboxId, SANDBOX_PROJECT_ID } from "../sandbox";
 import { isCertInXero, isCertReleased } from "../../shared/payment-release";
@@ -686,6 +690,53 @@ xero.get("/bill-check", async (c) => {
       contacts: contacts.map((ct) => ({ id: ct.ContactID, name: ct.Name })),
       rows,
       summary,
+    });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return c.json({ error: msg === "not_connected" ? "Xero isn't connected — an admin can connect it at Admin → Xero." : msg }, 502);
+  }
+});
+
+/**
+ * GET /api/xero/bill-detail/:id — one supplier bill as Xero holds it: its lines,
+ * the project each line is tracked to, and its attachments. The bill check
+ * above gives the ids. Read-only; same gate, since it shows the same bills.
+ * See xero/bill-detail.ts.
+ */
+xero.get("/bill-detail/:id", async (c) => {
+  const denied = requirePermission(c, "commercial.view");
+  if (denied) return denied;
+  const nc = notConfigured(c.env);
+  if (nc) return nc;
+  try {
+    const raw = await getBill(c.env, c.req.param("id"));
+    if (!raw) return c.json({ error: "No such bill in Xero" }, 404);
+    if (raw.Type !== "ACCPAY") return c.json({ error: "Not a supplier bill" }, 400);
+    const attachments = raw.HasAttachments === false ? [] : await listInvoiceAttachments(c.env, raw.InvoiceID);
+    return c.json(summariseBill(raw, attachments, parseXeroDate));
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return c.json({ error: msg === "not_connected" ? "Xero isn't connected — an admin can connect it at Admin → Xero." : msg }, 502);
+  }
+});
+
+/** GET /api/xero/bill-detail/:id/attachments/:attachmentId — the attached file
+ *  itself, e.g. the supplier's invoice PDF Accounts keyed the bill from. */
+xero.get("/bill-detail/:id/attachments/:attachmentId", async (c) => {
+  const denied = requirePermission(c, "commercial.view");
+  if (denied) return denied;
+  const nc = notConfigured(c.env);
+  if (nc) return nc;
+  try {
+    const raw = await getBill(c.env, c.req.param("id"));
+    if (!raw || raw.Type !== "ACCPAY") return c.json({ error: "No such supplier bill in Xero" }, 404);
+    const meta = (await listInvoiceAttachments(c.env, raw.InvoiceID))
+      .find((a) => a.AttachmentID === c.req.param("attachmentId"));
+    if (!meta) return c.json({ error: "No such attachment on this bill" }, 404);
+    const file = await downloadInvoiceAttachment(c.env, raw.InvoiceID, meta);
+    const safe = meta.FileName.replace(/["\\\r\n]/g, "_");
+    return new Response(file.body, {
+      headers: { "content-type": file.contentType, "content-disposition": `inline; filename="${safe}"` },
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);

@@ -485,6 +485,73 @@ export async function getInvoice(env: Env, invoiceId: string): Promise<XeroInvoi
   return body.Invoices?.[0] ?? null;
 }
 
+/** A bill as Xero holds it, with the lines — a single-invoice GET returns them,
+ *  listings don't. */
+export type XeroBillRaw = XeroInvoiceFull & {
+  HasAttachments?: boolean;
+  SubTotal?: number;
+  TotalTax?: number;
+  LineItems?: Array<{
+    Description?: string;
+    Quantity?: number;
+    UnitAmount?: number;
+    LineAmount?: number;
+    AccountCode?: string;
+    Tracking?: Array<{ Name?: string; Option?: string }>;
+  }>;
+};
+
+export type XeroAttachmentMeta = {
+  AttachmentID: string;
+  FileName: string;
+  MimeType?: string;
+  ContentLength?: number;
+};
+
+/** One bill with its lines and tracking. Read-only. */
+export async function getBill(env: Env, invoiceId: string): Promise<XeroBillRaw | null> {
+  return (await getInvoice(env, invoiceId)) as XeroBillRaw | null;
+}
+
+/** The files attached to an invoice or bill in Xero (GET /Invoices/{id}/Attachments). */
+export async function listInvoiceAttachments(env: Env, invoiceId: string): Promise<XeroAttachmentMeta[]> {
+  const conn = await getValidConnection(env);
+  const body = await xeroFetch(env, conn, "GET", `/Invoices/${encodeURIComponent(invoiceId)}/Attachments`) as {
+    Attachments?: XeroAttachmentMeta[];
+  };
+  return body.Attachments ?? [];
+}
+
+/**
+ * Download one attached file. Binary, so it can't use xeroFetch (which parses
+ * JSON); same 401 → refresh → retry recovery as uploadAttachment. Xero answers
+ * with the file itself when Accept names its type.
+ */
+export async function downloadInvoiceAttachment(
+  env: Env,
+  invoiceId: string,
+  attachment: XeroAttachmentMeta,
+): Promise<{ body: ArrayBuffer; contentType: string }> {
+  const conn = await getValidConnection(env);
+  const path = `/Invoices/${encodeURIComponent(invoiceId)}/Attachments/${encodeURIComponent(attachment.AttachmentID)}`;
+  const contentType = attachment.MimeType || "application/octet-stream";
+  const send = (token: string) => fetch(`${API_BASE}${path}`, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${token}`, "Xero-tenant-id": conn.tenant_id, Accept: contentType },
+  });
+  let res = await send(conn.access_token);
+  if (res.status === 401) {
+    let refreshed: XeroConnectionRow;
+    try { refreshed = await forceRefresh(env, conn); } catch { throw new Error(XERO_RECONNECT_MESSAGE); }
+    res = await send(refreshed.access_token);
+  }
+  if (!res.ok) {
+    const txt = await res.text();
+    throw new Error(`Xero attachment ${path} → ${res.status}: ${extractXeroError(txt)}`);
+  }
+  return { body: await res.arrayBuffer(), contentType: res.headers.get("content-type") || contentType };
+}
+
 /** List invoices/bills matching a Xero `where` clause, paginated. `modifiedSince`
  *  uses the If-Modified-Since header to bound the result to recent changes. */
 export async function listInvoices(
