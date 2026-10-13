@@ -18,6 +18,7 @@ import { isSandboxId } from "../sandbox";
 import { EXPENSES_SECTION, isExpenseSection, looksLikeExpenseLine } from "../../shared/afp-expenses";
 import { DAYWORKS_SECTION, isDayworkSection, looksLikeDayworkLine } from "../../shared/afp-dayworks";
 import { normaliseAttentionNote } from "../../shared/afp-attention";
+import { planAttachSource, type AttachSource, type AttachTarget } from "../afp-source-attach";
 import { amountsArePeriod as inferPeriodBasis } from "../../shared/afp-claim-basis";
 import {
   planRestatement, lineWrites, settleWrites,
@@ -745,6 +746,49 @@ applications.get("/:id/source-file", async (c) => {
       "Content-Disposition": `inline; filename="${(afp.source_file_name || "application").replace(/["\\]/g, "")}"`,
     },
   });
+});
+
+/**
+ * Attach a document the app already stores — on another application of the
+ * same subcontractor and project, or on an inbound tray item — to an
+ * application that has none. Superadmin only: it changes the evidence on
+ * certified and paid applications. Never overwrites, never uploads; see
+ * afp-source-attach.ts. Body: { from_afp_id } or { from_inbound_id }, and an
+ * optional display name.
+ */
+applications.post("/:id/attach-source", async (c) => {
+  const denied = requirePermission(c, "projects.delete");
+  if (denied) return denied;
+  const id = Number(c.req.param("id"));
+  const body = await c.req.json<{ from_afp_id?: number; from_inbound_id?: number; name?: string }>().catch(() => null);
+  if (!body || (body.from_afp_id == null) === (body.from_inbound_id == null)) {
+    return c.json({ error: "give exactly one of from_afp_id or from_inbound_id" }, 400);
+  }
+  const target = await c.env.DB.prepare(
+    "SELECT id, project_id, counterparty_supplier_id, source_file_key FROM applications_for_payment WHERE id = ?",
+  ).bind(id).first<AttachTarget>();
+  if (!target) return c.json({ error: "not found" }, 404);
+
+  const cols = "id, counterparty_supplier_id, source_file_key, source_file_name, source_file_type, source_file_hash";
+  const source: AttachSource | null = body.from_afp_id != null
+    ? await c.env.DB.prepare(`SELECT ${cols}, project_id FROM applications_for_payment WHERE id = ?`)
+        .bind(Number(body.from_afp_id)).first<Omit<Extract<AttachSource, { kind: "afp" }>, "kind">>()
+        .then((r) => (r ? { kind: "afp" as const, ...r } : null))
+    : await c.env.DB.prepare(`SELECT ${cols} FROM inbound_applications WHERE id = ?`)
+        .bind(Number(body.from_inbound_id)).first<Omit<Extract<AttachSource, { kind: "inbound" }>, "kind">>()
+        .then((r) => (r ? { kind: "inbound" as const, ...r } : null));
+  if (!source) return c.json({ error: "source not found" }, 404);
+
+  const plan = planAttachSource(target, source, body.name);
+  if (!plan.ok) return c.json({ error: plan.error }, 409);
+  if (!(await c.env.R2.head(plan.file.key))) return c.json({ error: "the stored file is missing" }, 409);
+
+  await setAfpSourceFile(c.env, id, plan.file);
+  await c.env.DB.prepare(
+    `INSERT INTO audit_log (entity_type, entity_id, action, actor, details, created_at)
+     VALUES ('afp', ?, 'source_file_attached', ?, ?, ?)`,
+  ).bind(String(id), c.get("userEmail"), JSON.stringify(plan.audit), new Date().toISOString()).run();
+  return c.json({ ok: true, source_file_name: plan.file.name });
 });
 
 /** Stream the counterparty's returned payment certificate — the document that
