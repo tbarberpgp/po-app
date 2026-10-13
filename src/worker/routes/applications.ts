@@ -4230,42 +4230,48 @@ applications.post("/:id/certify", async (c) => {
   const certified = body.certified_amount ?? afp.amount_due ?? 0;
   const now = new Date().toISOString();
   const actor = c.get("userEmail");
-  if (split) {
-    const db = c.env.DB;
-    await db.batch([
-      ...split.boq.map((b) => db.prepare(
-        "UPDATE afp_lines SET cumulative_value = ?, percent_complete = ? WHERE id = ? AND afp_id = ?",
-      ).bind(b.after, b.percent, b.line_id, id)),
-      // An ad-hoc line's rate and contract value ARE its value (upsertAdhoc), so
-      // all three move together; one drawn to nothing goes.
-      ...split.dayworks.map((d) => d.after > 0
-        ? db.prepare(
-          "UPDATE afp_lines SET qty = 1, rate = ?, contract_value = ?, cumulative_value = ? WHERE id = ? AND afp_id = ?",
-        ).bind(d.after, d.after, d.after, d.line_id, id)
-        : db.prepare("DELETE FROM afp_lines WHERE id = ? AND afp_id = ?").bind(d.line_id, id)),
-      db.prepare(
-        `INSERT INTO audit_log (entity_type, entity_id, action, actor, details, created_at)
-         VALUES ('afp', ?, 'time_placed_on_boq', ?, ?, ?)`,
-      ).bind(String(id), actor, JSON.stringify({
-        moved: split.moved, left_in_dayworks: split.left_in_dayworks,
-        boq: split.boq.map(({ line_id, description, before, after }) => ({ line_id, description, before, after })),
-        dayworks: split.dayworks,
-      }), now),
-    ]);
-    // Same value, counted in a different place: the measured position grows by
-    // exactly what Dayworks gives up, so the period net is unchanged.
-    await recalcTotals(db, id, { force: true });
-  }
-  await c.env.DB.prepare(
-    `UPDATE applications_for_payment
-     SET status = 'certified', certified_at = ?, certified_by = ?, certified_amount = ?,
-         invoiced_days = ?, signin_days = ?, signin_from = ?, signin_to = ?, signin_note = ?
-     WHERE id = ?`,
-  )
-    .bind(now, actor, certified,
+  // The split and the certificate go in ONE batch — D1 runs a batch as a
+  // transaction — so a certificate that fails leaves the lines as they were.
+  // Written as two steps, a failed certify (0137's columns missing on prod,
+  // 2026-10-13) left Cladders #28's time moved onto the BOQ and the
+  // application still submitted.
+  const db = c.env.DB;
+  const splitWrites = split ? [
+    ...split.boq.map((b) => db.prepare(
+      "UPDATE afp_lines SET cumulative_value = ?, percent_complete = ? WHERE id = ? AND afp_id = ?",
+    ).bind(b.after, b.percent, b.line_id, id)),
+    // An ad-hoc line's rate and contract value ARE its value (upsertAdhoc), so
+    // all three move together; one drawn to nothing goes.
+    ...split.dayworks.map((d) => d.after > 0
+      ? db.prepare(
+        "UPDATE afp_lines SET qty = 1, rate = ?, contract_value = ?, cumulative_value = ? WHERE id = ? AND afp_id = ?",
+      ).bind(d.after, d.after, d.after, d.line_id, id)
+      : db.prepare("DELETE FROM afp_lines WHERE id = ? AND afp_id = ?").bind(d.line_id, id)),
+    db.prepare(
+      `INSERT INTO audit_log (entity_type, entity_id, action, actor, details, created_at)
+       VALUES ('afp', ?, 'time_placed_on_boq', ?, ?, ?)`,
+    ).bind(String(id), actor, JSON.stringify({
+      moved: split.moved, left_in_dayworks: split.left_in_dayworks,
+      boq: split.boq.map(({ line_id, description, before, after }) => ({ line_id, description, before, after })),
+      dayworks: split.dayworks,
+    }), now),
+  ] : [];
+  await db.batch([
+    ...splitWrites,
+    db.prepare(
+      `UPDATE applications_for_payment
+       SET status = 'certified', certified_at = ?, certified_by = ?, certified_amount = ?,
+           invoiced_days = ?, signin_days = ?, signin_from = ?, signin_to = ?, signin_note = ?
+       WHERE id = ?`,
+    ).bind(now, actor, certified,
       signin?.invoiced ?? null, signin?.signedIn ?? null, signin?.from ?? null, signin?.to ?? null, signin?.note ?? null,
-      id)
-    .run();
+      id),
+  ]);
+  // Same value, counted in a different place: the measured position grows by
+  // exactly what Dayworks gives up, so the period net is unchanged. The
+  // recompute only rewrites the figures from the lines; status and the
+  // certified amount are untouched by it.
+  if (split) await recalcTotals(db, id, { force: true });
 
   // Email the raiser that the AfP was certified
   c.executionCtx.waitUntil((async () => {
