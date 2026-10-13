@@ -1784,8 +1784,11 @@ export const api = {
     jfetch<{ ok: true }>(`/api/site-reports/distribution-rules/${id}`, { method: "DELETE" }),
 };
 
+/** Anything that rounds to zero pence prints as £0.00, never "-£0.00": a
+ *  negated zero (e.g. -overrun on a lever with no overrun) or float noise
+ *  like -0.001 would otherwise keep its minus sign. */
 export function fmtMoney(n: number, currency = "GBP") {
-  return new Intl.NumberFormat("en-GB", { style: "currency", currency }).format(n);
+  return new Intl.NumberFormat("en-GB", { style: "currency", currency }).format(Math.abs(n) < 0.005 ? 0 : n);
 }
 export function fmtDate(iso: string | null | undefined) {
   if (!iso) return "";
