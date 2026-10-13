@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import type { Env, Variables } from "../env";
-import { requirePermission } from "../auth";
+import { hasDirectorAuthority, requirePermission } from "../auth";
 
 // Variations register. A variation is a project-level cost-centre, separate from
 // the contract: a sell value to the client plus material line items (pulled from
@@ -32,15 +32,6 @@ type MaterialInput = {
   unit_rate?: number;
 };
 type LabourInput = { description: string; qty?: number; unit_rate?: number; value?: number };
-
-/** True if `email` is a director-tier approver, project-scoped or global. */
-async function isDirectorApprover(db: D1Database, email: string, projectId: string): Promise<boolean> {
-  const row = await db.prepare(
-    `SELECT 1 FROM approvers
-     WHERE email = ? AND tier = 'director' AND (project_id IS NULL OR project_id = ?) LIMIT 1`,
-  ).bind(email, projectId).first();
-  return !!row;
-}
 
 /** List a project's variations with their material + labour lines and budgets. */
 variations.get("/:projectId", async (c) => {
@@ -252,8 +243,8 @@ variations.post("/:id/approve", async (c) => {
   ).bind(id).first<{ id: number; project_id: string }>();
   if (!v) return c.json({ error: "not found" }, 404);
   const email = c.get("userEmail");
-  if (!(await isDirectorApprover(c.env.DB, email, v.project_id))) {
-    return c.json({ error: "Only a director-tier approver can approve a variation" }, 403);
+  if (!(await hasDirectorAuthority(c, v.project_id))) {
+    return c.json({ error: "Only a director or superadmin can approve a variation" }, 403);
   }
   const now = new Date().toISOString();
   await c.env.DB.prepare(

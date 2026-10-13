@@ -58,13 +58,9 @@ export function ApprovalsInbox({ me }: { me: CurrentUser | null }) {
   // tiers they hold.
   const isSuper = me?.role === "superadmin";
   // Seeing the queue and being able to decide on it are separate things.
-  // Authority to approve is held by the `approvers` table, by email — a role
-  // never confers it, and the PO endpoint enforces exactly that. A superadmin
-  // who is not an approver is here to look, so the decision controls are not
-  // drawn for them: the price and substitution endpoints gate on
-  // `suppliers.manage` rather than on the approvers table, so those buttons
-  // WOULD go through, and offering them would hand out authority this view was
-  // never meant to grant.
+  // `approver_tiers` is the effective list (effectiveTiers in the worker): a
+  // superadmin or a director holds every tier, so is_approver is true for them
+  // and every queue here is theirs to decide.
   const canDecide = !!me?.is_approver;
   // Invoices are a separate authority from PO tiers: the release allowlist,
   // by name. Someone can hold one and not the other, so the invoice tab is

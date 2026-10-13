@@ -153,10 +153,12 @@ export function POView({ me }: { me: CurrentUser | null }) {
 
   if (!po) return <main className="muted">Loading…</main>;
 
-  // Mirrors mayDecide in the worker: a director can decide any tier, and an
-  // amend after rejection can leave a PO with no tier at all, which any
-  // approver may decide.
-  const holdsTier = me?.approver_tiers.includes("director")
+  // Mirrors mayDecide in the worker: a superadmin or a director can decide any
+  // tier, and an amend after rejection can leave a PO with no tier at all,
+  // which any approver may decide.
+  const isSuper = me?.role === "superadmin";
+  const holdsTier = isSuper
+    || me?.approver_tiers.includes("director")
     || (po.approval_tier != null
       ? me?.approver_tiers.includes(po.approval_tier) ?? false
       : me?.is_approver ?? false);
@@ -165,11 +167,11 @@ export function POView({ me }: { me: CurrentUser | null }) {
   const wasRejected = po.status === "rejected";
   const canApprove =
     (po.status === "pending_approval" || wasRejected) &&
-    me?.is_approver &&
+    (isSuper || me?.is_approver) &&
     holdsTier;
   // Mirrors unapproveGate: approved but not yet issued, by someone who could
   // have approved it. Once issued, amending is the way back.
-  const canUnapprove = po.status === "approved" && me?.is_approver && holdsTier;
+  const canUnapprove = po.status === "approved" && (isSuper || me?.is_approver) && holdsTier;
   const supplierCopy = supplierCopyState(po);
   // Mirrors issueGate on the worker: 'approved' normally, plus an order left
   // 'issued' while the supplier's copy is stale — the pre-0127 orders, which

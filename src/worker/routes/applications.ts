@@ -8,7 +8,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import * as XLSX from "xlsx";
 import { unzipSync, strFromU8 } from "fflate";
 import type { Env, Variables } from "../env";
-import { isReleaseApprover, requirePermission } from "../auth";
+import { hasDirectorAuthority, isReleaseApprover, requirePermission } from "../auth";
 import { learnAliases, aliasMap, normText } from "../matchMemory";
 import { findSupplier } from "./invoices";
 import { cisLabourBase } from "./xero";
@@ -3971,15 +3971,8 @@ applications.post("/:id/approve", async (c) => {
     .first<{ id: number; status: Status; direction: Direction; project_id: string }>();
   if (!afp) return c.json({ error: "not found" }, 404);
   // Director-tier approver, project-wide or global.
-  const approver = await c.env.DB.prepare(
-    `SELECT id FROM approvers
-     WHERE email = ? AND tier = 'director'
-       AND (project_id IS NULL OR project_id = ?)`,
-  )
-    .bind(userEmail, afp.project_id)
-    .first();
-  if (!approver) {
-    return c.json({ error: "Only a director-tier approver can sign off an over-budget application" }, 403);
+  if (!(await hasDirectorAuthority(c, afp.project_id))) {
+    return c.json({ error: "Only a director or superadmin can sign off an over-budget application" }, 403);
   }
   const now = new Date().toISOString();
   await c.env.DB.prepare(
@@ -4007,15 +4000,8 @@ applications.post("/:id/reject", async (c) => {
   if (afp.status !== "pending_approval") {
     return c.json({ error: "AfP is not awaiting approval" }, 409);
   }
-  const approver = await c.env.DB.prepare(
-    `SELECT id FROM approvers
-     WHERE email = ? AND tier = 'director'
-       AND (project_id IS NULL OR project_id = ?)`,
-  )
-    .bind(userEmail, afp.project_id)
-    .first();
-  if (!approver) {
-    return c.json({ error: "Only a director-tier approver can reject this AfP" }, 403);
+  if (!(await hasDirectorAuthority(c, afp.project_id))) {
+    return c.json({ error: "Only a director or superadmin can reject this AfP" }, 403);
   }
   const now = new Date().toISOString();
   await c.env.DB.prepare(
@@ -4095,15 +4081,8 @@ applications.post("/:id/rate-override", async (c) => {
   if (afp.direction !== "incoming_labour") {
     return c.json({ error: "rate variance only applies to labour applications" }, 400);
   }
-  const approver = await c.env.DB.prepare(
-    `SELECT id FROM approvers
-     WHERE email = ? AND tier = 'director'
-       AND (project_id IS NULL OR project_id = ?)`,
-  )
-    .bind(userEmail, afp.project_id)
-    .first();
-  if (!approver) {
-    return c.json({ error: "Only a director-tier approver can sign off a rate variance" }, 403);
+  if (!(await hasDirectorAuthority(c, afp.project_id))) {
+    return c.json({ error: "Only a director or superadmin can sign off a rate variance" }, 403);
   }
   const now = new Date().toISOString();
   await c.env.DB.prepare(

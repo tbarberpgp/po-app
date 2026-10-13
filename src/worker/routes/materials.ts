@@ -7,7 +7,7 @@ import {
 import type { ParsedMaterial, ParsedCommercialRow, ParsedContractItem, LabourRateLine } from "../../shared/parse-xlsx";
 import type { MaterialOrder, MaterialWithCommitment, OffBoqMaterial } from "../../shared/types";
 import { withCodedCommitted } from "../../shared/forecast";
-import { requirePermission } from "../auth";
+import { hasDirectorAuthority, requirePermission } from "../auth";
 import { loadSettings, tierForApproval } from "../approval";
 import { autoTagFromBill, baseProject } from "./programme";
 import { LABOUR_POSITION, LABOUR_SPENT_BY_ITEM, PRELIM_CLAIM } from "../labour-expended";
@@ -544,15 +544,6 @@ materials.get("/:projectId/contract-items", async (c) => {
 // shared/parse-xlsx.ts) — decoding a multi-MB cost workbook on the Worker blew
 // Cloudflare's 10ms CPU budget (error 1102). The Worker receives parsed rows.
 
-/** True if `email` is a director-tier approver, project-scoped or global. */
-async function isDirectorApprover(db: D1Database, email: string, projectId: string): Promise<boolean> {
-  const row = await db.prepare(
-    `SELECT 1 FROM approvers
-     WHERE email = ? AND tier = 'director' AND (project_id IS NULL OR project_id = ?) LIMIT 1`,
-  ).bind(email, projectId).first();
-  return !!row;
-}
-
 /**
  * Ingest a labour rate schedule the BROWSER has parsed (rows sent as JSON).
  * Matches the priced labour items to the BOQ labour lines and stores the agreed
@@ -665,9 +656,8 @@ materials.get("/:projectId/labour-rates", async (c) => {
 /** Director sign-off for a labour rate that increases the budget. */
 materials.post("/:projectId/labour-rates/:id/approve", async (c) => {
   const projectId = c.req.param("projectId");
-  const email = c.get("userEmail");
-  if (!(await isDirectorApprover(c.env.DB, email, projectId))) {
-    return c.json({ error: "Only a director-tier approver can approve a labour budget increase" }, 403);
+  if (!(await hasDirectorAuthority(c, projectId))) {
+    return c.json({ error: "Only a director or superadmin can approve a labour budget increase" }, 403);
   }
   await c.env.DB.prepare(
     "UPDATE labour_live_rates SET status = 'approved' WHERE id = ? AND project_id = ?",
