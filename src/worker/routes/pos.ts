@@ -2019,15 +2019,25 @@ pos.get("/:id/activity", async (c) => {
  *  same match the drawdown availability query uses), so coding the main PO
  *  once clears the "unpriced / assign to budget" nag across the family.
  *  Mirrors clears too (materialId null) so the framework stays authoritative. */
-async function cascadeFrameworkCoding(db: D1Database, frameworkId: string, items: string[], materialId: number | null): Promise<number> {
+/** The SET clause for coding a line to a budget line (bound: material id, its
+ *  wording, its wording). A line coded to the budget line it is ALREADY worded
+ *  as is that line's spend by wording — and the wording count requires
+ *  is_unpriced = 0, while the coded count skips same-wording lines, so leaving
+ *  the flag at 1 counted it nowhere: PO-26001-0033's 75 rolls of Euroroof
+ *  Charcoal (£5,507.25) dropped out of committed and the forecast. Lines coded
+ *  under other wording keep their flag — it is what shows them as "coded ✓". */
+const CODE_LINE_SET = `material_id = ?,
+  is_unpriced = CASE WHEN ? IS NOT NULL AND lower(item) = lower(?) THEN 0 ELSE is_unpriced END`;
+
+async function cascadeFrameworkCoding(db: D1Database, frameworkId: string, items: string[], materialId: number | null, codedItem: string | null): Promise<number> {
   const keys = [...new Set(items.map((s) => s.toLowerCase()))].filter(Boolean);
   if (!keys.length) return 0;
   const ph = keys.map(() => "?").join(",");
   const res = await db.prepare(
-    `UPDATE po_lines SET material_id = ?
+    `UPDATE po_lines SET ${CODE_LINE_SET}
       WHERE lower(item) IN (${ph})
         AND po_id IN (SELECT id FROM purchase_orders WHERE parent_po_id = ? AND status != 'deleted')`,
-  ).bind(materialId, ...keys, frameworkId).run();
+  ).bind(materialId, codedItem, codedItem, ...keys, frameworkId).run();
   return res.meta.changes ?? 0;
 }
 
@@ -2056,14 +2066,14 @@ pos.post("/:id/assign-budget", async (c) => {
     materialId = m.id;
     codedItem = m.item;
   }
-  const res = await c.env.DB.prepare("UPDATE po_lines SET material_id = ? WHERE po_id = ?").bind(materialId, id).run();
+  const res = await c.env.DB.prepare(`UPDATE po_lines SET ${CODE_LINE_SET} WHERE po_id = ?`).bind(materialId, codedItem, codedItem, id).run();
   const lineItems = (await c.env.DB.prepare("SELECT item FROM po_lines WHERE po_id = ?").bind(id).all<{ item: string }>()).results;
   // Remember each wording → budget line, so the next retro PO guesses itself.
   if (codedItem) {
     await learnAliases(c.env.DB, "budget_item", po.supplier, lineItems.map((l) => ({ alias: l.item, target: codedItem })), c.get("userEmail"));
   }
   const cascaded = po.order_type === "framework"
-    ? await cascadeFrameworkCoding(c.env.DB, id, lineItems.map((l) => l.item), materialId)
+    ? await cascadeFrameworkCoding(c.env.DB, id, lineItems.map((l) => l.item), materialId, codedItem)
     : 0;
   await c.env.DB.prepare(
     `INSERT INTO audit_log (entity_type, entity_id, action, actor, details, created_at)
@@ -2102,10 +2112,10 @@ pos.post("/:id/lines/:lineId/assign-budget", async (c) => {
     materialId = m.id;
     codedItem = m.item;
   }
-  await c.env.DB.prepare("UPDATE po_lines SET material_id = ? WHERE id = ? AND po_id = ?").bind(materialId, lineId, id).run();
+  await c.env.DB.prepare(`UPDATE po_lines SET ${CODE_LINE_SET} WHERE id = ? AND po_id = ?`).bind(materialId, codedItem, codedItem, lineId, id).run();
   if (codedItem) await learnAliases(c.env.DB, "budget_item", po.supplier, [{ alias: line.item, target: codedItem }], c.get("userEmail"));
   const cascaded = po.order_type === "framework"
-    ? await cascadeFrameworkCoding(c.env.DB, id, [line.item], materialId)
+    ? await cascadeFrameworkCoding(c.env.DB, id, [line.item], materialId, codedItem)
     : 0;
   await c.env.DB.prepare(
     `INSERT INTO audit_log (entity_type, entity_id, action, actor, details, created_at)

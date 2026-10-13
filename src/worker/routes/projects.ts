@@ -4,6 +4,7 @@ import type { Env, Variables } from "../env";
 import { aliasMapsBySupplier, normText } from "../matchMemory";
 import { requirePermission } from "../auth";
 import { PRELIM_LINE } from "../prelims-position";
+import { OFF_BOQ_LINE } from "../off-boq-line";
 
 export const projects = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -398,8 +399,7 @@ projects.get("/:id/summary", async (c) => {
      JOIN purchase_orders po ON po.id = pl.po_id
      WHERE po.project_id = ?
        AND po.status IN ('approved', 'issued', 'pending_approval')
-       AND pl.is_unpriced = 1
-       AND pl.material_id IS NULL
+       AND ${OFF_BOQ_LINE}
        AND COALESCE(po.order_type, 'standard') != 'call_off'
        AND NOT ${PRELIM_LINE}
      ORDER BY pl.line_total DESC`,
