@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { OFF_BOQ_LINE } from "./off-boq-line";
+import { UNCODED_LINE } from "./uncoded-line";
 
 /** A throwaway SQLite shaped like the tables the committed rules read. */
 function db() {
@@ -27,7 +27,8 @@ const line = (d: DatabaseSync, item: string, total: number, unpriced: 0 | 1, mat
     .run(item, total, unpriced, materialId);
 
 /** The two ways the BOQ counts a line, as the materials route writes them
- *  (committed_value and assigned_committed_value), plus off-BOQ — per line. */
+ *  (committed_value and assigned_committed_value), off-BOQ spend as projects.ts
+ *  selects it, and the uncoded flag — per line. */
 function buckets(d: DatabaseSync) {
   return d.prepare(`
     SELECT pl.item,
@@ -41,11 +42,12 @@ function buckets(d: DatabaseSync) {
                 AND lower(pl.item) != lower(m.item)
                 AND (sub.replacement_item IS NULL OR lower(pl.item) != lower(sub.replacement_item))
                 AND EXISTS (SELECT 1 FROM materials am WHERE am.id = pl.material_id AND lower(am.item) = lower(m.item))) AS by_coding,
-      ${OFF_BOQ_LINE} AS off_boq
-    FROM po_lines pl JOIN purchase_orders po ON po.id = pl.po_id`).all() as Array<{ item: string; by_wording: number; by_coding: number; off_boq: number }>;
+      (pl.is_unpriced = 1 AND pl.material_id IS NULL) AS off_boq,
+      ${UNCODED_LINE} AS uncoded
+    FROM po_lines pl JOIN purchase_orders po ON po.id = pl.po_id`).all() as Array<{ item: string; by_wording: number; by_coding: number; off_boq: number; uncoded: number }>;
 }
 
-test("every order line is counted in exactly one place", () => {
+test("every order line is counted in exactly one place, or flagged as uncoded", () => {
   const d = db();
   line(d, "SECTION - TOP HAT SECTION BY METRE", 4032, 0);   // retro PO off an invoice: unlinked, flagged priced
   line(d, "F-02-TYPE-B METRE", 2760, 0);                    // retro line under an OLD upload's wording
@@ -56,22 +58,24 @@ test("every order line is counted in exactly one place", () => {
   line(d, "Barwell flashing 2.4m", 300, 1, 10);             // coded under other wording
   line(d, "External Corner Flashing", 120, 1);              // free text typed as the BOQ wording, never linked
   for (const r of buckets(d)) {
-    assert.equal(r.by_wording + r.by_coding + r.off_boq, 1, `"${r.item}" counted ${r.by_wording + r.by_coding + r.off_boq} times`);
+    const n = r.by_wording + r.by_coding + r.off_boq + r.uncoded;
+    assert.equal(n, 1, `"${r.item}" counted/flagged ${n} times`);
   }
 });
 
-test("a retrospective invoice PO's unlinked lines are off-BOQ spend", () => {
+test("a retrospective invoice PO's unmatched lines are flagged, not booked as off-BOQ", () => {
   const d = db();
   line(d, "SECTION - TOP HAT SECTION BY METRE", 4032, 0);
   line(d, "F-02-TYPE-B METRE", 2760, 0);
-  const off = buckets(d).filter((r) => r.off_boq).map((r) => r.item);
-  assert.deepEqual(off, ["SECTION - TOP HAT SECTION BY METRE", "F-02-TYPE-B METRE"]);
+  const rows = buckets(d);
+  assert.deepEqual(rows.filter((r) => r.uncoded).map((r) => r.item), ["SECTION - TOP HAT SECTION BY METRE", "F-02-TYPE-B METRE"]);
+  assert.ok(rows.every((r) => !r.off_boq));
 });
 
-test("a line the BOQ counts by wording is not off-BOQ as well", () => {
+test("a line the BOQ counts by wording is not flagged", () => {
   const d = db();
   line(d, "External Corner Flashing", 2173, 0, 10);
   line(d, "external corner flashing", 500, 0);
   line(d, "Rockwool Duo Slab 150mm", 714.78, 0);
-  assert.ok(buckets(d).every((r) => r.by_wording === 1 && r.off_boq === 0));
+  assert.ok(buckets(d).every((r) => r.by_wording === 1 && r.uncoded === 0));
 });

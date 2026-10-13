@@ -23,7 +23,6 @@ import {
 } from "../shared/forecast";
 import { LABOUR_POSITION } from "./labour-expended";
 import { PLANT_ON_ORDER, PRELIMS_POSITION, PRELIM_LINE } from "./prelims-position";
-import { OFF_BOQ_LINE } from "./off-boq-line";
 import { plantBeyondOrders, type PlantOnOrder } from "../shared/prelims-cost";
 import type { LabourPositionRow } from "../shared/labour-cost";
 
@@ -101,13 +100,13 @@ const LIVE_PRICES = `
    WHERE mlp.status IN ('applied', 'approved')
    ORDER BY mlp.applied_at DESC`;
 
-/** Off-BOQ spend per project — the project page's "Off-BOQ spend". Lines the
- *  BOQ counts are excluded (OFF_BOQ_LINE) and so are prelim lines (the prelims
- *  pot measures those). Same rule as projects.ts's list. */
+/** Off-BOQ spend per project — the project page's "unpriced spend". Coded lines
+ *  are excluded (they belong to the line they were coded to) and so are prelim
+ *  lines (the prelims pot measures those). Same rule as projects.ts's list. */
 const UNPRICED_SPEND = `
   SELECT po.project_id AS pid, COALESCE(SUM(pl.line_total), 0) AS v
     FROM po_lines pl JOIN purchase_orders po ON po.id = pl.po_id
-   WHERE po.status IN ${COMMITTED} AND ${OFF_BOQ_LINE}
+   WHERE po.status IN ${COMMITTED} AND pl.is_unpriced = 1 AND pl.material_id IS NULL
      AND COALESCE(po.order_type, 'standard') != 'call_off'
      AND NOT ${PRELIM_LINE}
    GROUP BY po.project_id`;

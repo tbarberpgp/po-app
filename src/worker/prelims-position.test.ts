@@ -2,7 +2,6 @@ import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { PLANT_ON_ORDER, PRELIMS_POSITION, PRELIM_LINE } from "./prelims-position";
-import { OFF_BOQ_LINE } from "./off-boq-line";
 
 /** A throwaway SQLite shaped like the tables the prelims pot reads. */
 function db() {
@@ -14,7 +13,6 @@ function db() {
     CREATE TABLE materials (
       id INTEGER PRIMARY KEY, snapshot_id INTEGER, item TEXT, type TEXT, element_code TEXT,
       cost REAL, total_units REAL, material_total_cost REAL);
-    CREATE TABLE material_substitutions (id INTEGER PRIMARY KEY, material_id INTEGER, replacement_item TEXT, active INTEGER);
     CREATE TABLE material_omissions (project_id TEXT, item_key TEXT, omit_qty REAL, PRIMARY KEY (project_id, item_key));
     CREATE TABLE project_commercials (id INTEGER PRIMARY KEY, snapshot_id INTEGER, category TEXT, cost REAL, is_total INTEGER);
     CREATE TABLE purchase_orders (id TEXT PRIMARY KEY, project_id TEXT, category TEXT, status TEXT, order_type TEXT, total_value REAL);
@@ -56,7 +54,7 @@ const pos = (d: DatabaseSync, pid = "p1") =>
 const unpriced = (d: DatabaseSync) => Number((d.prepare(`
   SELECT COALESCE(SUM(pl.line_total), 0) AS v FROM po_lines pl JOIN purchase_orders po ON po.id = pl.po_id
    WHERE po.project_id = 'p1' AND po.status IN ('approved','issued','pending_approval')
-     AND ${OFF_BOQ_LINE}
+     AND pl.is_unpriced = 1 AND pl.material_id IS NULL
      AND COALESCE(po.order_type, 'standard') != 'call_off'
      AND NOT ${PRELIM_LINE}`).get() as { v: number }).v);
 
