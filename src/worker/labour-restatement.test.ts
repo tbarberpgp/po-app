@@ -14,7 +14,7 @@ import {
   type RestateAppRow, type RestateLineRow, type RestateRequest, type RestateStep,
 } from "./labour-restatement";
 import { periodNet } from "./routes/applications";
-import { LABOUR_POSITION } from "./labour-expended";
+import { LABOUR_POSITION, PRELIM_LABOUR_BY_PROJECT } from "./labour-expended";
 
 const P = "blyth";
 const GARBUTT = 51;
@@ -493,5 +493,167 @@ describe("restating a time-billing subcontractor (Cladders) into Dayworks", () =
     assert.deepEqual(pos(d), before);
     const n = d.prepare("SELECT COUNT(*) AS n FROM afp_lines WHERE section = 'Dayworks'").get() as { n: number };
     assert.equal(n.n, CL.length, "one Dayworks line per application, not two");
+  });
+});
+
+// Andrew Law (Asgard Projects) bills Dallas Rd site management weekly — £420 a
+// day plus hotel and mileage — and the contract prices it in each block's
+// Prelims, not the labour BOQ. Each block takes its share as a prelims
+// drawdown. The series as Block B holds it: PGP-010 already tagged "Site
+// management" by hand, PGP-019 read into Dayworks + Expenses, PGP-024 still owed.
+describe("restating a site manager (Asgard) as prelims drawdowns", () => {
+  const B = "26001";
+  const ASGARD = 35;
+  const HEADING = "Site management";
+  const ROOF = 2101; // a labour BOQ line the manual create seeded at £0
+  const AS: Array<{ id: number; n: number; status: string; inv: string; works: number; exp: Array<[string, number]>; paid: boolean; drawdown?: number }> = [
+    { id: 50, n: 1, status: "draft", inv: "010", works: 2100, exp: [], paid: true, drawdown: 2100 },
+    { id: 79, n: 2, status: "draft", inv: "019", works: 2100, exp: [["Mileage", 108.9], ["Premier Inn + meals x 4", 528]], paid: true },
+    { id: 97, n: 3, status: "submitted", inv: "024", works: 2100, exp: [["Mileage", 108.9], ["Premier Inn + meals x 4", 575]], paid: false },
+  ];
+  const asApps = (): RestateAppRow[] => AS.map((x) => ({
+    id: x.id, project_id: B, direction: "incoming_labour", app_number: x.n, status: x.status,
+    counterparty_supplier_id: ASGARD, prelim_heading: x.drawdown ? HEADING : null, claimed_amount: x.drawdown ?? null,
+    claim_basis: null, xero_po_id: null, retention_pct: 0, vat_pct: 0, cumulative_value: x.drawdown ?? 0,
+    this_period_net: x.drawdown ?? x.works + x.exp.reduce((s, [, v]) => s + v, 0), certified_amount: null,
+    attention_note: null, unmatched_lines_json: null, resolved_lines_json: null,
+  }));
+  const asLines = (): RestateLineRow[] => AS.flatMap((x) => {
+    const out: RestateLineRow[] = [{ id: x.id * 100, afp_id: x.id, contract_item_id: ROOF, section: "Roof", description: "Flat Roof", contract_value: 5124, cumulative_value: 0, is_adhoc: 0, variation_id: null, display_order: 1 }];
+    if (!x.drawdown) {
+      out.push({ id: x.id * 100 + 1, afp_id: x.id, contract_item_id: null, section: "Dayworks", description: "Management on site - DALLAS ROAD", contract_value: x.works, cumulative_value: x.works, is_adhoc: 1, variation_id: null, display_order: 2 });
+      x.exp.forEach(([d, v], i) => out.push({ id: x.id * 100 + 2 + i, afp_id: x.id, contract_item_id: null, section: "Expenses", description: d, contract_value: v, cumulative_value: v, is_adhoc: 1, variation_id: null, display_order: 3 + i }));
+    }
+    return out;
+  });
+  const asRequest = (over: Partial<RestateRequest> = {}): RestateRequest => ({
+    project_id: B, supplier_id: ASGARD, works_as: "prelims", prelim_heading: HEADING,
+    invoices: AS.map((x) => ({
+      afp_id: x.id, invoice_number: x.inv, works: x.works, paid_in_xero: x.paid,
+      expenses: x.exp.map(([description, amount]) => ({ description, amount })),
+    })),
+    ...over,
+  });
+  function asDatabase() {
+    const d = new DatabaseSync(":memory:");
+    d.exec(`
+      CREATE TABLE material_snapshots (id INTEGER PRIMARY KEY, project_id TEXT, is_active INTEGER);
+      CREATE TABLE contract_items (id INTEGER PRIMARY KEY, snapshot_id INTEGER, section TEXT, description TEXT, qty REAL, labour_rate REAL, labour_total REAL);
+      CREATE TABLE labour_live_rates (contract_item_id INTEGER, description TEXT, project_id TEXT, status TEXT, live_rate REAL, applied_at TEXT);
+      CREATE TABLE applications_for_payment (id INTEGER PRIMARY KEY, project_id TEXT, direction TEXT, app_number INTEGER,
+        status TEXT, counterparty_supplier_id INTEGER, prelim_heading TEXT, claimed_amount REAL, claim_basis TEXT,
+        unmatched_lines_json TEXT, resolved_lines_json TEXT, cumulative_value REAL, amount_due REAL, certified_amount REAL,
+        certified_at TEXT, certified_by TEXT, submitted_at TEXT, submitted_by TEXT, paid_at TEXT, paid_by TEXT,
+        payment_reference TEXT, attention_note TEXT, attention_note_by TEXT, attention_note_at TEXT);
+      CREATE TABLE afp_lines (id INTEGER PRIMARY KEY AUTOINCREMENT, afp_id INTEGER, contract_item_id INTEGER, section TEXT,
+        description TEXT, unit TEXT, qty REAL, rate REAL, contract_value REAL, percent_complete REAL,
+        cumulative_value REAL, is_adhoc INTEGER, display_order INTEGER, variation_id INTEGER);
+      CREATE TABLE audit_log (entity_type TEXT, entity_id TEXT, action TEXT, actor TEXT, details TEXT, created_at TEXT);
+      INSERT INTO material_snapshots VALUES (1, '${B}', 1);
+      INSERT INTO contract_items VALUES (${ROOF}, 1, 'Roof', 'Flat Roof', 166, 30.87, 5124);
+    `);
+    const ins = d.prepare(`INSERT INTO applications_for_payment (id, project_id, direction, app_number, status,
+      counterparty_supplier_id, prelim_heading, claimed_amount) VALUES (?, ?, 'incoming_labour', ?, ?, ?, ?, ?)`);
+    for (const a of asApps()) ins.run(a.id, B, a.app_number, a.status, ASGARD, a.prelim_heading, a.claimed_amount);
+    const insL = d.prepare(`INSERT INTO afp_lines (id, afp_id, contract_item_id, section, description, contract_value,
+      percent_complete, cumulative_value, is_adhoc, display_order) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`);
+    for (const l of asLines()) insL.run(l.id, l.afp_id, l.contract_item_id, l.section, l.description, l.contract_value, l.cumulative_value, l.is_adhoc, l.display_order);
+    return d;
+  }
+  /** recalcTotals for a drawdown: its claimed amount, plus whatever Expenses or
+   *  Dayworks lines it still carries — which is why none may be left on it. */
+  function drawdownRecalc(d: DatabaseSync, id: number) {
+    const a = d.prepare("SELECT prelim_heading, claimed_amount FROM applications_for_payment WHERE id = ?").get(id) as { prelim_heading: string | null; claimed_amount: number | null };
+    const ls = d.prepare("SELECT section, cumulative_value, is_adhoc FROM afp_lines WHERE afp_id = ?").all(id) as Array<{ section: string; cumulative_value: number; is_adhoc: number }>;
+    const exp = ls.filter((l) => l.is_adhoc === 1 && /expenses/i.test(l.section)).reduce((s, l) => s + l.cumulative_value, 0);
+    const dw = ls.filter((l) => l.is_adhoc === 1 && /dayworks/i.test(l.section)).reduce((s, l) => s + l.cumulative_value, 0);
+    const cum = a.prelim_heading != null && a.claimed_amount != null ? a.claimed_amount
+      : ls.filter((l) => !(l.is_adhoc === 1 && /expenses|dayworks/i.test(l.section))).reduce((s, l) => s + l.cumulative_value, 0);
+    const due = Math.round(periodNet({ cumulative: cum, previousCertified: 0, expensesAmount: exp, dayworksAmount: dw, basis: "period" }) * 100) / 100;
+    d.prepare("UPDATE applications_for_payment SET cumulative_value = ?, amount_due = ? WHERE id = ?").run(cum, due, id);
+    return due;
+  }
+  function asApply(d: DatabaseSync, steps: RestateStep[]) {
+    for (const s of steps) {
+      const cur = d.prepare("SELECT unmatched_lines_json, resolved_lines_json FROM applications_for_payment WHERE id = ?").get(s.afp_id) as { unmatched_lines_json: string | null; resolved_lines_json: string | null };
+      exec(d, lineWrites(s, null, "tester", "now", cur));
+    }
+    const errors: string[] = [];
+    for (const s of steps) {
+      const settled = settleWrites(s, drawdownRecalc(d, s.afp_id), "tester", "now");
+      if (settled.error) errors.push(settled.error);
+      exec(d, settled.writes);
+    }
+    return errors;
+  }
+  const prelimLabour = (d: DatabaseSync) =>
+    (d.prepare(`SELECT COALESCE(SUM(v), 0) AS v FROM (${PRELIM_LABOUR_BY_PROJECT}) WHERE pid = ?`).get(B) as { v: number }).v;
+  const labour = (d: DatabaseSync) =>
+    d.prepare(`SELECT COALESCE(SUM(boq_expended), 0) AS boq, COALESCE(SUM(other_expended), 0) AS other FROM (${LABOUR_POSITION}) WHERE pid = ?`).get(B) as { boq: number; other: number };
+
+  test("each invoice becomes a drawdown worth its time plus expenses; PGP-010's own tag is restated, not refused", () => {
+    const plan = planRestatement(asRequest(), asApps(), asLines());
+    assert.ok(plan.ok, !plan.ok ? plan.errors.join("\n") : "");
+    assert.equal(plan.totals.value_after, 7620.8);
+    assert.equal(plan.totals.paid_after, 4836.9);
+    assert.equal(plan.totals.owed_after, 2783.9);
+    for (const s of plan.steps) {
+      assert.equal(s.works_as, "prelims");
+      assert.equal(s.works_line_id, null);
+      assert.equal(s.after.prelim_heading, HEADING);
+    }
+    assert.equal(plan.steps[0].before.works_line, 2100, "PGP-010's old claimed amount is kept in the audit row");
+  });
+
+  test("prelims mode needs a heading", () => {
+    const plan = planRestatement(asRequest({ prelim_heading: "  " }), asApps(), asLines());
+    assert.ok(!plan.ok && plan.errors.includes("prelim_heading required"));
+  });
+
+  test("a drawdown is still refused in Dayworks mode", () => {
+    const plan = planRestatement(asRequest({ works_as: "dayworks" }), asApps(), asLines());
+    assert.ok(!plan.ok && plan.errors.some((e) => /010 on #1: a prelims drawdown/.test(e)));
+  });
+
+  test("applied: the money counts once, in prelims, and none of it as labour", () => {
+    const d = asDatabase();
+    const plan = planRestatement(asRequest(), asApps(), asLines());
+    assert.ok(plan.ok);
+    assert.deepEqual(asApply(d, plan.steps), []);
+    const adhoc = d.prepare("SELECT COUNT(*) AS n FROM afp_lines WHERE is_adhoc = 1").get() as { n: number };
+    assert.equal(adhoc.n, 0, "no Dayworks or Expenses line is left to add on top of a claimed amount");
+    assert.equal(Math.round(prelimLabour(d) * 100) / 100, 4836.9, "paid drawdowns reach the prelims pot");
+    assert.deepEqual({ ...labour(d) }, { boq: 0, other: 0 });
+    const r = d.prepare("SELECT status, prelim_heading, claimed_amount, amount_due, certified_amount, payment_reference FROM applications_for_payment WHERE id = 79").get();
+    assert.deepEqual({ ...(r as object) }, { status: "paid", prelim_heading: HEADING, claimed_amount: 2736.9, amount_due: 2736.9, certified_amount: 2736.9, payment_reference: "Paid in Xero — 019" });
+    const owed = d.prepare("SELECT status, claimed_amount, amount_due FROM applications_for_payment WHERE id = 97").get();
+    assert.deepEqual({ ...(owed as object) }, { status: "submitted", claimed_amount: 2783.9, amount_due: 2783.9 });
+    const audit = d.prepare("SELECT details FROM audit_log WHERE entity_id = '79'").get() as { details: string };
+    assert.deepEqual(JSON.parse(audit.details).after.expenses, [{ description: "Mileage", amount: 108.9 }, { description: "Premier Inn + meals x 4", amount: 528 }]);
+  });
+
+  test("applied twice: the second run changes nothing", () => {
+    const d = asDatabase();
+    const first = planRestatement(asRequest(), asApps(), asLines());
+    assert.ok(first.ok);
+    asApply(d, first.steps);
+    const apps = (d.prepare(`SELECT id, project_id, direction, app_number, status, counterparty_supplier_id, prelim_heading,
+      claimed_amount, claim_basis, NULL AS xero_po_id, 0 AS retention_pct, 0 AS vat_pct, cumulative_value,
+      amount_due AS this_period_net, certified_amount, attention_note, unmatched_lines_json, resolved_lines_json
+      FROM applications_for_payment`).all()) as unknown as RestateAppRow[];
+    const lines = d.prepare(`SELECT id, afp_id, contract_item_id, section, description, contract_value, cumulative_value,
+      is_adhoc, variation_id, display_order FROM afp_lines`).all() as unknown as RestateLineRow[];
+    const second = planRestatement(asRequest(), apps, lines);
+    assert.ok(second.ok, !second.ok ? second.errors.join("\n") : "");
+    assert.deepEqual(second.steps.filter((s) => s.after.status === "paid").map((s) => s.no_op), [true, true]);
+    const before = prelimLabour(d);
+    assert.deepEqual(asApply(d, second.steps), []);
+    assert.equal(prelimLabour(d), before);
+  });
+
+  test("a paid application restated earlier as something else is not rewritten as a drawdown", () => {
+    const apps = asApps().map((a) => (a.id === 79 ? { ...a, status: "paid", claim_basis: "period", certified_amount: 2736.9 } : a));
+    const plan = planRestatement(asRequest(), apps, asLines());
+    assert.ok(!plan.ok && plan.errors.some((e) => /019 on #2: already marked paid in the app/.test(e)));
   });
 });
