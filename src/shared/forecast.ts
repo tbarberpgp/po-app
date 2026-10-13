@@ -58,11 +58,14 @@ export type Forecast = {
   ffa: number; ffc: number; forecastProfit: number; forecastGpPct: number | null;
   contingency: number;
   materialSavings: number; labourSavings: number; varProfit: number; unexpectedSpend: number;
-  /** What forecast cost carries on top of the labour BOQ: certified labour past
-   *  its section's budget, labour claimed with no budget at all (expenses,
-   *  daywork) and variation labour past the variations' budget. Never negative
-   *  — see shared/labour-cost.ts. */
+  /** What forecast cost carries on top of the labour BOQ: certified labour
+   *  (measured, expenses, daywork) past the labour budget as a whole, and
+   *  variation labour past the variations' budget. Never negative — see
+   *  shared/labour-cost.ts. */
   labourOverrun: number;
+  /** Labour past a section's own line, or with no line (expenses, daywork),
+   *  that the unspent labour budget still covers — shown, not a loss. */
+  labourAbsorbed: number;
   /** Labour certified to date against the labour budget, and that budget — the
    *  Labour subtab's Expended and Total labour. */
   labourCertified: number; labourBudget: number;
@@ -390,8 +393,8 @@ export function computeForecast(input: {
   // contractCost is the pricing workbook's cost total — it still contains any
   // line since omitted, so take those out or the forecast never moves.
   const omittedValue = omittedMaterialValue(mats);
-  // Certified labour past its budget — or with no budget — is cost the workbook
-  // total doesn't hold. Without it the forecast kept every labour overrun off
+  // Certified labour past the labour budget is cost the workbook total doesn't
+  // hold. Without it the forecast kept every labour overrun off
   // the books and GP% kept margin the job was no longer making.
   const labour = labourOutturn(input.labour ?? [], variationLabourBudget(variations));
   // Prelims past the prelims budget. Prelim orders no longer sit in unexpected
@@ -414,7 +417,7 @@ export function computeForecast(input: {
     contractValue, contractCost,
     ffa, ffc, forecastProfit, forecastGpPct, contingency,
     materialSavings, labourSavings, varProfit, unexpectedSpend, omittedValue,
-    labourOverrun: labour.overrun, labourCertified: labour.certified, labourBudget: labour.budget,
+    labourOverrun: labour.overrun, labourAbsorbed: labour.absorbed, labourCertified: labour.certified, labourBudget: labour.budget,
     prelimsOverrun: prelims.overrun, prelimsSpend: prelims.spend, prelimsBudget: prelims.budget,
     unpricedSpend: summary.unpriced_spend, materialOverspend: summary.material_overspend,
     appliedValue, certifiedValue, varApplied, varCertified,
@@ -447,6 +450,7 @@ export function addForecasts(a: Forecast, b: Forecast): Forecast {
     materialSavings: a.materialSavings + b.materialSavings,
     labourSavings: a.labourSavings + b.labourSavings,
     labourOverrun: a.labourOverrun + b.labourOverrun,
+    labourAbsorbed: a.labourAbsorbed + b.labourAbsorbed,
     labourCertified: a.labourCertified + b.labourCertified,
     labourBudget: a.labourBudget + b.labourBudget,
     prelimsOverrun: a.prelimsOverrun + b.prelimsOverrun,
@@ -468,7 +472,7 @@ export const sumForecasts = (fs: Forecast[]): Forecast =>
   fs.reduce(addForecasts, {
     hasContract: false, contractValue: 0, contractCost: 0, ffa: 0, ffc: 0, forecastProfit: 0, forecastGpPct: null, contingency: 0,
     materialSavings: 0, labourSavings: 0, varProfit: 0, unexpectedSpend: 0, omittedValue: 0,
-    labourOverrun: 0, labourCertified: 0, labourBudget: 0,
+    labourOverrun: 0, labourAbsorbed: 0, labourCertified: 0, labourBudget: 0,
     prelimsOverrun: 0, prelimsSpend: 0, prelimsBudget: 0,
     unpricedSpend: 0, materialOverspend: 0,
     appliedValue: 0, certifiedValue: 0, varApplied: 0, varCertified: 0,

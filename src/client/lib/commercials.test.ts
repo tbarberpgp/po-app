@@ -244,7 +244,7 @@ test("re-basing the overspend pulls forecast cost, profit and GP% with it", () =
     hasContract: true, contractValue: 1000, contractCost: 900,
     ffa: 1000, ffc: 900, forecastProfit: 100, forecastGpPct: 0.1, contingency: 0,
     materialSavings: 0, labourSavings: 0, varProfit: 0, omittedValue: 0,
-    labourOverrun: 0, labourCertified: 0, labourBudget: 0,
+    labourOverrun: 0, labourAbsorbed: 0, labourCertified: 0, labourBudget: 0,
     prelimsOverrun: 0, prelimsSpend: 0, prelimsBudget: 0,
     unpricedSpend: 0, materialOverspend: OVER_26001, unexpectedSpend: OVER_26001,
     appliedValue: 0, certifiedValue: 0, varApplied: 0, varCertified: 0,

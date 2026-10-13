@@ -1786,7 +1786,9 @@ export function ForecastDashboard({ f, sections = ["forecast", "levers", "applie
             <D metric="labour" label="Profit/Loss from Labour" value={fmtMoney(labourProfit(f))}
               sub={f.labourOverrun > 0.005
                 ? `${fmtMoney(f.labourSavings)} live rates − ${fmtMoney(f.labourOverrun)} certified over budget`
-                : Math.abs(f.labourSavings) < 0.005 ? "upload labour rates" : "live vs BOQ"}
+                : f.labourAbsorbed > 0.005
+                  ? `${fmtMoney(f.labourSavings)} live rates · ${fmtMoney(f.labourAbsorbed)} expenses/overrun within labour budget`
+                  : Math.abs(f.labourSavings) < 0.005 ? "upload labour rates" : "live vs BOQ"}
               tone={moneyTone(labourProfit(f))} />
             {/* Prelims can only cost the forecast, never lift it: inside the
                 budget they leave it at the budget. */}
@@ -1990,7 +1992,7 @@ function OverviewAtAGlance({ projectId, forecast: f, commercials, afps, variatio
     // Already in forecast cost and GP% — flagged too, because a pound buried in
     // a margin is easy to read past. The dashboard raises the same flag.
     if (f.labourOverrun > 0.5) {
-      flags.push({ text: `Labour ${fmtMoney(f.labourOverrun)} over budget — certified past its allowance`, tab: "commercials", tone: "var(--danger)" });
+      flags.push({ text: `Labour ${fmtMoney(f.labourOverrun)} over budget — certified past the labour budget`, tab: "commercials", tone: "var(--danger)" });
     }
     if (f.prelimsOverrun > 0.5) {
       flags.push({ text: `Prelims ${fmtMoney(f.prelimsOverrun)} over budget`, tab: "commercials", tone: "var(--danger)" });
