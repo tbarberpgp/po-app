@@ -54,14 +54,15 @@ export function ApprovalsInbox({ me }: { me: CurrentUser | null }) {
   // tiers they hold.
   const isSuper = me?.role === "superadmin";
   // Seeing the queue and being able to decide on it are separate things.
-  // Authority to approve is held by the `approvers` table, by email — a role
-  // never confers it, and the PO endpoint enforces exactly that. A superadmin
-  // who is not an approver is here to look, so the decision controls are not
-  // drawn for them: the price and substitution endpoints gate on
-  // `suppliers.manage` rather than on the approvers table, so those buttons
-  // WOULD go through, and offering them would hand out authority this view was
-  // never meant to grant.
+  // Price and substitution authority is held by the `approvers` table, by
+  // email. A superadmin who is not an approver is there to look: those
+  // endpoints gate on `suppliers.manage` rather than on the approvers table, so
+  // the buttons WOULD go through, and offering them would hand out authority
+  // this view was never meant to grant.
   const canDecide = !!me?.is_approver;
+  // POs are the exception: a superadmin can decide a PO at any tier (mayDecide
+  // in the worker), approvers row or not.
+  const canDecidePOs = canDecide || isSuper;
   // Invoices are a separate authority from PO tiers: the release allowlist,
   // by name. Someone can hold one and not the other, so the invoice tab is
   // gated on its own right rather than on `canDecide`.
@@ -185,7 +186,7 @@ export function ApprovalsInbox({ me }: { me: CurrentUser | null }) {
                 from the PO tiers, so a blanket banner contradicted the Approve
                 buttons drawn beside it — it read "you cannot decide this" on
                 the one tab the reader could. */}
-            {tab !== "invoices" && tab !== "approved" && !canDecide && (
+            {tab !== "invoices" && tab !== "approved" && !(tab === "pos" ? canDecidePOs : canDecide) && (
               <div className="flash" style={{ marginBottom: 14 }}>
                 Read-only — you are a superadmin but not a configured approver, so you can review
                 what is waiting but not decide it. Approvers are set in Admin → Approvers.
@@ -265,13 +266,13 @@ export function ApprovalsInbox({ me }: { me: CurrentUser | null }) {
               <div className="card">
                 <div className="card-hd">
                   <span className="muted" style={{ fontSize: 12.5, flex: 1 }}>
-                    {!canDecide
+                    {!canDecidePOs
                       ? "Click a PO number to review it, or open a row to see the paperwork behind it."
                       : selected.size > 0
                         ? `${selected.size} of ${minePOs.length} selected · ${fmtMoney(minePOs.filter((r) => selected.has(String(r.id))).reduce((s, r) => s + (r.total_value ?? 0), 0))}`
                         : "Tick rows to approve several at once — click a PO number to review it first."}
                   </span>
-                  {canDecide && selected.size > 0 && (
+                  {canDecidePOs && selected.size > 0 && (
                     <>
                       <button className="ghost tiny" onClick={() => setSelected(new Set())} disabled={bulkBusy}>Clear</button>{" "}
                       <button className="accent" onClick={() => void approveSelected()} disabled={bulkBusy}>
@@ -284,7 +285,7 @@ export function ApprovalsInbox({ me }: { me: CurrentUser | null }) {
                   <thead>
                     <tr>
                       <th style={{ width: 34 }}>
-                        {canDecide && (
+                        {canDecidePOs && (
                           <input
                             type="checkbox"
                             style={{ minHeight: 0 }}
@@ -310,7 +311,7 @@ export function ApprovalsInbox({ me }: { me: CurrentUser | null }) {
                       <Fragment key={r.id}>
                       <tr>
                         <td>
-                          {canDecide && (
+                          {canDecidePOs && (
                             <input
                               type="checkbox"
                               style={{ minHeight: 0 }}

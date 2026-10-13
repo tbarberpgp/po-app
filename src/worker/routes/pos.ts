@@ -2197,7 +2197,7 @@ pos.post("/:id/approve", async (c) => {
   if (!po) return c.json({ error: "not found" }, 404);
   const gate = approveGate(po.status);
   if (!gate.ok) return c.json({ error: gate.error }, 409);
-  if (!mayDecide(await heldTiers(c.env.DB, actor), po.approval_tier)) {
+  if (!mayDecide(await heldTiers(c.env.DB, actor), po.approval_tier, c.get("userRole") === "superadmin")) {
     return c.json({ error: "you are not an approver for this tier" }, 403);
   }
   const now = new Date().toISOString();
@@ -2255,7 +2255,8 @@ pos.post("/:id/approve", async (c) => {
 
 /**
  * Who may approve, reject or unapprove a PO. Authority belongs to the tier,
- * with two widenings:
+ * with three widenings:
+ *  - a superadmin can decide a PO at any tier, approvers row or not;
  *  - a director can decide a PO at any tier — the top of the chain can do
  *    whatever the tiers below it can;
  *  - a PO amended after a rejection can be recomputed out of the approval net
@@ -2264,7 +2265,8 @@ pos.post("/:id/approve", async (c) => {
  *    bound "" as the tier, so a tierless PO could be approved but never
  *    rejected — by anyone.
  */
-export function mayDecide(held: readonly string[], poTier: string | null): boolean {
+export function mayDecide(held: readonly string[], poTier: string | null, isSuperadmin = false): boolean {
+  if (isSuperadmin) return true;
   if (held.length === 0) return false;
   if (held.includes("director")) return true;
   return poTier == null || held.includes(poTier);
@@ -2299,7 +2301,7 @@ pos.post("/:id/reject", async (c) => {
   if (po.status !== "pending_approval") {
     return c.json({ error: `cannot reject a ${po.status} PO` }, 409);
   }
-  if (!mayDecide(await heldTiers(c.env.DB, actor), po.approval_tier)) {
+  if (!mayDecide(await heldTiers(c.env.DB, actor), po.approval_tier, c.get("userRole") === "superadmin")) {
     return c.json({ error: "you are not an approver for this tier" }, 403);
   }
   const now = new Date().toISOString();
@@ -2372,7 +2374,7 @@ pos.post("/:id/unapprove", async (c) => {
   if (!po) return c.json({ error: "not found" }, 404);
   const gate = unapproveGate(po.status);
   if (!gate.ok) return c.json({ error: gate.error }, 409);
-  if (!mayDecide(await heldTiers(c.env.DB, actor), po.approval_tier)) {
+  if (!mayDecide(await heldTiers(c.env.DB, actor), po.approval_tier, c.get("userRole") === "superadmin")) {
     return c.json({ error: "you are not an approver for this tier" }, 403);
   }
   // An order that auto-approved never had a tier. A pending order with none is
