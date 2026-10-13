@@ -26,6 +26,7 @@ import { generateMaterialsXlsx } from "../lib/materials-xlsx";
 import { summarisePoRegister, supplierHasStaleCopy } from "../lib/po-register";
 import { PoRegisterExport } from "./PoRegisterExport";
 import { DeliveryDropRow } from "./POView";
+import { ProjectLabourApplications } from "./ApplicationsWorkspace";
 import { invoiceRefOf, filterAndSortAfps, countBy, labourBySubcontractor, type AfpSort } from "../../shared/afp-list";
 
 type Tab = "overview" | "materials" | "pos" | "commercials" | "programme" | "operations" | "reports" | "quality";
@@ -3181,8 +3182,12 @@ export function LabourBreakdown({
     try { await api.approveLabourRate(projectId, id); refreshLive(); onRefresh(); }
     catch { /* surfaced elsewhere */ }
   }
+  const applications = (
+    <ProjectLabourApplications projectId={projectId} canEdit={canRaiseApp} reloadKey={afps} onChanged={onRefresh} />
+  );
   if (rows.length === 0) {
     return (
+      <>
       <div className="card">
         <div className="card-bd">
           <div className="empty">
@@ -3190,6 +3195,8 @@ export function LabourBreakdown({
           </div>
         </div>
       </div>
+      {applications}
+      </>
     );
   }
   const totalLabour = rows.reduce((s, r) => s + r.labour_total, 0);
@@ -3247,6 +3254,8 @@ export function LabourBreakdown({
     </div>
 
     <LabourBySubcontractorCard afps={afps} expended={totalExpended} />
+
+    {applications}
 
     {unmatchedRates.length > 0 && (
       <UnmatchedLabourCard

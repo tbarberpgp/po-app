@@ -32,7 +32,6 @@ type StatusFilter = "all" | AfpStatus;
 
 export function ApplicationsWorkspace({ me }: { me: CurrentUser | null }) {
   const canEdit = can(me, "commercial.edit");
-  const navigate = useNavigate();
   const [rows, setRows] = useState<ApplicationListItem[]>([]);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [inbound, setInbound] = useState<InboundApplication[]>([]);
@@ -166,81 +165,207 @@ export function ApplicationsWorkspace({ me }: { me: CurrentUser | null }) {
           ) : visible.length === 0 ? (
             <div className="card-bd"><div className="empty">No {isLabour ? "labour" : "client"} applications{status !== "all" ? " match the current filter" : " yet"}.</div></div>
           ) : (
-            <table>
-              <thead>
-                <tr>
-                  <th className="center">#</th>
-                  <th>Project</th>
-                  <th>{isLabour ? "Subcontractor" : "Client"}</th>
-                  <th>Period</th>
-                  <th className="center">Status</th>
-                  <th className="num">Value</th>
-                  <th>Created</th>
-                </tr>
-              </thead>
-              <tbody>
-                {visible.map((r) => {
-                  const isUnassigned = isLabour && r.counterparty_supplier_id == null;
-                  const value = r.status === "certified" || r.status === "paid"
-                    ? (r.certified_amount ?? r.amount_due ?? 0)
-                    : (r.total_invoice ?? 0);
-                  return (
-                    // The whole row opens the application — hunting for the
-                    // small "#n" link is needless precision. Inner links and the
-                    // assign dropdown stop the bubble so they still do their own job.
-                    <tr key={r.id} className="rep-row" style={{ cursor: "pointer" }}
-                      onClick={(e) => { if (!(e.target as HTMLElement).closest("a,select,button,input,label")) navigate(`/applications/${r.id}`); }}>
-                      <td className="center">
-                        <Link to={`/applications/${r.id}`} onClick={(e) => e.stopPropagation()}>#{r.app_number}</Link>
-                      </td>
-                      <td>
-                        <Link to={`/projects/${r.project_id}`} style={{ fontWeight: 500 }} onClick={(e) => e.stopPropagation()}>{r.project_code}</Link>
-                        <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>{r.project_name}</div>
-                      </td>
-                      <td>
-                        {!isLabour ? (
-                          <span className="muted">Client (per project)</span>
-                        ) : isUnassigned ? (
-                          canEdit ? (
-                            <select
-                              defaultValue=""
-                              onChange={(e) => { const id = Number(e.target.value); if (id > 0) assign(r.id, id); }}
-                              style={{ minWidth: 200, borderColor: "var(--warn, #ea580c)" }}
-                              title="No subcontractor assigned — pick one"
-                            >
-                              <option value="">⚠ assign subcontractor…</option>
-                              {labourSuppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-                            </select>
-                          ) : (
-                            <span className="pill rejected" title="No subcontractor assigned">Unassigned</span>
-                          )
-                        ) : (
-                          r.supplier_name ?? <span className="muted">—</span>
-                        )}
-                      </td>
-                      <td>{fmtDate(r.period_end)}</td>
-                      <td className="center">
-                        <span className={`pill ${STATUS_PILL[r.status]}`}>{STATUS_LABEL[r.status]}</span>
-                        {r.has_unmatched === 1 && (
-                          <span className="pill pending" style={{ marginLeft: 6, fontSize: 10 }} title="Some uploaded lines still need review">review</span>
-                        )}
-                        {r.attention_note?.trim() && (
-                          <span className="pill danger" style={{ marginLeft: 6, fontSize: 10, cursor: "help" }} title={`Needs attention: ${r.attention_note}`}>⚑ attention</span>
-                        )}
-                      </td>
-                      <td className="num">{fmtMoney(value)}</td>
-                      <td className="muted" style={{ fontSize: 12 }}>
-                        {fmtDate(r.created_at)}
-                        <div style={{ fontSize: 11 }}>{formatActor(r.created_by)}</div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+            <ApplicationsTable
+              rows={visible}
+              isLabour={isLabour}
+              canEdit={canEdit}
+              labourSuppliers={labourSuppliers}
+              onAssign={assign}
+            />
           )}
         </div>
       </main>
+    </>
+  );
+}
+
+/**
+ * The applications table — shared by the portfolio workspace and a project's
+ * Labour tab (which drops the Project column). A row opens its application; an
+ * unassigned labour row offers the subcontractor picker inline.
+ */
+export function ApplicationsTable({
+  rows, isLabour, canEdit, labourSuppliers, onAssign, showProject = true,
+}: {
+  rows: ApplicationListItem[];
+  isLabour: boolean;
+  canEdit: boolean;
+  labourSuppliers: Supplier[];
+  onAssign: (afpId: number, supplierId: number) => void;
+  showProject?: boolean;
+}) {
+  const navigate = useNavigate();
+  return (
+    <table>
+      <thead>
+        <tr>
+          <th className="center">#</th>
+          {showProject && <th>Project</th>}
+          <th>{isLabour ? "Subcontractor" : "Client"}</th>
+          <th>Period</th>
+          <th className="center">Status</th>
+          <th className="num">Value</th>
+          <th>Created</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((r) => {
+          const isUnassigned = isLabour && r.counterparty_supplier_id == null;
+          const value = r.status === "certified" || r.status === "paid"
+            ? (r.certified_amount ?? r.amount_due ?? 0)
+            : (r.total_invoice ?? 0);
+          return (
+            // The whole row opens the application — hunting for the
+            // small "#n" link is needless precision. Inner links and the
+            // assign dropdown stop the bubble so they still do their own job.
+            <tr key={r.id} className="rep-row" style={{ cursor: "pointer" }}
+              onClick={(e) => { if (!(e.target as HTMLElement).closest("a,select,button,input,label")) navigate(`/applications/${r.id}`); }}>
+              <td className="center">
+                <Link to={`/applications/${r.id}`} onClick={(e) => e.stopPropagation()}>#{r.app_number}</Link>
+              </td>
+              {showProject && (
+                <td>
+                  <Link to={`/projects/${r.project_id}`} style={{ fontWeight: 500 }} onClick={(e) => e.stopPropagation()}>{r.project_code}</Link>
+                  <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>{r.project_name}</div>
+                </td>
+              )}
+              <td>
+                {!isLabour ? (
+                  <span className="muted">Client (per project)</span>
+                ) : isUnassigned ? (
+                  canEdit ? (
+                    <select
+                      defaultValue=""
+                      onChange={(e) => { const id = Number(e.target.value); if (id > 0) onAssign(r.id, id); }}
+                      style={{ minWidth: 200, borderColor: "var(--warn, #ea580c)" }}
+                      title="No subcontractor assigned — pick one"
+                    >
+                      <option value="">⚠ assign subcontractor…</option>
+                      {labourSuppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                    </select>
+                  ) : (
+                    <span className="pill rejected" title="No subcontractor assigned">Unassigned</span>
+                  )
+                ) : (
+                  r.supplier_name ?? <span className="muted">—</span>
+                )}
+              </td>
+              <td>{fmtDate(r.period_end)}</td>
+              <td className="center">
+                <span className={`pill ${STATUS_PILL[r.status]}`}>{STATUS_LABEL[r.status]}</span>
+                {r.has_unmatched === 1 && (
+                  <span className="pill pending" style={{ marginLeft: 6, fontSize: 10 }} title="Some uploaded lines still need review">review</span>
+                )}
+                {r.attention_note?.trim() && (
+                  <span className="pill danger" style={{ marginLeft: 6, fontSize: 10, cursor: "help" }} title={`Needs attention: ${r.attention_note}`}>⚑ attention</span>
+                )}
+              </td>
+              <td className="num">{fmtMoney(value)}</td>
+              <td className="muted" style={{ fontSize: 12 }}>
+                {fmtDate(r.created_at)}
+                <div style={{ fontSize: 11 }}>{formatActor(r.created_by)}</div>
+              </td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
+  );
+}
+
+/**
+ * One project's labour applications, as the workspace shows them: the same KPI
+ * strip, status filter and table, scoped to the project and without the
+ * Project column. Sits on the project's Commercials → Labour tab. `reloadKey`
+ * changes whenever the project's applications do, so the list follows.
+ */
+export function ProjectLabourApplications({
+  projectId, canEdit, reloadKey, onChanged,
+}: {
+  projectId: string;
+  canEdit: boolean;
+  reloadKey?: unknown;
+  /** Called after an inline change (a subcontractor assigned) so the page refetches. */
+  onChanged?: () => void;
+}) {
+  const [rows, setRows] = useState<ApplicationListItem[] | null>(null);
+  const [suppliers, setSuppliers] = useState<Supplier[]>([]);
+  const [status, setStatus] = useState<StatusFilter>("all");
+  const [unassignedOnly, setUnassignedOnly] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [tick, setTick] = useState(0);
+
+  useEffect(() => {
+    let live = true;
+    api.listAllApplications({ direction: "incoming_labour", projectId })
+      .then((r) => { if (live) { setRows(r); setErr(null); } })
+      .catch((e) => { if (live) setErr(e instanceof Error ? e.message : "failed to load applications"); });
+    return () => { live = false; };
+  }, [projectId, reloadKey, tick]);
+  useEffect(() => {
+    if (canEdit) api.listSuppliers().then(setSuppliers).catch(() => setSuppliers([]));
+  }, [canEdit]);
+
+  const labourSuppliers = useMemo(() => suppliers.filter((s) => s.is_labour_supplier), [suppliers]);
+  const all = rows ?? [];
+  const visible = all
+    .filter((r) => status === "all" || r.status === status)
+    .filter((r) => !unassignedOnly || r.counterparty_supplier_id == null);
+  const unassigned = all.filter((r) => r.counterparty_supplier_id == null).length;
+  const needsReview = all.filter((r) => r.has_unmatched === 1).length;
+  const certified = all.filter((r) => r.status === "certified" || r.status === "paid").length;
+
+  async function assign(afpId: number, supplierId: number) {
+    setErr(null);
+    try {
+      await api.updateAfp(afpId, { counterparty_supplier_id: supplierId });
+      setTick((t) => t + 1);
+      onChanged?.();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "assign failed");
+    }
+  }
+
+  return (
+    <>
+      <div className="kpis" style={{ marginBottom: 16 }}>
+        <Kpi label="Labour applications" value={String(all.length)} />
+        <Kpi label="Unassigned subbie" value={String(unassigned)} tone={unassigned > 0 ? "warn" : "default"} />
+        <Kpi label="Lines need review" value={String(needsReview)} tone={needsReview > 0 ? "warn" : "default"} />
+        <Kpi label="Certified / paid" value={String(certified)} tone={certified > 0 ? "success" : "default"} />
+      </div>
+      <div className="card">
+        <div className="card-hd" style={{ gap: 12, flexWrap: "wrap" }}>
+          <h2 style={{ flex: 1 }}>Labour applications</h2>
+          <select value={status} onChange={(e) => setStatus(e.target.value as StatusFilter)}>
+            <option value="all">All statuses</option>
+            <option value="draft">Draft</option>
+            <option value="pending_approval">Pending approval</option>
+            <option value="submitted">Submitted</option>
+            <option value="certified">Certified</option>
+            <option value="paid">Paid</option>
+          </select>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, textTransform: "none", letterSpacing: 0, color: "var(--ink)", cursor: "pointer", margin: 0 }}>
+            <input type="checkbox" checked={unassignedOnly} onChange={(e) => setUnassignedOnly(e.target.checked)} style={{ minHeight: 0 }} />
+            Unassigned only
+          </label>
+        </div>
+        {err && <div className="card-bd"><div className="flash error">{err}</div></div>}
+        {rows == null ? (
+          !err && <div className="card-bd"><div className="muted">Loading…</div></div>
+        ) : visible.length === 0 ? (
+          <div className="card-bd"><div className="empty">No labour applications{status !== "all" || unassignedOnly ? " match the current filter" : " on this project yet"}.</div></div>
+        ) : (
+          <ApplicationsTable
+            rows={visible}
+            isLabour
+            canEdit={canEdit}
+            labourSuppliers={labourSuppliers}
+            onAssign={assign}
+            showProject={false}
+          />
+        )}
+      </div>
     </>
   );
 }
