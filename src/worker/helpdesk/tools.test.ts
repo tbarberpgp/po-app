@@ -223,3 +223,60 @@ test("the release queue says whether this user can actually sign it off", async 
   const releaser = (await runTool(env, { role: "commercial", email: "t@x.y", can_release_payables: true }, "my_work_queue", {})) as Record<string, any>;
   assert.equal(releaser.invoices_awaiting_release_approval.can_i_sign_these_off, true);
 });
+
+/* ── Labour applications ──────────────────────────────────────────────── */
+
+const labourApp = {
+  id: 53, app_number: 2, status: "paid", period_end: "2026-07-10", claim_basis: "period",
+  this_period_net: 9676.8, certified_amount: 9676.8, source_file_name: "CLADDERS LTD copy copy.docx",
+  resolved_lines_json: JSON.stringify([{ description: "Hourly Rate of Pay £36.00 P/H – 5 x Operatives" }]),
+  payment_reference: null, paid_at: "2026-10-12T10:00:00Z",
+  subcontractor: "Cladders Ltd", project_code: "26004", project_name: "Blyth",
+};
+
+test("the labour lookup is offered only to people who can see the commercial side", () => {
+  assert.ok(!toolsFor({ role: "site" }).some((t) => t.name === "find_labour_applications"));
+  assert.ok(!toolsFor({ role: "pm" }).some((t) => t.name === "find_labour_applications"));
+  assert.ok(toolsFor({ role: "commercial" }).some((t) => t.name === "find_labour_applications"));
+});
+
+test("a PM asking for labour applications anyway is refused without reading them", async () => {
+  const { env, sql } = routedEnv(() => [labourApp]);
+  const out = (await runTool(env, { role: "pm" }, "find_labour_applications", { project: "Blyth" })) as { error: string };
+  assert.match(out.error, /commercial workspace/);
+  assert.equal(sql.length, 0);
+});
+
+test("a search by work finds what was booked to that line, and ignores the seeded £0 lines", async () => {
+  const { env, sql } = routedEnv((q) =>
+    /FROM applications_for_payment/.test(q) ? [labourApp]
+      : /FROM afp_lines/.test(q) ? [{ afp_id: 53, section: "Removal of Flashings", description: "Removal of Downpipes", cumulative_value: 4564.8 }]
+        : []);
+  const out = (await runTool(env, { role: "commercial" }, "find_labour_applications", {
+    project: "Blyth", work: "Removal of Downpipes",
+  })) as Array<Record<string, unknown>>;
+
+  // Project by name as well as by code; only valued lines count as a claim.
+  assert.match(sql[0], /p\.code = \? OR p\.name LIKE \?/);
+  assert.match(sql[0], /cumulative_value > 0/);
+  assert.match(sql[1], /cumulative_value > 0/);
+  assert.equal(out[0].application, "#2");
+  assert.equal(out[0].subcontractor, "Cladders Ltd");
+  assert.deepEqual(out[0].booked_to, [{ boq_line: "Removal of Flashings — Removal of Downpipes", value: 4564.8 }]);
+  // The invoice itself billed hours: its wording doesn't mention the work, and
+  // the result must not pretend it does.
+  assert.equal(out[0].invoice_wording, null);
+});
+
+test("no hits is an empty list, and doesn't go on to read lines", async () => {
+  const { env, sql } = routedEnv(() => []);
+  const out = await runTool(env, { role: "commercial" }, "find_labour_applications", { work: "downpipes" });
+  assert.deepEqual(out, []);
+  assert.equal(sql.length, 1);
+});
+
+test("the invoice search takes a project name too", async () => {
+  const { env, sql } = routedEnv(() => []);
+  await runTool(env, { role: "commercial" }, "find_invoices", { project_code: "Blyth" });
+  assert.match(sql[0], /p\.code = \? OR p\.name LIKE \?/);
+});

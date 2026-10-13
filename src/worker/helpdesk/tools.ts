@@ -30,12 +30,12 @@ const PO_TOOLS: Anthropic.Tool[] = [
   {
     name: "find_purchase_orders",
     description:
-      "Search purchase orders by PO number fragment, supplier name, project code and/or status. Returns up to 15 most recent matches with a one-line state each. Use it when the user describes an order without giving its exact number.",
+      "Search purchase orders by PO number fragment, supplier name, project (code or name) and/or status. Returns up to 15 most recent matches with a one-line state each. Use it when the user describes an order without giving its exact number.",
     input_schema: {
       type: "object" as const,
       properties: {
         query: { type: "string", description: "Fragment of the PO number or supplier name, e.g. '26004-012' or 'Alumasc'." },
-        project_code: { type: "string", description: "Project code, e.g. '26004'." },
+        project_code: { type: "string", description: "Project code or name, e.g. '26004' or 'Blyth'." },
         status: {
           type: "string",
           enum: ["draft", "pending_approval", "approved", "rejected", "issued"],
@@ -67,12 +67,12 @@ const INVOICE_TOOLS: Anthropic.Tool[] = [
   {
     name: "find_invoices",
     description:
-      "Search supplier invoices in Accounts by supplier, invoice number, project, the PO they're billed against, or where they've got to. Returns up to 15 with a one-line state each. Use it when the user names an invoice or asks what's outstanding for a supplier.",
+      "Search supplier invoices in Accounts by supplier, invoice number, project (code or name), the PO they're billed against, or where they've got to. Returns up to 15 with a one-line state each. Use it when the user names an invoice or asks what's outstanding for a supplier. Subcontractor labour invoices are NOT here — use find_labour_applications for those.",
     input_schema: {
       type: "object" as const,
       properties: {
         query: { type: "string", description: "Fragment of the invoice number or supplier name, e.g. 'INV2502383' or 'Alumasc'." },
-        project_code: { type: "string", description: "Project code, e.g. '26004'." },
+        project_code: { type: "string", description: "Project code or name, e.g. '26004' or 'Blyth'." },
         po_number: { type: "string", description: "Only invoices billed against this PO, e.g. 'PO-26003-0038'." },
         stage: {
           type: "string",
@@ -99,6 +99,26 @@ const INVOICE_TOOLS: Anthropic.Tool[] = [
   },
 ];
 
+const LABOUR_TOOLS: Anthropic.Tool[] = [
+  {
+    name: "find_labour_applications",
+    description:
+      "Search subcontractor labour applications — the subcontractors' own invoices, shown on a project's Labour tab — by project, subcontractor, status and/or the work they were booked to. Returns up to 25 with each one's value and status, the BOQ lines it was booked to that carry value, and the invoice's own wording where it was read. Use it for any question about labour invoices or labour applications, including 'which invoices were for <some work>'; the Accounts invoice search can't see these.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        project: { type: "string", description: "Project code or name, e.g. '26004' or 'Blyth'." },
+        subcontractor: { type: "string", description: "Fragment of the subcontractor's name, e.g. 'Cladders' or 'Garbutt'." },
+        work: {
+          type: "string",
+          description: "Words describing the work, e.g. 'Removal of Downpipes'. Matched against the BOQ lines each application was booked to and the invoice's own line descriptions; every word must appear.",
+        },
+        status: { type: "string", enum: ["draft", "submitted", "certified", "paid"] },
+      },
+    },
+  },
+];
+
 /** The tools this user may run.
  *
  *  Invoices are the commercial position in its rawest form — what is owed, to
@@ -109,8 +129,44 @@ const INVOICE_TOOLS: Anthropic.Tool[] = [
  *  that is the cost of not having the helpdesk describe invoices to a site
  *  manager before discovering it can't read them. */
 export function toolsFor(subject: HelpdeskActor): Anthropic.Tool[] {
-  return canSeeInvoices(subject) ? [...PO_TOOLS, ...INVOICE_TOOLS] : PO_TOOLS;
+  return canSeeInvoices(subject) ? [...PO_TOOLS, ...INVOICE_TOOLS, ...LABOUR_TOOLS] : PO_TOOLS;
 }
+
+/** A project filter that takes either the code or the name. People say
+ *  "Blyth", not "26004", and the model shouldn't have to know the mapping. */
+function projectFilter(value: string): { sql: string; binds: unknown[] } {
+  return { sql: "(p.code = ? OR p.name LIKE ?)", binds: [value, `%${value}%`] };
+}
+
+/** The words of a work description worth matching on, capped so the bind count
+ *  stays far from D1's 100-parameter ceiling. */
+function workWords(text: string): string[] {
+  return text.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length >= 3).slice(0, 5);
+}
+
+type LabourAppRow = {
+  id: number;
+  app_number: number;
+  status: string;
+  period_end: string | null;
+  claim_basis: string | null;
+  this_period_net: number | null;
+  certified_amount: number | null;
+  source_file_name: string | null;
+  resolved_lines_json: string | null;
+  payment_reference: string | null;
+  paid_at: string | null;
+  subcontractor: string | null;
+  project_code: string;
+  project_name: string;
+};
+
+type LabourLineRow = {
+  afp_id: number;
+  section: string | null;
+  description: string;
+  cumulative_value: number;
+};
 
 type PoRow = {
   id: string;
@@ -292,7 +348,10 @@ export async function runTool(
       where.push("(po.po_number LIKE ? OR po.supplier LIKE ?)");
       binds.push(`%${q}%`, `%${q}%`);
     }
-    if (str("project_code")) { where.push("p.code = ?"); binds.push(str("project_code")); }
+    if (str("project_code")) {
+      const f = projectFilter(str("project_code"));
+      where.push(f.sql); binds.push(...f.binds);
+    }
     if (str("status")) { where.push("po.status = ?"); binds.push(str("status")); }
     const rows = await env.DB.prepare(
       `SELECT ${PO_COLS} FROM purchase_orders po JOIN projects p ON p.id = po.project_id
@@ -441,6 +500,83 @@ export async function runTool(
     return out;
   }
 
+  if (name === "find_labour_applications") {
+    // Labour applications are on the Commercials side, behind the same
+    // permission as Accounts. `toolsFor` withholds this from everyone else.
+    if (!canSeeInvoices(subject)) {
+      return { error: "Labour applications are part of the commercial workspace, and this user doesn't have access to it." };
+    }
+    const where = ["a.direction = 'incoming_labour'", "p.deleted_at IS NULL"];
+    const binds: unknown[] = [];
+    if (str("project")) { const f = projectFilter(str("project")); where.push(f.sql); binds.push(...f.binds); }
+    if (str("subcontractor")) { where.push("s.name LIKE ?"); binds.push(`%${str("subcontractor")}%`); }
+    if (str("status")) { where.push("a.status = ?"); binds.push(str("status")); }
+
+    // Every application is seeded with the project's whole labour BOQ at £0,
+    // so a line only says the work was claimed when it carries value. The
+    // invoice's own wording survives in resolved_lines_json when it was read
+    // line by line; many weren't, so the BOQ allocation is the main evidence.
+    const words = workWords(str("work"));
+    const lineMatch = words.map(() => "lower(COALESCE(l.section, '') || ' ' || l.description) LIKE ?").join(" AND ");
+    if (words.length) {
+      const wordBinds = words.map((w) => `%${w}%`);
+      where.push(`(EXISTS (SELECT 1 FROM afp_lines l WHERE l.afp_id = a.id AND l.cumulative_value > 0 AND ${lineMatch})
+        OR (${words.map(() => "lower(COALESCE(a.resolved_lines_json, '')) LIKE ?").join(" AND ")}))`);
+      binds.push(...wordBinds, ...wordBinds);
+    }
+
+    const apps = await env.DB.prepare(
+      `SELECT a.id, a.app_number, a.status, a.period_end, a.claim_basis, a.this_period_net, a.certified_amount,
+              a.source_file_name, a.resolved_lines_json, a.payment_reference, a.paid_at,
+              s.name AS subcontractor, p.code AS project_code, p.name AS project_name
+         FROM applications_for_payment a
+         JOIN projects p ON p.id = a.project_id
+         LEFT JOIN suppliers s ON s.id = a.counterparty_supplier_id
+        WHERE ${where.join(" AND ")}
+        ORDER BY a.period_end DESC, a.app_number DESC LIMIT 25`,
+    ).bind(...binds).all<LabourAppRow>();
+    if (!apps.results.length) return [];
+
+    // The valued lines behind each hit: only the matching ones when a work
+    // description was given, otherwise everything the application was booked to.
+    const ids = apps.results.map((r) => r.id);
+    const lines = await env.DB.prepare(
+      `SELECT l.afp_id, l.section, l.description, l.cumulative_value FROM afp_lines l
+        WHERE l.afp_id IN (${ids.map(() => "?").join(",")}) AND l.cumulative_value > 0
+          ${words.length ? `AND ${lineMatch}` : ""}
+        ORDER BY l.afp_id, l.display_order`,
+    ).bind(...ids, ...words.map((w) => `%${w}%`)).all<LabourLineRow>();
+    const byApp = new Map<number, LabourLineRow[]>();
+    for (const l of lines.results) byApp.set(l.afp_id, [...(byApp.get(l.afp_id) ?? []), l]);
+
+    return apps.results.map((r) => {
+      let wording: string[] = [];
+      try {
+        const raw = r.resolved_lines_json ? (JSON.parse(r.resolved_lines_json) as Array<{ description?: unknown }>) : [];
+        wording = raw.map((x) => String(x.description ?? "")).filter(Boolean)
+          .filter((d) => !words.length || words.every((w) => d.toLowerCase().includes(w)));
+      } catch { /* unreadable JSON: say nothing about the wording */ }
+      return {
+        application: `#${r.app_number}`,
+        project: `${r.project_code} ${r.project_name}`,
+        subcontractor: r.subcontractor,
+        invoice_document: r.source_file_name,
+        period_end: r.period_end?.slice(0, 10) ?? null,
+        status: r.status,
+        claim_basis: r.claim_basis ?? "cumulative",
+        value_this_period: r.this_period_net,
+        certified_amount: r.certified_amount,
+        paid_on: r.paid_at?.slice(0, 10) ?? null,
+        payment_reference: r.payment_reference,
+        booked_to: (byApp.get(r.id) ?? []).map((l) => ({
+          boq_line: l.section ? `${l.section} — ${l.description}` : l.description,
+          value: Math.round(l.cumulative_value * 100) / 100,
+        })),
+        invoice_wording: wording.length ? wording : null,
+      };
+    });
+  }
+
   if (name === "find_invoices" || name === "get_invoice") {
     // Defence in depth: `toolsFor` already withholds these, so reaching here
     // means the model invented the call.
@@ -457,7 +593,10 @@ export async function runTool(
       where.push("(i.invoice_number LIKE ? OR i.supplier_name LIKE ? OR s.name LIKE ?)");
       binds.push(`%${q}%`, `%${q}%`, `%${q}%`);
     }
-    if (str("project_code")) { where.push("p.code = ?"); binds.push(str("project_code")); }
+    if (str("project_code")) {
+      const f = projectFilter(str("project_code"));
+      where.push(f.sql); binds.push(...f.binds);
+    }
     if (str("po_number")) {
       where.push("(upper(po.po_number) = upper(?) OR upper(COALESCE(i.extracted_po_ref, '')) LIKE upper(?))");
       binds.push(str("po_number"), `%${str("po_number")}%`);
