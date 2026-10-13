@@ -27,6 +27,17 @@
  * line instead and zeroes every BOQ line, which also clears figures the
  * reader matched onto measured items from a time invoice.
  *
+ * A site manager's time is neither: the contract prices it in Prelims (Dallas
+ * Rd's "Site Manager" line on each block), not in the labour BOQ. Andrew Law
+ * (Asgard Projects) bills it weekly — "Management on site", £420 a day, plus
+ * hotel and mileage — and one invoice covers three blocks, so each block gets
+ * its own application for its share. `works_as: "prelims"` makes each
+ * application a prelims drawdown under `prelim_heading`, worth the invoice's
+ * time plus expenses as its claimed amount. A drawdown's lines are not read —
+ * its claimed amount IS its value — so every BOQ line is zeroed and every
+ * Expenses/Dayworks line removed; leaving one would count the same money
+ * twice. The expense breakdown is kept in the audit row.
+ *
  * A certificate already agreed is never rewritten — except where Xero paid the
  * invoice at its own value and the app's certificate is the artefact of the
  * running-total reading (Cladders #2: certified £7,480.80, invoice and Xero
@@ -39,7 +50,8 @@
  * Every figure comes from the request, which is built from the invoices
  * themselves — nothing here reads a document or guesses. Planning is pure and
  * refuses rather than guesses: an application already certified at a different
- * value, one the app has billed to Xero itself, a prelims drawdown, or a series
+ * value, one the app has billed to Xero itself, a prelims drawdown (outside
+ * prelims mode), or a series
  * with an application left out (mixing period claims with running totals in
  * one subcontractor's series miscounts labour expended).
  */
@@ -64,17 +76,21 @@ export type RestateInvoice = {
   recertify?: boolean;
 };
 
-/** Where an invoice's time is booked: one named BOQ line, or a Dayworks line. */
-export type RestateWorksAs = "boq" | "dayworks";
+/** Where an invoice's time is booked: one named BOQ line, a Dayworks line, or
+ *  the whole invoice as a prelims drawdown. */
+export type RestateWorksAs = "boq" | "dayworks" | "prelims";
 
 export type RestateRequest = {
   project_id: string;
   supplier_id: number;
   /** The BOQ (contract) item the invoiced time is booked against. Required
-   *  unless works_as is "dayworks". */
+   *  when works_as is "boq". */
   works_item_id?: number | null;
   /** Default "boq". */
   works_as?: RestateWorksAs;
+  /** Prelims mode: the prelims heading every drawdown is tagged with, e.g.
+   *  "Site management". Required when works_as is "prelims". */
+  prelim_heading?: string | null;
   invoices: RestateInvoice[];
   /** Clear the attention flag on applications this corrects. */
   clear_attention?: boolean;
@@ -126,8 +142,10 @@ export type RestateStep = {
     claim_basis: string | null;
     value: number;
     certified_amount: number | null;
-    /** The named BOQ line's value, or the application's Dayworks total. */
+    /** The named BOQ line's value, the application's Dayworks total, or (prelims
+     *  mode) its claimed amount if it was already a drawdown. */
     works_line: number;
+    prelim_heading: string | null;
     other_boq: Array<{ line_id: number; description: string; value: number }>;
     adhoc: Array<{ line_id: number; section: string | null; description: string; value: number }>;
     attention: boolean;
@@ -138,13 +156,15 @@ export type RestateStep = {
     works: number;
     /** Dayworks mode: the Dayworks line's description. */
     works_description: string | null;
+    /** Prelims mode: the drawdown's heading; its claimed amount is `value`. */
+    prelim_heading: string | null;
     expenses: RestateExpense[];
     value: number;
     certified_amount: number | null;
     payment_reference: string | null;
     attention: boolean;
   };
-  /** The BOQ line the time goes on; null in Dayworks mode. */
+  /** The BOQ line the time goes on; null in Dayworks and prelims modes. */
   works_line_id: number | null;
   works_line_contract_value: number;
 };
@@ -183,8 +203,10 @@ export function planRestatement(
   if (!req.project_id) errors.push("project_id required");
   if (!Number.isInteger(req.supplier_id)) errors.push("supplier_id required");
   const worksAs: RestateWorksAs = req.works_as ?? "boq";
-  if (worksAs !== "boq" && worksAs !== "dayworks") errors.push(`works_as must be "boq" or "dayworks"`);
+  const heading = String(req.prelim_heading ?? "").trim() || null;
+  if (worksAs !== "boq" && worksAs !== "dayworks" && worksAs !== "prelims") errors.push(`works_as must be "boq", "dayworks" or "prelims"`);
   else if (worksAs === "boq" && !Number.isInteger(req.works_item_id)) errors.push("works_item_id required");
+  else if (worksAs === "prelims" && !heading) errors.push("prelim_heading required");
   if (!Array.isArray(req.invoices) || req.invoices.length === 0) errors.push("invoices required");
   if (errors.length) return { ok: false, errors };
 
@@ -222,7 +244,8 @@ export function planRestatement(
       continue;
     }
     const tag = `${inv.invoice_number} on #${a.app_number}`;
-    if (a.prelim_heading != null && a.claimed_amount != null) {
+    const wasDrawdown = a.prelim_heading != null && a.claimed_amount != null;
+    if (wasDrawdown && worksAs !== "prelims") {
       errors.push(`${tag}: a prelims drawdown — its claimed amount is its value, so it isn't restated here`);
       continue;
     }
@@ -269,7 +292,10 @@ export function planRestatement(
       errors.push(`${tag}: already certified at ${money(a.certified_amount)} but the invoice says ${money(value)} — an agreed certificate isn't rewritten here`);
       continue;
     }
-    const alreadyDone = a.status === "paid" && a.claim_basis === "period";
+    // In prelims mode "done" also means it is already this drawdown — a paid
+    // period claim restated earlier as Dayworks is not, and paid is not rewritten.
+    const alreadyDone = a.status === "paid" && a.claim_basis === "period"
+      && (worksAs !== "prelims" || (a.prelim_heading === heading && wasDrawdown));
     if (a.status === "paid" && !alreadyDone) {
       errors.push(`${tag}: already marked paid in the app — not touched`);
       continue;
@@ -296,7 +322,10 @@ export function planRestatement(
         certified_amount: a.certified_amount,
         works_line: wl
           ? r2(wl.cumulative_value)
-          : r2(own.filter((l) => l.is_adhoc === 1 && isDayworkSection(l.section)).reduce((t, l) => t + l.cumulative_value, 0)),
+          : worksAs === "prelims" && wasDrawdown
+            ? r2(a.claimed_amount ?? 0)
+            : r2(own.filter((l) => l.is_adhoc === 1 && isDayworkSection(l.section)).reduce((t, l) => t + l.cumulative_value, 0)),
+        prelim_heading: a.prelim_heading,
         other_boq: own
           .filter((l) => l.is_adhoc === 0 && l.id !== wl?.id && l.cumulative_value !== 0)
           .map((l) => ({ line_id: l.id, description: l.description, value: r2(l.cumulative_value) })),
@@ -310,6 +339,7 @@ export function planRestatement(
         claim_basis: "period",
         works: r2(works),
         works_description: worksDescription,
+        prelim_heading: worksAs === "prelims" ? heading : null,
         expenses,
         value,
         certified_amount: inv.paid_in_xero ? value : (a.status === "certified" ? a.certified_amount : null),
@@ -342,8 +372,9 @@ export function lineWrites(step: RestateStep, worksItemId: number | null | undef
   const pct = step.works_line_contract_value > 0
     ? Math.min(100, (step.after.works / step.works_line_contract_value) * 100)
     : 0;
+  const drawdown = step.works_as === "prelims";
   const out: Sql[] = step.works_line_id == null
-    // Dayworks mode: no BOQ line carries this invoice's time.
+    // Dayworks and prelims modes: no BOQ line carries this invoice's time.
     ? [{
         sql: `UPDATE afp_lines SET percent_complete = 0, cumulative_value = 0
                WHERE afp_id = ? AND is_adhoc = 0`,
@@ -369,7 +400,9 @@ export function lineWrites(step: RestateStep, worksItemId: number | null | undef
       params: [step.afp_id],
     },
   );
-  if (step.works_line_id == null && step.after.works > 0) {
+  // A drawdown's claimed amount is its whole value: no Dayworks or Expenses line
+  // goes back on, or recalcTotals would add them on top of it.
+  if (!drawdown && step.works_line_id == null && step.after.works > 0) {
     out.push({
       sql: `INSERT INTO afp_lines
               (afp_id, section, description, unit, qty, rate, contract_value,
@@ -379,7 +412,7 @@ export function lineWrites(step: RestateStep, worksItemId: number | null | undef
       params: [step.afp_id, DAYWORKS_SECTION, step.after.works_description ?? step.invoice_number, step.after.works, step.after.works, step.after.works, step.afp_id],
     });
   }
-  step.after.expenses.forEach((e) => {
+  if (!drawdown) step.after.expenses.forEach((e) => {
     out.push({
       sql: `INSERT INTO afp_lines
               (afp_id, section, description, unit, qty, rate, contract_value,
@@ -397,6 +430,10 @@ export function lineWrites(step: RestateStep, worksItemId: number | null | undef
   let resolved: Array<Record<string, unknown>> = [];
   try { resolved = current.resolved_lines_json ? JSON.parse(current.resolved_lines_json) : []; } catch { resolved = []; }
   const moved = unmatched.map((l) => ({ ...l, resolution: { action: "restated_from_invoice", invoice: step.invoice_number, by: actor, at: now } }));
+  if (drawdown) out.push({
+    sql: `UPDATE applications_for_payment SET prelim_heading = ?, claimed_amount = ? WHERE id = ?`,
+    params: [step.after.prelim_heading, step.after.value, step.afp_id],
+  });
   out.push({
     sql: `UPDATE applications_for_payment
              SET claim_basis = 'period', unmatched_lines_json = NULL, resolved_lines_json = ?
