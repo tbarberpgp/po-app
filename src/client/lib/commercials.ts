@@ -344,9 +344,9 @@ export function materialSavingsDrill(mats: MaterialWithCommitment[]): DrillBody 
 }
 
 /** Profit / loss from labour, line by line: each live subcontract rate's saving
- *  against the BOQ, then every pound forecast cost carries because certified
- *  labour went past its budget or never had one. The rows add up to the lever
- *  (labourProfit) — savings less the overrun. */
+ *  against the BOQ, then each section that went past its own line or never had
+ *  one, then what the unspent labour budget covers of those. The rows add up to
+ *  the lever (labourProfit) — savings less the overrun. */
 export function labourDrill(items: ContractItem[], rows: LabourPositionRow[], variations: Variation[]): DrillBody {
   const savings = items
     .filter((ci) => ci.live_labour_rate != null && ci.labour_rate != null)
@@ -361,10 +361,15 @@ export function labourDrill(items: ContractItem[], rows: LabourPositionRow[], va
     .filter((r) => Math.abs(r.effect) > 0.005)
     .sort((a, b) => b.effect - a.effect);
   const why = { over_budget: "Certified past its budget", unbudgeted: "No labour budget", variations: "Past the variations' labour budget" } as const;
-  const overruns = labourOutturn(rows, variationLabourBudget(variations)).lines.map((l) => ({
+  const outturn = labourOutturn(rows, variationLabourBudget(variations));
+  const overruns = outturn.lines.map((l) => ({
     description: l.section, why: why[l.kind], budget: l.budget, actual: l.certified, effect: -l.over,
   }));
-  const all = [...savings, ...overruns];
+  // The labour budget is one pot: while it has room, those lines are covered.
+  const covered = outturn.absorbed > 0.005
+    ? [{ description: "Labour budget still unspent", why: "Covers the lines above", budget: outturn.budget, actual: outturn.certified, effect: outturn.absorbed }]
+    : [];
+  const all = [...savings, ...overruns, ...covered];
   return {
     columns: [
       { key: "description", label: "Labour item / section" },
@@ -374,7 +379,7 @@ export function labourDrill(items: ContractItem[], rows: LabourPositionRow[], va
       { key: "effect", label: "Profit / loss", align: "right", fmt: money },
     ],
     rows: all, total: money(sum(all, "effect")),
-    note: "Certified labour only — a submitted claim moves the forecast once it's certified. An underspend isn't counted as a saving until the work is done; live subcontract rates are where labour savings come from.",
+    note: "Certified labour only — a submitted claim moves the forecast once it's certified. Labour is measured against its whole budget: a section over its own line, or an expense with no line, is a loss only once the labour budget as a whole is spent. An underspend isn't counted as a saving until the work is done; live subcontract rates are where labour savings come from.",
   };
 }
 
