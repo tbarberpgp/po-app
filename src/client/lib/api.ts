@@ -287,6 +287,8 @@ export const api = {
     }>>(`/api/materials/${projectId}/substitutions`),
   listLabourByCostCode: (projectId: string) =>
     jfetch<LabourByCostCode[]>(`/api/materials/${projectId}/labour-by-cost-code`),
+  listLabourSpentByLine: (projectId: string) =>
+    jfetch<Array<{ contract_item_id: number | null; spent: number }>>(`/api/materials/${projectId}/labour-spent-by-line`),
   listContractItems: (projectId: string) =>
     jfetch<import("../../shared/types").ContractItem[]>(`/api/materials/${projectId}/contract-items`),
 

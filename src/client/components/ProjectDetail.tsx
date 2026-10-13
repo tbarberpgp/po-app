@@ -3167,6 +3167,16 @@ export function LabourBreakdown({
 }) {
   const [costOpen, setCostOpen] = useState(true);
   const liveMap = useMemo(() => new Map(liveRates.map((r) => [r.contract_item_id, r])), [liveRates]);
+  // Certified labour per BOQ line, straight from the invoices — refetched
+  // whenever the applications change (an invoice certified, marked paid, …).
+  const [spentByLine, setSpentByLine] = useState<Map<number | null, number> | null>(null);
+  useEffect(() => {
+    let live = true;
+    api.listLabourSpentByLine(projectId)
+      .then((rows) => { if (live) setSpentByLine(new Map(rows.map((r) => [r.contract_item_id, r.spent]))); })
+      .catch(() => { if (live) setSpentByLine(null); });
+    return () => { live = false; };
+  }, [projectId, afps]);
   async function approveRate(id: number) {
     try { await api.approveLabourRate(projectId, id); refreshLive(); onRefresh(); }
     catch { /* surfaced elsewhere */ }
@@ -3190,6 +3200,18 @@ export function LabourBreakdown({
     (ci) => ci.labour_rate != null && ci.labour_rate > 0
   );
   const boqTotal = labourItems.reduce((s, ci) => s + (ci.labour_total ?? 0), 0);
+  const spentOf = (id: number) => spentByLine?.get(id) ?? 0;
+  const spentTotal = labourItems.reduce((s, ci) => s + spentOf(ci.id), 0);
+  // Certified measured work claimed against no line of the current BOQ (an
+  // earlier upload's items, or none) — said out loud, never silently dropped.
+  const onBoq = new Set(labourItems.map((ci) => ci.id));
+  const unplaced = spentByLine
+    ? [...spentByLine].reduce((s, [id, v]) => (id != null && onBoq.has(id) ? s : s + v), 0)
+    : 0;
+  // Quoted subcontract rates only exist once a rate schedule is uploaded; until
+  // then the two quote columns would read "awaiting quote" on every line.
+  const hasQuotes = liveRates.some((r) => r.status !== "unmatched");
+  const cols = hasQuotes ? 9 : 7;
 
   // Group BOQ items by section for display
   const sections: { name: string; items: typeof labourItems }[] = [];
@@ -3294,7 +3316,9 @@ export function LabourBreakdown({
     <div className="card">
       <div className="card-hd">
         <h2 style={{ flex: 1 }}>Labour BOQ</h2>
-        <span className="muted" style={{ fontSize: 12 }}>from pricing workbook · {fmtMoney(boqTotal)} total</span>
+        <span className="muted" style={{ fontSize: 12 }}>
+          from pricing workbook · {fmtMoney(boqTotal)} total · spent to date from certified invoices
+        </span>
       </div>
       {labourItems.length === 0 ? (
         <div className="card-bd">
@@ -3311,8 +3335,10 @@ export function LabourBreakdown({
               <th className="center">Unit</th>
               <th className="num">Contract rate £</th>
               <th className="num">Contract value £</th>
-              <th className="num">Live rate £</th>
-              <th className="num">Live value £</th>
+              <th className="num" title="Certified and paid invoices claimed against this line">Spent to date £</th>
+              <th className="num" title="Contract value less spent to date">Remaining £</th>
+              {hasQuotes && <th className="num">Quoted rate £</th>}
+              {hasQuotes && <th className="num">Quoted value £</th>}
             </tr>
           </thead>
           <tbody>
@@ -3321,7 +3347,7 @@ export function LabourBreakdown({
                 {sections.length > 1 && (
                   <tr style={{ background: "var(--card-2)" }}>
                     <td
-                      colSpan={7}
+                      colSpan={cols}
                       style={{ fontWeight: 600, fontSize: 12, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--text-2)" }}
                     >
                       {sec.name}
@@ -3342,7 +3368,27 @@ export function LabourBreakdown({
                       <td className="center">{ci.unit ?? "—"}</td>
                       <td className="num">{fmtMoney(ci.labour_rate!)}</td>
                       <td className="num" style={{ fontWeight: 600 }}>{fmtMoney(contractValue)}</td>
-                      <td className="num">
+                      {(() => {
+                        const spent = spentOf(ci.id);
+                        const left = contractValue - spent;
+                        const pct = contractValue > 0 ? (spent / contractValue) * 100 : 0;
+                        return (
+                          <>
+                            <td className="num">
+                              {spent < 0.005 ? <span className="muted">{fmtMoney(0)}</span> : (
+                                <>
+                                  <span style={{ fontWeight: 600 }}>{fmtMoney(spent)}</span>
+                                  <div className="muted" style={{ fontSize: 11 }}>{pct.toFixed(0)}% of line</div>
+                                </>
+                              )}
+                            </td>
+                            <td className="num" style={left < -0.005 ? { color: "var(--danger)", fontWeight: 600 } : undefined}>
+                              {left < -0.005 ? `▲ ${fmtMoney(-left)} over` : fmtMoney(left)}
+                            </td>
+                          </>
+                        );
+                      })()}
+                      {hasQuotes && <td className="num">
                         {liveRate != null ? (
                           <>
                             {fmtMoney(liveRate)}
@@ -3351,8 +3397,8 @@ export function LabourBreakdown({
                             {pending && <div style={{ fontSize: 10, color: "var(--warn)", fontWeight: 600 }}>pending</div>}
                           </>
                         ) : <span className="muted">—</span>}
-                      </td>
-                      <td className="num">
+                      </td>}
+                      {hasQuotes && <td className="num">
                         {liveValue != null ? (
                           <>
                             {/* Live value is neutral ink; the saving/overspend delta below is the
@@ -3372,10 +3418,10 @@ export function LabourBreakdown({
                         ) : (
                           <>
                             <span className="muted">{fmtMoney(contractValue)}</span>
-                            <div className="muted" style={{ fontSize: 11 }}>awaiting quote</div>
+                            <div className="muted" style={{ fontSize: 11 }}>no quote</div>
                           </>
                         )}
-                      </td>
+                      </td>}
                     </tr>
                   );
                 })}
@@ -3384,17 +3430,25 @@ export function LabourBreakdown({
             <tr style={{ background: "var(--card-2)" }}>
               <td colSpan={4} style={{ fontWeight: 600, textAlign: "right" }}>Total</td>
               <td className="num" style={{ fontWeight: 600 }}>{fmtMoney(boqTotal)}</td>
-              <td></td>
-              <td className="num" style={{ fontWeight: 600 }}>
+              <td className="num" style={{ fontWeight: 600 }}>{fmtMoney(spentTotal)}</td>
+              <td className="num" style={{ fontWeight: 600 }}>{fmtMoney(boqTotal - spentTotal)}</td>
+              {hasQuotes && <td></td>}
+              {hasQuotes && <td className="num" style={{ fontWeight: 600 }}>
                 {fmtMoney(labourItems.reduce((s, ci) => {
                   const lr = liveMap.get(ci.id);
                   if (!lr || lr.status === "pending_approval") return s; // effective (approved) only
                   return s + lr.live_rate * ci.qty;
                 }, 0))}
-              </td>
+              </td>}
             </tr>
           </tbody>
         </table>
+      )}
+      {unplaced >= 0.005 && (
+        <div className="card-bd muted" style={{ fontSize: 12 }}>
+          {fmtMoney(unplaced)} of certified measured work was claimed against lines that are not on the current BOQ
+          (an earlier workbook upload), so it shows in the section table above but on no line here.
+        </div>
       )}
     </div>
     </>
