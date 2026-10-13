@@ -1796,9 +1796,13 @@ export function ForecastDashboard({ f, sections = ["forecast", "levers", "applie
                 : "no prelims budget or spend"}
               tone={f.prelimsOverrun > 0.005 ? "danger" : "default"} />
             <D metric="variations" label="Profit/Loss from Variations" value={fmtMoney(f.varProfit)} tone={moneyTone(f.varProfit)} />
-            <D metric="unexpected" label="Unexpected spend" value={fmtMoney(-f.unexpectedSpend)}
-              sub={`${fmtMoney(f.unpricedSpend)} off-BOQ (the Materials tab figure) + ${fmtMoney(f.materialOverspend)} over-budget materials`}
-              tone={f.unexpectedSpend > 0.005 ? "danger" : "default"} />
+            {/* For information, not a loss in itself: off-BOQ spend is shown as
+                what it is, unsigned and neutral. It still sits in Forecast Final
+                Cost and Total Change; the tile only turns red when part of it is
+                over-budget materials, i.e. a budget line has actually gone minus. */}
+            <D metric="unexpected" label="Unexpected spend" value={fmtMoney(f.unexpectedSpend)}
+              sub={`${fmtMoney(f.unpricedSpend)} off-BOQ (the Materials tab figure) + ${fmtMoney(f.materialOverspend)} over-budget materials · included in forecast cost`}
+              tone={f.materialOverspend > 0.005 ? "danger" : "default"} />
             {f.omittedValue > 0.005 && (
               <Kpi label="Omitted from scope" value={fmtMoney(f.omittedValue)} sub="BOQ items no longer being bought" tone="success" />
             )}
