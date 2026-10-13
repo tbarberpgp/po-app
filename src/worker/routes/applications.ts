@@ -18,6 +18,8 @@ import { isSandboxId } from "../sandbox";
 import { EXPENSES_SECTION, isExpenseSection, looksLikeExpenseLine } from "../../shared/afp-expenses";
 import { DAYWORKS_SECTION, isDayworkSection, looksLikeDayworkLine } from "../../shared/afp-dayworks";
 import { normaliseAttentionNote } from "../../shared/afp-attention";
+import { PRELIM_CLAIM } from "../labour-expended";
+import { planTimeSplit, isSplittableBoqLine, type TimeSplitApp, type TimeSplitLine, type TimeSplitPart, type TimeSplitPlan } from "../../shared/afp-time-split";
 import { planAttachSource, type AttachSource, type AttachTarget } from "../afp-source-attach";
 import { amountsArePeriod as inferPeriodBasis } from "../../shared/afp-claim-basis";
 import {
@@ -4112,6 +4114,37 @@ applications.post("/:id/rate-override", async (c) => {
   return c.json({ ok: true, rate_override_at: now, rate_override_by: userEmail });
 });
 
+/**
+ * The time split on this subcontractor's most recent earlier claim on the same
+ * project — £ per contract item on its BOQ lines — so the certify panel can
+ * offer "same split as last time". Nothing when there's no earlier split.
+ */
+applications.get("/:id/last-time-split", async (c) => {
+  const denied = requirePermission(c, "commercial.view");
+  if (denied) return denied;
+  const id = Number(c.req.param("id"));
+  const prev = await c.env.DB.prepare(
+    `SELECT a.id, a.app_number
+       FROM applications_for_payment a
+       JOIN applications_for_payment me ON me.id = ?
+      WHERE a.project_id = me.project_id AND a.direction = 'incoming_labour'
+        AND a.counterparty_supplier_id IS me.counterparty_supplier_id AND a.id <> me.id
+        AND a.status IN ('submitted', 'certified', 'paid') AND a.claim_basis = 'period'
+        AND NOT ${PRELIM_CLAIM}
+        AND EXISTS (SELECT 1 FROM afp_lines l WHERE l.afp_id = a.id AND l.is_adhoc = 0
+                      AND l.variation_id IS NULL AND l.contract_item_id IS NOT NULL AND l.cumulative_value > 0)
+      ORDER BY a.period_end DESC, a.app_number DESC LIMIT 1`,
+  ).bind(id).first<{ id: number; app_number: number }>();
+  if (!prev) return c.json({ from: null, items: [] });
+  const items = (await c.env.DB.prepare(
+    `SELECT contract_item_id, cumulative_value AS value, is_adhoc, variation_id
+       FROM afp_lines WHERE afp_id = ? AND cumulative_value > 0`,
+  ).bind(prev.id).all<{ contract_item_id: number | null; value: number; is_adhoc: 0 | 1; variation_id: number | null }>()).results
+    .filter((l) => isSplittableBoqLine(l))
+    .map((l) => ({ contract_item_id: l.contract_item_id!, value: l.value }));
+  return c.json({ from: { id: prev.id, app_number: prev.app_number }, items });
+});
+
 /** Move from submitted → certified, with optional certified_amount override. */
 applications.post("/:id/certify", async (c) => {
   const denied = requirePermission(c, "commercial.edit");
@@ -4120,6 +4153,8 @@ applications.post("/:id/certify", async (c) => {
   type CertifyBody = {
     certified_amount?: number; notes?: string;
     invoiced_days?: number | null; signin_from?: string | null; signin_to?: string | null; signin_note?: string | null;
+    /** Time placed on BOQ lines — see afp-time-split.ts. Optional. */
+    time_split?: TimeSplitPart[] | null;
   };
   const body = await c.req.json<CertifyBody>().catch(() => ({} as CertifyBody));
   const afp = await c.env.DB.prepare(
@@ -4173,9 +4208,54 @@ applications.post("/:id/certify", async (c) => {
     signin = { invoiced, signedIn: read.person_days, from: read.from, to: read.to, note };
   }
 
+  // What the time was spent on (optional). A time invoice's hours arrive as
+  // Dayworks because the document never says which work they were for; the
+  // person certifying can. Planned in full before anything is written, so a
+  // bad split refuses the certificate rather than half-applying.
+  let split: Extract<TimeSplitPlan, { ok: true }> | null = null;
+  if (afp.direction === "incoming_labour" && Array.isArray(body.time_split) && body.time_split.length > 0) {
+    const head = await c.env.DB.prepare(
+      "SELECT claim_basis, prelim_heading, claimed_amount, this_period_net FROM applications_for_payment WHERE id = ?",
+    ).bind(id).first<TimeSplitApp>();
+    const lines = (await c.env.DB.prepare(
+      `SELECT id, is_adhoc, section, description, contract_item_id, variation_id,
+              contract_value, cumulative_value, display_order
+         FROM afp_lines WHERE afp_id = ?`,
+    ).bind(id).all<TimeSplitLine>()).results;
+    const plan = planTimeSplit(head!, lines, body.time_split);
+    if (!plan.ok) return c.json({ error: plan.error }, 409);
+    split = plan;
+  }
+
   const certified = body.certified_amount ?? afp.amount_due ?? 0;
   const now = new Date().toISOString();
   const actor = c.get("userEmail");
+  if (split) {
+    const db = c.env.DB;
+    await db.batch([
+      ...split.boq.map((b) => db.prepare(
+        "UPDATE afp_lines SET cumulative_value = ?, percent_complete = ? WHERE id = ? AND afp_id = ?",
+      ).bind(b.after, b.percent, b.line_id, id)),
+      // An ad-hoc line's rate and contract value ARE its value (upsertAdhoc), so
+      // all three move together; one drawn to nothing goes.
+      ...split.dayworks.map((d) => d.after > 0
+        ? db.prepare(
+          "UPDATE afp_lines SET qty = 1, rate = ?, contract_value = ?, cumulative_value = ? WHERE id = ? AND afp_id = ?",
+        ).bind(d.after, d.after, d.after, d.line_id, id)
+        : db.prepare("DELETE FROM afp_lines WHERE id = ? AND afp_id = ?").bind(d.line_id, id)),
+      db.prepare(
+        `INSERT INTO audit_log (entity_type, entity_id, action, actor, details, created_at)
+         VALUES ('afp', ?, 'time_placed_on_boq', ?, ?, ?)`,
+      ).bind(String(id), actor, JSON.stringify({
+        moved: split.moved, left_in_dayworks: split.left_in_dayworks,
+        boq: split.boq.map(({ line_id, description, before, after }) => ({ line_id, description, before, after })),
+        dayworks: split.dayworks,
+      }), now),
+    ]);
+    // Same value, counted in a different place: the measured position grows by
+    // exactly what Dayworks gives up, so the period net is unchanged.
+    await recalcTotals(db, id, { force: true });
+  }
   await c.env.DB.prepare(
     `UPDATE applications_for_payment
      SET status = 'certified', certified_at = ?, certified_by = ?, certified_amount = ?,
