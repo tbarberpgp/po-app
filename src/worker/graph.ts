@@ -103,6 +103,30 @@ function kindFromAs(as: string): "invoice" | "labour" | "client" | "cert" | "oth
   return "other";
 }
 
+/** The registered addresses of labour subcontractors (Approved suppliers →
+ *  contact email). Subbies email their weekly invoices to the Accounts mailbox
+ *  like any supplier, but the mail rule that files supplier invoices into the
+ *  pulled folder doesn't match them, so they sat in the Inbox and reached the
+ *  app only when someone forwarded them to labourapps@ by hand (Paul Garbutt
+ *  INV-016, 12 Oct 2026, never did). Exact addresses, not domains: Paul and
+ *  Cladders write from hotmail.co.uk and gmail.com. Empty on any failure — the
+ *  invoice pull must never depend on this. */
+async function labourSenders(env: Env): Promise<Set<string>> {
+  try {
+    const rows = await env.DB.prepare(
+      "SELECT contact_email FROM suppliers WHERE is_labour_supplier = 1 AND contact_email IS NOT NULL",
+    ).all<{ contact_email: string }>();
+    return new Set((rows.results ?? []).map((r) => r.contact_email.trim().toLowerCase()).filter((e) => e.includes("@")));
+  } catch {
+    return new Set();
+  }
+}
+
+/** The labour-applications address on the same app domain as `as`. */
+function labourAddressFor(as: string): string {
+  return `labourapps@${as.split("@")[1] ?? "pgpprojects.com"}`;
+}
+
 /** App-only (client-credentials) access token for Graph. Short-lived; fetched
  *  fresh per run (hourly), so no caching needed. */
 async function getToken(env: Env): Promise<string> {
@@ -140,10 +164,12 @@ function odataTime(d: Date): string {
  *  afterwards wouldn't recover what Graph left out. The whole window is walked
  *  via @odata.nextLink and sorted here, oldest first, so the longest-waiting
  *  invoices go in first when a backlog is bigger than a page. */
-async function listMessages(token: string, mailbox: string, folder: string, since: Date): Promise<GraphMsg[]> {
+async function listMessages(token: string, mailbox: string, folder: string | null, since: Date): Promise<GraphMsg[]> {
   const filter = encodeURIComponent(`hasAttachments eq true and receivedDateTime ge ${odataTime(since)}`);
+  // folder null = the whole mailbox (every folder), for the labour-sender sweep.
+  const scope = folder === null ? "" : `/mailFolders/${encodeURIComponent(folder)}`;
   let url: string =
-    `${GRAPH}/users/${encodeURIComponent(mailbox)}/mailFolders/${encodeURIComponent(folder)}/messages` +
+    `${GRAPH}/users/${encodeURIComponent(mailbox)}${scope}/messages` +
     `?$filter=${filter}&$select=id,subject,from,internetMessageId,receivedDateTime&$top=${PAGE_SIZE}`;
   const out: GraphMsg[] = [];
   for (let page = 0; page < MAX_PAGES && url; page++) {
@@ -261,9 +287,11 @@ export async function runMailboxPull(env: Env): Promise<PullResult> {
     return out;
   }
 
+  const subbies = await labourSenders(env);
+
   for (const cfg of cfgs) {
-    const kind = kindFromAs(cfg.as);
-    if (kind === "cert") {
+    const folderKind = kindFromAs(cfg.as);
+    if (folderKind === "cert") {
       out.errors.push(`${cfg.mailbox}: certificate mailboxes aren't pulled yet`);
       continue;
     }
@@ -274,11 +302,24 @@ export async function runMailboxPull(env: Env): Promise<PullResult> {
     let msgs: GraphMsg[] = [];
     try {
       msgs = await listMessages(token, cfg.mailbox, cfg.folder, since);
+      // An Accounts mailbox also gets swept, every folder, for mail from a
+      // labour subcontractor — wherever Outlook's rules left it.
+      if (folderKind === "invoice" && subbies.size > 0) {
+        const seen = new Set(msgs.map((m) => m.internetMessageId || m.id));
+        const fromSubbies = (await listMessages(token, cfg.mailbox, null, since))
+          .filter((m) => subbies.has(m.from.trim().toLowerCase()) && !seen.has(m.internetMessageId || m.id));
+        msgs = [...msgs, ...fromSubbies].sort((a, b) => a.receivedDateTime.localeCompare(b.receivedDateTime));
+      }
     } catch (e) {
       out.errors.push(`${cfg.mailbox} list: ${e instanceof Error ? e.message : String(e)}`);
       continue; // watermark stays put — this window is retried next run
     }
     for (const m of msgs) {
+      // A subbie's invoice is a labour application, never an Accounts bill —
+      // even when it did land in the invoices folder.
+      const asLabour = folderKind === "invoice" && subbies.has(m.from.trim().toLowerCase());
+      const to = asLabour ? labourAddressFor(cfg.as) : cfg.as;
+      const kind = asLabour ? "labour" : folderKind;
       out.fetched++;
       const key = m.internetMessageId || m.id;
       // Already dealt with, or out of retries? Leave it alone. The window
@@ -294,7 +335,7 @@ export async function runMailboxPull(env: Env): Promise<PullResult> {
         // supplier-by-domain matching still works. noReply: never email out.
         const pseudo = {
           from: m.from || cfg.mailbox,
-          to: cfg.as,
+          to,
           raw: streamFrom(mime),
           rawSize: mime.byteLength,
           headers: new Headers(),

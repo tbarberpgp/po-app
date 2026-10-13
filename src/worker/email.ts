@@ -122,6 +122,20 @@ function emailsInText(text: string): string[] {
 
 type LabourSupplier = { id: number; name: string; contact_email: string | null };
 
+/** The labour supplier registered at exactly this address, else the first one
+ *  on its domain. Exact first: subbies on hotmail/gmail share a domain with
+ *  each other, so the domain alone can name the wrong one. */
+async function supplierBySender(env: Env, address: string): Promise<LabourSupplier | null> {
+  if (address) {
+    const exact = await env.DB.prepare(
+      `SELECT id, name, contact_email FROM suppliers
+       WHERE is_labour_supplier = 1 AND lower(trim(contact_email)) = ?`,
+    ).bind(address).first<LabourSupplier>();
+    if (exact) return exact;
+  }
+  return supplierByDomain(env, domainOf(address));
+}
+
 /** Find a labour supplier whose contact_email is on the given domain. */
 async function supplierByDomain(env: Env, domain: string): Promise<LabourSupplier | null> {
   if (!domain) return null;
@@ -325,7 +339,7 @@ export async function handleInboundEmail(
     //   A — sender's domain is a labour supplier (subbie sent direct)
     //   B — sender is PowerGrid staff: it's a forward, detect the subbie
     //   C — unknown sender → reject
-    supplier = await supplierByDomain(env, senderDomain);
+    supplier = await supplierBySender(env, senderRaw);
     if (!supplier) {
       if (isPgStaff) {
         const pgDomains = new Set<string>([senderDomain].filter(Boolean));
