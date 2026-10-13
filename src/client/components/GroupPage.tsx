@@ -669,7 +669,7 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
             {cSub === "labour" && block !== "all" && (
               <LabourBreakdown rows={labourRows} contractItems={data[block]?.contractItems ?? []} canRaiseApp={canEditCommercial}
                 canApprove={isDirector} projectId={block} onRefresh={load} liveRates={labourLive} refreshLive={refreshBlockLive}
-                awaiting={labourAwaitingCertification(data[block]?.labourAfps ?? [])} />
+                awaiting={labourAwaitingCertification(data[block]?.labourAfps ?? [])} afps={data[block]?.labourAfps ?? []} />
             )}
             {cSub === "help" && <CommercialsHelpPanel />}
             {cSub === "overview" && (

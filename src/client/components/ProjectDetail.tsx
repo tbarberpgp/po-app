@@ -26,7 +26,7 @@ import { generateMaterialsXlsx } from "../lib/materials-xlsx";
 import { summarisePoRegister, supplierHasStaleCopy } from "../lib/po-register";
 import { PoRegisterExport } from "./PoRegisterExport";
 import { DeliveryDropRow } from "./POView";
-import { invoiceRefOf, filterAndSortAfps, countBy, type AfpSort } from "../../shared/afp-list";
+import { invoiceRefOf, filterAndSortAfps, countBy, labourBySubcontractor, type AfpSort } from "../../shared/afp-list";
 
 type Tab = "overview" | "materials" | "pos" | "commercials" | "programme" | "operations" | "reports" | "quality";
 type CommercialsSubtab = "breakdown" | "prelims" | "schedule" | "applications" | "labour" | "variations" | "contract" | "help";
@@ -2263,7 +2263,7 @@ function CommercialsBreakdown({
         <AfpListPanel projectId={projectId} afps={afps} canCreate={canEdit} onRefresh={onAfpsRefresh} />
       )}
       {subtab === "labour" && (
-        <LabourBreakdown rows={labour} contractItems={contractItems} canRaiseApp={canEdit} canApprove={canApprove} projectId={projectId} onRefresh={onAfpsRefresh} liveRates={liveRates} refreshLive={refreshLive} awaiting={labourAwaitingCertification(afps)} />
+        <LabourBreakdown rows={labour} contractItems={contractItems} canRaiseApp={canEdit} canApprove={canApprove} projectId={projectId} onRefresh={onAfpsRefresh} liveRates={liveRates} refreshLive={refreshLive} awaiting={labourAwaitingCertification(afps)} afps={afps} />
       )}
       {subtab === "variations" && (
         <VariationsView projectId={projectId} canEdit={canEdit} canApprove={canApprove} contractValue={rows.find((r) => r.is_total === 1)?.value ?? 0} />
@@ -3032,10 +3032,129 @@ function UnmatchedLabourCard({ projectId, canEdit, unmatched, options, onChanged
   );
 }
 
+/**
+ * The invoices behind labour expended, one row per subcontractor: what has been
+ * certified (and of that, paid), what is waiting to be certified, and drafts
+ * nobody has agreed yet. Open a row to see each invoice; each links to its
+ * application. Figures come from the applications themselves, so they move the
+ * moment an invoice is uploaded, certified or marked paid.
+ */
+function LabourBySubcontractorCard({ afps, expended }: { afps: ApplicationForPayment[]; expended: number }) {
+  const [suppliers, setSuppliers] = useState<Awaited<ReturnType<typeof api.listSuppliers>>>([]);
+  const [open, setOpen] = useState<Set<number | null>>(new Set());
+  const subs = useMemo(() => labourBySubcontractor(afps), [afps]);
+  useEffect(() => {
+    if (subs.length > 0 && suppliers.length === 0) {
+      api.listSuppliers().then(setSuppliers).catch(() => setSuppliers([]));
+    }
+  }, [subs.length, suppliers.length]);
+  if (subs.length === 0) return null;
+
+  const supplierName = (id: number | null) =>
+    id == null ? "Unassigned" : suppliers.find((s) => s.id === id)?.name ?? `Subcontractor #${id}`;
+  const toggle = (id: number | null) => setOpen((prev) => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+  const sum = (k: "spent" | "paid" | "awaiting" | "notCounted") => subs.reduce((t, s) => t + s[k], 0);
+  const invoiceCount = subs.reduce((t, s) => t + s.invoices.length, 0);
+  // Applications are valued at their own period's claim; the section table reads
+  // their lines. The two agree unless an application's lines and its total have
+  // drifted apart — say so rather than show two different "spent" figures quietly.
+  const drift = Math.abs(sum("spent") - expended) >= 0.01;
+  const money = (n: number) => (Math.abs(n) < 0.005 ? <span className="muted">{fmtMoney(0)}</span> : fmtMoney(n));
+
+  return (
+    <div className="card">
+      <div className="card-hd">
+        <h2 style={{ flex: 1 }}>Labour by subcontractor</h2>
+        <span className="muted" style={{ fontSize: 12 }}>{invoiceCount} invoice{invoiceCount === 1 ? "" : "s"} · click a row to see them</span>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Subcontractor</th>
+            <th className="num">Invoices</th>
+            <th className="num" title="Certified or paid — counts in Amount expended">Spent £</th>
+            <th className="num" title="The part of Spent recorded as paid">of which paid £</th>
+            <th className="num" title="Submitted, not yet certified">Awaiting cert. £</th>
+            <th className="num" title="Drafts — not agreed, counted nowhere">Drafts £</th>
+          </tr>
+        </thead>
+        <tbody>
+          {subs.map((s) => {
+            const isOpen = open.has(s.supplierId);
+            return (
+              <Fragment key={String(s.supplierId)}>
+                <tr style={{ cursor: "pointer" }} onClick={() => toggle(s.supplierId)}>
+                  <td style={{ fontWeight: 600 }}>
+                    <span className="muted" style={{ display: "inline-block", width: 16 }}>{isOpen ? "▾" : "▸"}</span>
+                    {supplierName(s.supplierId)}
+                  </td>
+                  <td className="num">{s.invoices.length}</td>
+                  <td className="num" style={{ fontWeight: 600 }}>{money(s.spent)}</td>
+                  <td className="num">{money(s.paid)}</td>
+                  <td className="num">{money(s.awaiting)}</td>
+                  <td className="num">{money(s.notCounted)}</td>
+                </tr>
+                {isOpen && s.invoices.map((a) => {
+                  const ref = invoiceRefOf(a);
+                  const v = a.this_period_net ?? 0;
+                  const col = a.status === "certified" || a.status === "paid" ? 2 : a.status === "submitted" ? 4 : 5;
+                  return (
+                    <tr key={a.id} style={{ background: "var(--card-2)", fontSize: 13 }}>
+                      <td style={{ paddingLeft: 40 }}>
+                        <Link to={`/applications/${a.id}`} title={a.source_file_name ?? undefined}>
+                          {ref ?? <span style={{ fontSize: 12 }}>{a.source_file_name ?? `Application #${a.app_number}`}</span>}
+                        </Link>
+                        <span className="muted" style={{ marginLeft: 8, fontSize: 12 }}>
+                          #{a.app_number} · period to {fmtDate(a.period_end)}
+                        </span>
+                        {a.attention_note && (
+                          <span title={`Needs attention: ${a.attention_note}`} style={{ color: "var(--danger)", marginLeft: 6, cursor: "help" }}>⚑</span>
+                        )}
+                      </td>
+                      <td className="num">
+                        <span className={`pill ${afpStatusPill(a.status)}`} style={{ fontSize: 10 }}>{a.status}</span>
+                      </td>
+                      {[2, 3, 4, 5].map((c) => (
+                        <td key={c} className="num">
+                          {c === col || (c === 3 && a.status === "paid") ? fmtMoney(v) : ""}
+                        </td>
+                      ))}
+                    </tr>
+                  );
+                })}
+              </Fragment>
+            );
+          })}
+          <tr style={{ background: "var(--card-2)" }}>
+            <td style={{ fontWeight: 600, textAlign: "right" }}>Total</td>
+            <td className="num" style={{ fontWeight: 600 }}>{invoiceCount}</td>
+            <td className="num" style={{ fontWeight: 600 }}>{fmtMoney(sum("spent"))}</td>
+            <td className="num" style={{ fontWeight: 600 }}>{fmtMoney(sum("paid"))}</td>
+            <td className="num" style={{ fontWeight: 600 }}>{fmtMoney(sum("awaiting"))}</td>
+            <td className="num" style={{ fontWeight: 600 }}>{fmtMoney(sum("notCounted"))}</td>
+          </tr>
+        </tbody>
+      </table>
+      {drift && (
+        <div className="card-bd muted" style={{ fontSize: 12 }}>
+          These invoices add up to {fmtMoney(sum("spent"))} certified; the section table below counts {fmtMoney(expended)}.
+          An application whose lines no longer match its total is the usual cause — check the Applications tab.
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function LabourBreakdown({
-  rows, contractItems, canRaiseApp, canApprove, projectId, onRefresh, liveRates, refreshLive, awaiting,
+  rows, contractItems, canRaiseApp, canApprove, projectId, onRefresh, liveRates, refreshLive, awaiting, afps,
 }: {
   rows: LabourByCostCode[];
+  /** The project's applications — the invoices behind the expended figures. */
+  afps: ApplicationForPayment[];
   /** Submitted labour applications not yet certified (labourAwaitingCertification). */
   awaiting: { total: number; count: number };
   contractItems: import("../../shared/types").ContractItem[];
@@ -3104,6 +3223,8 @@ export function LabourBreakdown({
         sub="of total labour"
       />
     </div>
+
+    <LabourBySubcontractorCard afps={afps} expended={totalExpended} />
 
     {unmatchedRates.length > 0 && (
       <UnmatchedLabourCard

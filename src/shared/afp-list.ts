@@ -102,3 +102,70 @@ export function countBy<T, K>(rows: readonly T[], key: (r: T) => K): Map<K, numb
   for (const r of rows) m.set(key(r), (m.get(key(r)) ?? 0) + 1);
   return m;
 }
+
+/** One labour application, as the Labour subtab's per-subcontractor breakdown needs it. */
+export type LabourInvoiceRow = AfpListRow & {
+  direction: string;
+  this_period_net: number | null;
+  prelim_heading?: string | null;
+  claimed_amount?: number | null;
+};
+
+export type SubcontractorLabour<T extends LabourInvoiceRow = LabourInvoiceRow> = {
+  supplierId: number | null;
+  /** Certified and paid — labour expended. */
+  spent: number;
+  /** The part of `spent` recorded as paid. */
+  paid: number;
+  /** Submitted, not yet certified — the same rows as labourAwaitingCertification. */
+  awaiting: number;
+  /** Drafts and anything else not yet sent: counted nowhere in the money. */
+  notCounted: number;
+  /** Every application, oldest period first, then invoice order. */
+  invoices: T[];
+};
+
+const r2 = (n: number) => Math.round(n * 100) / 100;
+
+/**
+ * Each subcontractor's labour invoices on a project and where their money sits.
+ *
+ * Every application is valued at `this_period_net` — its claim for its own
+ * period, the figure the Applications list shows and labourAwaitingCertification
+ * sums. Summing it across a series cannot double-count, because each
+ * application carries only its advance on the one before; so a subcontractor's
+ * certified and paid rows add up to what they put into labour expended.
+ *
+ * Prelims drawdowns (a PM's time against a Preliminaries heading) are left out:
+ * they draw on the prelims allowance, not the labour BOQ, and the Prelims tab
+ * counts them. Largest spend first.
+ */
+export function labourBySubcontractor<T extends LabourInvoiceRow>(afps: readonly T[]): SubcontractorLabour<T>[] {
+  const by = new Map<number | null, SubcontractorLabour<T>>();
+  for (const a of afps) {
+    if (a.direction !== "incoming_labour") continue;
+    if (a.prelim_heading != null && a.claimed_amount != null) continue;
+    let s = by.get(a.counterparty_supplier_id);
+    if (!s) {
+      s = { supplierId: a.counterparty_supplier_id, spent: 0, paid: 0, awaiting: 0, notCounted: 0, invoices: [] };
+      by.set(a.counterparty_supplier_id, s);
+    }
+    const v = a.this_period_net ?? 0;
+    if (a.status === "certified" || a.status === "paid") {
+      s.spent += v;
+      if (a.status === "paid") s.paid += v;
+    } else if (a.status === "submitted") {
+      s.awaiting += v;
+    } else {
+      s.notCounted += v;
+    }
+    s.invoices.push(a);
+  }
+  return [...by.values()]
+    .map((s) => ({
+      ...s,
+      spent: r2(s.spent), paid: r2(s.paid), awaiting: r2(s.awaiting), notCounted: r2(s.notCounted),
+      invoices: filterAndSortAfps(s.invoices, { sort: "oldest" }),
+    }))
+    .sort((x, y) => y.spent - x.spent || y.awaiting - x.awaiting);
+}
