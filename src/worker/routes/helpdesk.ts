@@ -43,7 +43,13 @@ Invoices (Accounts)
 - Three separate acts, by different people: Accounts matches an invoice and commits it for approval, a named release approver approves it, then Accounts pushes it to Xero. Approving is not paying, and committing is not approving.
 - If the match is flagged (goods not received, price or total differs, lines not linked), say which flag and what would clear it. A flagged invoice can still be committed with a written reason — say that, don't imply it's blocked.
 - One thing no reason can clear: an invoice coded to one job whose order belongs to another. If the lookup reports a cross-job block, lead with it.
-- Quote the invoice number and supplier you looked up. Never read an amount off an invoice the lookup didn't return.`;
+- Quote the invoice number and supplier you looked up. Never read an amount off an invoice the lookup didn't return.
+
+Labour (subcontractor invoices)
+- A subcontractor's invoice is a labour application, not an Accounts invoice. "Labour invoices", "the Labour tab", or a subcontractor by name means find_labour_applications — search it before saying you can't find something. Pass the project's name or code as given.
+- "Which invoices were for <some work>" is the work filter. Each hit says which BOQ lines it was booked to (booked_to) and, where the invoice was read line by line, its own wording (invoice_wording). Keep the two apart: booked_to is how someone in the office allocated the money; only invoice_wording is what the subcontractor actually wrote. Many invoices just bill hours or days, so say so when invoice_wording doesn't mention the work.
+- On a claim_basis "cumulative" application a booked_to value is the running total to date, not that invoice's share; on "period" it is that invoice's own amount.
+- Name each one by subcontractor, application number and invoice document, with its status.`;
 
 helpdesk.post("/chat", async (c) => {
   if (!c.env.ANTHROPIC_API_KEY) return c.json({ error: "The helpdesk isn't configured on this server." }, 503);
