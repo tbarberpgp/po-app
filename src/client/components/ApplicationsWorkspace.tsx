@@ -274,9 +274,10 @@ export function ApplicationsTable({
 }
 
 /**
- * One project's labour applications, as the workspace shows them: the same KPI
- * strip, status filter and table, scoped to the project and without the
- * Project column. Sits on the project's Commercials → Labour tab. `reloadKey`
+ * One project's labour applications, as the workspace shows them: the same
+ * status filter and table, scoped to the project and without the Project
+ * column. Sits on the project's Commercials → Labour tab, folded to a single
+ * header line (with the counts) until opened — the list runs long. `reloadKey`
  * changes whenever the project's applications do, so the list follows.
  */
 export function ProjectLabourApplications({
@@ -294,6 +295,7 @@ export function ProjectLabourApplications({
   const [unassignedOnly, setUnassignedOnly] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
+  const [open, setOpen] = useState(false);
 
   useEffect(() => {
     let live = true;
@@ -326,47 +328,59 @@ export function ProjectLabourApplications({
     }
   }
 
+  const warn = { color: "var(--warn)", fontWeight: 600 } as const;
   return (
-    <>
-      <div className="kpis" style={{ marginBottom: 16 }}>
-        <Kpi label="Labour applications" value={String(all.length)} />
-        <Kpi label="Unassigned subbie" value={String(unassigned)} tone={unassigned > 0 ? "warn" : "default"} />
-        <Kpi label="Lines need review" value={String(needsReview)} tone={needsReview > 0 ? "warn" : "default"} />
-        <Kpi label="Certified / paid" value={String(certified)} tone={certified > 0 ? "success" : "default"} />
-      </div>
-      <div className="card">
-        <div className="card-hd" style={{ gap: 12, flexWrap: "wrap" }}>
-          <h2 style={{ flex: 1 }}>Labour applications</h2>
-          <select value={status} onChange={(e) => setStatus(e.target.value as StatusFilter)}>
-            <option value="all">All statuses</option>
-            <option value="draft">Draft</option>
-            <option value="pending_approval">Pending approval</option>
-            <option value="submitted">Submitted</option>
-            <option value="certified">Certified</option>
-            <option value="paid">Paid</option>
-          </select>
-          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, textTransform: "none", letterSpacing: 0, color: "var(--ink)", cursor: "pointer", margin: 0 }}>
-            <input type="checkbox" checked={unassignedOnly} onChange={(e) => setUnassignedOnly(e.target.checked)} style={{ minHeight: 0 }} />
-            Unassigned only
-          </label>
-        </div>
-        {err && <div className="card-bd"><div className="flash error">{err}</div></div>}
-        {rows == null ? (
-          !err && <div className="card-bd"><div className="muted">Loading…</div></div>
-        ) : visible.length === 0 ? (
-          <div className="card-bd"><div className="empty">No labour applications{status !== "all" || unassignedOnly ? " match the current filter" : " on this project yet"}.</div></div>
-        ) : (
-          <ApplicationsTable
-            rows={visible}
-            isLabour
-            canEdit={canEdit}
-            labourSuppliers={labourSuppliers}
-            onAssign={assign}
-            showProject={false}
-          />
+    <div className="card">
+      <div className="card-hd" style={{ gap: 12, flexWrap: "wrap" }}>
+        <button
+          type="button"
+          onClick={() => setOpen((o) => !o)}
+          aria-expanded={open}
+          style={{ flex: 1, display: "flex", alignItems: "baseline", gap: 10, background: "none", border: 0, padding: 0, minHeight: 0, cursor: "pointer", textAlign: "left", color: "inherit" }}
+        >
+          <span className="muted" style={{ width: 12 }}>{open ? "▾" : "▸"}</span>
+          <h2 style={{ margin: 0 }}>Labour applications</h2>
+          {rows != null && (
+            <span className="muted" style={{ fontSize: 12 }}>
+              {all.length} · {certified} certified / paid
+              {unassigned > 0 && <> · <span style={warn}>{unassigned} unassigned</span></>}
+              {needsReview > 0 && <> · <span style={warn}>{needsReview} need review</span></>}
+            </span>
+          )}
+        </button>
+        {open && (
+          <>
+            <select value={status} onChange={(e) => setStatus(e.target.value as StatusFilter)}>
+              <option value="all">All statuses</option>
+              <option value="draft">Draft</option>
+              <option value="pending_approval">Pending approval</option>
+              <option value="submitted">Submitted</option>
+              <option value="certified">Certified</option>
+              <option value="paid">Paid</option>
+            </select>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, textTransform: "none", letterSpacing: 0, color: "var(--ink)", cursor: "pointer", margin: 0 }}>
+              <input type="checkbox" checked={unassignedOnly} onChange={(e) => setUnassignedOnly(e.target.checked)} style={{ minHeight: 0 }} />
+              Unassigned only
+            </label>
+          </>
         )}
       </div>
-    </>
+      {err && <div className="card-bd"><div className="flash error">{err}</div></div>}
+      {open && (rows == null ? (
+        !err && <div className="card-bd"><div className="muted">Loading…</div></div>
+      ) : visible.length === 0 ? (
+        <div className="card-bd"><div className="empty">No labour applications{status !== "all" || unassignedOnly ? " match the current filter" : " on this project yet"}.</div></div>
+      ) : (
+        <ApplicationsTable
+          rows={visible}
+          isLabour
+          canEdit={canEdit}
+          labourSuppliers={labourSuppliers}
+          onAssign={assign}
+          showProject={false}
+        />
+      ))}
+    </div>
   );
 }
 
