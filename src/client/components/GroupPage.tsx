@@ -97,7 +97,7 @@ const STATUS_META: Record<MatStatus, { label: string; tone: string }> = {
   called_off:     { label: "Called off",     tone: "issued" },
   part_delivered: { label: "Part-delivered", tone: "warn" },
   delivered:      { label: "Delivered",      tone: "ok" },
-  unpriced:       { label: "Unpriced",       tone: "neutral" },
+  unpriced:       { label: "No BOQ rate",    tone: "neutral" },
 };
 /** Chip filters over the combined list. "off_boq" is not a MatStatus — where a
  *  material sits in the pipeline and whether the bill priced it are different
@@ -106,12 +106,23 @@ type MatChip = MatStatus | "all" | "off_boq";
 const MAT_STATUS_CHIPS: Array<[MatChip, string]> = [
   ["all", "All"], ["to_order", "To order"], ["on_order", "On order"],
   ["called_off", "Called off"], ["part_delivered", "Part-delivered"],
-  ["delivered", "Delivered"], ["unpriced", "Unpriced"], ["off_boq", "Off-BOQ"],
+  ["delivered", "Delivered"], ["unpriced", "No BOQ rate"], ["off_boq", "Off-BOQ"],
 ];
-/** "To order" chip: anything with BOQ quantity still to buy — untouched lines
- *  and part-ordered ones alike, so a line 31% bought can't drop off the list
- *  just because its first orders have arrived. */
-const stillToOrder = (m: { statuses: Set<MatStatus> }) => m.statuses.has("to_order") || m.statuses.has("part_ordered");
+/** The chip a row's status files under. "To order" takes part-ordered lines
+ *  too — anything with BOQ quantity still to buy — so a line 31% bought can't
+ *  drop off it just because its first orders have arrived. */
+const chipOf = (s: MatStatus): MatChip => (s === "part_ordered" ? "to_order" : s);
+/** Split a supplier's "CODE - description" wording, so the long Alumasc lines
+ *  ("MS-VIEO-1050-0.7MM-GRAND - METShield MS-VIEO 0.7mm Pre-Coated …") lead with
+ *  what the item is and keep the code as a reference underneath. Only a code-
+ *  like first token qualifies: no spaces, at least one digit or slash, so
+ *  "Cavity Fire Barrier" or "Lead - Code 5" stay whole. */
+function splitProductCode(name: string): { code: string | null; text: string } {
+  const m = /^([A-Za-z0-9][A-Za-z0-9.\-/]{2,})\s+[-–:]\s+(.+)$/.exec(name);
+  if (!m || !/[0-9/]/.test(m[1])) return { code: null, text: name };
+  return { code: m[1], text: m[2] };
+}
+
 const STATUS_BAR: Record<MatStatus, string> = {
   delivered: "#2f9e44", part_delivered: "var(--warn)", on_order: "var(--accent)", part_ordered: "var(--warn)",
   called_off: "var(--accent)", to_order: "#cbd2d9", unpriced: "#cbd2d9",
@@ -255,14 +266,15 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
   }, [data, scopeMembers]);
 
   const matSummary = useMemo(() => {
-    let priced = 0, committed = 0, unpriced = 0, savings = 0;
+    let priced = 0, committed = 0, unpriced = 0, savings = 0, unpricedLines = 0;
     for (const m of scopeMembers) {
       const d = data[m.id]; if (!d) continue;
       const s = summariseMaterials(d.mats, d.unpricedSpend);
       priced += s.priced_total; committed += s.boq_committed; unpriced += s.unpriced_spend;
       savings += quoteSavingsOf(d.mats);
+      unpricedLines += d.unpricedLines.length;
     }
-    return { priced, committed, remaining: priced - committed, unpriced, savings };
+    return { priced, committed, remaining: priced - committed, unpriced, savings, unpricedLines };
   }, [data, scopeMembers]);
 
   // Per-block commercial summary (combined view only).
@@ -308,9 +320,6 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
       /** The last thing that happened to it — an order, a substitution, or a
        *  quote price being applied. */
       modifiedAt: string | null;
-      /** Every status this item holds on SOME block — a call-off still live on
-       *  one block mustn't be hidden because another block took a delivery. */
-      statuses: Set<MatStatus>;
       /** Effective-name frequency across blocks — the majority wording titles
        *  the merged row, so one block's typo can't split or mislabel it. */
       names: Map<string, number>;
@@ -373,7 +382,7 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
           ? (norm ? `n:${norm}\u0000${matSupplier(row).toLowerCase()}\u0000${codedTarget}` : "")
           : mergeProductId(row) != null ? `p:${mergeProductId(row)}` : (productByName.get(norm) ?? (norm ? `n:${norm}` : ""));
         if (!key || key === "p:") continue;
-        const cur: Row = by.get(key) ?? { key, item: row.sub_item || row.item, type: row.type ?? "", unit: row.total_units_unit ?? row.sub_unit ?? row.cost_unit ?? null, supplier: new Set<string>(), boqQty: 0, committedQty: 0, calledOffQty: 0, deliveredQty: 0, budget: 0, committed: 0, calledOff: 0, effVal: 0, priced: false, offBoq: false, codedToItem: null, lastOrdered: null, addedAt: null, modifiedAt: null, blocks: new Map<string, Blk>(), mats: [], statuses: new Set<MatStatus>(), names: new Map<string, number>() };
+        const cur: Row = by.get(key) ?? { key, item: row.sub_item || row.item, type: row.type ?? "", unit: row.total_units_unit ?? row.sub_unit ?? row.cost_unit ?? null, supplier: new Set<string>(), boqQty: 0, committedQty: 0, calledOffQty: 0, deliveredQty: 0, budget: 0, committed: 0, calledOff: 0, effVal: 0, priced: false, offBoq: false, codedToItem: null, lastOrdered: null, addedAt: null, modifiedAt: null, blocks: new Map<string, Blk>(), mats: [], names: new Map<string, number>() };
         const effName = withoutBlockName((row.sub_item || row.item || "").trim());
         if (effName) cur.names.set(effName, (cur.names.get(effName) ?? 0) + 1);
         const boq = netUnits(row); // budget qty net of any partial omission
@@ -409,7 +418,6 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
         const modified = materialModifiedAt(row);
         if (added && (cur.addedAt == null || added < cur.addedAt)) cur.addedAt = added;
         if (modified && (cur.modifiedAt == null || modified > cur.modifiedAt)) cur.modifiedAt = modified;
-        cur.statuses.add(statusOfMat({ priced: rowPriced, committedQty: committedQ, calledOffQty: calledOffQ, deliveredQty: delivered, toOrderQty: toOrder }));
         const sup = matSupplier(row); if (sup) cur.supplier.add(sup);
         const b = cur.blocks.get(m.code) ?? { code: m.code, boqQty: 0, committedQty: 0, calledOffQty: 0, deliveredQty: 0, toOrderQty: 0, toOrderValue: 0, budget: 0, committed: 0, calledOff: 0, effVal: 0, mats: [] };
         b.boqQty += boq; b.committedQty += committedQ; b.calledOffQty += calledOffQ; b.deliveredQty += delivered; b.toOrderQty += toOrder; b.toOrderValue += toOrderVal; b.budget += bud; b.committed += comm; b.calledOff += co; b.effVal += boq * effectiveSpendRate(row); b.mats.push(row);
@@ -441,16 +449,20 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
       .sort((a, b) => b.budget - a.budget);
   }, [data, scopeMembers]);
 
-  // Chips count/filter by "this item holds that status on ANY block" — so the
-  // group can never show fewer called-off items than one of its blocks. The
-  // row's own pill still shows the merged pipeline position.
+  // Status chips count each row once, by the status its own pill shows, so
+  // they add up to All. They used to count "holds that status on ANY block",
+  // which put one row under several chips (315 across 290 rows on Dallas Rd)
+  // and let a chip disagree with the pill on the row it listed. Off-BOQ is a
+  // different question — whether a budget line exists — so it sits apart and
+  // overlaps the stages.
   const statusCounts = useMemo(() => {
-    const c: Partial<Record<MatStatus, number>> = {};
-    for (const m of combinedMaterials) for (const s of m.statuses) c[s] = (c[s] ?? 0) + 1;
+    const c: Partial<Record<MatChip, number>> = {};
+    for (const m of combinedMaterials) { const k = chipOf(m.status); c[k] = (c[k] ?? 0) + 1; }
+    c.off_boq = combinedMaterials.filter((m) => m.offBoq).length;
     return c;
   }, [combinedMaterials]);
   const visibleMaterials = useMemo(() => combinedMaterials
-    .filter((m) => matStatus === "all" || (matStatus === "off_boq" ? m.offBoq : matStatus === "to_order" ? stillToOrder(m) : m.statuses.has(matStatus)))
+    .filter((m) => matStatus === "all" || (matStatus === "off_boq" ? m.offBoq : chipOf(m.status) === matStatus))
     .filter((m) => !matQuery || (m.item + " " + [...m.supplier].join(" ")).toLowerCase().includes(matQuery.toLowerCase())),
     [combinedMaterials, matStatus, matQuery]);
   const sortedMaterials = useMemo(() => {
@@ -820,8 +832,12 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
               <DrillKpi label="Remaining" value={fmtMoney(matSummary.remaining)}
                 sub="Against the priced budget"
                 tone={matSummary.remaining < 0 ? "danger" : "default"} />
-              <DrillKpi label="Unpriced spend" value={fmtMoney(matSummary.unpriced)}
-                tone={matSummary.unpriced > 0.005 ? "danger" : "default"} onOpen={() => openMatDrill("Unpriced spend", matSummary.unpriced, (d) => unpricedDrill(d.unpricedLines))} />
+              <DrillKpi label="Off-BOQ spend" value={fmtMoney(matSummary.unpriced)}
+                // The PO lines that make up this £ — not the Off-BOQ chip's count,
+                // which also lists call-offs and lines whose money is counted on a
+                // budget row, so the two don't reconcile.
+                sub={matSummary.unpricedLines ? `${matSummary.unpricedLines} PO line${matSummary.unpricedLines === 1 ? "" : "s"} with no budget line` : undefined}
+                tone={matSummary.unpriced > 0.005 ? "danger" : "default"} onOpen={() => openMatDrill("Off-BOQ spend", matSummary.unpriced, (d) => unpricedDrill(d.unpricedLines))} />
               <DrillKpi label="Quote savings" value={fmtMoney(matSummary.savings)} tone={matSummary.savings > 0.005 ? "success" : matSummary.savings < -0.005 ? "danger" : "default"} onOpen={() => openMatDrill("Quote savings", matSummary.savings, (d) => materialSavingsDrill(d.mats))} />
             </div>
 
@@ -833,20 +849,20 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
               </div>
               {combinedMaterials.length > 0 && (
                 <div className="row" style={{ gap: 8, flexWrap: "wrap", padding: "0 16px 12px", alignItems: "center" }}>
-                  <div className="seg" style={{ flexWrap: "wrap" }}>
-                    {MAT_STATUS_CHIPS.map(([s, label]) => {
-                      const count = s === "all" ? combinedMaterials.length
-                        : s === "off_boq" ? combinedMaterials.filter((m) => m.offBoq).length
-                        : s === "to_order" ? combinedMaterials.filter(stillToOrder).length
-                        : (statusCounts[s as MatStatus] ?? 0);
-                      if (s !== "all" && count === 0) return null;
-                      return (
-                        <button key={s} className={`seg-btn${matStatus === s ? " active" : ""}`} onClick={() => setMatStatus(s)}>
-                          {label} <span className="pill" style={{ marginLeft: 4, fontSize: 10 }}>{count}</span>
-                        </button>
-                      );
-                    })}
-                  </div>
+                  {[MAT_STATUS_CHIPS.filter(([s]) => s !== "off_boq"), MAT_STATUS_CHIPS.filter(([s]) => s === "off_boq")].map((chips, gi) => (
+                    <div key={gi} className="seg" style={{ flexWrap: "wrap" }}
+                      title={gi === 1 ? "Bought on a PO with no budget line behind it — overlaps the stages, so it isn't part of All's total" : undefined}>
+                      {chips.map(([s, label]) => {
+                        const count = s === "all" ? combinedMaterials.length : (statusCounts[s] ?? 0);
+                        if (s !== "all" && count === 0) return null;
+                        return (
+                          <button key={s} className={`seg-btn${matStatus === s ? " active" : ""}`} onClick={() => setMatStatus(s)}>
+                            {label} <span className="pill" style={{ marginLeft: 4, fontSize: 10 }}>{count}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ))}
                   <span className="grow" />
                   <select
                     value={matSort ? `${matSort}:${matSortDir}` : ""}
@@ -895,7 +911,7 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
                           <th className="num" onClick={() => toggleMatSort("variance")} style={{ cursor: "pointer" }} title="What this line will finish at against its budget: committed so far, plus the BOQ still to order at the rate we buy at. Unbought quantity is not a saving, so a line ordered at its BOQ rate shows — however much is left to buy.">Variance{matSortArrow("variance")}</th>
                           <th className="center" onClick={() => toggleMatSort("status")} style={{ cursor: "pointer" }}>Status{matSortArrow("status")}</th>
                           <th className="center">Blocks</th>
-                          {canUploadMaterials && <th className="center" style={{ width: 110 }}></th>}
+                          {canUploadMaterials && <th className="center" style={{ width: 110 }}>Substitute</th>}
                         </tr>
                       </thead>
                       <tbody>
@@ -905,6 +921,7 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
                           const useSpend = matValueMode === "calledoff" ? m.calledOff : m.committed;
                           const pct = m.boqQty > 0 ? Math.min(100, (useQty / m.boqQty) * 100) : (useQty > 0 ? 100 : 0);
                           const meta = STATUS_META[m.status];
+                          const nameParts = splitProductCode(m.item);
                           // Part-ordered says how far through the BOQ, not just that it is.
                           const orderedPct = m.boqQty > 0.005 ? Math.min(99, Math.floor((Math.max(m.committedQty, m.calledOffQty) / m.boqQty) * 100)) : null;
                           const statusLabel = m.status === "part_ordered" && orderedPct != null ? `${orderedPct}% ordered` : meta.label;
@@ -930,8 +947,10 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
                                   <div className="row" style={{ gap: 8, alignItems: "flex-start", flexWrap: "nowrap" }}>
                                     <span className="rep-group-chev" style={{ marginTop: 2, flexShrink: 0 }}>{open ? "▾" : "▸"}</span>
                                     <div style={{ minWidth: 0 }}>
-                                      <div style={{ fontWeight: 600 }}>
-                                        {m.item}
+                                      <div style={{ fontWeight: 600 }} title={m.item}>
+                                        {/* Two lines at most — the full wording is on hover
+                                            and in the expanded row. */}
+                                        <span style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{nameParts.text}</span>
                                         {/* Two different stories: unbudgeted spend nobody has
                                             placed against anything yet, vs a buy that HAS a
                                             budget line behind it and is shown here only so the
@@ -950,6 +969,7 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
                                         )}
                                       </div>
                                       <div className="muted" style={{ fontSize: 11 }}>
+                                        {nameParts.code && <span style={{ fontFamily: "var(--font-mono, ui-monospace, monospace)" }}>{nameParts.code} · </span>}
                                         {m.supplier.size === 1 ? [...m.supplier][0] : m.supplier.size > 1 ? "Mixed suppliers" : "Supplier TBC"}
                                         {m.lastOrdered && ` · last ordered ${fmtDate(m.lastOrdered)}`}
                                       </div>
@@ -988,7 +1008,7 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
                                 </td>
                                 <td className="center">
                                   {allBlocks
-                                    ? <span className="pill">All blocks</span>
+                                    ? <span className="pill" style={{ whiteSpace: "nowrap" }}>All blocks</span>
                                     : [...m.blocks.keys()].sort().map((b) => <span key={b} className="pill" style={{ marginLeft: 4, fontSize: 10 }}>{b}</span>)}
                                 </td>
                                 {canUploadMaterials && (
@@ -997,7 +1017,7 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
                                       ? null
                                       : subMats.length === 1
                                       ? <SubstituteAction material={subMats[0]} onChanged={load} />
-                                      : <button className="ghost tiny" onClick={() => setExpandedMat(open ? null : m.key)} title="Expand to substitute in a specific block">Substitute…</button>}
+                                      : <button className="ghost tiny" onClick={() => setExpandedMat(open ? null : m.key)} title="On more than one block — expand to substitute it block by block" style={{ whiteSpace: "nowrap" }}>By block…</button>}
                                   </td>
                                 )}
                               </tr>
