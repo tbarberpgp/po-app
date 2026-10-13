@@ -147,6 +147,38 @@ export async function isReleaseApprover(
   }
 }
 
+const ALL_TIERS = ["line_manager", "commercial_manager", "director"] as const;
+type Tier = (typeof ALL_TIERS)[number];
+
+/**
+ * The tiers someone can act at. A superadmin or a director can do anything
+ * any tier can, so both hold every tier; everyone else holds the rows they
+ * have in `approvers`. The client reads this as `approver_tiers`, so every
+ * screen that gates on a tier follows the same rule as the worker.
+ */
+export function effectiveTiers(role: Role | null | undefined, held: readonly string[]): Tier[] {
+  if (role === "superadmin" || held.includes("director")) return [...ALL_TIERS];
+  return ALL_TIERS.filter((t) => held.includes(t));
+}
+
+/**
+ * Director-level authority on a project: a superadmin, or a director-tier
+ * approver (global or scoped to the project). Gates the director-only
+ * sign-offs — variations, labour budget increases, over-budget and
+ * rate-variance labour applications.
+ */
+export async function hasDirectorAuthority(
+  c: Context<{ Bindings: Env; Variables: Variables }>,
+  projectId: string,
+): Promise<boolean> {
+  if (c.get("userRole") === "superadmin") return true;
+  const row = await c.env.DB.prepare(
+    `SELECT 1 FROM approvers
+     WHERE lower(email) = ? AND tier = 'director' AND (project_id IS NULL OR project_id = ?) LIMIT 1`,
+  ).bind(c.get("userEmail"), projectId).first();
+  return !!row;
+}
+
 export async function loadCurrentUser(c: Context<{ Bindings: Env; Variables: Variables }>) {
   const email = c.get("userEmail");
   const approverRows = await c.env.DB.prepare(
@@ -154,7 +186,7 @@ export async function loadCurrentUser(c: Context<{ Bindings: Env; Variables: Var
   )
     .bind(email)
     .all<{ tier: string }>();
-  const tiers = approverRows.results.map((r) => r.tier);
+  const tiers = effectiveTiers(c.get("userRole"), approverRows.results.map((r) => r.tier));
   return {
     email,
     name: c.get("userName") ?? null,
@@ -162,7 +194,7 @@ export async function loadCurrentUser(c: Context<{ Bindings: Env; Variables: Var
     grants: c.get("userGrants") ?? [],
     active: true,
     is_approver: tiers.length > 0,
-    approver_tiers: tiers as Array<"line_manager" | "commercial_manager" | "director">,
+    approver_tiers: tiers,
     can_release_payables: await isReleaseApprover(c.env, email),
   };
 }

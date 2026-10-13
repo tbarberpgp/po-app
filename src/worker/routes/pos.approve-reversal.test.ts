@@ -77,6 +77,12 @@ describe("mayDecide", () => {
     assert.equal(mayDecide(["line_manager"], null), true);
   });
 
+  test("a superadmin can decide any tier, even with no approver row", () => {
+    for (const tier of ["line_manager", "commercial_manager", "director", null]) {
+      assert.equal(mayDecide([], tier, true), true, `superadmin must decide ${tier}`);
+    }
+  });
+
   test("someone with no approver row decides nothing", () => {
     assert.equal(mayDecide([], null), false);
     assert.equal(mayDecide([], "line_manager"), false);
