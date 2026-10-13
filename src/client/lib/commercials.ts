@@ -451,6 +451,17 @@ export function unpricedDrill(lines: UnpricedLine[]): DrillBody {
   };
 }
 
+/** Order lines nothing counts yet (worker/uncoded-line.ts) — mostly invoice-PO
+ *  lines the auto-coder couldn't match. Same rows and in-place coding as the
+ *  Off-BOQ drill; only the explanation differs. */
+export function uncodedDrill(lines: UnpricedLine[]): DrillBody {
+  return {
+    ...unpricedDrill(lines),
+    note: "Order lines not coded to a budget line and not worded as one — mostly POs raised from invoices. "
+      + "They are not in the forecast or the Off-BOQ total yet: code each to its budget line and it counts there.",
+  };
+}
+
 /** Off-BOQ half of Unexpected spend. Rows carry hidden PO/line refs
  *  (__po_id/__line_id) so the drill drawer can offer "assign to a budget item"
  *  in place. */

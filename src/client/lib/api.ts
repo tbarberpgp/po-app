@@ -185,6 +185,9 @@ export const api = {
       unpriced_spend: number;
       unpriced_lines: Array<{ po_id: string; line_id: number; po_number: string; supplier: string | null; item: string; qty: number | null; unit: string | null; line_total: number; status: string; category?: string }>;
       by_status: Array<{ status: string; n: number; v: number }>;
+      /** Order lines nothing counts yet — not coded, not worded as a BOQ line,
+       *  not off-BOQ spend (worker/uncoded-line.ts). */
+      uncoded_lines?: Array<{ po_id: string; line_id: number; po_number: string; supplier: string | null; item: string; qty: number | null; unit: string | null; line_total: number; status: string; category?: string }>;
       overdrawn_framework_lines: Array<{
         po_id: string; line_id: number; po_number: string; supplier: string | null; item: string; unit: string;
         framework_qty: number; framework_value: number; drawn_qty: number; drawn_value: number;

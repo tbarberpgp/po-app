@@ -4,6 +4,7 @@ import type { Env, Variables } from "../env";
 import { aliasMapsBySupplier, normText } from "../matchMemory";
 import { requirePermission } from "../auth";
 import { PRELIM_LINE } from "../prelims-position";
+import { UNCODED_LINE } from "../uncoded-line";
 
 export const projects = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -442,6 +443,26 @@ projects.get("/:id/summary", async (c) => {
       framework_qty: number; framework_value: number; drawn_qty: number; drawn_value: number;
     }>();
 
+  // Lines nothing counts yet — mostly retrospective invoice-PO lines the
+  // auto-coder couldn't match (see uncoded-line.ts). Raised as needs-attention
+  // rather than booked as off-BOQ spend: they want coding to their budget line.
+  const uncodedLines = await c.env.DB.prepare(
+    `SELECT po.id AS po_id, pl.id AS line_id, po.po_number AS po_number, po.supplier AS supplier,
+            pl.item AS item, pl.qty AS qty, pl.unit AS unit,
+            COALESCE(pl.line_total, 0) AS line_total, po.status AS status,
+            COALESCE(po.category, 'materials') AS category
+     FROM po_lines pl
+     JOIN purchase_orders po ON po.id = pl.po_id
+     WHERE po.project_id = ?
+       AND po.status IN ('approved', 'issued', 'pending_approval')
+       AND ${UNCODED_LINE}
+       AND COALESCE(po.order_type, 'standard') != 'call_off'
+       AND NOT ${PRELIM_LINE}
+     ORDER BY pl.line_total DESC`,
+  )
+    .bind(id)
+    .all<{ po_id: string; line_id: number; po_number: string; supplier: string | null; item: string; qty: number | null; unit: string | null; line_total: number; status: string; category: string }>();
+
   const unpriced_spend = unpricedLines.results.reduce((s, r) => s + (r.line_total ?? 0), 0);
 
   // Codings this project's team has already made. Assigning a PO line to a
@@ -495,6 +516,7 @@ projects.get("/:id/summary", async (c) => {
     }),
     by_status: counts.results,
     overdrawn_framework_lines: overdrawnRows.results,
+    uncoded_lines: uncodedLines.results,
   });
 });
 

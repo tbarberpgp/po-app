@@ -14,7 +14,7 @@ import {
   summariseMaterials, computeForecast, sumForecasts, withCombinedOverspend, contractTotals, effectiveSpendRate, matSupplier, netUnits, quoteSavingsOf,
   pricedBudgetDrill, committedDrill, materialSavingsDrill, labourDrill, labourProfit, prelimsDrill, type PrelimsSummary,
   labourAwaitingCertification,
-  variationProfitDrill, unpricedDrill, combinedUnexpectedSpendDrill, applicationsDrill, combineDrill,
+  variationProfitDrill, unpricedDrill, uncodedDrill, combinedUnexpectedSpendDrill, applicationsDrill, combineDrill,
   offBoqRow, materialAddedAt, materialModifiedAt, materialOrders, materialMergeName, mergeProductId, withoutBlockName,
   type Forecast, type UnpricedLine, type DrillBody, type MatRow, type MaterialScope,
 } from "../lib/commercials";
@@ -51,6 +51,8 @@ type BlockData = {
   offBoq: OffBoqMaterial[];
   contingency: number;
   unpricedLines: UnpricedLine[];
+  /** Order lines nothing counts yet (worker/uncoded-line.ts). */
+  uncodedLines: UnpricedLine[];
   unpricedSpend: number;
   /** The block's labour position per section — what puts certified labour
    *  into its forecast cost. */
@@ -188,13 +190,13 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
           api.listAfps(m.id, "outgoing").catch(() => [] as ApplicationForPayment[]),
           api.listMaterials(m.id).catch(() => [] as MaterialWithCommitment[]),
           api.getContingency(m.id).then((r) => r.contingency).catch(() => 0),
-          api.getProjectSummary(m.id).then((s) => ({ lines: s.unpriced_lines ?? [], spend: s.unpriced_spend ?? 0 })).catch(() => ({ lines: [] as UnpricedLine[], spend: 0 })),
+          api.getProjectSummary(m.id).then((s) => ({ lines: s.unpriced_lines ?? [], spend: s.unpriced_spend ?? 0, uncoded: s.uncoded_lines ?? [] })).catch(() => ({ lines: [] as UnpricedLine[], spend: 0, uncoded: [] as UnpricedLine[] })),
           api.listOffBoqMaterials(m.id).catch(() => [] as OffBoqMaterial[]),
           api.listLabourByCostCode(m.id).catch(() => [] as LabourByCostCode[]),
           api.prelimsSummary(m.id).catch(() => null),
           api.listAfps(m.id, "incoming_labour").catch(() => [] as ApplicationForPayment[]),
         ]).then(([commercials, variations, contractItems, afps, mats, contingency, summary, offBoq, labour, prelims, labourAfps]) => {
-          setData((p) => ({ ...p, [m.id]: { commercials, variations, contractItems, afps, labourAfps, mats, contingency, unpricedLines: summary.lines, unpricedSpend: summary.spend, offBoq, labour, prelims } }));
+          setData((p) => ({ ...p, [m.id]: { commercials, variations, contractItems, afps, labourAfps, mats, contingency, unpricedLines: summary.lines, unpricedSpend: summary.spend, uncodedLines: summary.uncoded, offBoq, labour, prelims } }));
         }).catch(() => {});
       });
     }).catch((e) => setErr(e.message));
@@ -625,6 +627,7 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
           <GroupOverview
             scopeMembers={scopeMembers} data={data} fc={fc} contract={contract}
             baseId={base?.id ?? null} scopeLabel={scopeLabel} onJump={setTab} openForecastDrill={openForecastDrill}
+            openUncoded={(total) => openMatDrill("Not coded to a budget line", total, (d) => uncodedDrill(d.uncodedLines))}
           />
         )}
 
@@ -1157,7 +1160,7 @@ const jumpLink: CSSProperties = { background: "none", border: "none", color: "va
  *  summed forecast KPIs + outturn, the shared site's on-site-today, merged key
  *  dates, and needs-attention / recent-activity gathered from every contract. The
  *  detailed by-block commercial breakdown lives on the separate Commercials tab. */
-function GroupOverview({ scopeMembers, data, fc, contract, baseId, scopeLabel, onJump, openForecastDrill }: {
+function GroupOverview({ scopeMembers, data, fc, contract, baseId, scopeLabel, onJump, openForecastDrill, openUncoded }: {
   scopeMembers: Member[];
   data: Record<string, BlockData>;
   fc: Forecast;
@@ -1166,6 +1169,7 @@ function GroupOverview({ scopeMembers, data, fc, contract, baseId, scopeLabel, o
   scopeLabel: string;
   onJump: (t: GTab) => void;
   openForecastDrill: (m: ForecastDrill) => void;
+  openUncoded: (total: number) => void;
 }) {
   const today = new Date().toISOString().slice(0, 10);
   const [attendance, setAttendance] = useState<Awaited<ReturnType<typeof api.opsAttendance>>>([]);
@@ -1209,12 +1213,18 @@ function GroupOverview({ scopeMembers, data, fc, contract, baseId, scopeLabel, o
   const hasDates = !!(nextApp || nextDue || finalDate);
 
   // Needs attention — merged across blocks, each tagged with its block code
-  const flags: Array<{ text: string; tone: string }> = [];
+  const flags: Array<{ text: string; tone: string; onOpen?: () => void }> = [];
   for (const m of scopeMembers) {
     const d = data[m.id]; if (!d) continue;
     for (const a of d.afps.filter((x) => x.direction === "outgoing" && x.status === "submitted")) flags.push({ text: `${m.code} · AfP #${a.app_number} awaiting certification`, tone: "var(--warn)" });
     const openVars = d.variations.filter((v) => v.status === "open").length;
     if (openVars > 0) flags.push({ text: `${m.code} · ${openVars} open variation${openVars === 1 ? "" : "s"}`, tone: "var(--warn)" });
+  }
+  // One flag across the blocks — the drill lists each line with its block.
+  const uncodedAll = scopeMembers.flatMap((m) => data[m.id]?.uncodedLines ?? []);
+  if (uncodedAll.length > 0) {
+    const n = uncodedAll.length, total = uncodedAll.reduce((s, l) => s + (l.line_total ?? 0), 0);
+    flags.push({ text: `${n} order line${n === 1 ? "" : "s"} not coded to a budget line — ${fmtMoney(total)} not in the forecast yet`, tone: "var(--danger)", onOpen: () => openUncoded(total) });
   }
 
   // Recent activity — merged VOs / AfPs / POs across blocks, newest first
@@ -1301,7 +1311,9 @@ function GroupOverview({ scopeMembers, data, fc, contract, baseId, scopeLabel, o
                   <div key={i} className="row" style={{ alignItems: "center", gap: 10 }}>
                     <span style={{ width: 8, height: 8, borderRadius: 999, background: fl.tone, flex: "0 0 auto" }} />
                     <span style={{ flex: 1, fontSize: 13 }}>{fl.text}</span>
-                    <button onClick={() => onJump("commercials")} style={jumpLink}>View</button>
+                    {fl.onOpen
+                      ? <button onClick={fl.onOpen} style={jumpLink}>Code</button>
+                      : <button onClick={() => onJump("commercials")} style={jumpLink}>View</button>}
                   </div>
                 ))}
               </div>

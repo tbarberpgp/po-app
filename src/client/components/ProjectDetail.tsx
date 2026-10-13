@@ -17,7 +17,7 @@ import type { ApplicationForPayment, CurrentUser, LabourByCostCode, MaterialWith
 import {
   summariseMaterials, computeForecast, totalChange, labourProfit, prelimLabourCertified, labourAwaitingCertification, matSupplier, contractTotals, effectiveSpendRate, quoteSavingsOf,
   pricedBudgetDrill, committedDrill, materialSavingsDrill,
-  labourDrill, prelimsDrill, variationProfitDrill, unpricedDrill, unexpectedSpendDrill, applicationsDrill,
+  labourDrill, prelimsDrill, variationProfitDrill, unpricedDrill, uncodedDrill, unexpectedSpendDrill, applicationsDrill,
   offBoqRow, materialAddedAt, materialModifiedAt, type Forecast, type MatRow,
 } from "../lib/commercials";
 import { DrillPanel, DrillKpi, type DrillData } from "./DrillPanel";
@@ -293,6 +293,23 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
     }
   };
 
+  // Lines nothing counts yet — opened from Needs attention, coded in place.
+  const uncodedLines = poSummary?.uncoded_lines ?? [];
+  const uncodedTotal = uncodedLines.reduce((s, l) => s + (l.line_total ?? 0), 0);
+  const openUncodedDrill = () => {
+    const body = uncodedDrill(uncodedLines);
+    if (can(me, "pos.edit")) {
+      body.columns = [...body.columns, {
+        key: "__assign", label: "",
+        fmt: (_v, row) => (row.__line_id != null
+          ? <AssignBudgetCell poId={String(row.__po_id)} lineId={Number(row.__line_id)} mats={mats}
+              onAssigned={() => { if (id) { api.getProjectSummary(id).then(setPoSummary).catch(() => {}); api.listMaterials(id).then(setMats).catch(() => {}); } }} />
+          : null),
+      }];
+    }
+    setDrill({ title: "Not coded to a budget line", value: fmtMoney(uncodedTotal), ...body });
+  };
+
   // PO tab notification = only purchase orders awaiting approval.
   const poPendingCount = projectPOs.filter((p) => p.status === "pending_approval").length;
 
@@ -552,7 +569,7 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
               <CostToDate forecast={forecast} ordersCommitted={summarisePoRegister(projectPOs).committed} prelimLabour={prelimLabourCertified(afps)} labourAwaiting={labourAwaitingCertification(afps)} />
             )}
             {tab === "overview" && commercials.length > 0 && canViewCommercial && (
-              <OverviewAtAGlance projectId={id ?? ""} forecast={forecast} commercials={commercials} afps={afps} variations={variations} projectPOs={projectPOs} canViewCommercial={canViewCommercial} overdrawnFrameworkCount={poSummary?.overdrawn_framework_lines?.length ?? 0} onJump={setTab} />
+              <OverviewAtAGlance projectId={id ?? ""} forecast={forecast} commercials={commercials} afps={afps} variations={variations} projectPOs={projectPOs} canViewCommercial={canViewCommercial} overdrawnFrameworkCount={poSummary?.overdrawn_framework_lines?.length ?? 0} uncoded={{ count: uncodedLines.length, total: uncodedTotal, open: openUncodedDrill }} onJump={setTab} />
             )}
 
             {/* Delivery roles (PM/site) don't see commercials — they get an operational overview. */}
@@ -1918,7 +1935,7 @@ function OperationalOverview({ projectId, projectPOs, onJump }: { projectId: str
   );
 }
 
-function OverviewAtAGlance({ projectId, forecast: f, commercials, afps, variations, projectPOs, canViewCommercial, overdrawnFrameworkCount, onJump }: {
+function OverviewAtAGlance({ projectId, forecast: f, commercials, afps, variations, projectPOs, canViewCommercial, overdrawnFrameworkCount, uncoded, onJump }: {
   projectId: string;
   forecast: Forecast;
   commercials: ProjectCommercial[];
@@ -1927,6 +1944,8 @@ function OverviewAtAGlance({ projectId, forecast: f, commercials, afps, variatio
   projectPOs: ProjectPORow[];
   canViewCommercial: boolean;
   overdrawnFrameworkCount: number;
+  /** Order lines nothing counts yet — see worker/uncoded-line.ts. */
+  uncoded: { count: number; total: number; open: () => void };
   onJump: (t: Tab) => void;
 }) {
   const today = new Date().toISOString().slice(0, 10);
@@ -1976,7 +1995,7 @@ function OverviewAtAGlance({ projectId, forecast: f, commercials, afps, variatio
 
   // ── Needs attention ───────────────────────────────────────────────────
   // Commercial flags (applications/variations) only surface for commercial roles.
-  const flags: Array<{ text: string; tab: Tab; tone: string; to?: string }> = [];
+  const flags: Array<{ text: string; tab: Tab; tone: string; to?: string; onOpen?: () => void }> = [];
   if (canViewCommercial) {
     // Applications someone has flagged by hand (0135) — a problem found by
     // reading the source document, held for audit before anyone corrects or
@@ -1997,6 +2016,11 @@ function OverviewAtAGlance({ projectId, forecast: f, commercials, afps, variatio
     }
     if (f.prelimsOverrun > 0.5) {
       flags.push({ text: `Prelims ${fmtMoney(f.prelimsOverrun)} over budget`, tab: "commercials", tone: "var(--danger)" });
+    }
+    // Bought, but counted nowhere until coded — so the forecast is short by it.
+    if (uncoded.count > 0) {
+      const n = uncoded.count, total = uncoded.total;
+      flags.push({ text: `${n} order line${n === 1 ? "" : "s"} not coded to a budget line — ${fmtMoney(total)} not in the forecast yet`, tab: "materials", tone: "var(--danger)", onOpen: uncoded.open });
     }
   }
   if (overdrawnFrameworkCount > 0) {
@@ -2092,7 +2116,9 @@ function OverviewAtAGlance({ projectId, forecast: f, commercials, afps, variatio
                 <div key={i} className="row" style={{ alignItems: "center", gap: 10 }}>
                   <span style={{ width: 8, height: 8, borderRadius: 999, background: fl.tone, flex: "0 0 auto" }} />
                   <span style={{ flex: 1, fontSize: 13 }}>{fl.text}</span>
-                  {fl.to
+                  {fl.onOpen
+                    ? <button onClick={fl.onOpen} style={{ background: "none", border: "none", color: "var(--accent)", cursor: "pointer", fontSize: 13, padding: 0, minHeight: 0, width: "auto" }}>Code</button>
+                    : fl.to
                     ? <Link to={fl.to} style={{ fontSize: 13 }}>Open</Link>
                     : <button onClick={() => onJump(fl.tab)} style={{ background: "none", border: "none", color: "var(--accent)", cursor: "pointer", fontSize: 13, padding: 0, minHeight: 0, width: "auto" }}>View</button>}
                 </div>
