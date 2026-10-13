@@ -29,6 +29,9 @@ export function ApprovalsInbox({ me }: { me: CurrentUser | null }) {
   const [err, setErr] = useState<string | null>(null);
   const [tab, setTab] = useState<TabKey>("pos");
   const didInit = useRef(false);
+  // The landing tab waits on this: the invoice queue usually answers first,
+  // and choosing before the PO list is in would open on Invoices.
+  const [posLoaded, setPosLoaded] = useState(false);
 
   // Applications for payment no longer require director approval, so they no
   // longer appear here — only purchase orders, material price overspends and
@@ -36,7 +39,8 @@ export function ApprovalsInbox({ me }: { me: CurrentUser | null }) {
   function refresh() {
     api.listPOs({ status: "pending_approval" })
       .then((rs) => setRows(rs as Row[]))
-      .catch((e) => setErr(e.message));
+      .catch((e) => setErr(e.message))
+      .finally(() => setPosLoaded(true));
     api.listPendingPriceApprovals().then(setPrices).catch(() => setPrices([]));
     api.listPendingSubstitutions().then(setSubs).catch(() => setSubs([]));
     api.listPendingUploads().then(setUploads).catch(() => setUploads([]));
@@ -93,12 +97,15 @@ export function ApprovalsInbox({ me }: { me: CurrentUser | null }) {
     { key: "approved" as TabKey, label: "Approved", count: 0 },
   ];
 
-  // On first data arrival, land on the first tab that actually has something.
+  // Open on Purchase orders. Only once the PO list is in and turns out to have
+  // nothing for this reader do we move to the first tab that does — so an
+  // invoice-only releaser still lands on Invoices.
   useEffect(() => {
-    if (didInit.current) return;
+    if (didInit.current || !posLoaded || !me) return;
+    if (minePOs.length > 0) { didInit.current = true; return; }
     const first = tabs.find((t) => t.count > 0);
     if (first) { setTab(first.key); didInit.current = true; }
-  }, [minePOs.length, invoices.length, minePrices.length, mineSubs.length, uploads.length]);
+  }, [posLoaded, me, minePOs.length, invoices.length, minePrices.length, mineSubs.length, uploads.length]);
 
   // Bulk PO approval — tick rows, approve in one go. Sequential so each PO
   // still gets its own audit trail + notification emails.
