@@ -522,9 +522,11 @@ applications.get("/", async (c) => {
   const direction = c.req.query("direction");
   const status = c.req.query("status");
   const unassigned = c.req.query("unassigned") === "1";
+  const projectId = c.req.query("project_id");
 
   const where: string[] = [];
   const binds: unknown[] = [];
+  if (projectId) { where.push("a.project_id = ?"); binds.push(projectId); }
   if (direction === "outgoing" || direction === "incoming_labour") {
     where.push("a.direction = ?"); binds.push(direction);
   }

@@ -946,8 +946,9 @@ export const api = {
       `/api/applications/project/${projectId}?direction=${direction}`,
     ),
   /** Portfolio-wide list of all applications across projects (Applications workspace). */
-  listAllApplications: (filters?: { direction?: AfpDirection; status?: string; unassigned?: boolean }) => {
+  listAllApplications: (filters?: { direction?: AfpDirection; status?: string; unassigned?: boolean; projectId?: string }) => {
     const qs = new URLSearchParams();
+    if (filters?.projectId) qs.set("project_id", filters.projectId);
     if (filters?.direction) qs.set("direction", filters.direction);
     if (filters?.status) qs.set("status", filters.status);
     if (filters?.unassigned) qs.set("unassigned", "1");
