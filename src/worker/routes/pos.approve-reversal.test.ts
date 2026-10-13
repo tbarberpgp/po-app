@@ -15,7 +15,7 @@
 // deleted one must stay dead.
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { approveGate, unapproveGate } from "./pos";
+import { approveGate, mayDecide, unapproveGate } from "./pos";
 
 describe("approveGate", () => {
   test("a pending PO approves, and isn't a reversal", () => {
@@ -53,5 +53,32 @@ describe("unapproveGate", () => {
     for (const status of ["draft", "pending_approval", "rejected", "deleted"]) {
       assert.equal(unapproveGate(status).ok, false, `${status} must not be unapprovable`);
     }
+  });
+});
+
+// Who may approve, reject or unapprove. The case that prompted this: a
+// director with all three tiers was told "you are not an approver for this
+// tier" when rejecting — /reject compared against "" on a PO with no tier,
+// while /approve already let any approver through.
+describe("mayDecide", () => {
+  test("a director can decide a PO at any tier, and one with no tier", () => {
+    for (const tier of ["line_manager", "commercial_manager", "director", null]) {
+      assert.equal(mayDecide(["director"], tier), true, `director must decide ${tier}`);
+    }
+  });
+
+  test("anyone else needs the PO's own tier", () => {
+    assert.equal(mayDecide(["line_manager"], "line_manager"), true);
+    assert.equal(mayDecide(["line_manager"], "commercial_manager"), false);
+    assert.equal(mayDecide(["commercial_manager"], "director"), false);
+  });
+
+  test("a PO with no tier is open to any approver", () => {
+    assert.equal(mayDecide(["line_manager"], null), true);
+  });
+
+  test("someone with no approver row decides nothing", () => {
+    assert.equal(mayDecide([], null), false);
+    assert.equal(mayDecide([], "line_manager"), false);
   });
 });

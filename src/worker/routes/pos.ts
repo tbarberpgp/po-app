@@ -2197,18 +2197,7 @@ pos.post("/:id/approve", async (c) => {
   if (!po) return c.json({ error: "not found" }, 404);
   const gate = approveGate(po.status);
   if (!gate.ok) return c.json({ error: gate.error }, 409);
-  // Authority to approve belongs to the tier. A PO amended after it was
-  // rejected can have been recomputed out of the approval net altogether and
-  // left with no tier, so fall back to "is an approver at all" rather than
-  // dead-ending it on a tier nobody holds.
-  const approver = po.approval_tier
-    ? await c.env.DB.prepare(
-        "SELECT 1 AS ok FROM approvers WHERE lower(email) = ? AND tier = ? LIMIT 1",
-      ).bind(actor, po.approval_tier).first()
-    : await c.env.DB.prepare(
-        "SELECT 1 AS ok FROM approvers WHERE lower(email) = ? LIMIT 1",
-      ).bind(actor).first();
-  if (!approver) {
+  if (!mayDecide(await heldTiers(c.env.DB, actor), po.approval_tier)) {
     return c.json({ error: "you are not an approver for this tier" }, 403);
   }
   const now = new Date().toISOString();
@@ -2264,6 +2253,31 @@ pos.post("/:id/approve", async (c) => {
   return c.json({ ok: true });
 });
 
+/**
+ * Who may approve, reject or unapprove a PO. Authority belongs to the tier,
+ * with two widenings:
+ *  - a director can decide a PO at any tier — the top of the chain can do
+ *    whatever the tiers below it can;
+ *  - a PO amended after a rejection can be recomputed out of the approval net
+ *    and left with no tier, so any approver may decide it rather than it
+ *    dead-ending on a tier nobody holds. /reject used to miss this one and
+ *    bound "" as the tier, so a tierless PO could be approved but never
+ *    rejected — by anyone.
+ */
+export function mayDecide(held: readonly string[], poTier: string | null): boolean {
+  if (held.length === 0) return false;
+  if (held.includes("director")) return true;
+  return poTier == null || held.includes(poTier);
+}
+
+async function heldTiers(db: D1Database, actor: string): Promise<string[]> {
+  const { results } = await db
+    .prepare("SELECT DISTINCT tier FROM approvers WHERE lower(email) = ?")
+    .bind(actor)
+    .all<{ tier: string }>();
+  return results.map((r) => r.tier);
+}
+
 pos.post("/:id/reject", async (c) => {
   const id = c.req.param("id");
   const actor = c.get("userEmail");
@@ -2285,12 +2299,7 @@ pos.post("/:id/reject", async (c) => {
   if (po.status !== "pending_approval") {
     return c.json({ error: `cannot reject a ${po.status} PO` }, 409);
   }
-  const approver = await c.env.DB.prepare(
-    "SELECT 1 AS ok FROM approvers WHERE lower(email) = ? AND tier = ? LIMIT 1",
-  )
-    .bind(actor, po.approval_tier ?? "")
-    .first();
-  if (!approver) {
+  if (!mayDecide(await heldTiers(c.env.DB, actor), po.approval_tier)) {
     return c.json({ error: "you are not an approver for this tier" }, 403);
   }
   const now = new Date().toISOString();
@@ -2363,14 +2372,7 @@ pos.post("/:id/unapprove", async (c) => {
   if (!po) return c.json({ error: "not found" }, 404);
   const gate = unapproveGate(po.status);
   if (!gate.ok) return c.json({ error: gate.error }, 409);
-  const approver = po.approval_tier
-    ? await c.env.DB.prepare(
-        "SELECT 1 AS ok FROM approvers WHERE lower(email) = ? AND tier = ? LIMIT 1",
-      ).bind(actor, po.approval_tier).first()
-    : await c.env.DB.prepare(
-        "SELECT 1 AS ok FROM approvers WHERE lower(email) = ? LIMIT 1",
-      ).bind(actor).first();
-  if (!approver) {
+  if (!mayDecide(await heldTiers(c.env.DB, actor), po.approval_tier)) {
     return c.json({ error: "you are not an approver for this tier" }, 403);
   }
   // An order that auto-approved never had a tier. A pending order with none is

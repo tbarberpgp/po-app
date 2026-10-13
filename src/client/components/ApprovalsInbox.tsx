@@ -66,7 +66,7 @@ export function ApprovalsInbox({ me }: { me: CurrentUser | null }) {
   // by name. Someone can hold one and not the other, so the invoice tab is
   // gated on its own right rather than on `canDecide`.
   const canDecideInvoices = me?.can_release_payables === true;
-  const minePOs = me ? rows.filter((r) => isSuper || (r.approval_tier && me.approver_tiers.includes(r.approval_tier))) : [];
+  const minePOs = me ? rows.filter((r) => isSuper || me.approver_tiers.includes("director") || (r.approval_tier && me.approver_tiers.includes(r.approval_tier))) : [];
   const minePrices = me
     ? prices.filter((p) => isSuper || (p.approval_tier && me.approver_tiers.includes(p.approval_tier)))
     : [];
@@ -76,7 +76,7 @@ export function ApprovalsInbox({ me }: { me: CurrentUser | null }) {
   // Scoped like the pending tabs: you see decisions at the tiers you hold, and
   // a superadmin oversees every one of them.
   const mineApproved = me
-    ? approved.filter((r) => isSuper || (r.approval_tier && me.approver_tiers.includes(r.approval_tier)))
+    ? approved.filter((r) => isSuper || me.approver_tiers.includes("director") || (r.approval_tier && me.approver_tiers.includes(r.approval_tier)))
     : [];
 
   const tabs: Array<{ key: TabKey; label: string; count: number }> = [

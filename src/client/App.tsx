@@ -96,7 +96,7 @@ export function App() {
     ])
       .then(([pos, prices, subs, uploads, invoices]) => {
         const isSuper = me.role === "superadmin";
-        const minePOs = pos.filter((r) => isSuper || (r.approval_tier && me.approver_tiers.includes(r.approval_tier)));
+        const minePOs = pos.filter((r) => isSuper || me.approver_tiers.includes("director") || (r.approval_tier && me.approver_tiers.includes(r.approval_tier)));
         const minePrices = prices.filter((p) => isSuper || (p.approval_tier && me.approver_tiers.includes(p.approval_tier)));
         const mineSubs = subs.filter((s) => isSuper || (s.approval_tier && me.approver_tiers.includes(s.approval_tier)));
         // listPendingUploads returns [] for non-superadmins server-side.
