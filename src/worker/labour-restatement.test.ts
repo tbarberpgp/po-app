@@ -220,8 +220,9 @@ const exec = (d: DatabaseSync, ws: Array<{ sql: string; params: unknown[] }>) =>
 function recalc(d: DatabaseSync, id: number) {
   const ls = d.prepare("SELECT section, cumulative_value, is_adhoc FROM afp_lines WHERE afp_id = ?").all(id) as Array<{ section: string; cumulative_value: number; is_adhoc: number }>;
   const exp = ls.filter((l) => l.is_adhoc === 1 && /expenses/i.test(l.section)).reduce((s, l) => s + l.cumulative_value, 0);
+  const dw = ls.filter((l) => l.is_adhoc === 1 && /dayworks/i.test(l.section)).reduce((s, l) => s + l.cumulative_value, 0);
   const cum = ls.filter((l) => !(l.is_adhoc === 1 && /expenses|dayworks/i.test(l.section))).reduce((s, l) => s + l.cumulative_value, 0);
-  const due = Math.round(periodNet({ cumulative: cum, previousCertified: 0, expensesAmount: exp, dayworksAmount: 0, basis: "period" }) * 100) / 100;
+  const due = Math.round(periodNet({ cumulative: cum, previousCertified: 0, expensesAmount: exp, dayworksAmount: dw, basis: "period" }) * 100) / 100;
   d.prepare("UPDATE applications_for_payment SET amount_due = ? WHERE id = ?").run(due, id);
   return due;
 }
@@ -338,5 +339,159 @@ describe("applying the restatement", () => {
     const kept = JSON.parse(String(last.params[0]));
     assert.equal(kept.length, 1);
     assert.equal(kept[0].resolution.action, "restated_from_invoice");
+  });
+});
+
+// Cladders on Blyth, as the live database holds it on 13 Oct 2026. They bill
+// TIME ("2 x Operatives x 10 Hours per Shift @ £33.00 P/H"), so there is no
+// BOQ line the time belongs on: the reader matched #1/#2 onto flashing items
+// and #15 onto the PM line, and the 10-08 repair moved the drafts' time into
+// Dayworks. #2 was certified at £7,480.80 against a £9,676.80 invoice that
+// Xero paid in full. #6, a second upload of Invoice 001, goes back to draft
+// before the restatement and is left out.
+describe("restating a time-billing subcontractor (Cladders) into Dayworks", () => {
+  const CL: Array<{ id: number; n: number; status: string; net: number; cert: number | null; boq: Array<[number, number]>; dw: number; inv: string; works: number; exp?: number; paid: boolean; recert?: boolean }> = [
+    { id: 39, n: 1, status: "certified", net: 2196, cert: 2196, boq: [[1865, 828], [1866, 648], [1867, 720]], dw: 0, inv: "Invoice 001", works: 2196, paid: true },
+    { id: 53, n: 2, status: "certified", net: 7480.8, cert: 7480.8, boq: [[1865, 5112], [1867, 4564.8]], dw: 0, inv: "Invoice 002", works: 9676.8, paid: true, recert: true },
+    { id: 60, n: 7, status: "draft", net: 5328, cert: null, boq: [], dw: 5328, inv: "Invoice 003", works: 5328, paid: true },
+    { id: 76, n: 15, status: "submitted", net: 0, cert: null, boq: [[PM, 3300]], dw: 0, inv: "Invoice 006", works: 3300, paid: true },
+    { id: 95, n: 26, status: "draft", net: 3357.86, cert: null, boq: [], dw: 3300, inv: "Invoice 011", works: 3300, exp: 57.86, paid: true },
+    { id: 98, n: 28, status: "submitted", net: 9504, cert: null, boq: [[PM, 9900], [1865, 2484]], dw: 9504, inv: "Invoice 012", works: 9504, paid: false },
+  ];
+  const ITEMS = [PM, 1865, 1866, 1867];
+  const clApps = (): RestateAppRow[] => CL.map((x) => ({
+    id: x.id, project_id: P, direction: "incoming_labour", app_number: x.n, status: x.status,
+    counterparty_supplier_id: CLADDERS, prelim_heading: null, claimed_amount: null, claim_basis: null,
+    xero_po_id: null, retention_pct: 0, vat_pct: 0, cumulative_value: x.boq.reduce((t, [, v]) => t + v, 0),
+    this_period_net: x.net, certified_amount: x.cert, attention_note: null,
+    unmatched_lines_json: null, resolved_lines_json: null,
+  }));
+  const clLines = (): RestateLineRow[] => CL.flatMap((x) => {
+    const out: RestateLineRow[] = ITEMS.map((ci, i) => ({
+      id: x.id * 100 + i, afp_id: x.id, contract_item_id: ci, section: "BOQ", description: `item ${ci}`,
+      contract_value: 5940, cumulative_value: x.boq.find(([c]) => c === ci)?.[1] ?? 0, is_adhoc: 0, variation_id: null, display_order: i,
+    }));
+    if (x.dw) out.push({ id: x.id * 100 + 50, afp_id: x.id, contract_item_id: null, section: "Dayworks", description: "time", contract_value: x.dw, cumulative_value: x.dw, is_adhoc: 1, variation_id: null, display_order: 50 });
+    if (x.exp) out.push({ id: x.id * 100 + 51, afp_id: x.id, contract_item_id: null, section: "Expenses", description: "Expenses", contract_value: x.exp, cumulative_value: x.exp, is_adhoc: 1, variation_id: null, display_order: 51 });
+    return out;
+  });
+  const clRequest = (over: Partial<RestateRequest> = {}): RestateRequest => ({
+    project_id: P, supplier_id: CLADDERS, works_as: "dayworks",
+    invoices: CL.map((x) => ({
+      afp_id: x.id, invoice_number: x.inv, works: x.works, paid_in_xero: x.paid, recertify: x.recert,
+      works_description: `${x.inv} — operatives' time`,
+      expenses: x.exp ? [{ description: "Expenses", amount: x.exp }] : [],
+    })),
+    ...over,
+  });
+  function clDatabase() {
+    const d = new DatabaseSync(":memory:");
+    d.exec(`
+      CREATE TABLE material_snapshots (id INTEGER PRIMARY KEY, project_id TEXT, is_active INTEGER);
+      CREATE TABLE contract_items (id INTEGER PRIMARY KEY, snapshot_id INTEGER, section TEXT, description TEXT, qty REAL, labour_rate REAL, labour_total REAL);
+      CREATE TABLE labour_live_rates (contract_item_id INTEGER, description TEXT, project_id TEXT, status TEXT, live_rate REAL, applied_at TEXT);
+      CREATE TABLE applications_for_payment (id INTEGER PRIMARY KEY, project_id TEXT, direction TEXT, app_number INTEGER,
+        status TEXT, counterparty_supplier_id INTEGER, prelim_heading TEXT, claimed_amount REAL, claim_basis TEXT,
+        unmatched_lines_json TEXT, resolved_lines_json TEXT, amount_due REAL, certified_amount REAL,
+        certified_at TEXT, certified_by TEXT, submitted_at TEXT, submitted_by TEXT, paid_at TEXT, paid_by TEXT,
+        payment_reference TEXT, attention_note TEXT, attention_note_by TEXT, attention_note_at TEXT);
+      CREATE TABLE afp_lines (id INTEGER PRIMARY KEY AUTOINCREMENT, afp_id INTEGER, contract_item_id INTEGER, section TEXT,
+        description TEXT, unit TEXT, qty REAL, rate REAL, contract_value REAL, percent_complete REAL,
+        cumulative_value REAL, is_adhoc INTEGER, display_order INTEGER, variation_id INTEGER);
+      CREATE TABLE audit_log (entity_type TEXT, entity_id TEXT, action TEXT, actor TEXT, details TEXT, created_at TEXT);
+      INSERT INTO material_snapshots VALUES (1, '${P}', 1);
+    `);
+    const ins = d.prepare(`INSERT INTO applications_for_payment (id, project_id, direction, app_number, status,
+      counterparty_supplier_id, certified_amount, certified_at) VALUES (?, ?, 'incoming_labour', ?, ?, ?, ?, ?)`);
+    for (const a of clApps()) ins.run(a.id, P, a.app_number, a.status, CLADDERS, a.certified_amount, a.certified_amount != null ? "2026-07-15" : null);
+    const insL = d.prepare(`INSERT INTO afp_lines (id, afp_id, contract_item_id, section, description, contract_value,
+      percent_complete, cumulative_value, is_adhoc, display_order) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`);
+    for (const l of clLines()) insL.run(l.id, l.afp_id, l.contract_item_id, l.section, l.description, l.contract_value, l.cumulative_value, l.is_adhoc, l.display_order);
+    return d;
+  }
+  function clApply(d: DatabaseSync, steps: RestateStep[]) {
+    for (const s of steps) {
+      const cur = d.prepare("SELECT unmatched_lines_json, resolved_lines_json FROM applications_for_payment WHERE id = ?").get(s.afp_id) as { unmatched_lines_json: string | null; resolved_lines_json: string | null };
+      exec(d, lineWrites(s, null, "tester", "now", cur));
+    }
+    const errors: string[] = [];
+    for (const s of steps) {
+      const settled = settleWrites(s, recalc(d, s.afp_id), "tester", "now");
+      if (settled.error) errors.push(settled.error);
+      exec(d, settled.writes);
+    }
+    return errors;
+  }
+
+  test("each invoice is worth what it says, its time on one Dayworks line", () => {
+    const plan = planRestatement(clRequest(), clApps(), clLines());
+    assert.ok(plan.ok, !plan.ok ? plan.errors.join("\n") : "");
+    assert.equal(plan.totals.value_after, 2196 + 9676.8 + 5328 + 3300 + 3357.86 + 9504);
+    assert.equal(plan.totals.owed_after, 9504);
+    for (const s of plan.steps) {
+      assert.equal(s.works_line_id, null);
+      assert.equal(s.works_as, "dayworks");
+    }
+  });
+
+  test("#2's £7,480.80 certificate is refused without recertify, replaced with it", () => {
+    const req = clRequest();
+    req.invoices = req.invoices.map((i) => ({ ...i, recertify: false }));
+    const refused = planRestatement(req, clApps(), clLines());
+    assert.ok(!refused.ok && refused.errors.some((e) => /already certified at £7480\.80/.test(e)));
+
+    const plan = planRestatement(clRequest(), clApps(), clLines());
+    assert.ok(plan.ok);
+    const s = plan.steps.find((x) => x.app_number === 2)!;
+    assert.equal(s.before.certified_amount, 7480.8, "the old certificate goes in the audit row");
+    assert.equal(s.after.certified_amount, 9676.8);
+  });
+
+  test("recertify is refused on an invoice Xero hasn't paid", () => {
+    const req = clRequest();
+    req.invoices = req.invoices.map((i) => (i.invoice_number === "Invoice 002" ? { ...i, paid_in_xero: false } : i));
+    const plan = planRestatement(req, clApps(), clLines());
+    assert.ok(!plan.ok && plan.errors.some((e) => /recertify is only for an invoice Xero has paid/.test(e)));
+  });
+
+  test("BOQ mode still needs a works item", () => {
+    const plan = planRestatement(clRequest({ works_as: "boq" }), clApps(), clLines());
+    assert.ok(!plan.ok && plan.errors.includes("works_item_id required"));
+  });
+
+  test("applied: no BOQ position left, paid time and expenses counted once each", () => {
+    const d = clDatabase();
+    const plan = planRestatement(clRequest(), clApps(), clLines());
+    assert.ok(plan.ok);
+    assert.deepEqual(clApply(d, plan.steps), []);
+    const after = pos(d);
+    assert.equal(after.boq, 0, "time matched onto measured items is gone");
+    assert.equal(Math.round(after.other * 100) / 100, 2196 + 9676.8 + 5328 + 3300 + 3357.86);
+    const dw = d.prepare("SELECT description, cumulative_value FROM afp_lines WHERE afp_id = 53 AND section = 'Dayworks'").all() as Array<{ description: string; cumulative_value: number }>;
+    assert.deepEqual(dw.map((r) => ({ ...r })), [{ description: "Invoice 002 — operatives' time", cumulative_value: 9676.8 }]);
+    const r = d.prepare("SELECT status, certified_amount, certified_at FROM applications_for_payment WHERE id = 53").get() as { status: string; certified_amount: number; certified_at: string };
+    assert.deepEqual({ ...r }, { status: "paid", certified_amount: 9676.8, certified_at: "2026-07-15" });
+    const owed = d.prepare("SELECT status, amount_due FROM applications_for_payment WHERE id = 98").get() as { status: string; amount_due: number };
+    assert.deepEqual({ ...owed }, { status: "submitted", amount_due: 9504 });
+  });
+
+  test("applied twice: the second run changes nothing", () => {
+    const d = clDatabase();
+    const first = planRestatement(clRequest(), clApps(), clLines());
+    assert.ok(first.ok);
+    clApply(d, first.steps);
+    const apps = (d.prepare(`SELECT id, project_id, direction, app_number, status, counterparty_supplier_id, prelim_heading,
+      claimed_amount, claim_basis, NULL AS xero_po_id, 0 AS retention_pct, 0 AS vat_pct, NULL AS cumulative_value,
+      amount_due AS this_period_net, certified_amount, attention_note, unmatched_lines_json, resolved_lines_json
+      FROM applications_for_payment`).all()) as unknown as RestateAppRow[];
+    const lines = d.prepare(`SELECT id, afp_id, contract_item_id, section, description, contract_value, cumulative_value,
+      is_adhoc, variation_id, display_order FROM afp_lines`).all() as unknown as RestateLineRow[];
+    const second = planRestatement(clRequest(), apps, lines);
+    assert.ok(second.ok, !second.ok ? second.errors.join("\n") : "");
+    const before = pos(d);
+    assert.deepEqual(clApply(d, second.steps), []);
+    assert.deepEqual(pos(d), before);
+    const n = d.prepare("SELECT COUNT(*) AS n FROM afp_lines WHERE section = 'Dayworks'").get() as { n: number };
+    assert.equal(n.n, CL.length, "one Dayworks line per application, not two");
   });
 });
