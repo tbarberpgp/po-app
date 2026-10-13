@@ -27,6 +27,7 @@ export {
   contractTotals, quoteSavingsOf, omittedMaterialValue, variationLabourBudget,
   prelimsOf, prelimLabourCertified, labourAwaitingCertification, isLabourAwaitingCertification,
   computeForecast, totalChange, labourProfit, addForecasts, sumForecasts, withCombinedOverspend,
+  materialMergeName, mergeProductId, withoutBlockName,
 } from "../../shared/forecast";
 export type {
   Summary, Forecast, AccumulatedMaterial, MaterialScope, PrelimsSummary,

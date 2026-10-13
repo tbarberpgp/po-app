@@ -146,7 +146,38 @@ export function netUnits(m: MaterialWithCommitment): number {
 /** Wording reduced to its words alone, so spacing, punctuation and case can't
  *  split one material into two. Same normalisation the combined Materials
  *  table merges rows on. */
-const normMaterialName = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+export const normMaterialName = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+
+/** "Block C", "Blocks D", "for Block B" — a single capital letter only, so a
+ *  product spec like "Thermalite block 7N" is never mistaken for one. */
+const BLOCK_WORDING = /\s*\b(?:for\s+)?[Bb]locks?\s+[A-Z]\b\s*/g;
+
+/** True when the wording names the block it was priced for. Grouped sites price
+ *  each block as its own bill, and some lines carry the block in their wording
+ *  ("Block C CTF/SCHEME/1 - Tapered …") — and are linked to a master product
+ *  made per block — so neither the wording nor the product link matches the
+ *  same material on a sibling block. */
+export const namesABlock = (s: string): boolean => new RegExp(BLOCK_WORDING.source).test(s);
+
+/** The wording with any block designation taken out, tidied for display:
+ *  "Block B - Latchways Mansafe Systems" → "Latchways Mansafe Systems". */
+export function withoutBlockName(s: string): string {
+  if (!namesABlock(s)) return s;
+  return s.replace(BLOCK_WORDING, " ")
+    .replace(/\(\s*\)/g, "").replace(/\(\s+/g, "(").replace(/\s+\)/g, ")")
+    .replace(/\s{2,}/g, " ")
+    .replace(/^[\s\-–:,]+|[\s\-–:,]+$/g, "");
+}
+
+/** The merge key's wording: block designation out, then words alone. */
+export const materialMergeName = (s: string): string => normMaterialName(withoutBlockName(s));
+
+/** The master-product half of the merge key — withheld when the wording names a
+ *  block, because those rows are linked to a product made for that block alone
+ *  (product 43 is Block C's tapered scheme, 45 Block D's), which would keep the
+ *  same material apart across the site. They merge on wording instead. */
+export const mergeProductId = (m: Pick<MaterialWithCommitment, "product_id" | "item" | "sub_item">): number | null =>
+  m.product_id != null && !namesABlock(m.sub_item || m.item || "") ? m.product_id : null;
 
 /** One material as the job actually holds it: every BOQ row describing it added
  *  together — several lines in one bill, and, when the caller passes more than
@@ -178,13 +209,15 @@ export function accumulateMaterials(scopes: MaterialScope[]): AccumulatedMateria
   const live = scopes.map((g) => ({ scope: g.scope, mats: g.mats.filter((m) => !m.omitted) }));
   const productByName = new Map<string, string>();
   for (const g of live) for (const m of g.mats) {
-    const n = normMaterialName(m.sub_item || m.item || "");
-    if (n && m.product_id != null) productByName.set(n, `p:${m.product_id}`);
+    const n = materialMergeName(m.sub_item || m.item || "");
+    const pid = mergeProductId(m);
+    if (n && pid != null) productByName.set(n, `p:${pid}`);
   }
   const by = new Map<string, AccumulatedMaterial>();
   for (const g of live) for (const m of g.mats) {
-    const norm = normMaterialName(m.sub_item || m.item || "");
-    const key = m.product_id != null ? `p:${m.product_id}` : (productByName.get(norm) ?? (norm ? `n:${norm}` : ""));
+    const norm = materialMergeName(m.sub_item || m.item || "");
+    const pid = mergeProductId(m);
+    const key = pid != null ? `p:${pid}` : (productByName.get(norm) ?? (norm ? `n:${norm}` : ""));
     if (!key) continue;
     const cur = by.get(key) ?? { key, item: m.sub_item || m.item, budget: 0, committed: 0, scopes: [], mats: [] };
     // effectiveSpendRate (live quote first), NOT the sub-only blend: committed

@@ -5,7 +5,7 @@ import {
   budgetMoney, poLineBudgetMoney,
   unexpectedSpendDrill, combinedUnexpectedSpendDrill, withCombinedOverspend,
   computeForecast, contractTotals, totalChange, labourProfit, labourDrill, addForecasts, prelimLabourCertified,
-  prelimsDrill, quoteSavingsOf, isPrelimMaterial,
+  prelimsDrill, quoteSavingsOf, isPrelimMaterial, withoutBlockName, materialMergeName,
   type UnpricedLine, type Forecast, type PrelimsSummary,
 } from "./commercials";
 import type { ApplicationForPayment, ContractItem, MaterialWithCommitment, POLine, ProjectCommercial } from "../../shared/types";
@@ -84,6 +84,44 @@ test("an unlinked row joins the linked row of the same wording", () => {
   assert.equal(accumulateMaterials(oneScope([
     mat({ item: "Capping", cost: 10, total_units: 10, committed_qty: 40, product_id: 3 }),
     mat({ item: "capping ", cost: 10, total_units: 50, committed_qty: 10 }),
+  ])).length, 1);
+});
+
+// The live Dallas Rd case: each block's bill names its block, and the B/C/D
+// copies are linked to a master product made per block (43, 45) — so neither
+// wording nor product link matched across the site.
+const TAPERED = "CTF/SCHEME/1 - Tapered Insulation Scheme TT44, Fall 1:60, Straight Falls with Mitres to Tapered Gutter (110-200mm)";
+
+test("a line naming its block merges with the same material on the other blocks", () => {
+  const acc = accumulateMaterials([
+    { scope: "26001", mats: [mat({ item: TAPERED, cost: 114.11, total_units: 210, committed_qty: 210 })] },
+    { scope: "26002", mats: [mat({ item: `Block C ${TAPERED}`, cost: 129.58, total_units: 180.3, committed_qty: 180, product_id: 43 })] },
+    { scope: "26003", mats: [mat({ item: `Block D ${TAPERED}`, cost: 124.43, total_units: 166, committed_qty: 166, product_id: 45 })] },
+  ]);
+  assert.equal(acc.length, 1);
+  assert.deepEqual(acc[0].scopes, ["26001", "26002", "26003"]);
+});
+
+test("block wording comes out of the name, wherever it sits", () => {
+  assert.equal(withoutBlockName(`Block C ${TAPERED}`), TAPERED);
+  assert.equal(withoutBlockName("Block B - Latchways Mansafe Systems"), "Latchways Mansafe Systems");
+  assert.equal(withoutBlockName("Lightning Protection - Block B"), "Lightning Protection");
+  assert.equal(withoutBlockName("Lightening Protention for Blocks C"), "Lightening Protention");
+  assert.equal(withoutBlockName("Latchways Solidrail (Block B Mansafe)"), "Latchways Solidrail (Mansafe)");
+});
+
+test("a spec that merely contains the word block is left alone", () => {
+  for (const s of ["Thermalite block 7N", "Concrete Block 100mm", "MG4BLK - Euroroof Torch-On Cap Sheet"]) {
+    assert.equal(withoutBlockName(s), s);
+  }
+  assert.notEqual(materialMergeName("Thermalite block 7N"), materialMergeName("Thermalite"));
+});
+
+test("a product link still merges when the wording names no block", () => {
+  // Withholding the product id is only for block-named wording.
+  assert.equal(accumulateMaterials(oneScope([
+    mat({ item: "Pro Drain P-110 SBS", cost: 10, total_units: 10, committed_qty: 0, product_id: 7 }),
+    mat({ item: "PRO-DRAIN-P-110 (outlet)", cost: 10, total_units: 10, committed_qty: 0, product_id: 7 }),
   ])).length, 1);
 });
 

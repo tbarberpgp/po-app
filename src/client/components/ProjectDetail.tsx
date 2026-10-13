@@ -589,7 +589,7 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
               <Kpi label="Remaining" value={fmtMoney(summary.remaining_total)}
                 sub={summary.remaining_total < 0 ? `Over by ${fmtMoney(Math.abs(summary.remaining_total))}` : "Against the priced budget"}
                 tone={summary.remaining_total < 0 ? "danger" : summary.remaining_total === 0 ? "success" : "default"} />
-              <DrillKpi label="Unpriced spend" value={fmtMoney(summary.unpriced_spend)}
+              <DrillKpi label="Off-BOQ spend" value={fmtMoney(summary.unpriced_spend)}
                 sub={summary.unpriced_spend > 0 ? "Outside the BOQ" : "None"}
                 tone={summary.unpriced_spend > 0 ? "danger" : "default"}
                 onOpen={() => {
@@ -605,7 +605,7 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
                         : null),
                     }];
                   }
-                  setDrill({ title: "Unpriced spend", value: fmtMoney(summary.unpriced_spend), ...body });
+                  setDrill({ title: "Off-BOQ spend", value: fmtMoney(summary.unpriced_spend), ...body });
                 }} />
               {quotedMats.length > 0 && (
                 <DrillKpi
@@ -786,7 +786,7 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
                                     </span>
                                   ) : (
                                     <span className="pill warn" style={{ fontSize: 10 }}
-                                      title="Added on a purchase order, not in the priced BOQ. Its cost sits under Unpriced spend until someone assigns the PO line to a budget item.">
+                                      title="Added on a purchase order, not in the priced BOQ. Its cost sits under Off-BOQ spend until someone assigns the PO line to a budget item.">
                                       off-BOQ
                                     </span>
                                   )}
@@ -898,7 +898,7 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
                               <div style={{ fontSize: 10, color: m.off_boq.coded_to_item ? "var(--muted)" : "var(--danger)" }}
                                 title={m.off_boq.coded_to_item
                                   ? `Ordered on POs and coded to "${m.off_boq.coded_to_item}". This money is already counted in that budget line's committed spend — don't add it on top.`
-                                  : "Ordered on POs outside the priced BOQ. This money is already counted in the project's Unpriced spend and forecast final cost."}>
+                                  : "Ordered on POs outside the priced BOQ. This money is already counted in the project's Off-BOQ spend and forecast final cost."}>
                                 {fmtMoney(qtyMode === "calledoff" ? m.off_boq.called_off_value : m.off_boq.committed_value)} spent
                               </div>
                             )}

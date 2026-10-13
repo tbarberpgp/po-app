@@ -13,6 +13,8 @@ export type GroupMaterialExportRow = {
   boqQty: number;
   committedQty: number;
   deliveredQty: number;
+  toOrderQty: number;
+  toOrderValue: number;
   budget: number;
   committed: number;
   variance: number;
@@ -26,11 +28,11 @@ export function generateGroupMaterialsXlsx(siteCode: string, siteName: string, r
   aoa.push([siteName]);
   aoa.push([`Exported ${new Date().toLocaleString("en-GB")}`]);
   aoa.push([]);
-  aoa.push(["Material", "Type", "Supplier", "Unit", "BOQ qty", "Committed qty", "Delivered qty", "Budget £", "Committed £", "Variance £", "Status", "Blocks"]);
+  aoa.push(["Material", "Type", "Supplier", "Unit", "BOQ qty", "Committed qty", "Delivered qty", "To order qty", "To order £", "Budget £", "Committed £", "Variance £", "Status", "Blocks"]);
   for (const r of rows) {
     aoa.push([
       r.item, r.type, r.supplier, r.unit ?? "",
-      r.boqQty || null, r.committedQty || null, r.deliveredQty || null,
+      r.boqQty || null, r.committedQty || null, r.deliveredQty || null, r.toOrderQty || null, r.toOrderValue || null,
       r.budget || null, r.committed || null, r.variance || null,
       r.status, r.blocks,
     ]);
@@ -38,7 +40,7 @@ export function generateGroupMaterialsXlsx(siteCode: string, siteName: string, r
   const ws = XLSX.utils.aoa_to_sheet(aoa);
   ws["!cols"] = [
     { wch: 40 }, { wch: 22 }, { wch: 26 }, { wch: 7 },
-    { wch: 11 }, { wch: 13 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 12 },
+    { wch: 11 }, { wch: 13 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 12 },
     { wch: 14 }, { wch: 14 },
   ];
   const wb = XLSX.utils.book_new();
