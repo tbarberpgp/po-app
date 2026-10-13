@@ -186,7 +186,7 @@ function senderDmarcFailed(message: ForwardableEmailMessage): boolean {
 export async function handleInboundEmail(
   message: ForwardableEmailMessage,
   env: Env,
-  opts: { noReply?: boolean } = {},
+  opts: { noReply?: boolean; labourSupplierId?: number | null } = {},
 ): Promise<void> {
   // When the message was PULLED from a company mailbox via Graph (rather than
   // delivered to us directly), suppress every auto-reply — the original sender
@@ -322,10 +322,20 @@ export async function handleInboundEmail(
     }
   } else {
     // Incoming labour:
+    //   0 — pulled from a subbie's own mailbox folder: the folder decides
     //   A — sender's domain is a labour supplier (subbie sent direct)
     //   B — sender is PowerGrid staff: it's a forward, detect the subbie
     //   C — unknown sender → reject
-    supplier = await supplierByDomain(env, senderDomain);
+    if (opts.labourSupplierId) {
+      supplier = await env.DB.prepare(
+        "SELECT id, name, contact_email FROM suppliers WHERE id = ? AND is_labour_supplier = 1",
+      ).bind(opts.labourSupplierId).first<LabourSupplier>();
+      // Thrown, not swallowed: the pull records it as failed on the Admin card,
+      // where a mistyped supplier id in the folder mapping gets seen.
+      if (!supplier) throw new Error(`folder is mapped to supplier ${opts.labourSupplierId}, which isn't a labour supplier`);
+    } else {
+      supplier = await supplierByDomain(env, senderDomain);
+    }
     if (!supplier) {
       if (isPgStaff) {
         const pgDomains = new Set<string>([senderDomain].filter(Boolean));

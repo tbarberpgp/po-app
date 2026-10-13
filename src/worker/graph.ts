@@ -55,11 +55,19 @@ const WINDOW_MAX_DAYS = 30;
 const PAGE_SIZE = 50;
 const MAX_PAGES = 10;
 
-type MailboxConfig = { mailbox: string; as: string; folder: string };
+type MailboxConfig = { mailbox: string; as: string; folder: string; supplier: number | null };
 
 /** Parse MS_GRAPH_MAILBOXES — a JSON array mapping each source mailbox to the
  *  app address it should be ingested as (which drives handleInboundEmail's
- *  recipient routing). `folder` defaults to the Inbox. */
+ *  recipient routing). `folder` defaults to the Inbox; it may be a well-known
+ *  name, a Graph folder id, or a display-name path such as "Labour/Cladders".
+ *
+ *  `supplier` (a labour supplier's id) ties a folder to one subcontractor:
+ *  Accounts' mail rules file each subbie into its own folder under Labour, and
+ *  whoever sent it — the subbie, or Tom/Angela passing it on — everything in
+ *  that folder is that subbie's. Sender matching can't do this: Cladders bill
+ *  from a gmail address and their staff from others, and a forward from PG
+ *  staff carries no subbie address at all. */
 function parseMailboxes(env: Env): MailboxConfig[] {
   if (!env.MS_GRAPH_MAILBOXES) return [];
   try {
@@ -70,6 +78,7 @@ function parseMailboxes(env: Env): MailboxConfig[] {
         mailbox: String(m?.mailbox ?? "").trim(),
         as: String(m?.as ?? "").trim(),
         folder: String(m?.folder ?? "inbox").trim() || "inbox",
+        supplier: Number.isInteger(Number(m?.supplier)) && Number(m?.supplier) > 0 ? Number(m.supplier) : null,
       }))
       .filter((m) => m.mailbox && m.as);
   } catch {
@@ -120,6 +129,48 @@ async function getToken(env: Env): Promise<string> {
   const j = (await res.json()) as { access_token?: string };
   if (!j.access_token) throw new Error("token: no access_token in response");
   return j.access_token;
+}
+
+/** Graph addresses a folder by id or by well-known name — never by display name —
+ *  so a path like "Labour/Cladders" is walked one level at a time from the top
+ *  of the mailbox. Ids and well-known names pass straight through. */
+const WELL_KNOWN_FOLDERS = new Set([
+  "inbox", "archive", "drafts", "sentitems", "deleteditems", "junkemail", "outbox", "msgfolderroot",
+]);
+
+async function resolveFolder(token: string, mailbox: string, folder: string): Promise<string> {
+  if (WELL_KNOWN_FOLDERS.has(folder.toLowerCase())) return folder;
+  if (!/[\s/]/.test(folder) && folder.length >= 40) return folder; // a Graph folder id
+  let base = `${GRAPH}/users/${encodeURIComponent(mailbox)}/mailFolders`;
+  let id = "";
+  for (const name of folder.split("/").map((p) => p.trim()).filter(Boolean)) {
+    const filter = encodeURIComponent(`displayName eq '${name.replace(/'/g, "''")}'`);
+    const res = await fetch(`${base}?$filter=${filter}&$select=id`, { headers: { authorization: `Bearer ${token}` } });
+    if (!res.ok) throw new Error(`folder ${res.status}: ${(await res.text()).slice(0, 200)}`);
+    const j = (await res.json()) as { value?: Array<{ id?: string }> };
+    id = String(j.value?.[0]?.id ?? "");
+    if (!id) throw new Error(`folder "${folder}": no folder named "${name}"`);
+    base = `${GRAPH}/users/${encodeURIComponent(mailbox)}/mailFolders/${encodeURIComponent(id)}/childFolders`;
+  }
+  if (!id) throw new Error(`folder "${folder}": empty path`);
+  return id;
+}
+
+/** Each configured folder keeps its own place. One mailbox now feeds several
+ *  folders (Invoices, and a folder per subbie under Labour); a shared watermark
+ *  would let the first folder's run carry the rest past mail they never read. */
+function stateKey(cfg: MailboxConfig): string {
+  return `${cfg.mailbox}#${cfg.folder}`;
+}
+
+/** A subbie's folder isn't only applications: Tom files timesheets there and
+ *  Angela forwards materials invoices. Those would each become a junk labour
+ *  draft. Timesheets that ride along WITH an invoice ("Invoice & Timesheets")
+ *  are kept. Deliberately a deny-list — subbies' subjects are as often "Asgard
+ *  Projects 20 + 21" or "Fw: Cladders Ltd" as anything with "invoice" in it. */
+export function isLabourFolderNoise(subject: string): boolean {
+  if (/material/i.test(subject)) return true;
+  return /timesheet/i.test(subject) && !/\binv/i.test(subject);
 }
 
 type GraphMsg = {
@@ -174,14 +225,19 @@ async function fetchMime(token: string, mailbox: string, id: string): Promise<Ar
   return await res.arrayBuffer();
 }
 
-/** Where this mailbox has been read up to. Missing (or unreadable, if the
+/** Where this folder has been read up to. A folder with no row of its own yet
+ *  starts from its mailbox's pre-folder watermark (the row keyed on the bare
+ *  address, from before each folder kept its own), so switching to per-folder
+ *  state neither skips nor re-reads. Missing both (or unreadable, if the
  *  migration hasn't run yet) falls back to the bootstrap window rather than to
  *  the beginning of time — dedupe then keeps the repeat work to one row read. */
-async function watermarkFor(env: Env, mailbox: string, runStart: Date): Promise<Date> {
-  const row = await env.DB.prepare("SELECT watermark FROM graph_pull_state WHERE mailbox = ?")
-    .bind(mailbox).first<{ watermark: string }>().catch(() => null);
-  const t = row?.watermark ? new Date(row.watermark) : null;
-  if (t && !Number.isNaN(t.getTime())) return t;
+async function watermarkFor(env: Env, cfg: MailboxConfig, runStart: Date): Promise<Date> {
+  for (const key of [stateKey(cfg), cfg.mailbox]) {
+    const row = await env.DB.prepare("SELECT watermark FROM graph_pull_state WHERE mailbox = ?")
+      .bind(key).first<{ watermark: string }>().catch(() => null);
+    const t = row?.watermark ? new Date(row.watermark) : null;
+    if (t && !Number.isNaN(t.getTime())) return t;
+  }
   return new Date(runStart.getTime() - BOOTSTRAP_HOURS * 3_600_000);
 }
 
@@ -192,11 +248,11 @@ async function watermarkFor(env: Env, mailbox: string, runStart: Date): Promise<
  *  that arrived during the outage is skipped the moment service returns.
  *  A message still owed a retry drags the watermark back to its arrival time, so
  *  the next run's window still covers it. */
-async function advanceWatermark(env: Env, mailbox: string, runStart: Date): Promise<void> {
+async function advanceWatermark(env: Env, key: string, runStart: Date): Promise<void> {
   let next = new Date(runStart.getTime() - OVERLAP_MINUTES * 60_000);
   const owed = await env.DB.prepare(
     "SELECT MIN(received_at) AS oldest FROM graph_pulled_messages WHERE mailbox = ? AND status = 'failed' AND attempts < ?",
-  ).bind(mailbox, MAX_ATTEMPTS).first<{ oldest: string | null }>().catch(() => null);
+  ).bind(key, MAX_ATTEMPTS).first<{ oldest: string | null }>().catch(() => null);
   const oldest = owed?.oldest ? new Date(owed.oldest) : null;
   if (oldest && !Number.isNaN(oldest.getTime()) && oldest < next) next = oldest;
   const floor = new Date(runStart.getTime() - WINDOW_MAX_DAYS * 86_400_000);
@@ -204,7 +260,7 @@ async function advanceWatermark(env: Env, mailbox: string, runStart: Date): Prom
   await env.DB.prepare(
     "INSERT INTO graph_pull_state (mailbox, watermark, updated_at) VALUES (?,?,?) " +
     "ON CONFLICT(mailbox) DO UPDATE SET watermark = excluded.watermark, updated_at = excluded.updated_at",
-  ).bind(mailbox, next.toISOString(), new Date().toISOString()).run().catch(() => {});
+  ).bind(key, next.toISOString(), new Date().toISOString()).run().catch(() => {});
 }
 
 /** Record what became of a message. `attempts` counts up on every retry so a
@@ -214,7 +270,7 @@ async function recordOutcome(
   m: GraphMsg,
   cfg: MailboxConfig,
   kind: string,
-  status: "ingested" | "failed",
+  status: "ingested" | "skipped" | "failed",
   error: string | null,
 ): Promise<void> {
   const key = m.internetMessageId || m.id;
@@ -224,7 +280,7 @@ async function recordOutcome(
     "ON CONFLICT(message_id) DO UPDATE SET status = excluded.status, attempts = graph_pulled_messages.attempts + 1, " +
     "last_error = excluded.last_error, processed_at = excluded.processed_at",
   ).bind(
-    key, cfg.mailbox, kind, m.subject.slice(0, 300), m.from, new Date().toISOString(),
+    key, stateKey(cfg), kind, m.subject.slice(0, 300), m.from, new Date().toISOString(),
     status, error ? error.slice(0, 300) : null, m.receivedDateTime || null,
   ).run().catch(() => {});
 }
@@ -270,12 +326,13 @@ export async function runMailboxPull(env: Env): Promise<PullResult> {
     // Captured BEFORE the list, so mail that lands mid-run falls inside the next
     // window rather than between the two.
     const runStart = new Date();
-    const since = await watermarkFor(env, cfg.mailbox, runStart);
+    const since = await watermarkFor(env, cfg, runStart);
     let msgs: GraphMsg[] = [];
     try {
-      msgs = await listMessages(token, cfg.mailbox, cfg.folder, since);
+      const folderId = await resolveFolder(token, cfg.mailbox, cfg.folder);
+      msgs = await listMessages(token, cfg.mailbox, folderId, since);
     } catch (e) {
-      out.errors.push(`${cfg.mailbox} list: ${e instanceof Error ? e.message : String(e)}`);
+      out.errors.push(`${cfg.mailbox} ${cfg.folder} list: ${e instanceof Error ? e.message : String(e)}`);
       continue; // watermark stays put — this window is retried next run
     }
     for (const m of msgs) {
@@ -286,12 +343,18 @@ export async function runMailboxPull(env: Env): Promise<PullResult> {
       const prior = await env.DB.prepare(
         "SELECT status, attempts FROM graph_pulled_messages WHERE message_id = ?",
       ).bind(key).first<{ status: string; attempts: number }>().catch(() => null);
-      if (prior && (prior.status === "ingested" || prior.attempts >= MAX_ATTEMPTS)) { out.skipped++; continue; }
+      if (prior && (prior.status !== "failed" || prior.attempts >= MAX_ATTEMPTS)) { out.skipped++; continue; }
+      if (cfg.supplier && kind === "labour" && isLabourFolderNoise(m.subject)) {
+        await recordOutcome(env, m, cfg, kind, "skipped", null);
+        out.skipped++;
+        continue;
+      }
       try {
         const mime = await fetchMime(token, cfg.mailbox, m.id);
         // Synthesize a Cloudflare-style inbound message: `to` = the app address
         // so routing picks the right pipeline; `from` = the real sender so labour
-        // supplier-by-domain matching still works. noReply: never email out.
+        // supplier-by-domain matching still works — unless the folder names the
+        // subbie, which then wins outright. noReply: never email out.
         const pseudo = {
           from: m.from || cfg.mailbox,
           to: cfg.as,
@@ -300,7 +363,10 @@ export async function runMailboxPull(env: Env): Promise<PullResult> {
           headers: new Headers(),
           setReject() {},
         };
-        await handleInboundEmail(pseudo as unknown as Parameters<typeof handleInboundEmail>[0], env, { noReply: true });
+        await handleInboundEmail(pseudo as unknown as Parameters<typeof handleInboundEmail>[0], env, {
+          noReply: true,
+          labourSupplierId: kind === "labour" ? cfg.supplier : null,
+        });
         await recordOutcome(env, m, cfg, kind, "ingested", null);
         out.ingested++;
       } catch (e) {
@@ -309,7 +375,7 @@ export async function runMailboxPull(env: Env): Promise<PullResult> {
         out.errors.push(`${cfg.mailbox} "${m.subject.slice(0, 40)}": ${msg}`);
       }
     }
-    await advanceWatermark(env, cfg.mailbox, runStart);
+    await advanceWatermark(env, stateKey(cfg), runStart);
   }
 
   await logRun(env, out);
