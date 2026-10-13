@@ -17,6 +17,7 @@ import { daysDisagree, daysLine } from "../../shared/signin-days";
 import { isCertAwaitingApproval } from "../../shared/payment-release";
 import { isExpenseSection } from "../../shared/afp-expenses";
 import { isDayworkSection } from "../../shared/afp-dayworks";
+import { dayworksTotal, isSplittableBoqLine, scaleSplit, type TimeSplitPart } from "../../shared/afp-time-split";
 import { ATTENTION_NOTE_MAX } from "../../shared/afp-attention";
 
 export function AfpView({ me }: { me: CurrentUser | null }) {
@@ -187,10 +188,10 @@ export function AfpView({ me }: { me: CurrentUser | null }) {
   /** Commit the certified figure. The amount is always explicit now — the panel
    *  pre-fills it with the claimed amount due, which is what the server used to
    *  default to when the old prompt was left blank. */
-  async function certify(amount: number, days: CertifyDays | null) {
+  async function certify(amount: number, days: CertifyDays | null, split: TimeSplitPart[]) {
     setBusy(true); setErr(null);
     try {
-      await api.certifyAfp(afp.id, { certified_amount: amount, ...(days ?? {}) });
+      await api.certifyAfp(afp.id, { certified_amount: amount, ...(days ?? {}), ...(split.length ? { time_split: split } : {}) });
       setCertifyOpen(false);
       refresh();
     }
@@ -464,6 +465,7 @@ export function AfpView({ me }: { me: CurrentUser | null }) {
             afp={afp}
             isOutgoing={isOutgoing}
             certifiedWorks={certifiedWorks}
+            lines={lines}
             hasPerLineCertified={lines.some((l) => (l.certified_percent ?? 0) > 0)}
             cisRate={detail.cis?.rate ?? null}
             busy={busy}
@@ -782,16 +784,17 @@ function Field({ label, value }: { label: string; value: React.ReactNode }) {
  * invoice/bill, so the arithmetic here mirrors recalcTotals server-side.
  */
 function CertifyPanel({
-  afp, isOutgoing, certifiedWorks, hasPerLineCertified, cisRate, busy, onCancel, onCertify,
+  afp, isOutgoing, certifiedWorks, lines, hasPerLineCertified, cisRate, busy, onCancel, onCertify,
 }: {
   afp: ApplicationForPayment;
   isOutgoing: boolean;
   certifiedWorks: number;
+  lines: AfpLine[];
   hasPerLineCertified: boolean;
   cisRate: number | null;
   busy: boolean;
   onCancel: () => void;
-  onCertify: (amount: number, days: CertifyDays | null) => void;
+  onCertify: (amount: number, days: CertifyDays | null, split: TimeSplitPart[]) => void;
 }) {
   const claimed = afp.amount_due ?? 0;
   const retPct = afp.retention_pct ?? 0;
@@ -837,14 +840,22 @@ function CertifyPanel({
   // Days given but the register not yet read (loading, or the period just
   // changed): wait, or the certificate would go through with no check recorded.
   const daysPending = !isOutgoing && invoicedDays != null && days.summary == null;
-  const canCommit = valid && !daysInvalid && !needsNote && !daysPending;
+  // What the time was spent on — a period labour claim carrying Dayworks only.
+  const timeTotal = dayworksTotal(lines);
+  const offerSplit = !isOutgoing && afp.claim_basis === "period"
+    && !(afp.prelim_heading != null && afp.claimed_amount != null) && timeTotal > 0;
+  const [splitRaw, setSplitRaw] = useState<Record<number, string>>({});
+  const split = readSplit(splitRaw, timeTotal);
+  const splitBlocked = offerSplit && (split.invalid || split.over);
+
+  const canCommit = valid && !daysInvalid && !needsNote && !daysPending && !splitBlocked;
 
   function commit() {
     if (!canCommit || busy) return;
     const recorded: CertifyDays | null = !isOutgoing && invoicedDays != null && days.summary
       ? { invoiced_days: invoicedDays, signin_from: days.summary.from, signin_to: days.summary.to, signin_note: days.note.trim() || undefined }
       : null;
-    onCertify(amount, recorded);
+    onCertify(amount, recorded, offerSplit ? split.parts : []);
   }
 
   return (
@@ -927,6 +938,8 @@ function CertifyPanel({
 
       {!isOutgoing && <DaysOnSite afpId={afp.id} state={days} onChange={setDays} invoicedDays={invoicedDays} invalid={daysInvalid} mismatch={daysMismatch} />}
 
+      {offerSplit && <TimeOnBoq afpId={afp.id} lines={lines} total={timeTotal} raw={splitRaw} onChange={setSplitRaw} split={split} />}
+
       {cisRate != null && cisRate > 0 && (
         <div className="card-bd" style={{ borderTop: "1px solid var(--line)" }}>
           <div className="muted" style={{ fontSize: 12.5 }}>
@@ -939,7 +952,8 @@ function CertifyPanel({
 
       <div className="card-bd" style={{ borderTop: "1px solid var(--line)", display: "flex", gap: 8, flexWrap: "wrap" }}>
         <button className="accent" onClick={commit} disabled={busy || !canCommit}
-          title={needsNote ? "The days on the invoice don't match the sign-in register — add a note first" : undefined}>
+          title={needsNote ? "The days on the invoice don't match the sign-in register — add a note first"
+            : splitBlocked ? "Fix the amounts placed on the BOQ lines first" : undefined}>
           {busy ? "Certifying…" : valid ? `Certify ${fmtMoney(amount)}` : "Certify"}
         </button>
         <button className="ghost" onClick={onCancel} disabled={busy}>Cancel</button>
@@ -952,6 +966,130 @@ function CertifyPanel({
 }
 
 type CertifyDays = { invoiced_days: number; signin_from: string; signin_to: string; signin_note?: string };
+
+type SplitRead = { parts: TimeSplitPart[]; placed: number; left: number; over: boolean; invalid: boolean; badLines: Set<number> };
+
+/** The amounts typed against BOQ lines, read the way the server will. */
+function readSplit(raw: Record<number, string>, total: number): SplitRead {
+  const parts: TimeSplitPart[] = [];
+  const badLines = new Set<number>();
+  for (const [id, text] of Object.entries(raw)) {
+    if (!text.trim()) continue;
+    const v = parsePositiveMoney(text);
+    if (v == null) { badLines.add(Number(id)); continue; }
+    if (v > 0) parts.push({ line_id: Number(id), amount: Math.round(v * 100) / 100 });
+  }
+  const placed = Math.round(parts.reduce((s, p) => s + p.amount, 0) * 100) / 100;
+  return { parts, placed, left: Math.round((total - placed) * 100) / 100, over: placed > total + 0.005, invalid: badLines.size > 0, badLines };
+}
+
+/**
+ * "What was this time spent on?" — inside the certify panel, for a period
+ * claim whose value is time (Dayworks). The invoice never says which work the
+ * hours were for; the person certifying usually knows. Whatever they place here
+ * moves onto those BOQ lines at certification, so Labour by section shows it;
+ * whatever they don't stays in Dayworks. The certified figure doesn't change.
+ * See shared/afp-time-split.ts.
+ */
+function TimeOnBoq({ afpId, lines, total, raw, onChange, split }: {
+  afpId: number;
+  lines: AfpLine[];
+  total: number;
+  raw: Record<number, string>;
+  onChange: React.Dispatch<React.SetStateAction<Record<number, string>>>;
+  split: SplitRead;
+}) {
+  const boq = lines.filter((l) => isSplittableBoqLine(l)).sort((a, b) => a.display_order - b.display_order);
+  const [last, setLast] = useState<{ app_number: number; parts: TimeSplitPart[] } | null>(null);
+  useEffect(() => {
+    let live = true;
+    const lineByItem = new Map(boq.map((l) => [l.contract_item_id!, l.id]));
+    api.lastTimeSplit(afpId)
+      .then((r) => {
+        if (!live || !r.from) return;
+        const parts = scaleSplit(r.items, lineByItem, total);
+        if (parts.length) setLast({ app_number: r.from.app_number, parts });
+      })
+      .catch(() => { /* the button just doesn't appear */ });
+    return () => { live = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [afpId, total]);
+
+  const sections: Array<{ name: string; lines: AfpLine[] }> = [];
+  for (const l of boq) {
+    const name = l.section?.trim() || "Other";
+    const g = sections.find((x) => x.name === name);
+    if (g) g.lines.push(l); else sections.push({ name, lines: [l] });
+  }
+  const set = (id: number, text: string) => onChange((prev) => ({ ...prev, [id]: text }));
+
+  return (
+    <div className="card-bd" style={{ borderTop: "1px solid var(--line)" }}>
+      <div className="eyebrow">What was this time spent on?</div>
+      <div style={{ fontSize: 13, marginTop: 4 }}>
+        This invoice claims <b>{fmtMoney(total)}</b> of time, filed as Dayworks because it doesn't say what the work was.
+        If you know, put it on the BOQ lines below so Labour by section shows it. Anything you leave stays in Dayworks —
+        the amount certified doesn't change.
+      </div>
+
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
+        {last && (
+          <button type="button" className="ghost tiny"
+            onClick={() => onChange(Object.fromEntries(last.parts.map((p) => [p.line_id, p.amount.toFixed(2)])))}>
+            Same split as #{last.app_number}
+          </button>
+        )}
+        {split.parts.length > 0 && (
+          <button type="button" className="ghost tiny" onClick={() => onChange({})}>Clear</button>
+        )}
+      </div>
+
+      <table className="afp-lines" style={{ marginTop: 10, width: "100%" }}>
+        <thead>
+          <tr>
+            <th style={{ textAlign: "left" }}>BOQ line</th>
+            <th className="num">Labour budget</th>
+            <th className="num" style={{ width: 150 }}>From this invoice</th>
+          </tr>
+        </thead>
+        <tbody>
+          {sections.map((g) => (
+            <Fragment key={g.name}>
+              <tr><td colSpan={3} className="muted" style={{ fontSize: 12, fontWeight: 600, paddingTop: 10 }}>{g.name}</td></tr>
+              {g.lines.map((l) => (
+                <tr key={l.id}>
+                  <td>{l.description}</td>
+                  <td className="num muted">{fmtMoney(l.contract_value)}</td>
+                  <td className="num">
+                    <input className="num" inputMode="decimal" placeholder="—" style={{ width: 130 }}
+                      aria-label={`Amount of this invoice's time for ${l.description}`}
+                      aria-invalid={split.badLines.has(l.id)}
+                      value={raw[l.id] ?? ""} onChange={(e) => set(l.id, e.target.value)} />
+                  </td>
+                </tr>
+              ))}
+            </Fragment>
+          ))}
+        </tbody>
+      </table>
+
+      <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginTop: 10, fontSize: 13 }}>
+        <span>On the BOQ: <b>{fmtMoney(split.placed)}</b></span>
+        <span>Left in Dayworks: <b style={split.over ? { color: "#b91c1c" } : undefined}>{fmtMoney(Math.max(0, split.left))}</b></span>
+      </div>
+      {split.over && (
+        <div className="flash error" style={{ marginTop: 8 }}>
+          That's {fmtMoney(split.placed - total)} more than the {fmtMoney(total)} of time on this invoice.
+        </div>
+      )}
+      {split.invalid && (
+        <div className="muted" style={{ fontSize: 12.5, marginTop: 6, color: "#b91c1c" }}>
+          Amounts must be pounds, e.g. 1,250.00.
+        </div>
+      )}
+    </div>
+  );
+}
 type DaysState = { invoicedRaw: string; from: string; to: string; note: string; summary: AfpSigninDays | null };
 
 /** "5", "4.5", "4½" → days. Whole or half days; null when it isn't a number. */

@@ -1104,9 +1104,15 @@ export const api = {
     const qs = q.toString();
     return jfetch<AfpSigninDays>(`/api/applications/${id}/signin-days${qs ? `?${qs}` : ""}`);
   },
+  /** The subcontractor's previous time split on this project, £ per contract item. */
+  lastTimeSplit: (id: number) =>
+    jfetch<{ from: { id: number; app_number: number } | null; items: Array<{ contract_item_id: number; value: number }> }>(
+      `/api/applications/${id}/last-time-split`),
   certifyAfp: (id: number, body?: {
     certified_amount?: number; notes?: string;
     invoiced_days?: number | null; signin_from?: string; signin_to?: string; signin_note?: string;
+    /** Time placed on BOQ lines at certification (shared/afp-time-split.ts). */
+    time_split?: Array<{ line_id: number; amount: number }>;
   }) =>
     jfetch<{ ok: true; certified_amount: number }>(`/api/applications/${id}/certify`, {
       method: "POST",
