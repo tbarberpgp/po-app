@@ -153,12 +153,13 @@ export function POView({ me }: { me: CurrentUser | null }) {
 
   if (!po) return <main className="muted">Loading…</main>;
 
-  // An amend after rejection can leave a PO with no tier at all; the worker
-  // then accepts any approver, so mirror that here rather than hiding the
-  // button on a PO the API would let you approve.
-  const holdsTier = po.approval_tier != null
-    ? me?.approver_tiers.includes(po.approval_tier) ?? false
-    : me?.is_approver ?? false;
+  // Mirrors mayDecide in the worker: a director can decide any tier, and an
+  // amend after rejection can leave a PO with no tier at all, which any
+  // approver may decide.
+  const holdsTier = me?.approver_tiers.includes("director")
+    || (po.approval_tier != null
+      ? me?.approver_tiers.includes(po.approval_tier) ?? false
+      : me?.is_approver ?? false);
   // A rejection isn't the end of the road: the approver who turned a PO down
   // can change their mind and approve it here, which overturns the rejection.
   const wasRejected = po.status === "rejected";
