@@ -63,7 +63,7 @@ type GTab = "overview" | "commercials" | "materials" | "programme" | "operations
 
 const qty = (n: number | null | undefined) => (n == null ? "—" : Number(n).toLocaleString("en-GB", { maximumFractionDigits: 2 }));
 
-export type MatStatus = "unpriced" | "to_order" | "part_ordered" | "on_order" | "called_off" | "part_delivered" | "delivered";
+export type MatStatus = "unpriced" | "zero_value" | "to_order" | "part_ordered" | "on_order" | "called_off" | "part_delivered" | "delivered";
 
 /** BOQ quantity not yet on order. Bills are measured to two decimals and
  *  bought in whole rolls/packs, so a shortfall inside 1% of the BOQ (622 of
@@ -98,6 +98,7 @@ const STATUS_META: Record<MatStatus, { label: string; tone: string }> = {
   part_delivered: { label: "Part-delivered", tone: "warn" },
   delivered:      { label: "Delivered",      tone: "ok" },
   unpriced:       { label: "No BOQ rate",    tone: "neutral" },
+  zero_value:     { label: "£0 on PO",       tone: "neutral" },
 };
 /** Chip filters over the combined list. "off_boq" is not a MatStatus — where a
  *  material sits in the pipeline and whether the bill priced it are different
@@ -106,7 +107,7 @@ type MatChip = MatStatus | "all" | "off_boq";
 const MAT_STATUS_CHIPS: Array<[MatChip, string]> = [
   ["all", "All"], ["to_order", "To order"], ["on_order", "On order"],
   ["called_off", "Called off"], ["part_delivered", "Part-delivered"],
-  ["delivered", "Delivered"], ["unpriced", "No BOQ rate"], ["off_boq", "Off-BOQ"],
+  ["delivered", "Delivered"], ["unpriced", "No BOQ rate"], ["zero_value", "£0 on PO"], ["off_boq", "Off-BOQ"],
 ];
 /** The chip a row's status files under. "To order" takes part-ordered lines
  *  too — anything with BOQ quantity still to buy — so a line 31% bought can't
@@ -125,7 +126,7 @@ function splitProductCode(name: string): { code: string | null; text: string } {
 
 const STATUS_BAR: Record<MatStatus, string> = {
   delivered: "#2f9e44", part_delivered: "var(--warn)", on_order: "var(--accent)", part_ordered: "var(--warn)",
-  called_off: "var(--accent)", to_order: "#cbd2d9", unpriced: "#cbd2d9",
+  called_off: "var(--accent)", to_order: "#cbd2d9", unpriced: "#cbd2d9", zero_value: "#cbd2d9",
 };
 
 /**
@@ -444,7 +445,10 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
         // A coded row's money is already inside its budget line's variance —
         // showing it again here read as fresh overspend.
         delta: v.codedToItem && v.budget < 0.005 ? 0 : v.committed + toOrderValue - v.budget,
-        status: statusOfMat({ ...v, toOrderQty }),
+        // Bought at £0 with no BOQ line behind it — "Customer Collection", "Free
+        // Supplier Delivery", artwork instructions copied off a basket. Nothing
+        // is missing a price, so it mustn't read like a BOQ line awaiting one.
+        status: !v.priced && v.mats.every((x) => x.off_boq) ? "zero_value" as const : statusOfMat({ ...v, toOrderQty }),
       }))
       .sort((a, b) => b.budget - a.budget);
   }, [data, scopeMembers]);
