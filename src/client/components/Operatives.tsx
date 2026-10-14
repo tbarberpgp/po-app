@@ -21,23 +21,22 @@ function sentVia(r: { email: boolean; sms: boolean }): string | null {
   return parts.length ? parts.join(" & ") : null;
 }
 
-// Sites to assign an operative to. Contracts that share a physical site are
-// grouped — RAMS/sign-ins route to the group's base project — so offer one entry
-// per group plus each standalone contract. The value is the project id assignment attaches to.
+// Sites to assign an operative to: every contract on its own, so a block of a
+// grouped site (Dallas Rd 26001 / 26002 / 26003) can be picked directly. The
+// server treats any block as the whole site — RAMS, sign-in and inductions all
+// resolve to the group's base — so this only decides which contract they're on.
+// Grouped contracts carry the site name so the blocks read as one site.
 type ProjList = Awaited<ReturnType<typeof api.listProjects>>;
 type GroupList = Awaited<ReturnType<typeof api.opsSiteGroups>>;
 function siteOptionsFrom(projects: ProjList, groups: GroupList): { value: string; label: string }[] {
-  const memberIds = new Set<string>();
-  for (const g of groups) for (const m of g.members) memberIds.add(m.id);
-  const opts: { value: string; label: string }[] = [];
-  for (const g of groups) {
-    const value = g.base_project_id || g.members[0]?.id;
-    if (value && g.members.length) opts.push({ value, label: g.name });
-  }
-  for (const p of projects) {
-    if (!memberIds.has(p.id)) opts.push({ value: p.id, label: `${p.code} — ${p.name}` });
-  }
-  return opts.sort((a, b) => a.label.localeCompare(b.label));
+  const siteOf = new Map<string, string>();
+  for (const g of groups) for (const m of g.members) siteOf.set(m.id, g.name);
+  return projects
+    .map((p) => {
+      const site = siteOf.get(p.id);
+      return { value: p.id, label: `${p.code} — ${p.name}${site ? ` (${site})` : ""}` };
+    })
+    .sort((a, b) => a.label.localeCompare(b.label));
 }
 
 export function Operatives({ me }: { me: CurrentUser | null }) {
@@ -509,10 +508,8 @@ function RamsSection({ id, rams, canEdit, hasEmail, hasPhone, onChanged }: { id:
     api.opsSiteGroups().then(setGroups).catch(() => setGroups([]));
   }, [canEdit]);
 
-  // Contracts that share a physical site are grouped — RAMS, sign-ins and
-  // deliveries route to the group's base project. So offer the combined site
-  // (one entry per group) rather than each block; standalone contracts stay on
-  // their own. The option value is the project RAMS actually attach to.
+  // Every contract is offered on its own; a block of a grouped site loads the
+  // group's RAMS, because the RAMS route resolves to the base project.
   const siteOptions = useMemo(() => siteOptionsFrom(projects, groups), [projects, groups]);
   useEffect(() => {
     setPicks(new Set()); setSiteRams([]);

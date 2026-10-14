@@ -3064,7 +3064,10 @@ operations.post("/deliveries/:id/reassign", async (c) => {
 
 // ── RAMS / safety documents ──────────────────────────────────────────────────
 operations.get("/:projectId/rams", async (c) => {
-  const projectId = await opsBase(c.env, c.req.param("projectId"));
+  const scope = await siteScope(c.env, c.req.param("projectId"));
+  const projectId = scope.baseId;
+  // The crew is everyone on any block of the site, not just the base contract.
+  const crewPh = scope.memberIds.map(() => "?").join(",");
   let rows: { results: Record<string, unknown>[] };
   try {
     // Post-0055: includes expiry_date.
@@ -3100,17 +3103,17 @@ operations.get("/:projectId/rams", async (c) => {
   try {
     const monthAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
     const crewRow = await c.env.DB.prepare(
-      "SELECT COUNT(*) AS n FROM operatives WHERE assigned_project_id = ? AND archived_at IS NULL",
-    ).bind(projectId).first<{ n: number }>();
+      `SELECT COUNT(*) AS n FROM operatives WHERE assigned_project_id IN (${crewPh}) AND archived_at IS NULL`,
+    ).bind(...scope.memberIds).first<{ n: number }>();
     crew = crewRow?.n ?? 0;
     const signs = await c.env.DB.prepare(
       `SELECT s.rams_id AS rams_id, COUNT(DISTINCT s.operative_id) AS n
          FROM operative_rams_signs s
          JOIN operatives o ON o.id = s.operative_id
         WHERE s.project_id = ? AND s.signed_at IS NOT NULL AND s.signed_at >= ?
-          AND o.assigned_project_id = ? AND o.archived_at IS NULL
+          AND o.assigned_project_id IN (${crewPh}) AND o.archived_at IS NULL
         GROUP BY s.rams_id`,
-    ).bind(projectId, monthAgo, projectId).all<{ rams_id: number; n: number }>();
+    ).bind(projectId, monthAgo, ...scope.memberIds).all<{ rams_id: number; n: number }>();
     for (const r of signs.results) signedByDoc.set(r.rams_id, r.n);
     // Docs that have been distributed at all (any request, signed or not) — drives
     // the "NEW · UNDISTRIBUTED" badge.
@@ -3131,9 +3134,9 @@ operations.get("/:projectId/rams", async (c) => {
               o.name AS operative_name, o.company AS operative_company
          FROM operative_quals q
          JOIN operatives o ON o.id = q.operative_id
-        WHERE o.assigned_project_id = ? AND o.archived_at IS NULL AND q.verified_at IS NOT NULL
+        WHERE o.assigned_project_id IN (${crewPh}) AND o.archived_at IS NULL AND q.verified_at IS NOT NULL
         ORDER BY q.expiry_date IS NULL, q.expiry_date`,
-    ).bind(projectId).all<Record<string, unknown>>();
+    ).bind(...scope.memberIds).all<Record<string, unknown>>();
     operativeCerts = certs.results;
   } catch (e) {
     console.warn("operative certs skipped:", e instanceof Error ? e.message : e);

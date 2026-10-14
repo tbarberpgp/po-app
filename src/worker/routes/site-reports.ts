@@ -517,17 +517,20 @@ async function deliveriesDetail(env: Env, projectId: string, start: string, end:
 }
 
 /** Outstanding RAMS acknowledgements: pending (unsigned) requests on active RAMS
- *  for operatives currently assigned to the project. */
+ *  for operatives currently assigned to the site. A grouped site counts as one —
+ *  its RAMS sit on the base, and its crew may be on any of the blocks. */
 async function ramsOutstanding(env: Env, projectId: string): Promise<number> {
   try {
+    const ids = await signinScope(env, projectId);
+    const ph = ids.map(() => "?").join(",");
     const r = await env.DB.prepare(
       `SELECT COUNT(*) AS n
          FROM operative_rams_signs s
          JOIN operatives o ON o.id = s.operative_id
          JOIN rams_documents d ON d.id = s.rams_id
-        WHERE s.project_id = ? AND s.signed_at IS NULL AND d.active = 1
-          AND o.assigned_project_id = ? AND o.archived_at IS NULL`,
-    ).bind(projectId, projectId).first<{ n: number }>();
+        WHERE s.project_id IN (${ph}) AND s.signed_at IS NULL AND d.active = 1
+          AND o.assigned_project_id IN (${ph}) AND o.archived_at IS NULL`,
+    ).bind(...ids, ...ids).first<{ n: number }>();
     return r?.n ?? 0;
   } catch { return 0; }
 }
