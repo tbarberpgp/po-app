@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Link, NavLink } from "react-router-dom";
 import { useTheme } from "../lib/theme";
 import type { CurrentUser } from "../../shared/types";
@@ -169,8 +169,20 @@ export function Topbar({
   status?: ReactNode;
   actions?: ReactNode;
 }) {
+  // Publish the topbar's height so in-page bars (.sticky-bar) can stick just
+  // under it rather than sliding beneath it. It wraps on narrow screens, so
+  // it's measured, not hard-coded.
+  const ref = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const root = document.documentElement;
+    const ro = new ResizeObserver(() => root.style.setProperty("--topbar-h", `${el.offsetHeight}px`));
+    ro.observe(el);
+    return () => { ro.disconnect(); root.style.removeProperty("--topbar-h"); };
+  }, []);
   return (
-    <header className="topbar">
+    <header className="topbar" ref={ref}>
       <div className="title-block">
         {crumbs && <div className="crumbs">{crumbs}</div>}
         <h1>

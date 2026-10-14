@@ -855,7 +855,7 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
                 <button className="btn ghost tiny" onClick={exportMaterials} disabled={combinedMaterials.length === 0} title="Export to Excel">Export ⤓</button>
               </div>
               {combinedMaterials.length > 0 && (
-                <div className="row" style={{ gap: 8, flexWrap: "wrap", padding: "0 16px 12px", alignItems: "center" }}>
+                <div className="row sticky-bar" style={{ gap: 8, flexWrap: "wrap", padding: "8px 16px 12px", alignItems: "center", borderBottom: "1px solid var(--line)" }}>
                   {[MAT_STATUS_CHIPS.filter(([s]) => s !== "off_boq"), MAT_STATUS_CHIPS.filter(([s]) => s === "off_boq")].map((chips, gi) => (
                     <div key={gi} className="seg" style={{ flexWrap: "wrap" }}
                       title={gi === 1 ? "Bought on a PO with no budget line behind it — overlaps the stages, so it isn't part of All's total" : undefined}>
