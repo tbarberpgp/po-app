@@ -172,7 +172,7 @@ export function POsList({ me }: { me: CurrentUser | null }) {
         )}
 
         <div className="card">
-          <div className="card-hd" style={{ flexWrap: "wrap", gap: 10 }}>
+          <div className="card-hd sticky-bar" style={{ flexWrap: "wrap", gap: 10 }}>
             <h2>All purchase orders</h2>
             <span className="pill neutral">{shown.length}{shown.length !== rows.length ? ` of ${rows.length}` : ""}</span>
             {shown.length > 0 && <span className="muted" style={{ fontSize: 12.5 }}>{fmtMoney(total)}</span>}

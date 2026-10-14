@@ -210,7 +210,7 @@ export function SuppliersPage({ me }: { me: CurrentUser | null }) {
           <KpiSmall label="Suspended" value={byStatus.suspended} tone="danger" />
         </div>
 
-        <div className="row" style={{ margin: "4px 0 12px", gap: 8, alignItems: "center" }}>
+        <div className="row sticky-bar on-paper" style={{ margin: "4px 0 0", padding: "0 0 12px", gap: 8, alignItems: "center" }}>
           <div className="seg">
             <button className={`seg-btn${section === "materials" ? " active" : ""}`} onClick={() => setSection("materials")}>
               Materials suppliers ({materials.length})

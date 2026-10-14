@@ -287,6 +287,8 @@ a:hover { text-decoration: underline; }
   z-index: 5;
   background: var(--card);
 }
+.sticky-bar.on-paper { background: var(--paper); }   /* a bar sitting on the page, not in a card */
+.card > .sticky-bar:first-child { border-radius: var(--radius-lg) var(--radius-lg) 0 0; }
 .topbar .actions { display: flex; align-items: center; gap: 8px; }
 
 /* Main content area. No width cap: the data screens are wide tables and a

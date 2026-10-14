@@ -470,7 +470,7 @@ export function Reports() {
         </div>
 
         <div className="card">
-          <div className="card-hd">
+          <div className="card-hd sticky-bar">
             <h2>Reports</h2>
             <span className="pill">{filtered.length}</span>
             <span className="grow" />

@@ -49,7 +49,7 @@ export function OwnedPlantPage({ me }: { me: CurrentUser | null }) {
         {showNew && <NewOwnedPlant projects={projects} onClose={() => setShowNew(false)} onSaved={() => { setShowNew(false); refresh(); }} />}
 
         <div className="card" style={{ marginTop: rows.length > 0 ? 16 : 0 }}>
-          <div className="card-hd" style={{ flexWrap: "wrap", gap: 10 }}>
+          <div className="card-hd sticky-bar" style={{ flexWrap: "wrap", gap: 10 }}>
             <h2 style={{ fontSize: 17 }}>Register</h2><span className="pill">{rows.length}</span>
             <span className="grow" />
             {rows.length > 0 && <input className="input" placeholder="Search name, asset no, category" value={q} onChange={(e) => setQ(e.target.value)} style={{ width: 240, maxWidth: "50%" }} />}

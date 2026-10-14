@@ -171,7 +171,7 @@ export function Operatives({ me }: { me: CurrentUser | null }) {
           />
         )}
         <div className="card">
-          <div className="card-hd">
+          <div className="card-hd sticky-bar">
             <h2>Register</h2>
             <span className="pill">{rows.length}</span>
             <span className="grow" />
