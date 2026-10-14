@@ -279,6 +279,14 @@ a:hover { text-decoration: underline; }
   gap: 12px;
 }
 .topbar .title-block { flex: 1; min-width: 0; }
+/* A filter row that stays in view while its list scrolls — pinned just under
+   the topbar, and only for as long as its card is on screen. */
+.sticky-bar {
+  position: sticky;
+  top: var(--topbar-h, 0px);
+  z-index: 5;
+  background: var(--card);
+}
 .topbar .actions { display: flex; align-items: center; gap: 8px; }
 
 /* Main content area. No width cap: the data screens are wide tables and a
@@ -1210,6 +1218,7 @@ input[type="number"] { appearance: textfield; -moz-appearance: textfield; }
   }
 
   /* The page topbar can't be sticky under the mobile header — stack it. */
+  .sticky-bar { top: 59px; }   /* under .mobile-topbar — the page topbar scrolls away here */
   .topbar { position: static; padding: 14px 16px; flex-wrap: wrap; align-items: flex-start; gap: 10px 12px; }
   /* Row 1: title + Light/Dark toggle (top-right); Row 2: action buttons full-width. */
   .topbar .theme-toggle { order: 0; flex-shrink: 0; }
