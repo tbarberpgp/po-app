@@ -630,8 +630,10 @@ operatives.post("/:id/site-induction", async (c) => {
   if (denied) return denied;
   const id = c.req.param("id");
   const body = await c.req.json<{ project_id?: string; done?: boolean }>().catch(() => ({} as { project_id?: string; done?: boolean }));
-  const projectId = (body.project_id ?? "").trim();
-  if (!projectId) return c.json({ error: "project_id required" }, 400);
+  const requested = (body.project_id ?? "").trim();
+  if (!requested) return c.json({ error: "project_id required" }, 400);
+  // One induction per physical site — recorded on the base, where the crew view reads it.
+  const projectId = (await siteScope(c.env, requested)).baseId;
   if (body.done === false) {
     await c.env.DB.prepare("DELETE FROM site_inductions WHERE project_id = ? AND operative_id = ?").bind(projectId, id).run();
     return c.json({ ok: true, site_inducted: false });
@@ -647,7 +649,10 @@ operatives.post("/:id/site-induction", async (c) => {
  *  extra): open a pending request for every active RAMS doc there, re-open any
  *  signature older than a month, and email/SMS their profile link so they
  *  actually receive them. No RAMS on the site → nothing to do. */
-async function openSiteRams(env: Env, id: string, projectId: string, actor: string): Promise<void> {
+async function openSiteRams(env: Env, id: string, siteProjectId: string, actor: string): Promise<void> {
+  // A block of a grouped site (e.g. Dallas Rd 26002) holds no RAMS of its own —
+  // they live on the group's base, so queue from there.
+  const projectId = (await siteScope(env, siteProjectId)).baseId;
   const now = new Date().toISOString();
   const monthAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
   const docs = await env.DB.prepare(
@@ -943,11 +948,13 @@ operatives.post("/:id/rams", async (c) => {
   const body = await c.req.json<{ rams_id?: number; project_id?: string }>();
   if (!body.rams_id || !body.project_id) return c.json({ error: "rams_id and project_id required" }, 400);
   const now = new Date().toISOString();
+  // Stamp the base: the site's RAMS screen counts signatures there, whichever block was picked.
+  const siteId = (await siteScope(c.env, body.project_id)).baseId;
   await c.env.DB.prepare(
     `INSERT INTO operative_rams_signs (id, operative_id, rams_id, project_id, requested_at, requested_by)
      VALUES (?,?,?,?,?,?)
      ON CONFLICT(operative_id, rams_id) DO NOTHING`,
-  ).bind(crypto.randomUUID(), id, body.rams_id, body.project_id, now, c.get("userEmail")).run();
+  ).bind(crypto.randomUUID(), id, body.rams_id, siteId, now, c.get("userEmail")).run();
   // Notify the operative so they actually receive the RAMS to read & sign.
   try {
     const op = await c.env.DB.prepare(

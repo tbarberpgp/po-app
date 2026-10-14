@@ -3,6 +3,7 @@ import type { Env, Variables } from "../env";
 import { normalisePhone } from "../../shared/operatives-import";
 import { signinsCarryOperativeId } from "../schema";
 import { extractQualCard, hasExtraSites, worksAt } from "./operatives";
+import { siteScope } from "./operations";
 import { computeQualityRollup, qualityDashboardHtml } from "./quality-dashboard";
 import { isSafeMediaUrl } from "../safe-url";
 import { renderCabinQitpPdf } from "./qitp-pdf";
@@ -563,11 +564,14 @@ publicOps.get("/operative/:token", async (c) => {
   let siteInduction: { project_code: string; inducted_at: string | null } | null = null;
   if (op.assigned_project_id) {
     try {
+      // The induction is recorded on the site's base, so a block of a grouped
+      // site (Dallas Rd 26002) reads it from there; the code shown stays theirs.
+      const base = (await siteScope(c.env, op.assigned_project_id)).baseId;
       const si = await c.env.DB.prepare(
-        `SELECT p.code AS project_code, i.inducted_at AS inducted_at
-           FROM projects p LEFT JOIN site_inductions i ON i.project_id = p.id AND i.operative_id = ?
-          WHERE p.id = ?`,
-      ).bind(op.id, op.assigned_project_id).first<{ project_code: string; inducted_at: string | null }>();
+        `SELECT p.code AS project_code,
+                (SELECT i.inducted_at FROM site_inductions i WHERE i.project_id = ? AND i.operative_id = ?) AS inducted_at
+           FROM projects p WHERE p.id = ?`,
+      ).bind(base, op.id, op.assigned_project_id).first<{ project_code: string; inducted_at: string | null }>();
       if (si) siteInduction = { project_code: si.project_code, inducted_at: si.inducted_at };
     } catch { /* pre-0056 */ }
   }
