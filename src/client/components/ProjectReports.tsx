@@ -184,7 +184,7 @@ export function ProjectReports({ projectId, canEdit, members }: {
       )}
 
       <div className="card">
-        <div className="card-hd">
+        <div className="card-hd sticky-bar">
           <h2 style={{ flex: 1 }}>Reports</h2>
           <div className="seg">
             <button className={`seg-btn${period === "all" ? " active" : ""}`} onClick={() => setPeriod("all")}>All</button>

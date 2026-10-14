@@ -444,7 +444,7 @@ function AttendancePanel({ projectId, canEdit, project }: { projectId: string; c
 
         {/* Attendance list */}
         <div className="card ops-attendance-card">
-          <div className="card-hd" style={{ flexWrap: "wrap", gap: 10 }}>
+          <div className="card-hd sticky-bar" style={{ flexWrap: "wrap", gap: 10 }}>
             <h2 style={{ fontSize: 17 }}>On site</h2>
             <span className="pill neutral">{onSite} here{rows.length - onSite > 0 ? ` · ${rows.length - onSite} signed out` : ""}</span>
             <span className="grow" />
@@ -919,7 +919,7 @@ function OperativesPanel({ projectId, canEdit, project }: { projectId: string; c
       )}
 
       <div className="card">
-        <div className="card-hd">
+        <div className="card-hd sticky-bar">
           <h2 style={{ fontSize: 17 }}>Operatives on site</h2>
           <span className="pill neutral">{rows.length}</span>
           <span className="muted" style={{ fontSize: 12.5 }}>Assigned to this site — induction, cards &amp; RAMS at a glance.</span>

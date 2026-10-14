@@ -676,7 +676,7 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
 
             {tab === "materials" && (
               <div className="card">
-                <div className="card-hd">
+                <div className="card-hd sticky-bar">
                   <h2 style={{ flex: 1 }}>
                     Materials
                     <span className="muted" style={{ fontWeight: 400, marginLeft: 10, fontSize: 13, fontFamily: "var(--font-sans)" }}>
@@ -2818,7 +2818,7 @@ function AfpListPanel({
           </div>
         )}
         {inDirection.length > 0 && (
-          <div className="card-bd" style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end", borderBottom: "1px solid var(--line)" }}>
+          <div className="card-bd sticky-bar" style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end", borderBottom: "1px solid var(--line)" }}>
             <div>
               <label htmlFor="afp-filter-status">Status</label>
               <select id="afp-filter-status" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
