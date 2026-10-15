@@ -3,6 +3,7 @@ import { api, fmtDate } from "../lib/api";
 import { Topbar } from "./Shell";
 import { can } from "../../shared/permissions";
 import type { CurrentUser, OwnedPlant as OwnedPlantItem } from "../../shared/types";
+import { useStickyCard } from "../lib/sticky";
 
 type ProjectOpt = { id: string; code: string; name: string };
 const TEST_TYPES = ["LOLER", "PUWER / service", "PAT", "Insurance", "Calibration", "Other"];
@@ -11,6 +12,7 @@ const statusPill = (s?: string) => (s === "expired" ? "danger" : s === "expiring
 const statusLabel = (s?: string) => (s === "expired" ? "Test expired" : s === "expiring" ? "Retest due soon" : s === "valid" ? "In test" : "No test");
 
 export function OwnedPlantPage({ me }: { me: CurrentUser | null }) {
+  const plantCardRef = useStickyCard();
   const canEdit = can(me, "delivery.edit");
   const [rows, setRows] = useState<OwnedPlantItem[]>([]);
   const [projects, setProjects] = useState<ProjectOpt[]>([]);
@@ -48,7 +50,7 @@ export function OwnedPlantPage({ me }: { me: CurrentUser | null }) {
 
         {showNew && <NewOwnedPlant projects={projects} onClose={() => setShowNew(false)} onSaved={() => { setShowNew(false); refresh(); }} />}
 
-        <div className="card" style={{ marginTop: rows.length > 0 ? 16 : 0 }}>
+        <div ref={plantCardRef} className="card" style={{ marginTop: rows.length > 0 ? 16 : 0 }}>
           <div className="card-hd sticky-bar" style={{ flexWrap: "wrap", gap: 10 }}>
             <h2 style={{ fontSize: 17 }}>Register</h2><span className="pill">{rows.length}</span>
             <span className="grow" />
@@ -62,7 +64,7 @@ export function OwnedPlantPage({ me }: { me: CurrentUser | null }) {
               {canEdit && <div style={{ marginTop: 20 }}><button className="accent" onClick={() => setShowNew(true)}>+ Add plant</button></div>}
             </div>
           ) : (
-            <table className="ops-table">
+            <table className="ops-table sticky-head">
               <thead><tr><th>Item</th><th>Category</th><th>Supplier</th><th className="center">Location</th><th className="center">Tests</th></tr></thead>
               <tbody>
                 {shown.map((r) => (

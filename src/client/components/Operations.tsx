@@ -14,6 +14,7 @@ import { poDeliveryLabel, type PoDeliveryState } from "../../shared/po-delivery-
 import { poNumbersMatch } from "../../shared/line-match";
 import { MATRIX_QUAL_TYPES, QUAL_TYPES } from "../lib/quals";
 import { generateTrainingMatrixXlsx } from "../lib/training-matrix-xlsx";
+import { useStickyCard } from "../lib/sticky";
 import type {
   CurrentUser, OpsSite, OwnedPlant, PlantLog, ProgressPhoto, Project, RamsDocument, OperativeCert,
   ProjectSiteGroup, SiteBriefing, SiteDelivery, DeliveryTicketCandidate, PoDeliveryStatus, SiteNotice, SiteSignin, Supplier,
@@ -268,6 +269,7 @@ export function OperationsSite({ me }: { me: CurrentUser | null }) {
 
 // ── Attendance + the public sign-in link / QR ────────────────────────────────
 function AttendancePanel({ projectId, canEdit, project }: { projectId: string; canEdit: boolean; project: Project | null }) {
+  const attendanceCardRef = useStickyCard();
   const [token, setToken] = useState<string | null>(null);
   const [date, setDate] = useState(todayISO());
   const [rows, setRows] = useState<SiteSignin[]>([]);
@@ -443,7 +445,7 @@ function AttendancePanel({ projectId, canEdit, project }: { projectId: string; c
         </div>
 
         {/* Attendance list */}
-        <div className="card ops-attendance-card">
+        <div ref={attendanceCardRef} className="card ops-attendance-card">
           <div className="card-hd sticky-bar" style={{ flexWrap: "wrap", gap: 10 }}>
             <h2 style={{ fontSize: 17 }}>On site</h2>
             <span className="pill neutral">{onSite} here{rows.length - onSite > 0 ? ` · ${rows.length - onSite} signed out` : ""}</span>
@@ -511,7 +513,7 @@ function AttendancePanel({ projectId, canEdit, project }: { projectId: string; c
           ) : shown.length === 0 ? (
             <div className="empty">No one matches “{q}”.</div>
           ) : (
-            <table className="ops-table">
+            <table className="ops-table sticky-head">
               <thead>
                 <tr>
                   <th>Operative</th>
@@ -761,6 +763,7 @@ function HsPackScheduleCard({ projectId, canEdit, project }: { projectId: string
 // for crews split across two jobs, adds this as an extra site they also sign in
 // at — they then show on both rosters and both sign-in lists.
 function OperativesPanel({ projectId, canEdit, project }: { projectId: string; canEdit: boolean; project: Project | null }) {
+  const crewCardRef = useStickyCard();
   const [rows, setRows] = useState<Awaited<ReturnType<typeof api.operativesByProject>>>([]);
   const [all, setAll] = useState<Awaited<ReturnType<typeof api.operatives>>>([]);
   const [pick, setPick] = useState("");
@@ -918,7 +921,7 @@ function OperativesPanel({ projectId, canEdit, project }: { projectId: string; c
         </div>
       )}
 
-      <div className="card">
+      <div ref={crewCardRef} className="card">
         <div className="card-hd sticky-bar">
           <h2 style={{ fontSize: 17 }}>Operatives on site</h2>
           <span className="pill neutral">{rows.length}</span>
@@ -1010,7 +1013,7 @@ function OperativesPanel({ projectId, canEdit, project }: { projectId: string; c
             </p>
           </div>
         ) : (
-          <table className="ops-table">
+          <table className="ops-table sticky-head">
             <thead>
               <tr>
                 <th>Name</th>

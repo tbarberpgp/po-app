@@ -13,6 +13,7 @@ const STATUS_LABEL: Record<SupplierStatus, string> = {
 };
 
 import { CIS_RATES, PAYMENT_TERMS_OPTIONS, cisRateLabel } from "../../shared/payment-terms";
+import { useStickyCard } from "../lib/sticky";
 
 const STATUS_PILL: Record<SupplierStatus, string> = {
   approved: "approved",
@@ -22,6 +23,7 @@ const STATUS_PILL: Record<SupplierStatus, string> = {
 };
 
 export function SuppliersPage({ me }: { me: CurrentUser | null }) {
+  const pageRef = useStickyCard();
   const navigate = useNavigate();
   const [rows, setRows] = useState<Supplier[]>([]);
   const [elements, setElements] = useState<Element[]>([]);
@@ -199,7 +201,7 @@ export function SuppliersPage({ me }: { me: CurrentUser | null }) {
           </>
         }
       />
-      <main>
+      <main ref={pageRef}>
         {err && <div className="flash error">{err}</div>}
         {info && <div className="flash success">{info}</div>}
 
@@ -253,7 +255,7 @@ export function SuppliersPage({ me }: { me: CurrentUser | null }) {
               </div>
             </div>
           ) : (
-            <table className="register">
+            <table className="register sticky-head">
               <thead>
                 <tr>
                   <th>Supplier</th>
