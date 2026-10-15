@@ -47,6 +47,14 @@ export function isInXero(inv: ReleasableInvoice): boolean {
   return inv.status === "pushed" || !!inv.xero_bill_id;
 }
 
+/** Set aside as a duplicate, not ours, or handed to labour. Dismissing keeps
+ *  approved_at / released_at (so a Restore lands it back where it was), which
+ *  is why the queues below have to rule it out by status — without this a
+ *  dismissed invoice stayed in "To approve" showing only a Restore button. */
+export function isDismissed(inv: ReleasableInvoice): boolean {
+  return inv.status === "dismissed";
+}
+
 /**
  * Does this invoice need an approve-for-payment before it can be signed off?
  *
@@ -71,7 +79,7 @@ export function readyForRelease(inv: ReleasableInvoice): boolean {
  * yet. This is the queue tbarber and adouty work from.
  */
 export function isAwaitingApproval(inv: ReleasableInvoice): boolean {
-  return !isInXero(inv) && !inv.released_at && readyForRelease(inv);
+  return !isDismissed(inv) && !isInXero(inv) && !inv.released_at && readyForRelease(inv);
 }
 
 /**
@@ -79,7 +87,7 @@ export function isAwaitingApproval(inv: ReleasableInvoice): boolean {
  * works from — the only invoices the push button will accept.
  */
 export function isReadyToPush(inv: ReleasableInvoice): boolean {
-  return !isInXero(inv) && !!inv.released_at;
+  return !isDismissed(inv) && !isInXero(inv) && !!inv.released_at;
 }
 
 /** Signed off, so a push (or a retry of a failed one) is permitted. */
