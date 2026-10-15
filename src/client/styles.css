@@ -2060,7 +2060,7 @@ body.rd-printing .rd-linedel, body.rd-printing .rd-addline, body.rd-printing .rd
 }
 
 /* ── Accounts / invoice-matching redesign (all scoped under .acctx) ──────── */
-.acctx { max-width: 1440px; }
+.acctx { max-width: 1760px; }
 .acctx .a-tabsrow { display:flex; align-items:center; gap:16px; border-bottom:1px solid var(--line); margin-bottom:18px; }
 .acctx .a-tab { padding:9px 2px 13px; font-size:15px; font-weight:500; color:var(--muted); cursor:pointer; border:0; border-bottom:2px solid transparent; margin-bottom:-1px; display:inline-flex; align-items:center; gap:8px; background:none; }
 .acctx .a-tab:hover { color:var(--ink); }
@@ -2068,7 +2068,9 @@ body.rd-printing .rd-linedel, body.rd-printing .rd-addline, body.rd-printing .rd
 .acctx .a-tab .cnt { font-size:11px; font-weight:700; background:var(--line); color:var(--muted); border-radius:999px; padding:1px 7px; font-variant-numeric:tabular-nums; }
 .acctx .a-tab.on .cnt { background:var(--accent-soft); color:var(--accent-2); }
 
-.acctx .a-split { display:grid; grid-template-columns:360px 1fr; gap:22px; align-items:start; }
+/* The inbox grows with the screen: at a fixed 360px every row wrapped its
+   warnings onto four or five lines and the list read as a narrow strip. */
+.acctx .a-split { display:grid; grid-template-columns:clamp(400px, 34%, 560px) minmax(0, 1fr); gap:22px; align-items:start; }
 @media (max-width:1000px){ .acctx .a-split { grid-template-columns:1fr; } }
 
 .acctx .inbox { background:var(--card); border:1px solid var(--line); border-radius:14px; overflow:hidden; position:sticky; top:14px; }
