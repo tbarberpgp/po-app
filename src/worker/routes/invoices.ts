@@ -2281,6 +2281,7 @@ invoices.post("/:id/release", async (c) => {
   const inv = await c.env.DB.prepare("SELECT * FROM invoices WHERE id = ?").bind(c.req.param("id")).first<Record<string, unknown>>();
   if (!inv) return c.json({ error: "not found" }, 404);
   if (inv.kind === "overhead" && !isAdmin(c)) return c.json({ error: "Forbidden: overheads are admin-only" }, 403);
+  if (inv.status === "dismissed") return c.json({ error: "This invoice has been dismissed. Restore it before approving it." }, 409);
 
   // Release signs off an approval — it doesn't stand in for one. Requiring the
   // first stage keeps the two signatures distinct even when one person could

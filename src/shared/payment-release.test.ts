@@ -175,6 +175,19 @@ describe("isReadyToPush / isCertReadyToPush", () => {
     assert.equal(isReadyToPush(posted), false);
   });
 
+  test("a dismissed invoice leaves both queues, whatever stage it reached", () => {
+    // Dismissing keeps the stamps so Restore can put it back; the queues must
+    // still drop it, or it sits in "To approve" with nothing to do but Restore.
+    for (const st of [
+      project({ approved_at: "a", status: "dismissed" }),
+      project({ approved_at: "a", released_at: "b", status: "dismissed" }),
+      overhead({ nominal_code: "6100", status: "dismissed" }),
+    ]) {
+      assert.equal(isAwaitingApproval(st), false, JSON.stringify(st));
+      assert.equal(isReadyToPush(st), false, JSON.stringify(st));
+    }
+  });
+
   test("a failed push leaves it in Accounts' queue to retry", () => {
     assert.equal(isReadyToPush(project({ approved_at: "a", released_at: "b" })), true);
   });
