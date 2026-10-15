@@ -6,10 +6,17 @@
 // received that never was. The same paper also routinely arrives twice (WhatsApp
 // and email both carry it), so the twin has to be recognised, not booked.
 //
+// Except: suppliers also reuse one note number across the drops of one order.
+// DEL563874 (Alumasc, PO-26008-0004) brought the rolls on one drop and the PIR
+// insulation on the next under the same number. So the same note on the SAME
+// order is let through while that order is still part delivered — see
+// `mayRebookNote`.
+//
 // Pure helpers here; the worker does the lookup. Kept in `shared/` so the rules
 // can be tested without D1.
 
 import { supplierNameOverlap, supplierNameTokens } from "./line-match";
+import { summarisePoDeliveries, type PoDeliveryRow, type PoLineRef } from "./po-delivery-status";
 
 /** Canonical form of a note number: case and punctuation dropped. Null when the
  *  text can't identify a note — blank, or words like "TBC" / "N/A" with no run
@@ -56,4 +63,28 @@ export function isSameDeliveryNote(
 export function deliveryNoteFromNotes(notes: string | null | undefined): string | null {
   const m = String(notes ?? "").match(/delivery note\s*(?:no\.?|number|#)?\s*:?\s*([A-Za-z0-9][A-Za-z0-9\-/]*)/i);
   return m ? m[1] : null;
+}
+
+/** Whether a note already booked may be booked again: every earlier booking of
+ *  it is on the order this one goes on, that order is not yet fully delivered,
+ *  and none of the lines this booking takes is already received in full.
+ *
+ *  The line check is what still catches the same paper sent twice (WhatsApp
+ *  and email): the twin re-books lines its first copy already finished. A
+ *  booking against the whole order (no line) is judged on the order alone. */
+export function mayRebookNote(
+  earlier: ReadonlyArray<{ poId: string | null }>,
+  incoming: { poId: string | null; lineIds: ReadonlyArray<number | null> },
+  poLines: readonly PoLineRef[],
+  poDeliveries: readonly PoDeliveryRow[],
+): boolean {
+  const poId = incoming.poId;
+  if (!poId || !earlier.length || earlier.some((e) => e.poId !== poId)) return false;
+  if (summarisePoDeliveries(poId, poLines, poDeliveries).state === "full") return false;
+  return incoming.lineIds.every((id) => {
+    if (id == null) return true;
+    const line = poLines.filter((l) => l.id === id && l.po_id === poId);
+    if (!line.length) return false;
+    return summarisePoDeliveries(poId, line, poDeliveries).state !== "full";
+  });
 }
