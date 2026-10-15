@@ -595,7 +595,15 @@ invoices.get("/", async (c) => {
   if (!admin) { where.push("(i.kind IS NULL OR i.kind != 'overhead')"); }
   const rows = await c.env.DB.prepare(
     `SELECT i.*, p.code AS project_code, p.name AS project_name, s.name AS matched_supplier_name,
-            s.payment_terms AS supplier_payment_terms
+            s.payment_terms AS supplier_payment_terms,
+            -- No dismissed_at column: the audit log already records it, for
+            -- both ways an invoice gets dismissed. Only looked up for
+            -- dismissed rows, through idx_audit_entity.
+            CASE WHEN i.status = 'dismissed' THEN (
+              SELECT MAX(a.created_at) FROM audit_log a
+               WHERE a.entity_type = 'invoice' AND a.entity_id = CAST(i.id AS TEXT)
+                 AND a.action IN ('dismissed', 'sent_to_labour')
+            ) END AS dismissed_at
        FROM invoices i
        LEFT JOIN projects p ON p.id = i.project_id
        LEFT JOIN suppliers s ON s.id = i.supplier_id

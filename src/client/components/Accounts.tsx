@@ -200,7 +200,7 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
 
   const visible = useMemo(() => {
     const q = search.trim().toLowerCase();
-    return rows.filter((r) => {
+    const shown = rows.filter((r) => {
       if (tab === "overheads") { if (!(r.kind === "overhead" && r.status !== "dismissed")) return false; }
       else if (tab === "held") { if (!isAwaitingApproval(r)) return false; }
       else if (tab === "ready") { if (!isReadyToPush(r)) return false; }
@@ -216,6 +216,14 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
       }
       return true;
     });
+    // Everywhere else the order is when it arrived. Dismissed is looked at for
+    // what was just set aside, so it goes by when that happened — otherwise
+    // something dismissed today sinks below everything received after it.
+    if (tab === "dismissed") {
+      const when = (r: Invoice) => r.dismissed_at ?? r.received_at ?? "";
+      shown.sort((a, b) => when(b).localeCompare(when(a)));
+    }
+    return shown;
   }, [rows, tab, search]);
 
   const sel = rows.find((r) => r.id === selId) ?? null;
@@ -362,7 +370,7 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
                         <div style={{ minWidth: 0 }}>
                           <div className="isup">{r.supplier_name || r.matched_supplier_name || "Unknown supplier"}</div>
                           <div className="imeta">
-                            <span>{r.invoice_number ? `#${r.invoice_number}` : "no #"} · {(r.invoice_date || (r.received_at ?? "")).slice(0, 10)}{r.kind === "overhead" ? " · Overhead" : ""}{r.labour_afp_id != null ? " · Sent to labour" : ""}</span>
+                            <span>{r.invoice_number ? `#${r.invoice_number}` : "no #"} · {(r.invoice_date || (r.received_at ?? "")).slice(0, 10)}{r.kind === "overhead" ? " · Overhead" : ""}{r.labour_afp_id != null ? " · Sent to labour" : ""}{tab === "dismissed" && r.dismissed_at ? ` · dismissed ${r.dismissed_at.slice(0, 10)}` : ""}</span>
                             {r.kind !== "overhead" && r.project_code && <span className="proj">{r.project_code}</span>}
                             {r.source === "email" && <span title="received by email">✉</span>}
                             {r.extract_error && <span title="couldn't auto-read">⚠</span>}

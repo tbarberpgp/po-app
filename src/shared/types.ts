@@ -1957,6 +1957,10 @@ export type Invoice = {
    *  have no order to reconcile against. */
   match?: MatchSummary | null;
   received_at: string | null;
+  /** When it was last dismissed (or sent to labour), read from the audit log on
+   *  list. Null for an invoice that isn't dismissed, or one dismissed by hand in
+   *  SQL with no audit entry. Orders the Dismissed tab. */
+  dismissed_at?: string | null;
   created_at: string;
   created_by: string | null;
 };
