@@ -57,3 +57,26 @@ export function deliveryNoteFromNotes(notes: string | null | undefined): string 
   const m = String(notes ?? "").match(/delivery note\s*(?:no\.?|number|#)?\s*:?\s*([A-Za-z0-9][A-Za-z0-9\-/]*)/i);
   return m ? m[1] : null;
 }
+
+/** Whether a booking of an already-booked note is its next page rather than a
+ *  second copy. A note can run to two pages, and each page arrives as its own
+ *  photo — DEL563874 (Alumasc) had the rolls on page 1 and the PIR insulation on
+ *  page 2, and the guard refused page 2 as if it were page 1 sent twice.
+ *
+ *  It is a later page only when it goes on the same order as every earlier
+ *  booking of the note, and books lines none of them booked. A whole-order
+ *  booking on either side covers every line, so it can't be told apart from a
+ *  twin and is refused. */
+export function isLaterPageOfNote(
+  earlier: Array<{ poId: string | null; lineId: number | null }>,
+  incoming: { poId: string | null; lineIds: Array<number | null> },
+): boolean {
+  if (!earlier.length || !incoming.poId || !incoming.lineIds.length) return false;
+  if (incoming.lineIds.some((id) => id == null)) return false;
+  const booked = new Set<number>();
+  for (const e of earlier) {
+    if (e.poId !== incoming.poId || e.lineId == null) return false;
+    booked.add(e.lineId);
+  }
+  return incoming.lineIds.every((id) => !booked.has(id as number));
+}

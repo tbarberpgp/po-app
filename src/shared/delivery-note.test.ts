@@ -3,7 +3,7 @@
 //   npm test
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { deliveryNoteKey, deliveryNoteFromNotes, isSameDeliveryNote, sameDeliveryNote } from "./delivery-note";
+import { deliveryNoteKey, deliveryNoteFromNotes, isLaterPageOfNote, isSameDeliveryNote, sameDeliveryNote } from "./delivery-note";
 
 describe("deliveryNoteKey", () => {
   test("drops case and punctuation", () => {
@@ -60,5 +60,28 @@ describe("deliveryNoteFromNotes", () => {
   });
   test("nothing when it isn't there", () => {
     assert.equal(deliveryNoteFromNotes("Checked in from WhatsApp delivery ticket"), null);
+  });
+});
+
+describe("isLaterPageOfNote", () => {
+  // DEL563874: page 1 booked lines 1883–1886, page 2 carries the PIR on 1887.
+  const page1 = [1883, 1884, 1885, 1886].map((lineId) => ({ poId: "po-4", lineId }));
+  test("page 2 on the same order with new lines is allowed", () => {
+    assert.ok(isLaterPageOfNote(page1, { poId: "po-4", lineIds: [1887] }));
+  });
+  test("the same page sent twice books the same lines, so it is refused", () => {
+    assert.ok(!isLaterPageOfNote(page1, { poId: "po-4", lineIds: [1884] }));
+    assert.ok(!isLaterPageOfNote(page1, { poId: "po-4", lineIds: [1887, 1883] }));
+  });
+  test("a different order is refused — a note belongs to one PO", () => {
+    assert.ok(!isLaterPageOfNote(page1, { poId: "po-9", lineIds: [1887] }));
+  });
+  test("a whole-order booking on either side is refused", () => {
+    assert.ok(!isLaterPageOfNote([{ poId: "po-4", lineId: null }], { poId: "po-4", lineIds: [1887] }));
+    assert.ok(!isLaterPageOfNote(page1, { poId: "po-4", lineIds: [null] }));
+    assert.ok(!isLaterPageOfNote(page1, { poId: "po-4", lineIds: [] }));
+  });
+  test("no PO on the new booking is refused", () => {
+    assert.ok(!isLaterPageOfNote(page1, { poId: null, lineIds: [1887] }));
   });
 });
