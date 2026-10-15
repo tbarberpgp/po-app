@@ -9,7 +9,7 @@ import { isSafeMediaUrl } from "../safe-url";
 import { normalisePhone } from "../../shared/operatives-import";
 import { isSandboxId } from "../sandbox";
 import { signinsCarryOperativeId, deliveriesRecordPoLink, ticketScansCarrySupplierRef, deliveriesCarryNoteNumber } from "../schema";
-import { deliveryNoteDigits, deliveryNoteFromNotes, deliveryNoteKey, isSameDeliveryNote } from "../../shared/delivery-note";
+import { deliveryNoteDigits, deliveryNoteFromNotes, deliveryNoteKey, isSameDeliveryNote, mayRebookNote } from "../../shared/delivery-note";
 import { sendReportEmail, recipientsFor } from "./site-reports";
 import { buildHsPack } from "../../shared/hs-pack-pdf";
 import { fuzzyFindPo } from "../poRef";
@@ -17,7 +17,7 @@ import { learnAliases, aliasMapsBySupplier, normText } from "../matchMemory";
 import { deliveryVariance, matchItemToLine, type VarianceLine, type PriorReceipt } from "../../shared/delivery-variance";
 import { poRefCore, supplierNameOverlap, poNumbersMatch } from "../../shared/line-match";
 import { clampRegion, cleanRegion, regionSchema, type ReadRegion } from "../../shared/read-regions";
-import { summarisePoDeliveries, lineReceivedInFull, isDeliverableLine, PO_DELIVERY_NOTE_COLUMNS, PO_DELIVERY_NOTE_JOIN, type PoDeliveryRow } from "../../shared/po-delivery-status";
+import { summarisePoDeliveries, lineReceivedInFull, isDeliverableLine, PO_DELIVERY_NOTE_COLUMNS, PO_DELIVERY_NOTE_JOIN, type PoDeliveryRow, type PoLineRef } from "../../shared/po-delivery-status";
 
 // Operations — Phase 1 (site-team basics). Authenticated app-side endpoints:
 // the supervisor's view of a site's QR/sign-in link, today's attendance,
@@ -2449,14 +2449,20 @@ operations.post("/:projectId/deliveries/ticket-candidates/:id/dismiss", async (c
  *  A note belongs to one order and is booked once; a PO taking several notes is
  *  a part-delivery and fine. Looks in all three places a note number lives: the
  *  scan a ticket check-in came from, the column hand-logged deliveries now
- *  carry, and the prose those deliveries carried before it. */
-async function deliveryNoteAlreadyBooked(env: Env, note: string | null | undefined, supplier: string | null | undefined): Promise<string | null> {
+ *  carry, and the prose those deliveries carried before it.
+ *
+ *  `incoming` is the order and lines the new booking would take: the same note
+ *  on the same order goes through while that order is still part delivered. */
+async function deliveryNoteAlreadyBooked(
+  env: Env, note: string | null | undefined, supplier: string | null | undefined,
+  incoming: { poId: string | null; lineIds: Array<number | null> },
+): Promise<string | null> {
   const digits = deliveryNoteDigits(note);
   if (!digits) return null;
   const hasCol = await deliveriesCarryNoteNumber(env);
   const like = `%${digits}%`;
   const rows = (await env.DB.prepare(
-    `SELECT d.id, d.supplier, d.notes, d.delivered_at, d.created_by, d.scan_id,
+    `SELECT d.id, d.supplier, d.notes, d.delivered_at, d.created_by, d.scan_id, d.po_id,
             COALESCE(po.po_number, d.po_number) AS po_number,
             s.delivery_note_number AS scan_dn${hasCol ? ", d.delivery_note_number AS own_dn" : ""}
        FROM site_deliveries d
@@ -2466,16 +2472,27 @@ async function deliveryNoteAlreadyBooked(env: Env, note: string | null | undefin
       ORDER BY d.id LIMIT 50`,
   ).bind(...(hasCol ? [like, like, like] : [like, like])).all<{
     id: number; supplier: string | null; notes: string | null; delivered_at: string | null; created_by: string | null;
-    scan_id: number | null; po_number: string | null; scan_dn: string | null; own_dn?: string | null;
+    scan_id: number | null; po_id: string | null; po_number: string | null; scan_dn: string | null; own_dn?: string | null;
   }>()).results;
-  const hit = rows.find((r) => [r.scan_dn, r.own_dn, deliveryNoteFromNotes(r.notes)]
+  const hits = rows.filter((r) => [r.scan_dn, r.own_dn, deliveryNoteFromNotes(r.notes)]
     .some((dn) => isSameDeliveryNote({ note, supplier }, { note: dn, supplier: r.supplier })));
-  if (!hit) return null;
+  if (!hits.length) return null;
+  const poId = incoming.poId;
+  if (poId && hits.every((h) => h.po_id === poId)) {
+    const poLines = (await env.DB.prepare("SELECT id, po_id, qty, item FROM po_lines WHERE po_id = ?")
+      .bind(poId).all<PoLineRef>()).results;
+    const poDels = (await env.DB.prepare(
+      `SELECT d.po_id, ${PO_DELIVERY_NOTE_COLUMNS} FROM site_deliveries d ${PO_DELIVERY_NOTE_JOIN} WHERE d.po_id = ?`,
+    ).bind(poId).all<PoDeliveryRow>()).results;
+    if (mayRebookNote(hits.map((h) => ({ poId: h.po_id })), incoming, poLines, poDels)) return null;
+  }
+  const hit = hits[0];
   const when = (hit.delivered_at ?? "").slice(0, 10);
   const detail = [when && `delivered ${when}`, hit.created_by && `booked by ${hit.created_by}`].filter(Boolean).join(", ");
   return `Delivery note ${String(note).trim()} is already booked${hit.po_number ? ` on ${hit.po_number}` : ""}${detail ? ` (${detail})` : ""}. `
     + "A delivery note can only be booked once. If the earlier booking is on the wrong order, move or delete it first; "
-    + "if this is the same ticket sent twice, dismiss this copy.";
+    + "if this is the same ticket sent twice, dismiss this copy. "
+    + `A later drop under the same number can go on ${hit.po_number ?? "the same order"} while it is part delivered, against lines not yet received in full.`;
 }
 
 operations.post("/:projectId/deliveries/ticket-candidates/:id/check-in", async (c) => {
@@ -2498,7 +2515,11 @@ operations.post("/:projectId/deliveries/ticket-candidates/:id/check-in", async (
 
   let ov: { supplier?: string; po_number?: string; po_id?: string; description?: string; delivered_at?: string; contract_project_id?: string; target_project_id?: string; completes_po?: string; po_link_reason?: string; po_line_id?: string; po_line_desc?: string; received_qty?: string | number; received_unit?: string; part?: string; lines?: Array<{ po_line_id?: string; po_line_desc?: string; received_qty?: string | number; received_unit?: string }> } = {};
   try { ov = await c.req.json(); } catch { /* no overrides */ }
-  const booked = await deliveryNoteAlreadyBooked(c.env, scan.delivery_note_number, ov.supplier ?? scan.supplier_name);
+  const lineIdOf = (v: string | undefined) => v && /^\d+$/.test(v) ? Number(v) : null;
+  const booked = await deliveryNoteAlreadyBooked(c.env, scan.delivery_note_number, ov.supplier ?? scan.supplier_name, {
+    poId: (ov.po_id ?? scan.matched_po_id ?? "").trim() || null,
+    lineIds: Array.isArray(ov.lines) && ov.lines.length ? ov.lines.map((l) => lineIdOf(l.po_line_id)) : [lineIdOf(ov.po_line_id)],
+  });
   if (booked) return c.json({ error: booked }, 409);
   const completesPo = ov.completes_po === "0" ? 0 : 1;
   const poLineId = ov.po_line_id && /^\d+$/.test(ov.po_line_id) ? Number(ov.po_line_id) : null;
@@ -2877,7 +2898,11 @@ operations.post("/:projectId/deliveries", async (c) => {
   const noteNumber = deliveryNoteKey(String(form.get("delivery_note_number") ?? ""))
     ? String(form.get("delivery_note_number")).trim()
     : deliveryNoteFromNotes(String(form.get("notes") ?? ""));
-  const booked = await deliveryNoteAlreadyBooked(c.env, noteNumber, String(form.get("supplier") ?? "").trim() || null);
+  const handLineId = String(form.get("po_line_id") ?? "").trim();
+  const booked = await deliveryNoteAlreadyBooked(c.env, noteNumber, String(form.get("supplier") ?? "").trim() || null, {
+    poId: String(form.get("po_id") ?? "").trim() || null,
+    lineIds: [/^\d+$/.test(handLineId) ? Number(handLineId) : null],
+  });
   if (booked) return c.json({ error: booked }, 409);
 
   let ticketKey: string | null = null;

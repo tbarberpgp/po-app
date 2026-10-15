@@ -3,7 +3,7 @@
 //   npm test
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { deliveryNoteKey, deliveryNoteFromNotes, isSameDeliveryNote, sameDeliveryNote } from "./delivery-note";
+import { deliveryNoteKey, deliveryNoteFromNotes, isSameDeliveryNote, mayRebookNote, sameDeliveryNote } from "./delivery-note";
 
 describe("deliveryNoteKey", () => {
   test("drops case and punctuation", () => {
@@ -60,5 +60,41 @@ describe("deliveryNoteFromNotes", () => {
   });
   test("nothing when it isn't there", () => {
     assert.equal(deliveryNoteFromNotes("Checked in from WhatsApp delivery ticket"), null);
+  });
+});
+
+describe("mayRebookNote", () => {
+  // PO-26008-0004 as it stood: DEL563874 booked the four rolls/adhesive lines,
+  // the PIR (1887) and two more lines still to come.
+  const po = "po-4";
+  const lines = [1883, 1884, 1885, 1886, 1887, 1888, 1889].map((id) => ({ id, po_id: po, qty: 10 }));
+  const drop1 = [1883, 1884, 1885, 1886].map((po_line_id) => ({ po_id: po, po_line_id, completes_po: 1, received_qty: 10 }));
+  const earlier = drop1.map(() => ({ poId: po }));
+  test("the next drop under the same number, on a part-delivered order, is allowed", () => {
+    assert.ok(mayRebookNote(earlier, { poId: po, lineIds: [1887] }, lines, drop1));
+  });
+  test("the same ticket sent twice re-books finished lines, so it is refused", () => {
+    assert.ok(!mayRebookNote(earlier, { poId: po, lineIds: [1884] }, lines, drop1));
+  });
+  test("topping up a line that is only part received is allowed", () => {
+    const part = [...drop1, { po_id: po, po_line_id: 1887, completes_po: 0, received_qty: 4 }];
+    assert.ok(mayRebookNote(earlier, { poId: po, lineIds: [1887] }, lines, part));
+  });
+  test("an order already fully delivered is refused", () => {
+    const all = lines.map((l) => ({ po_id: po, po_line_id: l.id, completes_po: 1, received_qty: 10 }));
+    assert.ok(!mayRebookNote(earlier, { poId: po, lineIds: [null] }, lines, all));
+  });
+  test("a whole-order receipt that closed the order is refused", () => {
+    const closed = [{ po_id: po, po_line_id: null, completes_po: 1 }];
+    assert.ok(!mayRebookNote([{ poId: po }], { poId: po, lineIds: [1887] }, lines, closed));
+  });
+  test("a different order is refused — a note belongs to one PO", () => {
+    assert.ok(!mayRebookNote(earlier, { poId: "po-9", lineIds: [1887] }, lines, drop1));
+  });
+  test("no PO on the new booking is refused", () => {
+    assert.ok(!mayRebookNote(earlier, { poId: null, lineIds: [1887] }, lines, drop1));
+  });
+  test("a line that isn't on the order is refused", () => {
+    assert.ok(!mayRebookNote(earlier, { poId: po, lineIds: [9999] }, lines, drop1));
   });
 });
