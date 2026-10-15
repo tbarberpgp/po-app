@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api, fmtDate, fmtMoney } from "../lib/api";
 import { Topbar } from "./Shell";
+import { useStickyCard } from "../lib/sticky";
 import { can } from "../../shared/permissions";
 import { displayPerson } from "../lib/people";
 import type { CurrentUser, PurchaseOrder } from "../../shared/types";
@@ -43,16 +44,7 @@ const SORTS: Record<SortKey, (r: Row) => string | number> = {
 
 export function POsList({ me }: { me: CurrentUser | null }) {
   const [rows, setRows] = useState<Row[]>([]);
-  // The column headings stick under the card's own (sticky) search bar, which
-  // wraps on narrow screens — so its height is measured into --bar-h.
-  const barObserver = useRef<ResizeObserver | null>(null);
-  const cardRef = useCallback((card: HTMLDivElement | null) => {
-    barObserver.current?.disconnect();
-    const bar = card?.querySelector<HTMLElement>(".sticky-bar");
-    if (!card || !bar) return;
-    barObserver.current = new ResizeObserver(() => card.style.setProperty("--bar-h", `${bar.offsetHeight}px`));
-    barObserver.current.observe(bar);
-  }, []);
+  const cardRef = useStickyCard();
   const [status, setStatus] = useState<string>("");
   const [err, setErr] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);

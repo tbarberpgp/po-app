@@ -7,6 +7,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api, fmtDate, fmtMoney } from "../lib/api";
 import { Topbar } from "./Shell";
+import { useStickyCard } from "../lib/sticky";
 import { can } from "../../shared/permissions";
 import type { AfpStatus, ApplicationListItem, CurrentUser, InboundApplication, Supplier } from "../../shared/types";
 
@@ -33,6 +34,7 @@ type StatusFilter = "all" | AfpStatus;
 export function ApplicationsWorkspace({ me }: { me: CurrentUser | null }) {
   const canEdit = can(me, "commercial.edit");
   const [rows, setRows] = useState<ApplicationListItem[]>([]);
+  const cardRef = useStickyCard();
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [inbound, setInbound] = useState<InboundApplication[]>([]);
   const [projects, setProjects] = useState<ProjectOption[]>([]);
@@ -141,8 +143,8 @@ export function ApplicationsWorkspace({ me }: { me: CurrentUser | null }) {
           />
         )}
 
-        <div className="card">
-          <div className="card-hd" style={{ gap: 12, flexWrap: "wrap" }}>
+        <div className="card" ref={cardRef}>
+          <div className="card-hd sticky-bar" style={{ gap: 12, flexWrap: "wrap" }}>
             <h2 style={{ flex: 1 }}>{isLabour ? "Labour applications" : "Client applications"}</h2>
             <select value={status} onChange={(e) => setStatus(e.target.value as StatusFilter)}>
               <option value="all">All statuses</option>
@@ -196,7 +198,7 @@ export function ApplicationsTable({
 }) {
   const navigate = useNavigate();
   return (
-    <table>
+    <table className="sticky-head">
       <thead>
         <tr>
           <th className="center">#</th>
@@ -296,6 +298,7 @@ export function ProjectLabourApplications({
   const [err, setErr] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
   const [open, setOpen] = useState(false);
+  const cardRef = useStickyCard();
 
   useEffect(() => {
     let live = true;
@@ -330,8 +333,8 @@ export function ProjectLabourApplications({
 
   const warn = { color: "var(--warn)", fontWeight: 600 } as const;
   return (
-    <div className="card">
-      <div className="card-hd" style={{ gap: 12, flexWrap: "wrap" }}>
+    <div className="card" ref={cardRef}>
+      <div className="card-hd sticky-bar" style={{ gap: 12, flexWrap: "wrap" }}>
         <button
           type="button"
           onClick={() => setOpen((o) => !o)}
