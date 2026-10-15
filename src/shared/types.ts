@@ -1165,7 +1165,9 @@ export type AfpDetail = {
   afp: ApplicationForPayment;
   lines: AfpLine[];
   prior_apps: Array<{
+    id: number;
     app_number: number;
+    supplier_name: string | null;
     period_end: string;
     status: AfpStatus;
     certified_amount: number | null;

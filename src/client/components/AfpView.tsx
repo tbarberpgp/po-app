@@ -584,16 +584,7 @@ export function AfpView({ me }: { me: CurrentUser | null }) {
                 </tr>
               </thead>
               <tbody>
-                {prior_apps.map((p) => (
-                  <tr key={p.app_number}>
-                    <td className="center">{p.app_number}</td>
-                    <td>{fmtDate(p.period_end)}</td>
-                    <td className="center"><span className={`pill ${statusPill(p.status)}`} style={{ fontSize: 10 }}>{p.status}</span></td>
-                    <td className="num">{p.cumulative_value != null ? fmtMoney(p.cumulative_value) : "—"}</td>
-                    <td className="num">{p.certified_amount != null ? fmtMoney(p.certified_amount) : "—"}</td>
-                    <td className="num">{p.total_invoice != null ? fmtMoney(p.total_invoice) : "—"}</td>
-                  </tr>
-                ))}
+                {prior_apps.map((p) => <PriorAppRow key={p.id} prior={p} />)}
               </tbody>
             </table>
           </div>
@@ -747,6 +738,108 @@ function LabourPayApproval({ afp, cis, certified, claimed, budget, canEdit, canR
 
 function isMosSection(s: string | null | undefined): boolean {
   return /material/i.test(s ?? "") && /site/i.test(s ?? "");
+}
+
+/** One row of "Previous applications". Click to expand it in place: its lines
+ *  and dates load on first open, with a link through to the full application. */
+function PriorAppRow({ prior: p }: { prior: AfpDetail["prior_apps"][number] }) {
+  const [open, setOpen] = useState(false);
+  const [detail, setDetail] = useState<AfpDetail | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  const toggle = () => {
+    const next = !open;
+    setOpen(next);
+    if (next && !detail) {
+      setErr(null);
+      api.getAfp(p.id).then(setDetail).catch((e) => setErr(e instanceof Error ? e.message : String(e)));
+    }
+  };
+
+  const a = detail?.afp;
+  // Only a client AfP is certified by %; a labour cert is certified at its value.
+  const showCertPct = a?.direction === "outgoing";
+  const claimed = (detail?.lines ?? []).filter((l) => Math.abs(l.cumulative_value ?? 0) >= 0.005);
+  const dates = a
+    ? ([["Submitted", a.submitted_at], ["Certified", a.certified_at], ["Paid", a.paid_at]] as const).filter(([, d]) => d)
+    : [];
+
+  return (
+    <>
+      <tr onClick={toggle} style={{ cursor: "pointer" }} title={open ? "Collapse" : "Show this application's lines"}>
+        <td className="center" style={{ whiteSpace: "nowrap" }}>
+          <button
+            type="button"
+            className="linklike"
+            aria-expanded={open}
+            aria-label={open ? `Collapse application ${p.app_number}` : `Expand application ${p.app_number}`}
+            onClick={(e) => { e.stopPropagation(); toggle(); }}
+            style={{ background: "none", border: "none", cursor: "pointer", color: "var(--muted)", padding: "0 4px 0 0", width: 18, fontSize: 14, lineHeight: 1 }}
+          >
+            {open ? "▾" : "▸"}
+          </button>
+          {p.app_number}
+        </td>
+        <td>
+          {fmtDate(p.period_end)}
+          {p.supplier_name && <div className="muted" style={{ fontSize: 11 }}>{p.supplier_name}</div>}
+        </td>
+        <td className="center"><span className={`pill ${statusPill(p.status)}`} style={{ fontSize: 10 }}>{p.status}</span></td>
+        <td className="num">{p.cumulative_value != null ? fmtMoney(p.cumulative_value) : "—"}</td>
+        <td className="num">{p.certified_amount != null ? fmtMoney(p.certified_amount) : "—"}</td>
+        <td className="num">{p.total_invoice != null ? fmtMoney(p.total_invoice) : "—"}</td>
+      </tr>
+      {open && (
+        <tr>
+          <td colSpan={6} style={{ background: "var(--card-2)", padding: "12px 16px" }}>
+            {err ? (
+              <span style={{ color: "#b91c1c" }}>Couldn't load application #{p.app_number}: {err}</span>
+            ) : !detail ? (
+              <span className="muted">Loading…</span>
+            ) : (
+              <>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 16, alignItems: "baseline", marginBottom: 8, fontSize: 12 }}>
+                  {dates.map(([label, d]) => (
+                    <span key={label}><span className="muted">{label}</span> {fmtDate(d!)}</span>
+                  ))}
+                  {a?.payment_reference && <span><span className="muted">Payment ref</span> {a.payment_reference}</span>}
+                  <Link to={`/applications/${p.id}`} style={{ marginLeft: "auto" }}>Open {afpDocLabel(a!.direction, a!.status)} #{p.app_number} →</Link>
+                </div>
+                {claimed.length === 0 ? (
+                  <div className="muted" style={{ fontSize: 12 }}>No lines claimed on this application.</div>
+                ) : (
+                  <table style={{ fontSize: 12 }}>
+                    <thead>
+                      <tr>
+                        <th>Description</th>
+                        <th className="num">Applied %</th>
+                        {showCertPct && <th className="num">Certified %</th>}
+                        <th className="num">Value</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {claimed.map((l) => (
+                        <tr key={l.id}>
+                          <td>
+                            {l.description}
+                            {l.section && <span className="muted"> · {l.section}</span>}
+                          </td>
+                          <td className="num">{(l.percent_complete ?? 0).toFixed(0)}%</td>
+                          {showCertPct && <td className="num">{l.certified_percent != null ? `${l.certified_percent.toFixed(0)}%` : "—"}</td>}
+                          <td className="num">{fmtMoney(l.cumulative_value ?? 0)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+                {a?.notes && <div className="muted" style={{ marginTop: 8, fontSize: 12, whiteSpace: "pre-wrap" }}>{a.notes}</div>}
+              </>
+            )}
+          </td>
+        </tr>
+      )}
+    </>
+  );
 }
 
 function statusPill(s: AfpStatus): string {
