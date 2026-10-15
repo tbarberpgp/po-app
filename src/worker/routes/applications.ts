@@ -846,10 +846,12 @@ applications.get("/:id", async (c) => {
   }
 
   const priors = await c.env.DB.prepare(
-    `SELECT app_number, period_end, status, certified_amount, cumulative_value, total_invoice
-     FROM applications_for_payment
-     WHERE project_id = ? AND direction = ? AND app_number < ?
-     ORDER BY app_number`,
+    `SELECT a.id, a.app_number, a.period_end, a.status, a.certified_amount, a.cumulative_value,
+            a.total_invoice, s.name AS supplier_name
+     FROM applications_for_payment a
+     LEFT JOIN suppliers s ON s.id = a.counterparty_supplier_id
+     WHERE a.project_id = ? AND a.direction = ? AND a.app_number < ?
+     ORDER BY a.app_number`,
   )
     .bind((afp as AfpRow).project_id, (afp as AfpRow).direction, (afp as AfpRow).app_number)
     .all();
