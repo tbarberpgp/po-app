@@ -30,6 +30,9 @@ export function AfpView({ me }: { me: CurrentUser | null }) {
   // The certify decision panel (replaces a window.prompt that couldn't show the
   // figures behind the number it was asking for, or parse "1,250.00").
   const [certifyOpen, setCertifyOpen] = useState(false);
+  // Previous applications run long on a weekly labour package: show the latest
+  // few and let the rest be opened on demand.
+  const [allPriors, setAllPriors] = useState(false);
   const canEdit = can(me, "projects.edit");
   // Not a role check — the release list is by name, because no role draws the
   // line in the right place (see release_approvers / isReleaseApprover).
@@ -571,7 +574,10 @@ export function AfpView({ me }: { me: CurrentUser | null }) {
         {/* Prior applications context */}
         {prior_apps.length > 0 && (
           <div className="card" style={{ marginTop: 16 }}>
-            <div className="card-hd"><h3 style={{ flex: 1 }}>Previous applications</h3></div>
+            <div className="card-hd">
+              <h3 style={{ flex: 1 }}>Previous applications</h3>
+              <span className="pill">{prior_apps.length}</span>
+            </div>
             <table>
               <thead>
                 <tr>
@@ -584,9 +590,18 @@ export function AfpView({ me }: { me: CurrentUser | null }) {
                 </tr>
               </thead>
               <tbody>
-                {prior_apps.map((p) => <PriorAppRow key={p.id} prior={p} />)}
+                {(allPriors ? prior_apps : prior_apps.slice(-PRIORS_SHOWN)).map((p) => <PriorAppRow key={p.id} prior={p} />)}
               </tbody>
             </table>
+            {prior_apps.length > PRIORS_SHOWN && (
+              <div style={{ padding: "10px 16px", borderTop: "1px solid var(--line)", textAlign: "center" }}>
+                <button type="button" className="btn ghost sm" aria-expanded={allPriors} onClick={() => setAllPriors((v) => !v)}>
+                  {allPriors
+                    ? `Show only the latest ${PRIORS_SHOWN}`
+                    : `Show all ${prior_apps.length} previous applications`}
+                </button>
+              </div>
+            )}
           </div>
         )}
 
@@ -739,6 +754,9 @@ function LabourPayApproval({ afp, cis, certified, claimed, budget, canEdit, canR
 function isMosSection(s: string | null | undefined): boolean {
   return /material/i.test(s ?? "") && /site/i.test(s ?? "");
 }
+
+/** How many of the most recent previous applications show before "Show all". */
+const PRIORS_SHOWN = 5;
 
 /** One row of "Previous applications". Click to expand it in place: its lines
  *  and dates load on first open, with a link through to the full application. */
