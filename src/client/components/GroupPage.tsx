@@ -21,6 +21,7 @@ import {
 import { isApprovedNotIssued } from "../lib/po-register";
 import { can } from "../../shared/permissions";
 import { combineSiteCodes } from "../../shared/site-code";
+import { useFloatingHead, useStickyCard } from "../lib/sticky";
 import type {
   CurrentUser, Project, MaterialWithCommitment, OffBoqMaterial, ProjectCommercial, ContractItem, Variation, ApplicationForPayment, OpsSite, LabourByCostCode,
 } from "../../shared/types";
@@ -140,6 +141,8 @@ const STATUS_BAR: Record<MatStatus, string> = {
  * filter re-scopes the commercials, the forecast and the materials table.
  */
 export function GroupPage({ me }: { me: CurrentUser | null }) {
+  const matCardRef = useStickyCard();
+  const matHeadRef = useFloatingHead();
   const { groupId = "" } = useParams();
   const [members, setMembers] = useState<Member[]>([]);
   const [baseProject, setBaseProject] = useState<Project | null>(null);
@@ -848,7 +851,7 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
               <DrillKpi label="Quote savings" value={fmtMoney(matSummary.savings)} tone={matSummary.savings > 0.005 ? "success" : matSummary.savings < -0.005 ? "danger" : "default"} onOpen={() => openMatDrill("Quote savings", matSummary.savings, (d) => materialSavingsDrill(d.mats))} />
             </div>
 
-            <div className="card" style={{ marginTop: 16 }}>
+            <div ref={matCardRef} className="card" style={{ marginTop: 16 }}>
               <div className="card-hd">
                 <h2 style={{ flex: 1 }}>Combined materials</h2>
                 <span className="pill">{combinedMaterials.length}</span>
@@ -904,8 +907,8 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
                 : visibleMaterials.length === 0
                 ? <div className="empty in-card"><p>No materials match this filter.</p></div>
                 : (
-                  <div style={{ overflowX: "auto" }}>
-                    <table style={{ minWidth: 720 }}>
+                  <div ref={matHeadRef} style={{ overflowX: "auto" }}>
+                    <table className="float-head" style={{ minWidth: 720 }}>
                       <thead>
                         <tr>
                           <th onClick={() => toggleMatSort("material")} style={{ cursor: "pointer" }}>Material{matSortArrow("material")}</th>

@@ -5,6 +5,7 @@ import { Topbar } from "./Shell";
 import { can } from "../../shared/permissions";
 import { QUAL_TYPES } from "../lib/quals";
 import type { CurrentUser, Operative, OperativeQual, OperativeRamsRow } from "../../shared/types";
+import { useStickyCard } from "../lib/sticky";
 
 type OperativeRow = Operative & { qual_count: number; rams_pending: number; qual_worst: string; quals_pending: number; assigned_project_code: string | null };
 
@@ -40,6 +41,7 @@ function siteOptionsFrom(projects: ProjList, groups: GroupList): { value: string
 }
 
 export function Operatives({ me }: { me: CurrentUser | null }) {
+  const registerCardRef = useStickyCard();
   const canEdit = can(me, "delivery.edit");
   const [rows, setRows] = useState<OperativeRow[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
@@ -170,7 +172,7 @@ export function Operatives({ me }: { me: CurrentUser | null }) {
             }}
           />
         )}
-        <div className="card">
+        <div ref={registerCardRef} className="card">
           <div className="card-hd sticky-bar">
             <h2>Register</h2>
             <span className="pill">{rows.length}</span>
@@ -194,7 +196,7 @@ export function Operatives({ me }: { me: CurrentUser | null }) {
           ) : shown.length === 0 ? (
             <div style={{ padding: 28 }}><div className="empty">No operatives match “{q}”.</div></div>
           ) : (
-            <table>
+            <table className="sticky-head">
               <thead>
                 <tr>
                   {canEdit && <th style={{ width: 34 }}><input type="checkbox" checked={allShownChecked} onChange={toggleCheckAll} aria-label="Select all" style={{ width: 15, height: 15, minHeight: 0 }} /></th>}

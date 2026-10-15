@@ -299,6 +299,9 @@ table.sticky-head thead th {
   z-index: 4;
   background: var(--card);
 }
+/* Headings slid down by useFloatingHead() — for a table inside a sideways
+   scroller, where sticky can't reach the page. */
+table.float-head thead th { position: relative; z-index: 4; background: var(--card); }
 .topbar .actions { display: flex; align-items: center; gap: 8px; }
 
 /* Main content area. No width cap: the data screens are wide tables and a

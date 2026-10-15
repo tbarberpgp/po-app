@@ -28,6 +28,7 @@ import { PoRegisterExport } from "./PoRegisterExport";
 import { DeliveryDropRow } from "./POView";
 import { ProjectLabourApplications } from "./ApplicationsWorkspace";
 import { invoiceRefOf, filterAndSortAfps, countBy, labourBySubcontractor, type AfpSort } from "../../shared/afp-list";
+import { useStickyCard } from "../lib/sticky";
 
 type Tab = "overview" | "materials" | "pos" | "commercials" | "programme" | "operations" | "reports" | "quality";
 type CommercialsSubtab = "breakdown" | "prelims" | "schedule" | "applications" | "labour" | "variations" | "contract" | "help";
@@ -36,6 +37,7 @@ type MaterialsSubtab = "list" | "pos" | "help";
 type ProjectPORow = PurchaseOrder & { project_code: string; project_name: string };
 
 export function ProjectDetail({ me }: { me: CurrentUser | null }) {
+  const matCardRef = useStickyCard();
   const nav = useNavigate();
   const canRaisePO = can(me, "pos.create");
   const canUploadMaterials = can(me, "materials.upload");
@@ -675,7 +677,7 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
             )}
 
             {tab === "materials" && (
-              <div className="card">
+              <div ref={matCardRef} className="card">
                 <div className="card-hd sticky-bar">
                   <h2 style={{ flex: 1 }}>
                     Materials
@@ -741,7 +743,7 @@ export function ProjectDetail({ me }: { me: CurrentUser | null }) {
                     {reservedValue > 0.005 && <span className="muted">·&nbsp; <b style={{ color: "var(--warn)" }}>{fmtMoney(reservedValue)}</b> still reserved, awaiting call-off</span>}
                   </div>
                 )}
-                <table>
+                <table className="sticky-head">
                   <thead>
                     <tr className="sortable-head">
                       <th className="center" onClick={() => toggleSort("type")} style={{ cursor: "pointer" }}>Type{sortArrow("type")}</th>
@@ -2546,6 +2548,7 @@ function AfpListPanel({
   canCreate: boolean;
   onRefresh: () => void;
 }) {
+  const afpCardRef = useStickyCard();
   const navigate = useNavigate();
   const [direction, setDirection] = useState<"outgoing" | "incoming_labour">("outgoing");
   const [creating, setCreating] = useState(false);
@@ -2692,7 +2695,7 @@ function AfpListPanel({
         <Kpi label="Paid" value={fmtMoney(totals.paid)} tone={totals.paid > 0 ? "success" : "default"} />
       </div>
 
-      <div className="card" style={{ marginTop: 16 }}>
+      <div ref={afpCardRef} className="card" style={{ marginTop: 16 }}>
         <div className="card-hd">
           <h2 style={{ flex: 1 }}>Applications for payment</h2>
           <div style={{ display: "flex", gap: 6, marginRight: 12 }}>
@@ -2870,7 +2873,7 @@ function AfpListPanel({
         ) : filtered.length === 0 ? (
           <div className="card-bd"><div className="empty">No applications match these filters.</div></div>
         ) : (
-          <table>
+          <table className="sticky-head">
             <thead>
               <tr>
                 <th className="center">#</th>
