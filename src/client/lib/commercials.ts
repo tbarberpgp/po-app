@@ -10,7 +10,7 @@ import type {
 } from "../../shared/types";
 import { MONEY_EPSILON, pricedBudget } from "../../shared/budget";
 import {
-  accumulateMaterials, effectiveSpendRate, isPrelimMaterial, matSupplier, materialSpendCost,
+  accumulateMaterials, effectiveSpendRate, isPrelimMaterial, matSupplier, materialSpendCost, materialOutturn,
   netUnits, oneScope, prelimsOf, variationLabourBudget, withoutPrelims,
   type AccumulatedMaterial, type MaterialScope, type PrelimsSummary,
 } from "../../shared/forecast";
@@ -23,7 +23,7 @@ import type { DrillColumn } from "../components/DrillPanel";
 // where every screen already imports it from.
 export {
   withoutPrelims, withCodedCommitted, matSupplier, materialSpendCost, effectiveSpendRate, netUnits,
-  oneScope, accumulateMaterials, isPrelimMaterial, materialOverspendOf, summariseMaterials,
+  oneScope, accumulateMaterials, isPrelimMaterial, materialOverspendOf, materialOutturn, summariseMaterials,
   contractTotals, quoteSavingsOf, omittedMaterialValue, variationLabourBudget,
   prelimsOf, prelimLabourCertified, labourAwaitingCertification, isLabourAwaitingCertification,
   computeForecast, totalChange, labourProfit, addForecasts, sumForecasts, withCombinedOverspend,
@@ -492,12 +492,26 @@ const UNEXPECTED_COLUMNS: DrillColumn[] = [
   { key: "amount", label: "Amount", align: "right", fmt: money },
 ];
 const unexpectedNote = () =>
-  `Off-BOQ purchases plus committed spend above a material's budget — both pull through to forecast cost. A material is listed only where its total across the scope shown is over budget, so an over-run covered by the same material elsewhere doesn't appear.${PRELIMS_ELSEWHERE}`;
+  `Off-BOQ purchases plus committed spend above a material's budget. Materials are measured against their whole budget: these reach forecast cost only once the materials budget as a whole is spent — until then the unspent budget covers them. A material is listed only where its total across the scope shown is over budget.${PRELIMS_ELSEWHERE}`;
 
-/** Unexpected spend = off-BOQ unpriced lines + over-budget materials. */
+/** The row that takes the listed lines to the headline: what the unspent
+ *  materials budget covers of them, or — when lines bought at a quote are
+ *  ordered past the quantity the saving was claimed on — the spend past the
+ *  quoted budget that no single line shows. */
+function potRows(scopes: MaterialScope[], lines: UnpricedLine[], listed: number) {
+  const pot = materialOutturn(scopes, sum(lines, "line_total"));
+  const gap = pot.overrun - listed;
+  if (gap < -0.005) return [{ kind: "Covered", detail: "Materials budget still unspent — covers the lines above", amount: gap }];
+  if (gap > 0.005) return [{ kind: "Over budget", detail: "Ordered past the quoted budget", amount: gap }];
+  return [];
+}
+
+/** Unexpected spend = off-BOQ unpriced lines + over-budget materials, less what
+ *  the materials budget still covers. */
 export function unexpectedSpendDrill(lines: UnpricedLine[], mats: MaterialWithCommitment[]): DrillBody {
   const over = overBudgetRows(oneScope(mats)).map(({ __scope, ...r }) => r); // eslint-disable-line @typescript-eslint/no-unused-vars
-  const rows = [...offBoqSpendRows(lines), ...over].sort((a, b) => b.amount - a.amount);
+  const listed = [...offBoqSpendRows(lines), ...over].sort((a, b) => b.amount - a.amount);
+  const rows = [...listed, ...potRows(oneScope(mats), lines, sum(listed, "amount"))];
   return {
     columns: UNEXPECTED_COLUMNS,
     rows, total: money(sum(rows, "amount")),
@@ -516,7 +530,10 @@ export function combinedUnexpectedSpendDrill(
   const scopes: MaterialScope[] = blocks.map((b) => ({ scope: b.block, mats: b.mats }));
   const offBoq = blocks.flatMap((b) => offBoqSpendRows(b.lines).map((r) => ({ __block: b.block, ...r })));
   const over = overBudgetRows(scopes).map(({ __scope, ...r }) => ({ __block: __scope, ...r }));
-  const rows = [...offBoq, ...over].sort((a, b) => b.amount - a.amount);
+  const listed = [...offBoq, ...over].sort((a, b) => b.amount - a.amount);
+  const cover = potRows(scopes, blocks.flatMap((b) => b.lines), sum(listed, "amount"))
+    .map((r) => ({ __block: scopes.length > 1 ? "All blocks" : (scopes[0]?.scope ?? ""), ...r }));
+  const rows = [...listed, ...cover];
   return {
     columns: [{ key: "__block", label: "Block", align: "left" }, ...UNEXPECTED_COLUMNS],
     rows, total: total ?? money(sum(rows, "amount")),

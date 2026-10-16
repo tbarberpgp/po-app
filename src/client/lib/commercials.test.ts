@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {
   accumulateMaterials, materialOverspendOf, summariseMaterials, oneScope, budgetMoneyHint, pickUnit,
   budgetMoney, poLineBudgetMoney,
-  unexpectedSpendDrill, combinedUnexpectedSpendDrill, withCombinedOverspend,
+  unexpectedSpendDrill, combinedUnexpectedSpendDrill, withCombinedOverspend, materialOutturn,
   computeForecast, contractTotals, totalChange, labourProfit, labourDrill, addForecasts, prelimLabourCertified,
   prelimsDrill, quoteSavingsOf, isPrelimMaterial, withoutBlockName, materialMergeName,
   type UnpricedLine, type Forecast, type PrelimsSummary,
@@ -247,7 +247,11 @@ test("the drill lists only what the headline figure counts", () => {
   const body = combinedUnexpectedSpendDrill(dallas.map((g, i) => ({ block: g.scope, lines: i === 0 ? unpriced : [], mats: g.mats })));
   assert.equal(body.rows.filter((r) => r.kind === "Over budget").length, 0, "the netted material is gone");
   const shown = body.rows.reduce((s, r) => s + Number(r.amount), 0);
-  assert.ok(Math.abs(shown - (2674 + materialOverspendOf(dallas))) < 0.01, `drill ${shown}`);
+  // The site is ~£5k inside budget on the bars, so that unspent budget covers
+  // the £2,674 off-BOQ tape too: the drill nets to the headline, £0.
+  assert.ok(Math.abs(shown - materialOutturn(dallas, 2674).overrun) < 0.01, `drill ${shown}`);
+  assert.equal(materialOutturn(dallas, 2674).overrun, 0);
+  assert.equal(body.rows.find((r) => r.kind === "Covered")?.amount, -2674);
 });
 
 test("a combined over-budget row names the blocks it sits on", () => {
@@ -270,7 +274,51 @@ test("a combined over-budget row names the blocks it sits on", () => {
 test("the per-block drill and the per-block summary agree", () => {
   const summary = summariseMaterials(dallas[0].mats, 2674);
   const shown = unexpectedSpendDrill(unpriced, dallas[0].mats).rows.reduce((s, r) => s + Number(r.amount), 0);
-  assert.ok(Math.abs(shown - (summary.unpriced_spend + summary.material_overspend)) < 0.01, `drill ${shown}`);
+  assert.ok(Math.abs(shown - summary.material_overrun) < 0.01, `drill ${shown}`);
+});
+
+// ── Materials are one pot ───────────────────────────────────────────────────
+
+const twoLines = (a: number, b: number) => [
+  mat({ item: "Material A", cost: 10, total_units: 50, committed_qty: a / 10 }),
+  mat({ item: "Material B", cost: 10, total_units: 50, committed_qty: b / 10 }),
+];
+
+test("a line over its budget is covered while the materials budget has room", () => {
+  // £1,000 budget: £900 on A's £500 and £100 on B's £500 is no loss.
+  const s = summariseMaterials(twoLines(900, 100), 0);
+  assert.equal(s.material_overspend, 400, "A is still shown £400 over its own line");
+  assert.equal(s.material_overrun, 0);
+  assert.equal(s.material_absorbed, 400);
+});
+
+test("only what the whole spend runs past the whole budget is a loss", () => {
+  // £900 + £300 = £1,200 against £1,000: a £200 loss.
+  const s = summariseMaterials(twoLines(900, 300), 0);
+  assert.equal(Math.round(s.material_overrun * 100) / 100, 200);
+  assert.equal(Math.round(s.material_absorbed * 100) / 100, 200);
+});
+
+test("off-BOQ spend draws on the same pot", () => {
+  assert.equal(summariseMaterials(twoLines(400, 100), 300).material_overrun, 0);
+  assert.equal(Math.round(summariseMaterials(twoLines(400, 100), 800).material_overrun * 100) / 100, 300);
+});
+
+test("a quote saving isn't spent twice", () => {
+  // A quote at £8 against £10 claims £100 on A's 50 units; the pot measures
+  // at £8, so B's £100 over-run isn't hidden behind the saving already taken.
+  const rows = [
+    mat({ item: "Material A", cost: 10, total_units: 50, committed_qty: 50, live_unit_price: 8 }),
+    mat({ item: "Material B", cost: 10, total_units: 50, committed_qty: 60 }),
+  ];
+  assert.equal(quoteSavingsOf(rows), 100);
+  assert.equal(Math.round(summariseMaterials(rows, 0).material_overrun * 100) / 100, 100);
+});
+
+test("the pot's overrun is what forecast cost carries", () => {
+  const covered = forecastWith({ committed: 1200, unpriced: 3_000 });
+  const base = forecastWith({});
+  assert.equal(covered.unexpectedSpend, Math.round((covered.ffc - base.ffc) * 100) / 100);
 });
 
 // ── Rolling the blocks up ───────────────────────────────────────────────────
@@ -284,7 +332,7 @@ test("re-basing the overspend pulls forecast cost, profit and GP% with it", () =
     materialSavings: 0, labourSavings: 0, varProfit: 0, omittedValue: 0,
     labourOverrun: 0, labourAbsorbed: 0, labourCertified: 0, labourBudget: 0,
     prelimsOverrun: 0, prelimsSpend: 0, prelimsBudget: 0,
-    unpricedSpend: 0, materialOverspend: OVER_26001, unexpectedSpend: OVER_26001,
+    unpricedSpend: 0, materialOverspend: OVER_26001, unexpectedSpend: OVER_26001, materialAbsorbed: 0,
     appliedValue: 0, certifiedValue: 0, varApplied: 0, varCertified: 0,
   };
   const fc = withCombinedOverspend(summed, dallas);
