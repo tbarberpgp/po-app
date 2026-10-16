@@ -153,8 +153,10 @@ describe("labour position", () => {
     const byS = Object.fromEntries(position(d).map((r) => [r.section, r]));
     assert.equal(byS.Roof.boq_expended, 4000);
     assert.equal(byS.Expenses.other_expended, 300);
-    assert.equal(byS.Variations.variation_expended, 400);
-    assert.equal(byS.Variations.other_expended, 0);
+    // Only the tagged line is variation labour; the untagged tab is ours to
+    // absorb in the labour pot, like an expense.
+    assert.equal(byS.Variations.variation_expended, 250);
+    assert.equal(byS.Variations.other_expended, 150);
     assert.equal(byS.Daywork.other_expended, 80);
   });
 

@@ -88,11 +88,19 @@ const COUNTED_BOQ_APPS = `
        OR (a.claim_basis = 'period' AND a.app_number > COALESCE(${LATEST_CUMULATIVE_NO}, 0))
      )`;
 
-/** An ad-hoc line claimed against a variation. Its budget is the variation's
- *  labour budget, which forecast cost already carries — so it is measured
- *  against that, never counted as unbudgeted. Uploaded workbooks' Variations
- *  tabs arrive untagged, so the section label counts as well as the tag. */
-const VARIATION_LINE = "(al.variation_id IS NOT NULL OR lower(COALESCE(al.section, '')) LIKE '%variation%')";
+/** An ad-hoc line claimed against a variation in the register. Its budget is
+ *  that variation's labour budget, which forecast cost already carries — so it
+ *  is measured against that, in a pot of its own: the client pays for it.
+ *
+ *  Only the tag counts, not the section label. An uploaded workbook's
+ *  "Variations" tab arrives untagged, and what a subcontractor lists there is
+ *  usually daywork and extras nobody raised with the client — our own cost,
+ *  with no variation budget behind it. Read by its label it went into the
+ *  variations' pot, which had nothing in it, and every pound showed as a loss
+ *  while the labour budget still had room (Blyth, 2026-10-16: −£32,488.44 with
+ *  £243 of labour budget unspent). Untagged, it is unbudgeted labour and the
+ *  labour pot covers it, as it does expenses and daywork. */
+const VARIATION_LINE = "(al.variation_id IS NOT NULL)";
 
 /**
  * Where each project's labour stands against its budget, per BOQ section — the
