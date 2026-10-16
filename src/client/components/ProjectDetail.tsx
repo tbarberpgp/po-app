@@ -3069,7 +3069,7 @@ function UnmatchedLabourCard({ projectId, canEdit, unmatched, options, onChanged
  * application. Figures come from the applications themselves, so they move the
  * moment an invoice is uploaded, certified or marked paid.
  */
-function LabourBySubcontractorCard({ afps, expended }: { afps: ApplicationForPayment[]; expended: number }) {
+export function LabourBySubcontractorCard({ afps, expended }: { afps: ApplicationForPayment[]; expended: number }) {
   const [suppliers, setSuppliers] = useState<Awaited<ReturnType<typeof api.listSuppliers>>>([]);
   const [open, setOpen] = useState<Set<number | null>>(new Set());
   const subs = useMemo(() => labourBySubcontractor(afps), [afps]);
