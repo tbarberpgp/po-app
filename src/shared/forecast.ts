@@ -44,8 +44,14 @@ export type Summary = {
   remaining_total: number;
   committed_pct: number;
   unpriced_spend: number;
-  /** Committed spend above budget, summed per line. Feeds forecast cost. */
+  /** Committed spend above budget, summed per accumulated material. Listed,
+   *  but it only reaches forecast cost once the materials pot is spent. */
   material_overspend: number;
+  /** What materials add to forecast cost: spend past the materials budget as a
+   *  whole (see materialOutturn). */
+  material_overrun: number;
+  /** The part of overspend + off-BOQ the unspent materials budget covers. */
+  material_absorbed: number;
   by_supplier: Array<{ supplier: string; items: number; priced: number; committed: number }>;
 };
 
@@ -57,7 +63,14 @@ export type Forecast = {
   contractValue: number; contractCost: number;
   ffa: number; ffc: number; forecastProfit: number; forecastGpPct: number | null;
   contingency: number;
-  materialSavings: number; labourSavings: number; varProfit: number; unexpectedSpend: number;
+  materialSavings: number; labourSavings: number; varProfit: number;
+  /** What forecast cost carries for materials beyond the bill: committed spend
+   *  — on the bill and off it — past the materials budget as a whole. Never
+   *  negative — see materialOutturn. */
+  unexpectedSpend: number;
+  /** Off-BOQ spend and materials over their own line that the unspent
+   *  materials budget still covers — shown, not a loss. */
+  materialAbsorbed: number;
   /** What forecast cost carries on top of the labour BOQ: certified labour
    *  (measured, expenses, daywork) past the labour budget as a whole, and
    *  variation labour past the variations' budget. Never negative — see
@@ -78,8 +91,9 @@ export type Forecast = {
   /** Budget removed from the forecast cost by omitted materials (whole lines +
    *  the omitted part of partial omissions), at the BOQ rate. */
   omittedValue: number;
-  /** The two halves of unexpectedSpend — off-BOQ lines (the Materials tab's
-   *  "Unpriced spend") and over-budget committed on BOQ items. */
+  /** What makes up unexpectedSpend before the pot covers it — off-BOQ lines
+   *  (the Materials tab's "Unpriced spend") and over-budget committed on BOQ
+   *  items. */
   unpricedSpend: number; materialOverspend: number;
   appliedValue: number; certifiedValue: number; varApplied: number; varCertified: number;
 };
@@ -254,12 +268,60 @@ export function materialOverspendOf(scopes: MaterialScope[]): number {
   return accumulateMaterials(withoutPrelims(scopes)).reduce((s, a) => s + Math.max(0, a.committed - a.budget), 0);
 }
 
+export type MaterialOutturn = {
+  /** The materials budget at the rates we buy at (BOQ less quote savings). */
+  budget: number;
+  /** Committed on the bill, at the buy rate. */
+  committed: number;
+  overspend: number;
+  unpriced: number;
+  absorbed: number;
+  /** What forecast cost carries: everything committed, on the bill and off
+   *  it, past the materials budget as a whole. */
+  overrun: number;
+};
+
+/**
+ * What materials do to forecast cost — one pot, the way labour and prelims are
+ * measured (user's rule, 2026-10-16). With £1,000 of materials budget, £900 on
+ * a £500 line and £100 on the other £500 is not a loss; £900 and £300 is a
+ * £200 one. A material over its own line, or an order with no line at all
+ * (off-BOQ), is covered while the materials budget as a whole has room, and
+ * only what the whole spend runs past the whole budget reaches forecast cost.
+ *
+ * The budget is the one we buy at — each line's BOQ quantity at its buy rate,
+ * i.e. BOQ less the quote saving the materials lever already claims — so a
+ * saving the job has eaten into isn't counted twice, exactly as labour measures
+ * against its live-rate budget. Prelim rows are the prelims pot's, and omitted
+ * lines are out of the job.
+ *
+ * An underspend never lowers forecast cost: it isn't a saving until the work
+ * is bought, and quotes are where material savings come from.
+ */
+export function materialOutturn(scopes: MaterialScope[], unpricedSpend: number): MaterialOutturn {
+  let budget = 0, committed = 0;
+  for (const g of withoutPrelims(scopes)) for (const m of g.mats) {
+    if (m.omitted) continue;
+    const buy = effectiveSpendRate(m);
+    // Same rate quoteSavingsOf measures against: a line with no BOQ cost has
+    // no budget, and a zero buy rate claims no saving, so it keeps the BOQ cost.
+    const rate = m.cost == null ? 0 : (buy > 0 ? buy : m.cost);
+    budget += netUnits(m) * rate;
+    committed += (m.committed_qty ?? 0) * buy;
+  }
+  const overspend = materialOverspendOf(scopes);
+  const unpriced = Math.max(0, unpricedSpend);
+  const overrun = Math.max(0, committed + unpriced - budget);
+  return { budget, committed, overspend, unpriced, absorbed: Math.max(0, overspend + unpriced - overrun), overrun };
+}
+
 export function summariseMaterials(mats: MaterialWithCommitment[], unpricedSpend: number): Summary {
   // Omitted materials are out of the job — they contribute nothing to budget,
   // committed or overspend.
   mats = mats.filter((m) => !m.omitted);
   let priced = 0, committed = 0;
-  const overspend = materialOverspendOf(oneScope(mats));
+  const pot = materialOutturn(oneScope(mats), unpricedSpend);
+  const overspend = pot.overspend;
   const bySup = new Map<string, { items: number; priced: number; committed: number }>();
   for (const m of mats) {
     const cost = m.cost ?? 0;
@@ -289,6 +351,8 @@ export function summariseMaterials(mats: MaterialWithCommitment[], unpricedSpend
     committed_pct: priced > 0 ? (committed / priced) * 100 : 0,
     unpriced_spend: unpricedSpend,
     material_overspend: overspend,
+    material_overrun: pot.overrun,
+    material_absorbed: pot.absorbed,
     by_supplier: [...bySup.entries()]
       .map(([supplier, v]) => ({ supplier, ...v }))
       .filter((s) => s.priced > 0)
@@ -422,7 +486,9 @@ export function computeForecast(input: {
   }, 0);
 
   const ffa = contractValue + varSell;
-  const unexpectedSpend = summary.unpriced_spend + summary.material_overspend;
+  // Materials are one pot: off-BOQ orders and lines over their own budget
+  // reach forecast cost only once the materials budget as a whole is spent.
+  const unexpectedSpend = summary.material_overrun;
   // contractCost is the pricing workbook's cost total — it still contains any
   // line since omitted, so take those out or the forecast never moves.
   const omittedValue = omittedMaterialValue(mats);
@@ -449,7 +515,7 @@ export function computeForecast(input: {
     hasContract: !!total,
     contractValue, contractCost,
     ffa, ffc, forecastProfit, forecastGpPct, contingency,
-    materialSavings, labourSavings, varProfit, unexpectedSpend, omittedValue,
+    materialSavings, labourSavings, varProfit, unexpectedSpend, materialAbsorbed: summary.material_absorbed, omittedValue,
     labourOverrun: labour.overrun, labourAbsorbed: labour.absorbed, labourCertified: labour.certified, labourBudget: labour.budget,
     prelimsOverrun: prelims.overrun, prelimsSpend: prelims.spend, prelimsBudget: prelims.budget,
     unpricedSpend: summary.unpriced_spend, materialOverspend: summary.material_overspend,
@@ -491,6 +557,7 @@ export function addForecasts(a: Forecast, b: Forecast): Forecast {
     prelimsBudget: a.prelimsBudget + b.prelimsBudget,
     varProfit: a.varProfit + b.varProfit,
     unexpectedSpend: a.unexpectedSpend + b.unexpectedSpend,
+    materialAbsorbed: a.materialAbsorbed + b.materialAbsorbed,
     omittedValue: a.omittedValue + b.omittedValue,
     unpricedSpend: a.unpricedSpend + b.unpricedSpend,
     materialOverspend: a.materialOverspend + b.materialOverspend,
@@ -504,7 +571,7 @@ export function addForecasts(a: Forecast, b: Forecast): Forecast {
 export const sumForecasts = (fs: Forecast[]): Forecast =>
   fs.reduce(addForecasts, {
     hasContract: false, contractValue: 0, contractCost: 0, ffa: 0, ffc: 0, forecastProfit: 0, forecastGpPct: null, contingency: 0,
-    materialSavings: 0, labourSavings: 0, varProfit: 0, unexpectedSpend: 0, omittedValue: 0,
+    materialSavings: 0, labourSavings: 0, varProfit: 0, unexpectedSpend: 0, materialAbsorbed: 0, omittedValue: 0,
     labourOverrun: 0, labourAbsorbed: 0, labourCertified: 0, labourBudget: 0,
     prelimsOverrun: 0, prelimsSpend: 0, prelimsBudget: 0,
     unpricedSpend: 0, materialOverspend: 0,
@@ -525,12 +592,15 @@ export const sumForecasts = (fs: Forecast[]): Forecast =>
  *  combined cost can now sit below the sum of the blocks' costs by exactly the
  *  over-runs its siblings cover. */
 export function withCombinedOverspend(fc: Forecast, scopes: MaterialScope[]): Forecast {
-  const materialOverspend = materialOverspendOf(scopes);
-  const unexpectedSpend = fc.unpricedSpend + materialOverspend;
+  // The pot is the whole scope's too: one block's unspent budget covers a
+  // sibling's over-run on the combined view.
+  const pot = materialOutturn(scopes, fc.unpricedSpend);
+  const materialOverspend = pot.overspend;
+  const unexpectedSpend = pot.overrun;
   const ffc = fc.ffc - fc.unexpectedSpend + unexpectedSpend;
   const forecastProfit = fc.ffa - ffc;
   return {
-    ...fc, materialOverspend, unexpectedSpend, ffc, forecastProfit,
+    ...fc, materialOverspend, unexpectedSpend, materialAbsorbed: pot.absorbed, ffc, forecastProfit,
     forecastGpPct: fc.ffa > 0 ? forecastProfit / fc.ffa : null,
   };
 }
