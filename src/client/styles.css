@@ -134,7 +134,7 @@ a:hover { text-decoration: underline; }
   align-items: center;
   gap: 10px;
 }
-.sidebar-logo img { height: 22px; width: auto; display: block; }
+.sidebar-logo img { height: 34px; width: auto; display: block; }
 .sidebar-group { display: flex; flex-direction: column; gap: 2px; }
 .sidebar-group-label {
   font-size: 11px;
@@ -1227,7 +1227,7 @@ input[type="number"] { appearance: textfield; -moz-appearance: textfield; }
     background: var(--card); position: sticky; top: 0; z-index: 20;
   }
   .mobile-logo { display: inline-flex; align-items: center; }
-  .mobile-logo img { height: 22px; display: block; }
+  .mobile-logo img { height: 28px; display: block; }
   .nav-toggle {
     display: inline-flex; align-items: center; justify-content: center;
     width: 40px; height: 40px; padding: 0; font-size: 19px; line-height: 1;
@@ -2247,8 +2247,8 @@ body.rd-printing .rd-linedel, body.rd-printing .rd-addline, body.rd-printing .rd
 .hd-fab {
   position: fixed; right: 20px; bottom: 20px; z-index: 60;
   display: inline-flex; align-items: center; gap: 8px;
-  padding: 10px 16px; border: 0; border-radius: 999px; cursor: pointer;
-  background: var(--accent); color: var(--accent-fg); font: inherit; font-weight: 600;
+  padding: 14px 24px; border: 0; border-radius: 999px; cursor: pointer;
+  background: var(--accent); color: var(--accent-fg); font: inherit; font-size: 16px; font-weight: 600;
   box-shadow: 0 4px 16px rgba(0,0,0,.25);
 }
 .hd-fab:hover { background: var(--accent-2); }
