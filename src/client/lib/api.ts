@@ -100,7 +100,6 @@ async function jfetch<T>(path: string, init?: RequestInit): Promise<T> {
  *  heuristic match, or simply another live order on the site — and `why` is the
  *  one-line reason to show beside it. Everything on the site appears; the
  *  ranking only decides the order they appear in. */
-
 export type PoCandidate = {
   id: string;
   po_number: string;
@@ -1144,6 +1143,12 @@ export const api = {
     ),
   /** Labour certificates in the Accounts queues (certified onwards). */
   listAccountsLabour: () => jfetch<AccountsLabourCert[]>(`/api/applications/_accounts-labour`),
+  /** Record a labour certificate's bill as keyed into Xero by hand. */
+  markAfpInXeroByHand: (id: number, bill_number: string) =>
+    jfetch<{ ok: true }>(`/api/applications/${id}/already-in-xero`, {
+      method: "POST",
+      body: JSON.stringify({ bill_number }),
+    }),
   markAfpPaid: (id: number, payment_reference?: string) =>
     jfetch<{ ok: true }>(`/api/applications/${id}/mark-paid`, {
       method: "POST",

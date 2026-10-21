@@ -502,7 +502,15 @@ function LabourCertDetail({ cert: a, canEdit, canRelease, onChanged }: {
   const [note, setNote] = useState("");
   const stage = labourTab(a);
   const net = a.certified_amount ?? a.amount_due ?? 0;
-  const cis = a.cis_rate != null ? Math.round(net * a.cis_rate) / 100 : null;
+  const keyedByHand = isCertInXero(a) && !a.xero_po_id;
+  /** A bill typed straight into Xero before labour ran through here. Recording
+   *  it takes the certificate out of the queues so it can't be pushed twice. */
+  function alreadyInXero() {
+    const bill = prompt("This certificate's bill was keyed into Xero by hand. What is the bill's number in Xero?");
+    if (bill === null) return;
+    if (!bill.trim()) { setErr("Give the bill's number as it appears in Xero."); return; }
+    run(() => api.markAfpInXeroByHand(a.id, bill.trim()));
+  }
   async function run(f: () => Promise<unknown>) {
     setBusy(true); setErr(null);
     try { await f(); onChanged(); }
@@ -529,11 +537,11 @@ function LabourCertDetail({ cert: a, canEdit, canRelease, onChanged }: {
         {row("Project", `${a.project_code} ${a.project_name}`)}
         {row("Period ending", a.period_end ?? "—")}
         {row("Certified (net)", <b>{money(net)}</b>)}
-        {cis != null && row(`CIS @ ${a.cis_rate}%`, <>− {money(cis)} · <b>{money(net - cis)} payable</b></>)}
+        {a.cis_rate != null && a.cis_rate > 0 && row("CIS", `${a.cis_rate}% — deducted on the bill (labour element only; see the certificate)`)}
         {row("Certified", `${a.certified_by ?? "—"} on ${(a.certified_at ?? "").slice(0, 10)}`)}
         {a.pay_approved_at && row("Committed", `${a.pay_approved_by ?? "—"} on ${a.pay_approved_at.slice(0, 10)}${a.pay_approval_note ? ` — "${a.pay_approval_note}"` : ""}`)}
         {a.pay_released_at && row("Approved", `${a.pay_released_by ?? "—"} on ${a.pay_released_at.slice(0, 10)}`)}
-        {isCertInXero(a) && row("Xero", `Draft bill ${a.xero_po_number ?? ""}`)}
+        {isCertInXero(a) && row("Xero", keyedByHand ? `Bill ${a.xero_po_number ?? ""} — keyed in by hand` : `Draft bill ${a.xero_po_number ?? ""}`)}
         {a.source_file_name && row("Invoice", a.source_file_name)}
       </div>
       {stage === "inbox" && canEdit && (
@@ -553,9 +561,16 @@ function LabourCertDetail({ cert: a, canEdit, canRelease, onChanged }: {
           {a.xero_sync_status === "failed" ? "Retry Xero push" : "Push to Xero"}
         </button>
       )}
+      {stage !== "pushed" && canEdit && (
+        <button className="ghost tiny" style={{ justifySelf: "start" }} disabled={busy} onClick={alreadyInXero}
+          title="It was keyed into Xero by hand — record that instead of pushing a second bill">
+          Already in Xero
+        </button>
+      )}
       <div className="muted" style={{ fontSize: 11.5, lineHeight: 1.5 }}>
         Pushes as a draft bill with the CIS deduction and the subcontractor's invoice attached.
-        Don't key labour bills into Xero by hand — they'd be paid twice.
+        Don't key labour bills into Xero by hand — they'd be paid twice. The push refuses an invoice
+        number the subcontractor already has a bill for.
       </div>
     </div>
   );

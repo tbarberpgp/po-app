@@ -38,6 +38,7 @@ import { summariseBill } from "../xero/bill-detail";
 import { recheckPaidStatus } from "../xero/paid";
 import { isSandboxId, SANDBOX_PROJECT_ID } from "../sandbox";
 import { isCertInXero, isCertReleased } from "../../shared/payment-release";
+import { findKeyedBill } from "../../shared/labour-bill-duplicate";
 import { reconcileBills, type AppInvoiceSide, type AppPoSide, type XeroBillSide } from "../../shared/bill-reconcile";
 
 /** Refusal for a certificate that hasn't been signed off. Shared by the push
@@ -1022,7 +1023,7 @@ export async function pushAfpToXero(env: Env, afpId: number): Promise<
             a.amount_due, a.certified_amount, a.counterparty_supplier_id,
             a.pay_approved_at, a.pay_released_at,
             a.source_file_key, a.source_file_name, a.source_file_type,
-            a.xero_po_id, a.xero_po_number,
+            a.xero_po_id, a.xero_po_number, a.xero_sync_status, a.extracted_meta_json,
             p.code AS project_code, p.name AS project_name
      FROM applications_for_payment a JOIN projects p ON p.id = a.project_id
      WHERE a.id = ?`,
@@ -1034,9 +1035,15 @@ export async function pushAfpToXero(env: Env, afpId: number): Promise<
     source_file_key: string | null;
     source_file_name: string | null; source_file_type: string | null;
     xero_po_id: string | null; xero_po_number: string | null;
+    xero_sync_status: string | null; extracted_meta_json: string | null;
     project_code: string; project_name: string;
   }>();
   if (!afp) throw new Error("Application not found");
+  // Recorded as keyed into Xero by hand: there is already a bill, and the
+  // failure path below would overwrite that record with 'failed'.
+  if (!afp.xero_po_id && isCertInXero(afp)) {
+    throw new Error(`This certificate is already in Xero${afp.xero_po_number ? ` as bill ${afp.xero_po_number}` : ""} — it was keyed in by hand.`);
+  }
   // Sandbox/demo project never writes to the live Xero org (return, not a failure).
   if (isSandboxId(afp.project_id)) return { ok: true, skipped: true, reason: "sandbox" };
 
@@ -1115,6 +1122,25 @@ export async function pushAfpToXero(env: Env, afpId: number): Promise<
       cisAmount = Math.round(base * cisRate) / 100;
     }
 
+    // The subbie's own invoice number, as read from their document. It goes on
+    // the bill as its number (what Xero shows for a payable), and it is how a
+    // bill already keyed in by hand is found: pushing a second one would have
+    // Xero pay the same invoice twice.
+    let theirNumber: string | null = null;
+    try { theirNumber = (JSON.parse(afp.extracted_meta_json ?? "null") as { invoice_number?: string | null } | null)?.invoice_number?.trim() || null; } catch { /* no meta */ }
+    if (theirNumber) {
+      const existing = await listInvoices(env,
+        `Type=="ACCPAY"&&Contact.ContactID==guid("${contactId}")`, { summaryOnly: true, maxPages: 10 });
+      const keyed = findKeyedBill(existing, theirNumber);
+      if (keyed) {
+        throw new Error(
+          `${supplierRow.name}'s invoice ${theirNumber} is already in Xero as bill ${keyed.InvoiceNumber ?? keyed.InvoiceID}`
+          + `${keyed.Total != null ? ` (£${keyed.Total.toFixed(2)}, ${String(keyed.Status ?? "").toLowerCase()})` : ""}`
+          + ` — it was keyed in by hand. Record it as already in Xero instead of pushing a second bill.`,
+        );
+      }
+    }
+
     // Net 30 from today: a sensible default for a subcontractor payment; the
     // due date can be adjusted on the bill in Xero if terms differ.
     const dueDate = new Date(Date.now() + 30 * 86_400_000).toISOString().split("T")[0];
@@ -1123,6 +1149,7 @@ export async function pushAfpToXero(env: Env, afpId: number): Promise<
       Contact: { ContactID: contactId },
       Date: new Date().toISOString().split("T")[0],
       DueDate: dueDate,
+      ...(theirNumber ? { InvoiceNumber: theirNumber } : {}),
       Reference: `${afp.project_code} Labour Cert #${afp.app_number}`,
       Status: "DRAFT",
       LineAmountTypes: "Exclusive",

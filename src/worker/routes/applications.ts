@@ -676,8 +676,6 @@ applications.get("/project/:projectId", async (c) => {
   return c.json(rows.results);
 });
 
-/** List AfPs awaiting approval (used by the inbox). Registered before "/:id"
- *  so the literal path is never captured as an id. */
 /**
  * Labour certificates for the Accounts workspace, so a subbie's bill runs the
  * same queues as a supplier invoice: certified → committed → approved → pushed.
@@ -706,6 +704,8 @@ applications.get("/_accounts-labour", async (c) => {
   return c.json(rows.results);
 });
 
+/** List AfPs awaiting approval (used by the inbox). Registered before "/:id"
+ *  so the literal path is never captured as an id. */
 applications.get("/_pending-approval", async (c) => {
   const rows = await c.env.DB.prepare(
     `SELECT a.id, a.app_number, a.period_end, a.direction, a.total_invoice,
@@ -4438,6 +4438,45 @@ applications.post("/:id/release-payment", async (c) => {
   // money, Accounts posts it. Approval unlocks the push on /xero/push-afp/:id,
   // which refuses anything unapproved.
   return c.json({ ok: true, pay_released_at: when, pushed: false });
+});
+
+/**
+ * Record that a labour certificate's bill was keyed into Xero by hand, so it
+ * leaves the Accounts queues and can never be pushed as a second bill. Kept on
+ * the push columns (status 'synced', the bill number the user gives, no bill
+ * id): every check that asks "is this in Xero?" already reads those.
+ */
+applications.post("/:id/already-in-xero", async (c) => {
+  const denied = requirePermission(c, "commercial.edit");
+  if (denied) return denied;
+  const id = Number(c.req.param("id"));
+  const body = await c.req.json<{ bill_number?: string }>().catch(() => ({} as { bill_number?: string }));
+  const bill = (body.bill_number || "").trim();
+  if (!bill) return c.json({ error: "Give the bill's number as it appears in Xero." }, 400);
+  const afp = await c.env.DB.prepare(
+    "SELECT id, direction, status, xero_po_id, xero_po_number, xero_sync_status FROM applications_for_payment WHERE id = ?",
+  ).bind(id).first<{ id: number; direction: string; status: string; xero_po_id: string | null; xero_po_number: string | null; xero_sync_status: string | null }>();
+  if (!afp) return c.json({ error: "not found" }, 404);
+  if (afp.direction !== "incoming_labour") return c.json({ error: "Only labour certificates are recorded this way." }, 400);
+  if (afp.status !== "certified" && afp.status !== "paid") {
+    return c.json({ error: "Certify the labour certificate first — this records the bill for a certified value." }, 409);
+  }
+  if (afp.xero_po_id || afp.xero_sync_status === "synced") {
+    return c.json({ error: `This certificate is already recorded in Xero as bill ${afp.xero_po_number ?? afp.xero_po_id ?? ""}.` }, 409);
+  }
+  const now = new Date().toISOString();
+  await c.env.DB.batch([
+    c.env.DB.prepare(
+      `UPDATE applications_for_payment
+          SET xero_po_number = ?, xero_synced_at = ?, xero_sync_status = 'synced', xero_sync_error = NULL
+        WHERE id = ?`,
+    ).bind(bill, now, id),
+    c.env.DB.prepare(
+      `INSERT INTO audit_log (entity_type, entity_id, action, actor, details, created_at)
+       VALUES ('afp', ?, 'keyed_in_xero_by_hand', ?, ?, ?)`,
+    ).bind(String(id), c.get("userEmail"), JSON.stringify({ bill_number: bill }), now),
+  ]);
+  return c.json({ ok: true });
 });
 
 /** Mark as paid. */
