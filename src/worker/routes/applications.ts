@@ -678,6 +678,34 @@ applications.get("/project/:projectId", async (c) => {
 
 /** List AfPs awaiting approval (used by the inbox). Registered before "/:id"
  *  so the literal path is never captured as an id. */
+/**
+ * Labour certificates for the Accounts workspace, so a subbie's bill runs the
+ * same queues as a supplier invoice: certified → committed → approved → pushed.
+ * Certified or paid only; a "paid" one with no Xero bill was keyed into Xero
+ * by hand before this existed, so it is history, not a queue item.
+ */
+applications.get("/_accounts-labour", async (c) => {
+  const denied = requirePermission(c, "commercial.view");
+  if (denied) return denied;
+  const rows = await c.env.DB.prepare(
+    `SELECT a.id, a.project_id, a.app_number, a.period_end, a.status,
+            a.certified_amount, a.amount_due, a.certified_at, a.certified_by,
+            a.pay_approved_at, a.pay_approved_by, a.pay_approval_note,
+            a.pay_released_at, a.pay_released_by,
+            a.xero_po_id, a.xero_po_number, a.xero_sync_status, a.xero_sync_error,
+            a.source_file_name, a.vat_pct,
+            p.code AS project_code, p.name AS project_name,
+            s.name AS supplier_name, s.cis_rate
+     FROM applications_for_payment a
+     JOIN projects p ON p.id = a.project_id
+     LEFT JOIN suppliers s ON s.id = a.counterparty_supplier_id
+     WHERE a.direction = 'incoming_labour'
+       AND (a.status = 'certified' OR (a.status = 'paid' AND a.xero_po_id IS NOT NULL))
+     ORDER BY a.certified_at DESC`,
+  ).all();
+  return c.json(rows.results);
+});
+
 applications.get("/_pending-approval", async (c) => {
   const rows = await c.env.DB.prepare(
     `SELECT a.id, a.app_number, a.period_end, a.direction, a.total_invoice,

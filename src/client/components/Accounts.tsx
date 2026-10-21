@@ -4,14 +4,14 @@ import { PdfHighlightViewer } from "./PdfHighlightViewer";
 import { RegionBoxes, FieldCrop, type DrawnRegion } from "./ReadRegions";
 import { looksLikeOurPoNumber } from "../../shared/line-match";
 import { GroupedCombobox, type ComboGroup, type ComboOption } from "./GroupedCombobox";
-import { api, fmtMoney } from "../lib/api";
+import { api, fmtMoney, type AccountsLabourCert } from "../lib/api";
 import { isSpreadsheetFile } from "../../shared/file-kind";
 import { can } from "../../shared/permissions";
 import { Topbar } from "./Shell";
 import type { CurrentUser, Invoice, InvoiceMatch, InvoiceMatchLine, MatchSummary, Project, Supplier } from "../../shared/types";
 import { NON_GOODS_LINE_IDS, PAYMENT_SCHEDULE_LINE_ID, SERVICE_CHARGE_LINE_ID } from "../../shared/line-match";
 import { poStatusHint, poDeliveryLabel } from "../../shared/po-delivery-status";
-import { isAwaitingApproval, isReadyToPush } from "../../shared/payment-release";
+import { isAwaitingApproval, isReadyToPush, isCertAwaitingApproval, isCertReadyToPush, isCertInXero } from "../../shared/payment-release";
 
 // Amounts render in the invoice's OWN currency — a $ or € invoice shown with a
 // £ sign misreports what we owe. Falls back to sterling when unknown.
@@ -140,6 +140,10 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
   const [tab, setTab] = useState<Tab>("inbox");
   const [rows, setRows] = useState<Invoice[]>([]);
   const [selId, setSelId] = useState<number | null>(null);
+  // Labour certificates run the same queues as invoices. Selecting one clears
+  // the invoice selection and vice versa.
+  const [labour, setLabour] = useState<AccountsLabourCert[]>([]);
+  const [selLabourId, setSelLabourId] = useState<number | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const [accounts, setAccounts] = useState<Array<{ code: string; name: string; type: string }>>([]);
   // Only needed to name the subcontractor when handing an invoice to labour.
@@ -152,6 +156,7 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
 
   function load() {
     api.listInvoices().then(setRows).catch((e) => setErr(e.message));
+    api.listAccountsLabour().then(setLabour).catch(() => {});
   }
 
   /** Hand the invoice to the labour pipeline. It leaves this queue for the
@@ -225,6 +230,16 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
     }
     return shown;
   }, [rows, tab, search]);
+
+  const visibleLabour = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return labour.filter((a) => {
+      if (labourTab(a) !== tab) return false;
+      return !q || `${a.supplier_name ?? ""} ${a.project_code} labour cert #${a.app_number}`.toLowerCase().includes(q);
+    });
+  }, [labour, tab, search]);
+  const labourCount = (t: Tab) => labour.filter((a) => labourTab(a) === t).length;
+  const selLabour = labour.find((a) => a.id === selLabourId) ?? null;
 
   const sel = rows.find((r) => r.id === selId) ?? null;
   const inboxCount = rows.filter((r) => (r.status === "inbox" || r.status === "ready") && !isAwaitingApproval(r) && !isReadyToPush(r)).length;
@@ -308,13 +323,13 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
   }
 
   const TABS: Array<[Tab, string, number | null]> = [
-    ["inbox", "Inbox", inboxCount],
+    ["inbox", "Inbox", inboxCount + labourCount("inbox")],
     // Both queues are counted for everyone. Accounts needs to see what it is
     // waiting on, not just what it can act on — an approval queue that only
     // approvers can see is how something sits in it for a fortnight.
-    ["held", canRelease ? "To approve" : "Awaiting approval", heldCount],
+    ["held", canRelease ? "To approve" : "Awaiting approval", heldCount + labourCount("held")],
     // The queue Accounts works from: approved, not yet posted.
-    ["ready", "Ready to push", readyCount],
+    ["ready", "Ready to push", readyCount + labourCount("ready")],
     ...(isAdmin ? [["overheads", "Overheads", null] as [Tab, string, null]] : []),
     ["pushed", "Pushed", null],
     ["dismissed", "Dismissed", null],
@@ -355,17 +370,43 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
           <div className="a-split">
             {/* ── inbox ── */}
             <aside className="inbox">
-              <div className="inbox-hd"><h2>{tabLabel}</h2><span className="count">{visible.length}</span></div>
+              <div className="inbox-hd"><h2>{tabLabel}</h2><span className="count">{visible.length + visibleLabour.length}</span></div>
               <div className="inbox-search">
                 <input placeholder="Search supplier, invoice #…" value={search} onChange={(e) => setSearch(e.target.value)} />
               </div>
               <div className="ilist">
-                {visible.length === 0
+                {visibleLabour.length > 0 && (
+                  <>
+                    <div className="muted" style={{ padding: "8px 15px 4px", fontSize: 11, textTransform: "uppercase", letterSpacing: "0.04em" }}>Labour certificates</div>
+                    {visibleLabour.map((a) => {
+                      const st = labourTab(a) === "held" ? "held" : labourTab(a) === "ready" ? "ready" : labourTab(a) === "pushed" ? "matched" : "review";
+                      return (
+                        <button key={`l${a.id}`} className={`irow${selLabourId === a.id ? " on" : ""}`}
+                          onClick={() => { setSelLabourId(a.id); setSelId(null); }}>
+                          <span className={`idot ${st}`} />
+                          <div style={{ minWidth: 0 }}>
+                            <div className="isup">{a.supplier_name || "Unassigned subcontractor"}</div>
+                            <div className="imeta">
+                              <span>Labour cert #{a.app_number} · {(a.certified_at ?? "").slice(0, 10)}</span>
+                              <span className="proj">{a.project_code}</span>
+                              {a.cis_rate != null && <span>CIS {a.cis_rate}%</span>}
+                              {a.xero_sync_status === "failed" && <span style={{ color: "var(--danger)", fontWeight: 600 }} title={a.xero_sync_error ?? ""}>⚠ push failed</span>}
+                            </div>
+                            <span className={`istatus ${st}`}>{LABOUR_LABEL[labourTab(a)]}</span>
+                          </div>
+                          <div className="iamt">{money(a.certified_amount ?? a.amount_due)}</div>
+                        </button>
+                      );
+                    })}
+                    {visible.length > 0 && <div className="muted" style={{ padding: "8px 15px 4px", fontSize: 11, textTransform: "uppercase", letterSpacing: "0.04em" }}>Supplier invoices</div>}
+                  </>
+                )}
+                {visible.length === 0 && visibleLabour.length > 0 ? null : visible.length === 0
                   ? <div className="muted" style={{ padding: "18px 15px", fontSize: 13, lineHeight: 1.5 }}>Nothing here. Email an invoice to <b>invoices@pgpprojects.com</b> or upload one.</div>
                   : visible.map((r) => {
                     const st = r.status === "dismissed" ? "none" : rowStatus(r);
                     return (
-                      <button key={r.id} className={`irow${selId === r.id ? " on" : ""}`} onClick={() => setSelId(r.id)}>
+                      <button key={r.id} className={`irow${selId === r.id ? " on" : ""}`} onClick={() => { setSelId(r.id); setSelLabourId(null); }}>
                         <span className={`idot ${st}`} />
                         <div style={{ minWidth: 0 }}>
                           <div className="isup">{r.supplier_name || r.matched_supplier_name || "Unknown supplier"}</div>
@@ -418,7 +459,9 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
 
             {/* ── detail ── */}
             <section className="detail">
-              {!sel
+              {selLabour
+                ? <LabourCertDetail key={`l${selLabour.id}`} cert={selLabour} canEdit={canEdit} canRelease={canRelease} onChanged={load} />
+                : !sel
                 ? <div className="a-card a-pad"><div className="muted" style={{ fontSize: 13 }}>Select an invoice to review, code and push to Xero.</div></div>
                 : <InvoiceDetail key={sel.id} inv={sel} projects={projects} accounts={accounts} isAdmin={isAdmin} canEdit={canEdit}
                     canRelease={canRelease} busy={busy}
@@ -432,6 +475,89 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
         </div>
       </main>
     </>
+  );
+}
+
+/** Which Accounts tab a labour certificate sits in — the same stages as an
+ *  invoice: certified (to commit) → awaiting approval → ready to push → pushed. */
+function labourTab(a: AccountsLabourCert): Tab {
+  if (isCertInXero(a)) return "pushed";
+  if (isCertReadyToPush(a)) return "ready";
+  if (isCertAwaitingApproval(a)) return "held";
+  return "inbox";
+}
+const LABOUR_LABEL: Record<Tab, string> = {
+  inbox: "Certified — commit", held: "Awaiting approval", ready: "Ready to push",
+  pushed: "Pushed", overheads: "", dismissed: "",
+};
+
+/** A labour certificate in the Accounts detail pane. Certification stays with
+ *  the QS on the certificate itself; from here Accounts commits it, an approver
+ *  approves it, and Accounts pushes the draft bill to Xero. */
+function LabourCertDetail({ cert: a, canEdit, canRelease, onChanged }: {
+  cert: AccountsLabourCert; canEdit: boolean; canRelease: boolean; onChanged: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [note, setNote] = useState("");
+  const stage = labourTab(a);
+  const net = a.certified_amount ?? a.amount_due ?? 0;
+  const cis = a.cis_rate != null ? Math.round(net * a.cis_rate) / 100 : null;
+  async function run(f: () => Promise<unknown>) {
+    setBusy(true); setErr(null);
+    try { await f(); onChanged(); }
+    catch (e) { setErr(e instanceof Error ? e.message : "That didn't work"); }
+    finally { setBusy(false); }
+  }
+  const row = (k: string, v: React.ReactNode) => (
+    <div className="row" style={{ gap: 12, fontSize: 13, padding: "4px 0" }}>
+      <span className="muted" style={{ width: 150 }}>{k}</span><span>{v}</span>
+    </div>
+  );
+  return (
+    <div className="a-card a-pad" style={{ display: "grid", gap: 14 }}>
+      <div className="row" style={{ alignItems: "center", gap: 10 }}>
+        <div>
+          <div className="eyebrow">Labour certificate · {a.project_code}</div>
+          <h2 style={{ margin: "2px 0 0" }}>{a.supplier_name || "Unassigned subcontractor"} — #{a.app_number}</h2>
+        </div>
+        <span style={{ flex: 1 }} />
+        <Link className="btn ghost tiny" to={`/applications/${a.id}`}>Open certificate</Link>
+      </div>
+      {err && <div className="flash error">{err}</div>}
+      <div>
+        {row("Project", `${a.project_code} ${a.project_name}`)}
+        {row("Period ending", a.period_end ?? "—")}
+        {row("Certified (net)", <b>{money(net)}</b>)}
+        {cis != null && row(`CIS @ ${a.cis_rate}%`, <>− {money(cis)} · <b>{money(net - cis)} payable</b></>)}
+        {row("Certified", `${a.certified_by ?? "—"} on ${(a.certified_at ?? "").slice(0, 10)}`)}
+        {a.pay_approved_at && row("Committed", `${a.pay_approved_by ?? "—"} on ${a.pay_approved_at.slice(0, 10)}${a.pay_approval_note ? ` — "${a.pay_approval_note}"` : ""}`)}
+        {a.pay_released_at && row("Approved", `${a.pay_released_by ?? "—"} on ${a.pay_released_at.slice(0, 10)}`)}
+        {isCertInXero(a) && row("Xero", `Draft bill ${a.xero_po_number ?? ""}`)}
+        {a.source_file_name && row("Invoice", a.source_file_name)}
+      </div>
+      {stage === "inbox" && canEdit && (
+        <div style={{ display: "grid", gap: 8, maxWidth: 520 }}>
+          <textarea rows={2} value={note} onChange={(e) => setNote(e.target.value)} placeholder="Note (optional)" />
+          <button className="accent" style={{ justifySelf: "start" }} disabled={busy}
+            onClick={() => run(() => api.approveAfpPayment(a.id, note))}>Commit for approval</button>
+        </div>
+      )}
+      {stage === "held" && (canRelease
+        ? <button className="accent" style={{ justifySelf: "start" }} disabled={busy}
+            onClick={() => run(() => api.releaseAfpPayment(a.id, note))}>Approve</button>
+        : <div className="muted" style={{ fontSize: 12 }}>Waiting on an approver. Once approved it moves to Ready to push.</div>)}
+      {stage === "ready" && canEdit && (
+        <button className="accent" style={{ justifySelf: "start" }} disabled={busy}
+          onClick={() => run(() => api.xeroPushAfp(a.id))}>
+          {a.xero_sync_status === "failed" ? "Retry Xero push" : "Push to Xero"}
+        </button>
+      )}
+      <div className="muted" style={{ fontSize: 11.5, lineHeight: 1.5 }}>
+        Pushes as a draft bill with the CIS deduction and the subcontractor's invoice attached.
+        Don't key labour bills into Xero by hand — they'd be paid twice.
+      </div>
+    </div>
   );
 }
 
