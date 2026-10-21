@@ -356,6 +356,7 @@ materials.get("/:projectId/labour-by-cost-code", async (c) => {
     .all<{
       section: string; line_count: number; budget: number; saving: number;
       boq_expended: number; variation_expended: number; other_expended: number;
+      claim_lines: number;
     }>();
   // To the penny, as the portfolio dashboard already rounds its own figure —
   // otherwise the same total reads 1389.1799999999998 on one screen and
@@ -368,6 +369,7 @@ materials.get("/:projectId/labour-by-cost-code", async (c) => {
       return {
         section: r.section,
         line_count: r.line_count ?? 0,
+        claim_lines: r.claim_lines ?? 0,
         labour_total: r2(r.budget),
         expended: r2(boq + variation + other),
         saving: r2(r.saving),

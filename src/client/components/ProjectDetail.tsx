@@ -3324,17 +3324,30 @@ export function LabourBreakdown({
             const over = expended > r.labour_total && r.labour_total > 0;
             const exact = r.labour_total > 0 && Math.abs(expended - r.labour_total) < 0.005;
             const isZero = expended < 0.005;
+            // Spend with no BOQ line behind it — expenses, dayworks. A £0.00
+            // budget and 0% read as "nothing here" when it is real money.
+            const unbudgeted = r.labour_total <= 0 && !isZero;
             return (
               <tr key={r.section}>
                 <td style={{ fontWeight: 600 }}>{r.section}</td>
-                <td className="num">{r.line_count}</td>
-                <td className="num" style={{ fontWeight: 600 }}>{fmtMoney(r.labour_total)}</td>
+                <td className="num">{unbudgeted ? (r.claim_lines ?? 0) : r.line_count}</td>
+                <td className="num" style={{ fontWeight: 600 }}>
+                  {unbudgeted ? <span className="muted" style={{ fontWeight: 400 }}>no budget</span> : fmtMoney(r.labour_total)}
+                </td>
                 <td className="num">
                   {isZero ? <span className="muted">{fmtMoney(0)}</span> : fmtMoney(expended)}
                 </td>
                 <td>
-                  <div className="bar"><div className={over ? "danger" : exact ? "ok" : ""} style={{ width: `${Math.min(100, pct)}%` }} /></div>
-                  <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>{pct.toFixed(0)}%</div>
+                  {unbudgeted ? (
+                    <div style={{ fontSize: 12, color: "var(--warn)" }} title="Certified spend with no line in the labour BOQ — it comes out of the labour budget as a whole">
+                      unbudgeted
+                    </div>
+                  ) : (
+                    <>
+                      <div className="bar"><div className={over ? "danger" : exact ? "ok" : ""} style={{ width: `${Math.min(100, pct)}%` }} /></div>
+                      <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>{pct.toFixed(0)}%</div>
+                    </>
+                  )}
                 </td>
               </tr>
             );
