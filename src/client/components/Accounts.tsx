@@ -244,7 +244,9 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
   const labourCount = (t: Tab) => labour.filter((a) => labourTab(a) === t).length;
   const hasLabourSubtab = tab === "inbox" || tab === "held" || tab === "ready" || tab === "pushed";
   const showLabour = hasLabourSubtab && kind === "labour";
-  const selLabour = showLabour ? labour.find((a) => a.id === selLabourId) ?? null : null;
+  // Only while it's in the list on screen: a certificate that moved on (or a
+  // tab switch) shouldn't leave its detail open beside a list it isn't in.
+  const selLabour = showLabour ? labour.find((a) => a.id === selLabourId && labourTab(a) === tab) ?? null : null;
 
   const sel = showLabour ? null : rows.find((r) => r.id === selId) ?? null;
   const inboxCount = rows.filter((r) => (r.status === "inbox" || r.status === "ready") && !isAwaitingApproval(r) && !isReadyToPush(r)).length;
@@ -562,7 +564,9 @@ function LabourCertDetail({ cert: a, canEdit, canRelease, onChanged }: {
         {a.cis_rate != null && a.cis_rate > 0 && row("CIS", `${a.cis_rate}% — deducted on the bill (labour element only; see the certificate)`)}
         {a.submitted_at && row("Submitted", a.submitted_at.slice(0, 10))}
         {a.certified_at && row("Certified", `${a.certified_by ?? "—"} on ${a.certified_at.slice(0, 10)}`)}
-        {a.pay_approved_at && row("Committed", `${a.pay_approved_by ?? "—"} on ${a.pay_approved_at.slice(0, 10)}${a.pay_approval_note ? ` — "${a.pay_approval_note}"` : ""}`)}
+        {/* An approval from Accounts fills in the commit with the same stamp;
+            only a separate, earlier commit is worth a line of its own. */}
+        {a.pay_approved_at && a.pay_approved_at !== a.pay_released_at && row("Committed", `${a.pay_approved_by ?? "—"} on ${a.pay_approved_at.slice(0, 10)}${a.pay_approval_note ? ` — "${a.pay_approval_note}"` : ""}`)}
         {a.pay_released_at && row("Approved", `${a.pay_released_by ?? "—"} on ${a.pay_released_at.slice(0, 10)}`)}
         {isCertInXero(a) && row("Xero", keyedByHand ? `Bill ${a.xero_po_number ?? ""} — keyed in by hand` : `Draft bill ${a.xero_po_number ?? ""}`)}
         {a.source_file_name && row("Invoice", a.source_file_name)}
