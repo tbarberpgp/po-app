@@ -1147,7 +1147,7 @@ export const api = {
   linkLabourXero: () => {
     type Row = { id: number; app_number: number; project_code: string; supplier: string; bill: string; value: number };
     return jfetch<{
-      dry: boolean; linked_paid: Row[]; linked_owed: Row[]; now_paid: Row[];
+      dry: boolean; linked_paid: Row[]; linked_owed: Row[]; now_paid: Row[]; paid_date_fixed: Row[];
       amount_differs: Array<Row & { xero_value: number }>; no_contact: string[];
     }>(`/api/xero/link-labour`, { method: "POST" });
   },
