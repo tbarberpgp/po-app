@@ -4,7 +4,7 @@
 // outgoing (to client) and incoming labour (from subcontractor).
 
 import { Fragment, useEffect, useMemo, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, fmtDate, fmtMoney, fmtQty } from "../lib/api";
 import { Topbar } from "./Shell";
 import { can } from "../../shared/permissions";
@@ -24,6 +24,10 @@ export function AfpView({ me }: { me: CurrentUser | null }) {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const afpId = Number(id);
+  // Opened from the Accounts queues (?from=accounts): certifying returns there,
+  // so working down the labour queue doesn't mean finding your way back each time.
+  const [searchParams] = useSearchParams();
+  const fromAccounts = searchParams.get("from") === "accounts";
   const [detail, setDetail] = useState<AfpDetail | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -196,6 +200,7 @@ export function AfpView({ me }: { me: CurrentUser | null }) {
     try {
       await api.certifyAfp(afp.id, { certified_amount: amount, ...(days ?? {}), ...(split.length ? { time_split: split } : {}) });
       setCertifyOpen(false);
+      if (fromAccounts && afp.direction === "incoming_labour") { navigate(`/accounts?labour=${afp.id}`); return; }
       refresh();
     }
     catch (e) { setErr(e instanceof Error ? e.message : "certify failed"); }
@@ -264,6 +269,11 @@ export function AfpView({ me }: { me: CurrentUser | null }) {
         status={<span className={`pill ${statusPill(afp.status)}`}>{afp.status}</span>}
         actions={
           <>
+            {/* A labour certificate past draft sits in the Accounts queues, so
+                there is always somewhere in Accounts to go back to. */}
+            {afp.direction === "incoming_labour" && (fromAccounts || afp.status !== "draft") && (
+              <Link className="btn ghost" to={`/accounts?labour=${afp.id}`} title="Back to this certificate in the Accounts queues">← Back to Accounts</Link>
+            )}
             <button className="ghost" onClick={downloadPdf} disabled={busy} title="Download as PDF">↓ PDF</button>
             <button className="ghost" onClick={downloadXlsx} disabled={busy} title="Download as Excel">↓ Excel</button>
             {canEdit && afp.source_file_name && afp.status !== "certified" && afp.status !== "paid" && (
