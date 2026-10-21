@@ -322,7 +322,7 @@ export function AfpView({ me }: { me: CurrentUser | null }) {
                   : <span className="pill navy" style={{ alignSelf: "center" }}
                       title={afp.pay_approved_at
                         ? "Committed and waiting on an approver. Once approved, Accounts pushes it to Xero."
-                        : "Commit this certificate for approval first (below)"}>Awaiting approval</span>
+                        : "Certified and waiting on an approver (Accounts → Awaiting approval). Once approved, Accounts pushes it to Xero."}>Awaiting approval</span>
             )}
             {/* Certified client applications raise a live ACCREC invoice in Xero. */}
             {canEdit && afp.direction === "outgoing" && (afp.status === "certified" || afp.status === "paid") && (
@@ -735,6 +735,16 @@ function LabourPayApproval({ afp, cis, certified, claimed, budget, canEdit, canR
                 {afp.pay_release_note ? ` — "${afp.pay_release_note}"` : ""}
               </div>
             )}
+          </div>
+        ) : canRelease && !locked ? (
+          // Certified is enough to approve: the QS's certificate is the first
+          // signature, and the approver's is the second.
+          <div style={{ display: "grid", gap: 8, maxWidth: 560 }}>
+            <label style={{ fontSize: 12, margin: 0 }}>Approve this certificate for payment</label>
+            <textarea value={releaseNote} onChange={(e) => setReleaseNote(e.target.value)} rows={2}
+              placeholder="Note (optional)" style={{ width: "100%", resize: "vertical" }} />
+            <button className="accent" style={{ justifySelf: "start" }} disabled={busy} onClick={release}
+              title="Approves the certificate. Accounts then pushes it to Xero.">Approve</button>
           </div>
         ) : canEdit ? (
           <div style={{ display: "grid", gap: 8, maxWidth: 560 }}>

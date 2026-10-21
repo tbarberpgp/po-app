@@ -11,7 +11,7 @@ import { Topbar } from "./Shell";
 import type { CurrentUser, Invoice, InvoiceMatch, InvoiceMatchLine, MatchSummary, Project, Supplier } from "../../shared/types";
 import { NON_GOODS_LINE_IDS, PAYMENT_SCHEDULE_LINE_ID, SERVICE_CHARGE_LINE_ID } from "../../shared/line-match";
 import { poStatusHint, poDeliveryLabel } from "../../shared/po-delivery-status";
-import { isAwaitingApproval, isReadyToPush, isCertAwaitingApproval, isCertReadyToPush, isCertInXero } from "../../shared/payment-release";
+import { isAwaitingApproval, isReadyToPush, isCertReadyToPush, isCertInXero } from "../../shared/payment-release";
 
 // Amounts render in the invoice's OWN currency — a $ or € invoice shown with a
 // £ sign misreports what we owe. Falls back to sterling when unknown.
@@ -144,6 +144,9 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
   // the invoice selection and vice versa.
   const [labour, setLabour] = useState<AccountsLabourCert[]>([]);
   const [selLabourId, setSelLabourId] = useState<number | null>(null);
+  // Which of the two lists the queue shows. Overheads and Dismissed are
+  // invoice-only, so they always show invoices.
+  const [kind, setKind] = useState<"invoices" | "labour">("invoices");
   const [projects, setProjects] = useState<Project[]>([]);
   const [accounts, setAccounts] = useState<Array<{ code: string; name: string; type: string }>>([]);
   // Only needed to name the subcontractor when handing an invoice to labour.
@@ -239,9 +242,11 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
     });
   }, [labour, tab, search]);
   const labourCount = (t: Tab) => labour.filter((a) => labourTab(a) === t).length;
-  const selLabour = labour.find((a) => a.id === selLabourId) ?? null;
+  const hasLabourSubtab = tab === "inbox" || tab === "held" || tab === "ready" || tab === "pushed";
+  const showLabour = hasLabourSubtab && kind === "labour";
+  const selLabour = showLabour ? labour.find((a) => a.id === selLabourId) ?? null : null;
 
-  const sel = rows.find((r) => r.id === selId) ?? null;
+  const sel = showLabour ? null : rows.find((r) => r.id === selId) ?? null;
   const inboxCount = rows.filter((r) => (r.status === "inbox" || r.status === "ready") && !isAwaitingApproval(r) && !isReadyToPush(r)).length;
   const heldCount = rows.filter((r) => isAwaitingApproval(r)).length;
   const readyCount = rows.filter((r) => isReadyToPush(r)).length;
@@ -370,38 +375,45 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
           <div className="a-split">
             {/* ── inbox ── */}
             <aside className="inbox">
-              <div className="inbox-hd"><h2>{tabLabel}</h2><span className="count">{visible.length + visibleLabour.length}</span></div>
+              <div className="inbox-hd"><h2>{tabLabel}</h2><span className="count">{showLabour ? visibleLabour.length : visible.length}</span></div>
+              {hasLabourSubtab && (
+                <div className="a-subtabs">
+                  <button className={kind === "invoices" ? "on" : ""} onClick={() => setKind("invoices")}>
+                    Supplier invoices<span className="cnt">{visible.length}</span>
+                  </button>
+                  <button className={kind === "labour" ? "on" : ""} onClick={() => setKind("labour")}>
+                    Labour certificates<span className="cnt">{visibleLabour.length}</span>
+                  </button>
+                </div>
+              )}
               <div className="inbox-search">
-                <input placeholder="Search supplier, invoice #…" value={search} onChange={(e) => setSearch(e.target.value)} />
+                <input placeholder={showLabour ? "Search subcontractor, project, cert #…" : "Search supplier, invoice #…"} value={search} onChange={(e) => setSearch(e.target.value)} />
               </div>
               <div className="ilist">
-                {visibleLabour.length > 0 && (
-                  <>
-                    <div className="muted" style={{ padding: "8px 15px 4px", fontSize: 11, textTransform: "uppercase", letterSpacing: "0.04em" }}>Labour certificates</div>
-                    {visibleLabour.map((a) => {
-                      const st = labourTab(a) === "held" ? "held" : labourTab(a) === "ready" ? "ready" : labourTab(a) === "pushed" ? "matched" : "review";
+                {showLabour ? (
+                  visibleLabour.length === 0
+                    ? <div className="muted" style={{ padding: "18px 15px", fontSize: 13, lineHeight: 1.5 }}>{LABOUR_EMPTY[tab]}</div>
+                    : visibleLabour.map((a) => {
+                      const t = labourTab(a);
+                      const st = t === "held" ? "held" : t === "ready" ? "ready" : t === "pushed" ? "matched" : "review";
                       return (
-                        <button key={`l${a.id}`} className={`irow${selLabourId === a.id ? " on" : ""}`}
-                          onClick={() => { setSelLabourId(a.id); setSelId(null); }}>
+                        <button key={`l${a.id}`} className={`irow${selLabourId === a.id ? " on" : ""}`} onClick={() => setSelLabourId(a.id)}>
                           <span className={`idot ${st}`} />
                           <div style={{ minWidth: 0 }}>
                             <div className="isup">{a.supplier_name || "Unassigned subcontractor"}</div>
                             <div className="imeta">
-                              <span>Labour cert #{a.app_number} · {(a.certified_at ?? "").slice(0, 10)}</span>
+                              <span>Labour cert #{a.app_number} · {(a.certified_at ?? a.submitted_at ?? "").slice(0, 10)}</span>
                               <span className="proj">{a.project_code}</span>
-                              {a.cis_rate != null && <span>CIS {a.cis_rate}%</span>}
+                              {a.cis_rate != null && a.cis_rate > 0 && <span>CIS {a.cis_rate}%</span>}
                               {a.xero_sync_status === "failed" && <span style={{ color: "var(--danger)", fontWeight: 600 }} title={a.xero_sync_error ?? ""}>⚠ push failed</span>}
                             </div>
-                            <span className={`istatus ${st}`}>{LABOUR_LABEL[labourTab(a)]}</span>
+                            <span className={`istatus ${st}`}>{LABOUR_LABEL[t]}</span>
                           </div>
                           <div className="iamt">{money(a.certified_amount ?? a.amount_due)}</div>
                         </button>
                       );
-                    })}
-                    {visible.length > 0 && <div className="muted" style={{ padding: "8px 15px 4px", fontSize: 11, textTransform: "uppercase", letterSpacing: "0.04em" }}>Supplier invoices</div>}
-                  </>
-                )}
-                {visible.length === 0 && visibleLabour.length > 0 ? null : visible.length === 0
+                    })
+                ) : visible.length === 0
                   ? <div className="muted" style={{ padding: "18px 15px", fontSize: 13, lineHeight: 1.5 }}>Nothing here. Email an invoice to <b>invoices@pgpprojects.com</b> or upload one.</div>
                   : visible.map((r) => {
                     const st = r.status === "dismissed" ? "none" : rowStatus(r);
@@ -462,7 +474,7 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
               {selLabour
                 ? <LabourCertDetail key={`l${selLabour.id}`} cert={selLabour} canEdit={canEdit} canRelease={canRelease} onChanged={load} />
                 : !sel
-                ? <div className="a-card a-pad"><div className="muted" style={{ fontSize: 13 }}>Select an invoice to review, code and push to Xero.</div></div>
+                ? <div className="a-card a-pad"><div className="muted" style={{ fontSize: 13 }}>{showLabour ? "Select a labour certificate." : "Select an invoice to review, code and push to Xero."}</div></div>
                 : <InvoiceDetail key={sel.id} inv={sel} projects={projects} accounts={accounts} isAdmin={isAdmin} canEdit={canEdit}
                     canRelease={canRelease} busy={busy}
                     onPatch={(b) => patch(sel.id, b)} onPush={() => push(sel.id)} onRelease={(note) => release(sel.id, note)}
@@ -478,22 +490,32 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
   );
 }
 
-/** Which Accounts tab a labour certificate sits in — the same stages as an
- *  invoice: certified (to commit) → awaiting approval → ready to push → pushed. */
+/** Which Accounts tab a labour certificate sits in. Submitted (in from the
+ *  mailbox, not yet certified) → certified, awaiting approval → approved, ready
+ *  to push → pushed. Certifying IS the first signature here: there is no
+ *  separate commit step between it and the approver. */
 function labourTab(a: AccountsLabourCert): Tab {
   if (isCertInXero(a)) return "pushed";
   if (isCertReadyToPush(a)) return "ready";
-  if (isCertAwaitingApproval(a)) return "held";
+  if (a.status === "certified" || a.status === "paid") return "held";
   return "inbox";
 }
 const LABOUR_LABEL: Record<Tab, string> = {
-  inbox: "Certified — commit", held: "Awaiting approval", ready: "Ready to push",
+  inbox: "Submitted", held: "Certified", ready: "Ready to push",
   pushed: "Pushed", overheads: "", dismissed: "",
+};
+const LABOUR_EMPTY: Record<Tab, string> = {
+  inbox: "No labour invoices waiting to be certified.",
+  held: "No certified labour waiting for approval.",
+  ready: "No approved labour waiting to go to Xero.",
+  pushed: "No labour certificates pushed to Xero yet.",
+  overheads: "", dismissed: "",
 };
 
 /** A labour certificate in the Accounts detail pane. Certification stays with
- *  the QS on the certificate itself; from here Accounts commits it, an approver
- *  approves it, and Accounts pushes the draft bill to Xero. */
+ *  the QS on the certificate itself (the days check, time split and budget
+ *  sign-off live there); from here an approver approves it and Accounts pushes
+ *  the draft bill to Xero. */
 function LabourCertDetail({ cert: a, canEdit, canRelease, onChanged }: {
   cert: AccountsLabourCert; canEdit: boolean; canRelease: boolean; onChanged: () => void;
 }) {
@@ -536,24 +558,29 @@ function LabourCertDetail({ cert: a, canEdit, canRelease, onChanged }: {
       <div>
         {row("Project", `${a.project_code} ${a.project_name}`)}
         {row("Period ending", a.period_end ?? "—")}
-        {row("Certified (net)", <b>{money(net)}</b>)}
+        {row(a.certified_at ? "Certified (net)" : "Claimed (net)", <b>{money(net)}</b>)}
         {a.cis_rate != null && a.cis_rate > 0 && row("CIS", `${a.cis_rate}% — deducted on the bill (labour element only; see the certificate)`)}
-        {row("Certified", `${a.certified_by ?? "—"} on ${(a.certified_at ?? "").slice(0, 10)}`)}
+        {a.submitted_at && row("Submitted", a.submitted_at.slice(0, 10))}
+        {a.certified_at && row("Certified", `${a.certified_by ?? "—"} on ${a.certified_at.slice(0, 10)}`)}
         {a.pay_approved_at && row("Committed", `${a.pay_approved_by ?? "—"} on ${a.pay_approved_at.slice(0, 10)}${a.pay_approval_note ? ` — "${a.pay_approval_note}"` : ""}`)}
         {a.pay_released_at && row("Approved", `${a.pay_released_by ?? "—"} on ${a.pay_released_at.slice(0, 10)}`)}
         {isCertInXero(a) && row("Xero", keyedByHand ? `Bill ${a.xero_po_number ?? ""} — keyed in by hand` : `Draft bill ${a.xero_po_number ?? ""}`)}
         {a.source_file_name && row("Invoice", a.source_file_name)}
       </div>
-      {stage === "inbox" && canEdit && (
-        <div style={{ display: "grid", gap: 8, maxWidth: 520 }}>
-          <textarea rows={2} value={note} onChange={(e) => setNote(e.target.value)} placeholder="Note (optional)" />
-          <button className="accent" style={{ justifySelf: "start" }} disabled={busy}
-            onClick={() => run(() => api.approveAfpPayment(a.id, note))}>Commit for approval</button>
+      {stage === "inbox" && (
+        <div style={{ display: "grid", gap: 8 }}>
+          <div className="muted" style={{ fontSize: 12.5, lineHeight: 1.5 }}>
+            Waiting to be certified. Certify it on the certificate — it then moves to Awaiting approval.
+          </div>
+          {canEdit && <Link className="btn accent" style={{ justifySelf: "start" }} to={`/applications/${a.id}`}>Open to certify</Link>}
         </div>
       )}
       {stage === "held" && (canRelease
-        ? <button className="accent" style={{ justifySelf: "start" }} disabled={busy}
-            onClick={() => run(() => api.releaseAfpPayment(a.id, note))}>Approve</button>
+        ? <div style={{ display: "grid", gap: 8, maxWidth: 520 }}>
+            <textarea rows={2} value={note} onChange={(e) => setNote(e.target.value)} placeholder="Note (optional)" />
+            <button className="accent" style={{ justifySelf: "start" }} disabled={busy}
+              onClick={() => run(() => api.releaseAfpPayment(a.id, note))}>Approve</button>
+          </div>
         : <div className="muted" style={{ fontSize: 12 }}>Waiting on an approver. Once approved it moves to Ready to push.</div>)}
       {stage === "ready" && canEdit && (
         <button className="accent" style={{ justifySelf: "start" }} disabled={busy}
@@ -561,7 +588,7 @@ function LabourCertDetail({ cert: a, canEdit, canRelease, onChanged }: {
           {a.xero_sync_status === "failed" ? "Retry Xero push" : "Push to Xero"}
         </button>
       )}
-      {stage !== "pushed" && canEdit && (
+      {(stage === "held" || stage === "ready") && canEdit && (
         <button className="ghost tiny" style={{ justifySelf: "start" }} disabled={busy} onClick={alreadyInXero}
           title="It was keyed into Xero by hand — record that instead of pushing a second bill">
           Already in Xero

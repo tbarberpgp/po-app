@@ -2081,6 +2081,12 @@ body.rd-printing .rd-linedel, body.rd-printing .rd-addline, body.rd-printing .rd
 .acctx .inbox-hd h2 { font-size:16px; margin:0; }
 .acctx .inbox-hd .count { margin-left:auto; font-size:12px; font-weight:700; color:var(--muted); background:var(--card-2); border:1px solid var(--line); border-radius:999px; padding:2px 9px; font-variant-numeric:tabular-nums; }
 .acctx .inbox-search { padding:10px 14px; border-bottom:1px solid var(--line); }
+.acctx .a-subtabs { display:flex; gap:6px; padding:10px 14px 0; }
+.acctx .a-subtabs button { flex:1; display:inline-flex; align-items:center; justify-content:center; gap:7px; padding:7px 10px; border:1px solid var(--line-strong); border-radius:9px; background:var(--card); color:var(--muted); font:500 12.5px 'Inter',sans-serif; cursor:pointer; }
+.acctx .a-subtabs button:hover { color:var(--ink); }
+.acctx .a-subtabs button.on { border-color:var(--accent); background:var(--accent-soft); color:var(--accent-2); }
+.acctx .a-subtabs .cnt { font-size:11px; font-weight:700; background:var(--line); color:var(--muted); border-radius:999px; padding:1px 7px; font-variant-numeric:tabular-nums; }
+.acctx .a-subtabs button.on .cnt { background:var(--card); color:var(--accent-2); }
 .acctx .inbox-search input { width:100%; border:1px solid var(--line-strong); background:var(--card); border-radius:9px; padding:8px 12px; font:400 13px 'Inter',sans-serif; color:var(--ink); }
 .acctx .inbox-search input:focus { outline:none; border-color:var(--accent); }
 .acctx .ilist { max-height:calc(100vh - 210px); overflow:auto; }
