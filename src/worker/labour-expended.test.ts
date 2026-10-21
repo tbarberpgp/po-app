@@ -44,7 +44,7 @@ const liveRate = (d: DatabaseSync, itemId: number, rate: number) =>
     VALUES ('p1', ?, ?, 'applied', '2026-09-01')`).run(itemId, rate);
 
 type Row = { section: string; line_count: number; budget: number; saving: number;
-  boq_expended: number; variation_expended: number; other_expended: number };
+  boq_expended: number; variation_expended: number; other_expended: number; claim_lines: number };
 const position = (d: DatabaseSync) =>
   d.prepare(`SELECT * FROM (${LABOUR_POSITION}) WHERE pid = ?`).all("p1") as Row[];
 const pence = (v: number) => Math.round(v * 100) / 100;
@@ -83,6 +83,19 @@ describe("labour expended", () => {
     app(d, 2, 10, 2); line(d, 2, "Removal of Flashings", 9676.8); line(d, 2, "Expenses", 752.28, 1);
     assert.equal(total(d), pence(9676.8 + 636.9 + 752.28));
     assert.deepEqual(sections(d), { "Removal of Flashings": 9676.8, Expenses: 1389.18 });
+  });
+
+  // Expenses have no BOQ line, so the Labour subtab shows how many claims make
+  // up the spend instead of a line count of 0.
+  test("counts the certified ad-hoc lines behind each section", () => {
+    const d = db();
+    app(d, 1, 10, 1); line(d, 1, "Removal of Flashings", 2196); line(d, 1, "Expenses", 366.58, 1);
+    app(d, 2, 11, 1); line(d, 2, "Expenses", 57.86, 1); line(d, 2, "Dayworks", 3300, 1);
+    app(d, 3, 11, 2, "submitted"); line(d, 3, "Dayworks", 17510, 1);
+    const byS = Object.fromEntries(position(d).map((r) => [r.section, r]));
+    assert.equal(byS.Expenses.claim_lines, 2);
+    assert.equal(byS.Dayworks.claim_lines, 1, "a submitted claim is not counted");
+    assert.equal(byS["Removal of Flashings"].claim_lines, 0);
   });
 
   test("an uncertified claim is not yet expenditure", () => {

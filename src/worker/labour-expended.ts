@@ -116,6 +116,8 @@ const VARIATION_LINE = "(al.variation_id IS NOT NULL)";
  *   variation_expended    ad-hoc claims against variations, across the series
  *   other_expended        every other ad-hoc claim — expenses, daywork — which
  *                         has no budget line anywhere
+ *   claim_lines           how many certified ad-hoc lines make up the last two,
+ *                         the "Lines" a section with no BOQ line can show
  *
  * The three expended columns add up to labour expended; the split is what lets
  * forecast cost tell work past its budget from work that was never budgeted. Returns `pid` and `section` with those columns; takes no binds
@@ -124,7 +126,8 @@ const VARIATION_LINE = "(al.variation_id IS NOT NULL)";
 export const LABOUR_POSITION = `
   SELECT pid, section,
          SUM(line_count) AS line_count, SUM(budget) AS budget, SUM(saving) AS saving,
-         SUM(boq) AS boq_expended, SUM(variation) AS variation_expended, SUM(other) AS other_expended
+         SUM(boq) AS boq_expended, SUM(variation) AS variation_expended, SUM(other) AS other_expended,
+         SUM(claim_lines) AS claim_lines
     FROM (
       SELECT sn.project_id AS pid,
              COALESCE(NULLIF(TRIM(ci.section), ''), 'Other') AS section,
@@ -139,13 +142,13 @@ export const LABOUR_POSITION = `
                   AND llr.live_rate <= COALESCE(ci.labour_rate, llr.live_rate) * 5
                 ORDER BY llr.applied_at DESC LIMIT 1
              )) * COALESCE(ci.qty, 0), 0) AS saving,
-             0 AS boq, 0 AS variation, 0 AS other
+             0 AS boq, 0 AS variation, 0 AS other, 0 AS claim_lines
         FROM contract_items ci
         JOIN material_snapshots sn ON sn.id = ci.snapshot_id
        WHERE sn.is_active = 1 AND (ci.labour_total > 0 OR ci.labour_rate IS NOT NULL)
       UNION ALL
       SELECT l.project_id, COALESCE(NULLIF(TRIM(al.section), ''), 'Other'),
-             0, 0, 0, COALESCE(al.cumulative_value, 0), 0, 0
+             0, 0, 0, COALESCE(al.cumulative_value, 0), 0, 0, 0
         FROM afp_lines al
         JOIN (${COUNTED_BOQ_APPS}) l ON l.id = al.afp_id
        WHERE al.is_adhoc = 0
@@ -153,7 +156,8 @@ export const LABOUR_POSITION = `
       SELECT a.project_id, COALESCE(NULLIF(TRIM(al.section), ''), 'Other'),
              0, 0, 0, 0,
              CASE WHEN ${VARIATION_LINE} THEN COALESCE(al.cumulative_value, 0) ELSE 0 END,
-             CASE WHEN ${VARIATION_LINE} THEN 0 ELSE COALESCE(al.cumulative_value, 0) END
+             CASE WHEN ${VARIATION_LINE} THEN 0 ELSE COALESCE(al.cumulative_value, 0) END,
+             1
         FROM afp_lines al
         JOIN applications_for_payment a ON a.id = al.afp_id
        WHERE a.direction = 'incoming_labour' AND a.status IN ('certified', 'paid')

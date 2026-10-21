@@ -1212,6 +1212,9 @@ export type LabourByCostCode = {
   variation_expended?: number;
   /** Certified ad-hoc claims with no budget line — expenses, daywork. */
   other_expended?: number;
+  /** How many certified ad-hoc lines (expenses, daywork, variations) make up
+   *  the section's spend — its "Lines" when it has no BOQ line. */
+  claim_lines?: number;
 };
 
 /** A row from the workbook's Summary Cost Sheet — value / cost / GP per category. */
