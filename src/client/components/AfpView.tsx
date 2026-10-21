@@ -14,7 +14,7 @@ import { afpDocLabel } from "../../shared/types";
 import { parseMoney, parsePositiveMoney } from "../../shared/money";
 import type { AfpDetail, AfpLine, AfpStatus, CurrentUser, ApplicationForPayment, AfpSigninDays } from "../../shared/types";
 import { daysDisagree, daysLine } from "../../shared/signin-days";
-import { isCertAwaitingApproval } from "../../shared/payment-release";
+import { isCertAwaitingApproval, isCertInXero } from "../../shared/payment-release";
 import { isExpenseSection } from "../../shared/afp-expenses";
 import { isDayworkSection } from "../../shared/afp-dayworks";
 import { dayworksTotal, isSplittableBoqLine, scaleSplit, type TimeSplitPart } from "../../shared/afp-time-split";
@@ -206,6 +206,17 @@ export function AfpView({ me }: { me: CurrentUser | null }) {
     catch (e) { setErr(e instanceof Error ? e.message : "certify failed"); }
     finally { setBusy(false); }
   }
+  /** Back to submitted, to be certified again. Refused server-side once the
+   *  bill is in Xero or paid; the reason goes in the audit log. */
+  async function uncertify() {
+    const reason = prompt(`Uncertify ${afpDocLabel(afp.direction, afp.status)} #${afp.app_number}? It goes back to submitted and its approval is withdrawn.\n\nWhy?`);
+    if (reason === null) return;
+    if (!reason.trim()) { setErr("Say why it's being uncertified."); return; }
+    setBusy(true); setErr(null);
+    try { await api.uncertifyAfp(afp.id, reason.trim()); refresh(); }
+    catch (e) { setErr(e instanceof Error ? e.message : "couldn't uncertify"); }
+    finally { setBusy(false); }
+  }
   async function pushXero() {
     setBusy(true); setErr(null);
     try { await api.xeroPushAfp(afp.id); refresh(); }
@@ -315,6 +326,10 @@ export function AfpView({ me }: { me: CurrentUser | null }) {
               ) : (
                 <button className="accent" onClick={() => setCertifyOpen(true)} disabled={busy || certifyOpen}>Mark certified</button>
               )
+            )}
+            {canEdit && afp.direction === "incoming_labour" && afp.status === "certified" && !isCertInXero(afp) && (
+              <button className="ghost" onClick={uncertify} disabled={busy}
+                title="Take it back to submitted so it can be certified again">Uncertify</button>
             )}
             {/* Labour certificates push to Xero as a live bill (ACCPAY) to the
                 subbie — but only after the release sign-off, which is what

@@ -22,6 +22,7 @@ import { PRELIM_CLAIM } from "../labour-expended";
 import { planTimeSplit, isSplittableBoqLine, type TimeSplitApp, type TimeSplitLine, type TimeSplitPart, type TimeSplitPlan } from "../../shared/afp-time-split";
 import { planAttachSource, type AttachSource, type AttachTarget } from "../afp-source-attach";
 import { assertNotDuplicateLabourInvoice, DuplicateLabourInvoiceError } from "../labour-invoice-dupe";
+import { uncertifyBlock } from "../../shared/afp-uncertify";
 import { amountsArePeriod as inferPeriodBasis } from "../../shared/afp-claim-basis";
 import {
   planRestatement, lineWrites, settleWrites,
@@ -4342,6 +4343,65 @@ applications.post("/:id/certify", async (c) => {
   // gate — and then pushes as a DRAFT bill, not straight into the pay run.
 
   return c.json({ ok: true, certified_amount: certified });
+});
+
+/**
+ * Take a labour certificate back from certified to submitted, so it can be
+ * certified again at a different value. The certificate and everything signed
+ * after it go — the certified amount, the days-on-site check, the approval —
+ * and a reason is kept in the audit log. Time placed on BOQ lines at certify
+ * stays where it was put: it's the same value, and re-certifying offers the
+ * split again for whatever is left in Dayworks. See afp-uncertify.ts for what
+ * refuses.
+ */
+applications.post("/:id/uncertify", async (c) => {
+  const denied = requirePermission(c, "commercial.edit");
+  if (denied) return denied;
+  const id = Number(c.req.param("id"));
+  const body = await c.req.json<{ reason?: string }>().catch(() => ({} as { reason?: string }));
+  const reason = (body.reason ?? "").trim();
+  if (!reason) return c.json({ error: "Say why it's being uncertified." }, 400);
+  const afp = await c.env.DB.prepare(
+    `SELECT id, project_id, app_number, direction, status, claim_basis, counterparty_supplier_id,
+            certified_amount, certified_at, certified_by, pay_approved_at, pay_released_at,
+            xero_po_id, xero_po_number, xero_sync_status
+       FROM applications_for_payment WHERE id = ?`,
+  ).bind(id).first<{
+    id: number; project_id: string; app_number: number; direction: string; status: string; claim_basis: string | null;
+    counterparty_supplier_id: number | null; certified_amount: number | null; certified_at: string | null;
+    certified_by: string | null; pay_approved_at: string | null; pay_released_at: string | null;
+    xero_po_id: string | null; xero_po_number: string | null; xero_sync_status: string | null;
+  }>();
+  if (!afp) return c.json({ error: "not found" }, 404);
+  const later = await c.env.DB.prepare(
+    `SELECT app_number FROM applications_for_payment
+      WHERE project_id = ? AND direction = 'incoming_labour' AND counterparty_supplier_id IS ?
+        AND app_number > ? AND status IN ('certified', 'paid')
+      ORDER BY app_number`,
+  ).bind(afp.project_id, afp.counterparty_supplier_id, afp.app_number).all<{ app_number: number }>();
+  const block = uncertifyBlock(afp, later.results.map((r) => r.app_number));
+  if (block) return c.json({ error: block }, 409);
+
+  const now = new Date().toISOString();
+  await c.env.DB.batch([
+    c.env.DB.prepare(
+      `UPDATE applications_for_payment
+          SET status = 'submitted', certified_at = NULL, certified_by = NULL, certified_amount = NULL,
+              invoiced_days = NULL, signin_days = NULL, signin_from = NULL, signin_to = NULL, signin_note = NULL,
+              pay_approved_at = NULL, pay_approved_by = NULL, pay_approval_note = NULL,
+              pay_released_at = NULL, pay_released_by = NULL, pay_release_note = NULL,
+              xero_sync_status = NULL, xero_sync_error = NULL
+        WHERE id = ? AND status = 'certified'`,
+    ).bind(id),
+    c.env.DB.prepare(
+      `INSERT INTO audit_log (entity_type, entity_id, action, actor, details, created_at)
+       VALUES ('afp', ?, 'uncertified', ?, ?, ?)`,
+    ).bind(String(id), c.get("userEmail"), JSON.stringify({
+      reason, certified_amount: afp.certified_amount, certified_at: afp.certified_at, certified_by: afp.certified_by,
+      pay_approved_at: afp.pay_approved_at, pay_released_at: afp.pay_released_at,
+    }), now),
+  ]);
+  return c.json({ ok: true });
 });
 
 /**
