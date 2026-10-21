@@ -8,7 +8,7 @@ import { api, fmtMoney, type AccountsLabourCert } from "../lib/api";
 import { isSpreadsheetFile } from "../../shared/file-kind";
 import { can } from "../../shared/permissions";
 import { Topbar } from "./Shell";
-import type { CurrentUser, Invoice, InvoiceMatch, InvoiceMatchLine, MatchSummary, Project, Supplier } from "../../shared/types";
+import type { CurrentUser, InboundApplication, Invoice, InvoiceMatch, InvoiceMatchLine, MatchSummary, Project, Supplier } from "../../shared/types";
 import { NON_GOODS_LINE_IDS, PAYMENT_SCHEDULE_LINE_ID, SERVICE_CHARGE_LINE_ID } from "../../shared/line-match";
 import { poStatusHint, poDeliveryLabel } from "../../shared/po-delivery-status";
 import { isAwaitingApproval, isReadyToPush, isCertReadyToPush, isCertInXero } from "../../shared/payment-release";
@@ -144,6 +144,10 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
   // the invoice selection and vice versa.
   const [labour, setLabour] = useState<AccountsLabourCert[]>([]);
   const [selLabourId, setSelLabourId] = useState<number | null>(null);
+  // Labour emails the mailbox couldn't put on a project. They wait here, in
+  // Accounts' own Inbox, rather than in a tray nobody in Accounts looks at.
+  const [tray, setTray] = useState<InboundApplication[]>([]);
+  const [selTrayId, setSelTrayId] = useState<number | null>(null);
   // Which of the two lists the queue shows. Overheads and Dismissed are
   // invoice-only, so they always show invoices.
   const [kind, setKind] = useState<"invoices" | "labour">("invoices");
@@ -160,6 +164,7 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
   function load() {
     api.listInvoices().then(setRows).catch((e) => setErr(e.message));
     api.listAccountsLabour().then(setLabour).catch(() => {});
+    api.listInboundApplications().then((r) => setTray(r.filter((i) => i.direction === "incoming_labour"))).catch(() => {});
   }
 
   /** Hand the invoice to the labour pipeline. It leaves this queue for the
@@ -258,12 +263,19 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
       return !q || `${a.supplier_name ?? ""} ${a.project_code} labour cert #${a.app_number}`.toLowerCase().includes(q);
     });
   }, [labour, tab, search]);
-  const labourCount = (t: Tab) => labour.filter((a) => labourTab(a) === t).length;
+  const visibleTray = useMemo(() => {
+    if (tab !== "inbox") return [];
+    const q = search.trim().toLowerCase();
+    return tray.filter((i) => !q || `${i.supplier_name ?? ""} ${i.sender_email} ${i.subject ?? ""} ${i.filename ?? ""}`.toLowerCase().includes(q));
+  }, [tray, tab, search]);
+  const labourCount = (t: Tab) => labour.filter((a) => labourTab(a) === t).length + (t === "inbox" ? tray.length : 0);
+  const labourShown = visibleTray.length + visibleLabour.length;
   const hasLabourSubtab = tab === "inbox" || tab === "held" || tab === "ready" || tab === "pushed";
   const showLabour = hasLabourSubtab && kind === "labour";
   // Only while it's in the list on screen: a certificate that moved on (or a
   // tab switch) shouldn't leave its detail open beside a list it isn't in.
   const selLabour = showLabour ? labour.find((a) => a.id === selLabourId && labourTab(a) === tab) ?? null : null;
+  const selTray = showLabour && tab === "inbox" ? tray.find((i) => i.id === selTrayId) ?? null : null;
 
   const sel = showLabour ? null : rows.find((r) => r.id === selId) ?? null;
   const inboxCount = rows.filter((r) => (r.status === "inbox" || r.status === "ready") && !isAwaitingApproval(r) && !isReadyToPush(r)).length;
@@ -394,14 +406,14 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
           <div className="a-split">
             {/* ── inbox ── */}
             <aside className="inbox">
-              <div className="inbox-hd"><h2>{tabLabel}</h2><span className="count">{showLabour ? visibleLabour.length : visible.length}</span></div>
+              <div className="inbox-hd"><h2>{tabLabel}</h2><span className="count">{showLabour ? labourShown : visible.length}</span></div>
               {hasLabourSubtab && (
                 <div className="a-subtabs">
                   <button className={kind === "invoices" ? "on" : ""} onClick={() => setKind("invoices")}>
                     Supplier invoices<span className="cnt">{visible.length}</span>
                   </button>
                   <button className={kind === "labour" ? "on" : ""} onClick={() => setKind("labour")}>
-                    Labour certificates<span className="cnt">{visibleLabour.length}</span>
+                    Labour certificates<span className="cnt">{labourShown}</span>
                   </button>
                 </div>
               )}
@@ -410,13 +422,26 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
               </div>
               <div className="ilist">
                 {showLabour ? (
-                  visibleLabour.length === 0
+                  labourShown === 0
                     ? <div className="muted" style={{ padding: "18px 15px", fontSize: 13, lineHeight: 1.5 }}>{LABOUR_EMPTY[tab]}</div>
-                    : visibleLabour.map((a) => {
+                    : <>{visibleTray.map((i) => (
+                      <button key={`t${i.id}`} className={`irow${selTrayId === i.id ? " on" : ""}`} onClick={() => { setSelTrayId(i.id); setSelLabourId(null); }}>
+                        <span className="idot review" />
+                        <div style={{ minWidth: 0 }}>
+                          <div className="isup">{i.supplier_name || i.sender_email}</div>
+                          <div className="imeta">
+                            <span>{i.filename ?? "email"} · {(i.received_at ?? "").slice(0, 10)}</span>
+                            <span title="received by email">✉</span>
+                          </div>
+                          <span className="istatus review">Needs project</span>
+                        </div>
+                        <div className="iamt" />
+                      </button>
+                    ))}{visibleLabour.map((a) => {
                       const t = labourTab(a);
                       const st = t === "held" ? "held" : t === "ready" ? "ready" : t === "pushed" ? "matched" : "review";
                       return (
-                        <button key={`l${a.id}`} className={`irow${selLabourId === a.id ? " on" : ""}`} onClick={() => setSelLabourId(a.id)}>
+                        <button key={`l${a.id}`} className={`irow${selLabourId === a.id ? " on" : ""}`} onClick={() => { setSelLabourId(a.id); setSelTrayId(null); }}>
                           <span className={`idot ${st}`} />
                           <div style={{ minWidth: 0 }}>
                             <div className="isup">{a.supplier_name || "Unassigned subcontractor"}</div>
@@ -426,12 +451,12 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
                               {a.cis_rate != null && a.cis_rate > 0 && <span>CIS {a.cis_rate}%</span>}
                               {a.xero_sync_status === "failed" && <span style={{ color: "var(--danger)", fontWeight: 600 }} title={a.xero_sync_error ?? ""}>⚠ push failed</span>}
                             </div>
-                            <span className={`istatus ${st}`}>{LABOUR_LABEL[t]}</span>
+                            <span className={`istatus ${st}`}>{a.status === "draft" ? "Needs review" : LABOUR_LABEL[t]}</span>
                           </div>
                           <div className="iamt">{money(a.certified_amount ?? a.amount_due)}</div>
                         </button>
                       );
-                    })
+                    })}</>
                 ) : visible.length === 0
                   ? <div className="muted" style={{ padding: "18px 15px", fontSize: 13, lineHeight: 1.5 }}>Nothing here. Email an invoice to <b>invoices@pgpprojects.com</b> or upload one.</div>
                   : visible.map((r) => {
@@ -490,7 +515,10 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
 
             {/* ── detail ── */}
             <section className="detail">
-              {selLabour
+              {selTray
+                ? <LabourEmailDetail key={`t${selTray.id}`} item={selTray} projects={projects} canEdit={canEdit}
+                    onDone={(afpId) => { load(); setSelTrayId(null); if (afpId != null) setSelLabourId(afpId); }} />
+                : selLabour
                 ? <LabourCertDetail key={`l${selLabour.id}`} cert={selLabour} canEdit={canEdit} canRelease={canRelease} onChanged={load} />
                 : !sel
                 ? <div className="a-card a-pad"><div className="muted" style={{ fontSize: 13 }}>{showLabour ? "Select a labour certificate." : "Select an invoice to review, code and push to Xero."}</div></div>
@@ -524,12 +552,76 @@ const LABOUR_LABEL: Record<Tab, string> = {
   pushed: "Pushed", overheads: "", dismissed: "",
 };
 const LABOUR_EMPTY: Record<Tab, string> = {
-  inbox: "No labour invoices waiting to be certified.",
+  inbox: "No labour invoices waiting. They arrive here from the subcontractors' Labour folders in the Accounts mailbox.",
   held: "No certified labour waiting for approval.",
   ready: "No approved labour waiting to go to Xero.",
   pushed: "No labour certificates pushed to Xero yet.",
   overheads: "", dismissed: "",
 };
+
+/** A labour email the mailbox couldn't place: no project named, and the subbie
+ *  works (or has worked lately) on more than one. Picking the project here
+ *  creates the certificate from what was already read off the document. */
+function LabourEmailDetail({ item, projects, canEdit, onDone }: {
+  item: InboundApplication; projects: Project[]; canEdit: boolean; onDone: (afpId: number | null) => void;
+}) {
+  const [projectId, setProjectId] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  async function assign() {
+    if (!projectId) { setErr("Pick the project this invoice is for."); return; }
+    setBusy(true); setErr(null);
+    try { const r = await api.resolveInboundApplication(item.id, { project_id: projectId }); onDone(r.id); }
+    catch (e) { setErr(e instanceof Error ? e.message : "Couldn't create the certificate"); }
+    finally { setBusy(false); }
+  }
+  async function dismiss() {
+    if (!confirm(`Set aside ${item.filename ?? "this email"} from ${item.sender_email}? It won't become a labour certificate.`)) return;
+    setBusy(true); setErr(null);
+    try { await api.dismissInboundApplication(item.id); onDone(null); }
+    catch (e) { setErr(e instanceof Error ? e.message : "Couldn't set it aside"); }
+    finally { setBusy(false); }
+  }
+  const row = (k: string, v: React.ReactNode) => (
+    <div className="row" style={{ gap: 12, fontSize: 13, padding: "4px 0" }}>
+      <span className="muted" style={{ width: 150 }}>{k}</span><span>{v}</span>
+    </div>
+  );
+  return (
+    <div className="a-card a-pad" style={{ display: "grid", gap: 14 }}>
+      <div>
+        <div className="eyebrow">Labour invoice · by email</div>
+        <h2 style={{ margin: "2px 0 0" }}>{item.supplier_name || "Subcontractor not recognised"}</h2>
+      </div>
+      {err && <div className="flash error">{err}</div>}
+      <div>
+        {row("From", item.sender_email)}
+        {row("Received", (item.received_at ?? "").slice(0, 16).replace("T", " "))}
+        {item.subject && row("Subject", item.subject)}
+        {row("File", item.filename ?? "—")}
+        {row("Lines read", String(item.line_count))}
+        {item.note && row("Why it's here", item.note)}
+      </div>
+      {canEdit && (
+        <div style={{ display: "grid", gap: 8, maxWidth: 520 }}>
+          <label style={{ fontSize: 12, margin: 0 }}>Which project is this invoice for?</label>
+          <select value={projectId} onChange={(e) => setProjectId(e.target.value)}>
+            <option value="">Pick a project…</option>
+            {projects.map((p) => <option key={p.id} value={p.id}>{p.code} — {p.name}</option>)}
+          </select>
+          <div className="row" style={{ gap: 8 }}>
+            <button className="accent" disabled={busy || !projectId} onClick={assign}>Create labour certificate</button>
+            <button className="ghost tiny" disabled={busy} onClick={dismiss}>Not a labour invoice</button>
+          </div>
+        </div>
+      )}
+      <div className="muted" style={{ fontSize: 11.5, lineHeight: 1.5 }}>
+        The email didn't name a project and {item.supplier_name ?? "the sender"} has invoiced more than one lately
+        (or none), so it couldn't be placed automatically.
+      </div>
+    </div>
+  );
+}
 
 /** A labour certificate in the Accounts detail pane. Certification stays with
  *  the QS on the certificate itself (the days check, time split and budget
@@ -588,7 +680,16 @@ function LabourCertDetail({ cert: a, canEdit, canRelease, onChanged }: {
         {isCertInXero(a) && row("Xero", keyedByHand ? `Bill ${a.xero_po_number ?? ""} — keyed in by hand` : `Draft bill ${a.xero_po_number ?? ""}`)}
         {a.source_file_name && row("Invoice", a.source_file_name)}
       </div>
-      {stage === "inbox" && (
+      {stage === "inbox" && a.status === "draft" && (
+        <div style={{ display: "grid", gap: 8 }}>
+          <div className="muted" style={{ fontSize: 12.5, lineHeight: 1.5 }}>
+            In by email, but some of its lines didn't match the labour budget. Match them on the certificate —
+            it's sent for certifying as soon as the last one is done.
+          </div>
+          {canEdit && <Link className="btn accent" style={{ justifySelf: "start" }} to={`/applications/${a.id}?from=accounts`}>Open to review</Link>}
+        </div>
+      )}
+      {stage === "inbox" && a.status !== "draft" && (
         <div style={{ display: "grid", gap: 8 }}>
           <div className="muted" style={{ fontSize: 12.5, lineHeight: 1.5 }}>
             Waiting to be certified. Certify it on the certificate — it then moves to Awaiting approval.

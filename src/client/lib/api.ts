@@ -1837,7 +1837,7 @@ export function fmtQty(n: number | null | undefined) {
 /** A labour certificate as the Accounts workspace lists it. */
 export type AccountsLabourCert = {
   id: number; project_id: string; app_number: number; period_end: string | null; status: string;
-  certified_amount: number | null; amount_due: number | null; submitted_at: string | null;
+  certified_amount: number | null; amount_due: number | null; created_by: string | null; submitted_at: string | null;
   certified_at: string | null; certified_by: string | null;
   pay_approved_at: string | null; pay_approved_by: string | null; pay_approval_note: string | null;
   pay_released_at: string | null; pay_released_by: string | null;
