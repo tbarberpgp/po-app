@@ -2,7 +2,7 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Link, NavLink } from "react-router-dom";
 import { useTheme } from "../lib/theme";
 import type { CurrentUser } from "../../shared/types";
-import { can, ROLE_LABELS } from "../../shared/permissions";
+import { can, ROLES, ROLE_LABELS, type Role } from "../../shared/permissions";
 import { WHATS_NEW_LATEST_ID } from "../lib/whats-new";
 
 // Line icons (Lucide-style: 24×24 viewBox, currentColor stroke) keyed by nav
@@ -23,6 +23,7 @@ const ICON_PATHS: Record<string, ReactNode> = {
   admin: <><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z" /></>,
   deleted: <><path d="M3 6h18" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" /><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /><line x1="10" y1="11" x2="10" y2="17" /><line x1="14" y1="11" x2="14" y2="17" /></>,
   guide: <><circle cx="12" cy="12" r="10" /><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3" /><line x1="12" y1="17" x2="12.01" y2="17" /></>,
+  viewas: <><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z" /><circle cx="12" cy="12" r="3" /></>,
   whatsnew: <polygon points="12 2 15.1 8.3 22 9.3 17 14.1 18.2 21 12 17.8 5.8 21 7 14.1 2 9.3 8.9 8.3 12 2" />,
 };
 
@@ -58,7 +59,7 @@ function NavSection({ id, label, onNavigate, children }: { id: string; label: st
   );
 }
 
-export function Sidebar({ me, approvalsCount, onNavigate }: { me: CurrentUser | null; approvalsCount: number; onNavigate?: () => void }) {
+export function Sidebar({ me, approvalsCount, onNavigate, viewAs }: { me: CurrentUser | null; approvalsCount: number; onNavigate?: () => void; viewAs?: { role: Role; onChange: (r: Role) => void } }) {
   // Permission checks take the whole user, not just the role: a per-user grant
   // has to reach the nav, or a page someone was granted stays hidden from them.
   // `isAdmin` below is a genuine question about rank, so it keeps the role.
@@ -141,6 +142,17 @@ export function Sidebar({ me, approvalsCount, onNavigate }: { me: CurrentUser | 
           {whatsNewUnseen && <span className="nav-dot" aria-label="New updates" />}
         </NavLink>
       </nav>
+      {/* Superadmin role preview, styled as one more row. Outside the <nav>
+          above so opening it doesn't close the phone drawer. */}
+      {viewAs && (
+        <label className="nav-viewas">
+          <Icon name="viewas" /><span>View as</span>
+          <select value={viewAs.role} onChange={(e) => viewAs.onChange(e.target.value as Role)}>
+            {ROLES.map((r) => <option key={r} value={r}>{ROLE_LABELS[r]}</option>)}
+          </select>
+        </label>
+      )}
+
 
       {me && (
         <div className="sidebar-user">

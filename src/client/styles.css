@@ -127,6 +127,7 @@ a:hover { text-decoration: underline; }
   top: 0;
   align-self: start;
   height: 100vh;
+  overflow-y: auto;   /* short windows: scroll the nav rather than clip the user chip */
 }
 .sidebar-logo {
   padding: 4px 8px 0;
@@ -206,6 +207,24 @@ a:hover { text-decoration: underline; }
 
 /* Help & changelog block, just above the user chip. */
 .sidebar-foot { display: flex; flex-direction: column; gap: 2px; }
+/* "View as" (superadmin): looks like the rows above; the current role sits
+   on the right in muted text and opens the role list. */
+.nav-viewas {
+  display: flex; align-items: center; gap: 10px;
+  margin: -16px 0 0; padding: 8px 10px; border-radius: var(--radius-md);
+  font-size: 13.5px; font-weight: 400; color: var(--ink); cursor: pointer;
+  text-transform: none; letter-spacing: 0;
+  transition: background var(--motion-fast);
+}
+.nav-viewas:hover { background: var(--line); }
+.nav-viewas > span { white-space: nowrap; }
+.nav-viewas select {
+  margin-left: auto; flex: 0 1 auto; min-width: 0; max-width: 112px; min-height: 0; width: auto;
+  padding: 0 2px; border: 0; background: transparent;
+  font: 400 12.5px var(--font-sans); color: var(--muted); text-align: right; cursor: pointer;
+}
+.nav-viewas select:focus { outline: none; }
+.nav-viewas:focus-within { box-shadow: 0 0 0 2px var(--accent); }
 .nav-dot { margin-left: auto; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex-shrink: 0; }
 
 /* "What's new" changelog entries. */

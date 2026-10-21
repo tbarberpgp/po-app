@@ -128,22 +128,23 @@ export function App() {
 
   return (
     <div className={`app${navOpen ? " nav-open" : ""}`}>
-      <Sidebar me={effectiveMe} approvalsCount={approvalsCount} onNavigate={() => setNavOpen(false)} />
+      <Sidebar
+        me={effectiveMe}
+        approvalsCount={approvalsCount}
+        onNavigate={() => setNavOpen(false)}
+        viewAs={isSuper ? { role: viewAs ?? "superadmin", onChange: (r) => changeViewAs(r === "superadmin" ? null : r) } : undefined}
+      />
       <div className="nav-backdrop" onClick={() => setNavOpen(false)} />
       <div className="app-main">
         <div className="mobile-topbar">
           <button className="nav-toggle" aria-label="Open menu" onClick={() => setNavOpen(true)}>☰</button>
           <Link to="/" className="mobile-logo" aria-label="PGP Home"><img src="/logo.png" alt="PGP" /></Link>
         </div>
-        {isSuper && (
-          <div className={`viewas-bar${viewAs && viewAs !== "superadmin" ? " active" : ""}`}>
-            <span className="viewas-label">View as</span>
-            <select value={viewAs ?? "superadmin"} onChange={(e) => changeViewAs(e.target.value === "superadmin" ? null : (e.target.value as Role))}>
-              {ROLES.map((r) => <option key={r} value={r}>{ROLE_LABELS[r]}</option>)}
-            </select>
-            {viewAs && viewAs !== "superadmin" && (
-              <span className="viewas-note">Previewing as <b>{ROLE_LABELS[viewAs]}</b> — commercial views hidden. <button className="viewas-exit" onClick={() => changeViewAs(null)}>Exit</button></span>
-            )}
+        {/* The role picker lives in the sidebar; this strip only appears while
+            previewing another role, so it's never mistaken for your own view. */}
+        {isSuper && viewAs && viewAs !== "superadmin" && (
+          <div className="viewas-bar active">
+            <span className="viewas-note">Previewing as <b>{ROLE_LABELS[viewAs]}</b> — commercial views hidden. <button className="viewas-exit" onClick={() => changeViewAs(null)}>Exit</button></span>
           </div>
         )}
         {error && (
