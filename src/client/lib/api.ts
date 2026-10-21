@@ -1143,6 +1143,12 @@ export const api = {
     ),
   /** Labour certificates in the Accounts queues (submitted onwards). */
   listAccountsLabour: () => jfetch<AccountsLabourCert[]>(`/api/applications/_accounts-labour`),
+  /** Take a labour certificate back from certified to submitted. */
+  uncertifyAfp: (id: number, reason: string) =>
+    jfetch<{ ok: true }>(`/api/applications/${id}/uncertify`, {
+      method: "POST",
+      body: JSON.stringify({ reason }),
+    }),
   /** Record a labour certificate's bill as keyed into Xero by hand. */
   markAfpInXeroByHand: (id: number, bill_number: string) =>
     jfetch<{ ok: true }>(`/api/applications/${id}/already-in-xero`, {

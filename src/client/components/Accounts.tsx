@@ -644,6 +644,13 @@ function LabourCertDetail({ cert: a, canEdit, canRelease, onChanged }: {
     if (!bill.trim()) { setErr("Give the bill's number as it appears in Xero."); return; }
     run(() => api.markAfpInXeroByHand(a.id, bill.trim()));
   }
+  /** Back to the Inbox as submitted, to be certified again. */
+  function uncertify() {
+    const reason = prompt(`Uncertify ${a.supplier_name ?? "this"} #${a.app_number}? It goes back to submitted in the Inbox and its approval is withdrawn.\n\nWhy?`);
+    if (reason === null) return;
+    if (!reason.trim()) { setErr("Say why it's being uncertified."); return; }
+    run(() => api.uncertifyAfp(a.id, reason.trim()));
+  }
   async function run(f: () => Promise<unknown>) {
     setBusy(true); setErr(null);
     try { await f(); onChanged(); }
@@ -708,6 +715,12 @@ function LabourCertDetail({ cert: a, canEdit, canRelease, onChanged }: {
         <button className="accent" style={{ justifySelf: "start" }} disabled={busy}
           onClick={() => run(() => api.xeroPushAfp(a.id))}>
           {a.xero_sync_status === "failed" ? "Retry Xero push" : "Push to Xero"}
+        </button>
+      )}
+      {(stage === "held" || stage === "ready") && a.status === "certified" && canEdit && (
+        <button className="ghost tiny" style={{ justifySelf: "start" }} disabled={busy} onClick={uncertify}
+          title="Take it back to submitted so it can be certified again">
+          Uncertify
         </button>
       )}
       {(stage === "held" || stage === "ready") && canEdit && (
