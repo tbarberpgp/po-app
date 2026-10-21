@@ -21,6 +21,7 @@
 
 import PostalMime from "postal-mime";
 import type { Env } from "./env";
+import { soleLabourProject } from "./labour-sole-project";
 import { extractLabourLines, extractCertificateLines, createAfpFromLines, applyClientCertificate, putLabourSourceFile, setAfpSourceFile, setAfpCertFile, sha256Hex, findDuplicateSourceDoc, extractCombinedLabourByProject, resolveCombinedGroupBase, createCombinedClientAfpFromLines } from "./routes/applications";
 import { ingestInvoice } from "./routes/invoices";
 import { isSpreadsheetFile } from "../shared/file-kind";
@@ -371,7 +372,15 @@ export async function handleInboundEmail(
     primary: [subject, ...attachments.map((a) => a.filename ?? "")].join("  "),
     body: `${parsed.text ?? ""}\n${parsed.html ?? ""}`,
   });
-  const project = (projectResult === "none" || projectResult === "ambiguous") ? null : projectResult;
+  let project = (projectResult === "none" || projectResult === "ambiguous") ? null : projectResult;
+  // No project named: a subbie whose recent applications are all on one live
+  // project is taken to be invoicing that one. Only when nothing was named —
+  // two codes in the email is a question for a person, not a guess.
+  let projectGuessed = false;
+  if (!project && projectResult === "none" && direction === "incoming_labour" && supplier) {
+    project = await soleLabourProject(env, supplier.id).catch(() => null);
+    projectGuessed = !!project;
+  }
 
   // ── 5. Per attachment: extract → create draft OR park in inbound tray ─
   const created: Array<{ file: string; afp_id: number; app_number: number; extracted: number; matched: number; unmatched: number }> = [];
@@ -381,9 +390,10 @@ export async function handleInboundEmail(
 
   const periodEnd = new Date().toISOString().slice(0, 10);
   const kind = direction === "outgoing" ? "client application" : "labour application";
-  const inboundNote = supplierUnresolvedForward
+  const inboundNote = (supplierUnresolvedForward
     ? `Forwarded by ${senderRaw} — subject "${subject}". Subcontractor not auto-detected — please assign on the draft.`
-    : `Received ${kind} via email from ${senderRaw} — subject "${subject}".`;
+    : `Received ${kind} via email from ${senderRaw} — subject "${subject}".`)
+    + (projectGuessed && project ? ` No project named; put on ${project.code}, the only project they've invoiced recently.` : "");
 
   for (const att of attachments) {
     const fname = att.filename ?? "application.xlsx";

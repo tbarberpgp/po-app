@@ -679,7 +679,8 @@ applications.get("/project/:projectId", async (c) => {
 /**
  * Labour certificates for the Accounts workspace, so a subbie's bill runs the
  * same queues as a supplier invoice: submitted → certified (awaiting approval)
- * → approved → pushed. Drafts aren't sent yet, so they stay out. A "paid" one
+ * → approved → pushed. A draft is only listed when it came in by email (its
+ * lines need matching before it sends); a hand-made draft isn't sent yet. A "paid" one
  * with no Xero bill was keyed into Xero by hand before this existed, so it is
  * history, not a queue item.
  */
@@ -688,7 +689,7 @@ applications.get("/_accounts-labour", async (c) => {
   if (denied) return denied;
   const rows = await c.env.DB.prepare(
     `SELECT a.id, a.project_id, a.app_number, a.period_end, a.status,
-            a.certified_amount, a.amount_due, a.submitted_at, a.certified_at, a.certified_by,
+            a.certified_amount, a.amount_due, a.created_by, a.submitted_at, a.certified_at, a.certified_by,
             a.pay_approved_at, a.pay_approved_by, a.pay_approval_note,
             a.pay_released_at, a.pay_released_by,
             a.xero_po_id, a.xero_po_number, a.xero_sync_status, a.xero_sync_error,
@@ -700,6 +701,8 @@ applications.get("/_accounts-labour", async (c) => {
      LEFT JOIN suppliers s ON s.id = a.counterparty_supplier_id
      WHERE a.direction = 'incoming_labour'
        AND (a.status IN ('submitted', 'certified')
+            -- In by email but not sent on: some lines didn't match the budget.
+            OR (a.status = 'draft' AND (a.created_by LIKE 'email:%' OR a.notes LIKE 'From inbound email%'))
             OR (a.status = 'paid' AND (a.xero_po_id IS NOT NULL OR a.xero_sync_status = 'synced')))
      ORDER BY COALESCE(a.certified_at, a.submitted_at) DESC`,
   ).all();
