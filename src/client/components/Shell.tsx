@@ -58,7 +58,7 @@ function NavSection({ id, label, onNavigate, children }: { id: string; label: st
   );
 }
 
-export function Sidebar({ me, approvalsCount, onNavigate }: { me: CurrentUser | null; approvalsCount: number; onNavigate?: () => void }) {
+export function Sidebar({ me, approvalsCount, onNavigate, viewAs }: { me: CurrentUser | null; approvalsCount: number; onNavigate?: () => void; viewAs?: ReactNode }) {
   // Permission checks take the whole user, not just the role: a per-user grant
   // has to reach the nav, or a page someone was granted stays hidden from them.
   // `isAdmin` below is a genuine question about rank, so it keeps the role.
@@ -141,6 +141,9 @@ export function Sidebar({ me, approvalsCount, onNavigate }: { me: CurrentUser | 
           {whatsNewUnseen && <span className="nav-dot" aria-label="New updates" />}
         </NavLink>
       </nav>
+
+      {/* Superadmin role preview — App passes the picker in only for them. */}
+      {viewAs}
 
       {me && (
         <div className="sidebar-user">
