@@ -18,14 +18,23 @@ export async function markClientApplicationPaid(env: Env, inv: XeroInvoiceFull, 
  *  else to an incoming-labour certificate's reference. */
 export async function markBillPaid(env: Env, inv: XeroInvoiceFull, paidAt: string): Promise<boolean> {
   const ref = inv.Reference?.trim();
-  if (!ref) return false;
 
-  const po = await env.DB.prepare(
+  const po = ref ? await env.DB.prepare(
     `UPDATE purchase_orders
        SET paid_at = ?, xero_bill_id = ?, paid_reference = ?
      WHERE po_number = ? AND paid_at IS NULL`,
-  ).bind(paidAt, inv.InvoiceID, inv.InvoiceNumber ?? ref, ref).run();
-  if ((po.meta?.changes ?? 0) > 0) return true;
+  ).bind(paidAt, inv.InvoiceID, inv.InvoiceNumber ?? ref, ref).run() : null;
+  if ((po?.meta?.changes ?? 0) > 0) return true;
+
+  // A labour certificate tied to this bill by its id — pushed from the app, or
+  // linked to a bill keyed in by hand. Holds whatever the bill's Reference says.
+  const byId = await env.DB.prepare(
+    `UPDATE applications_for_payment
+       SET status = 'paid', paid_at = ?, paid_by = 'xero', payment_reference = ?
+     WHERE direction = 'incoming_labour' AND status = 'certified' AND xero_po_id = ?`,
+  ).bind(paidAt, inv.InvoiceNumber ?? ref ?? null, inv.InvoiceID).run();
+  if ((byId.meta?.changes ?? 0) > 0) return true;
+  if (!ref) return false;
 
   const cert = await env.DB.prepare(
     `UPDATE applications_for_payment

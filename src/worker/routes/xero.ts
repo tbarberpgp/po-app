@@ -36,6 +36,7 @@ import type { XeroContact, XeroPOInput, XeroInvoiceInput } from "../xero/client"
 import { encryptToken } from "../xero/crypto";
 import { summariseBill } from "../xero/bill-detail";
 import { recheckPaidStatus } from "../xero/paid";
+import { linkLabourToXero } from "../xero/labour-link";
 import { isSandboxId, SANDBOX_PROJECT_ID } from "../sandbox";
 import { isCertInXero, isCertReleased } from "../../shared/payment-release";
 import { findKeyedBill } from "../../shared/labour-bill-duplicate";
@@ -523,6 +524,21 @@ export async function cisLabourBase(
     return net;
   }
 }
+
+/** Tie labour certificates to the bills already in Xero for them (keyed by
+ *  hand): certified at that value, paid once Xero has paid it. `?dry=1`
+ *  reports without writing. Also runs hourly from the cron. */
+xero.post("/link-labour", async (c) => {
+  const denied = requirePermission(c, "commercial.edit");
+  if (denied) return denied;
+  const nc = notConfigured(c.env);
+  if (nc) return nc;
+  try {
+    return c.json(await linkLabourToXero(c.env, { dry: c.req.query("dry") === "1" }));
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : String(e) }, 502);
+  }
+});
 
 /** Push a certified labour certificate to Xero as a live bill to the subbie. */
 xero.post("/push-afp/:id", async (c) => {

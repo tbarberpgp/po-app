@@ -1143,6 +1143,14 @@ export const api = {
     ),
   /** Labour certificates in the Accounts queues (submitted onwards). */
   listAccountsLabour: () => jfetch<AccountsLabourCert[]>(`/api/applications/_accounts-labour`),
+  /** Tie labour certificates to bills already keyed into Xero. */
+  linkLabourXero: () => {
+    type Row = { id: number; app_number: number; project_code: string; supplier: string; bill: string; value: number };
+    return jfetch<{
+      dry: boolean; linked_paid: Row[]; linked_owed: Row[]; now_paid: Row[];
+      amount_differs: Array<Row & { xero_value: number }>; no_contact: string[];
+    }>(`/api/xero/link-labour`, { method: "POST" });
+  },
   /** Take a labour certificate back from certified to submitted. */
   uncertifyAfp: (id: number, reason: string) =>
     jfetch<{ ok: true }>(`/api/applications/${id}/uncertify`, {
