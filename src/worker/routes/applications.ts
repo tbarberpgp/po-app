@@ -21,6 +21,7 @@ import { normaliseAttentionNote } from "../../shared/afp-attention";
 import { PRELIM_CLAIM } from "../labour-expended";
 import { planTimeSplit, isSplittableBoqLine, type TimeSplitApp, type TimeSplitLine, type TimeSplitPart, type TimeSplitPlan } from "../../shared/afp-time-split";
 import { planAttachSource, type AttachSource, type AttachTarget } from "../afp-source-attach";
+import { assertNotDuplicateLabourInvoice, DuplicateLabourInvoiceError } from "../labour-invoice-dupe";
 import { amountsArePeriod as inferPeriodBasis } from "../../shared/afp-claim-basis";
 import {
   planRestatement, lineWrites, settleWrites,
@@ -606,6 +607,16 @@ applications.post("/inbound/:id/resolve", async (c) => {
   catch { return c.json({ error: "stored lines are corrupt" }, 500); }
 
   try {
+    if (row.direction === "incoming_labour") {
+      let invoiceNumber: string | null = null;
+      try { invoiceNumber = (JSON.parse(row.extracted_meta_json ?? "null") as LabourAppMeta | null)?.invoice_number ?? null; } catch { /* no meta */ }
+      await assertNotDuplicateLabourInvoice(c.env, {
+        projectId: body.project_id,
+        supplierId: body.counterparty_supplier_id ?? row.counterparty_supplier_id ?? null,
+        invoiceNumber,
+        fileName: row.source_file_name,
+      });
+    }
     const result = await createAfpFromLines(c.env, {
       projectId: body.project_id,
       direction: row.direction,
@@ -629,6 +640,9 @@ applications.post("/inbound/:id/resolve", async (c) => {
     ).bind(result.id, id).run();
     return c.json(result);
   } catch (e) {
+    if (e instanceof DuplicateLabourInvoiceError) {
+      return c.json({ error: e.message }, 409);
+    }
     const msg = e instanceof Error ? e.message : String(e);
     const code = /not found|upload a pricing/.test(msg) ? 400 : 500;
     return c.json({ error: msg }, code);
@@ -1160,6 +1174,9 @@ export type LabourAppMeta = {
   supplier_utr: string | null;
   supplier_email: string | null;
   supplier_phone: string | null;
+  /** The subcontractor's own invoice / application number — identity for the
+   *  duplicate guard (labour-invoice-dupe.ts). */
+  invoice_number: string | null;
   payment_terms: string | null;
   bank_name: string | null;
   bank_sort_code: string | null;
@@ -1232,6 +1249,7 @@ Numbers must be plain — no £ symbol, no commas.`;
               utr: { type: "string", description: "Their UTR (unique taxpayer reference) if printed — common on CIS labour applications." },
               email: { type: "string", description: "Their contact / remittance email if printed." },
               phone: { type: "string", description: "Their phone number if printed." },
+              invoice_number: { type: "string", description: "Their own invoice or application number exactly as printed, e.g. 'INV - 016' or 'Application 7'. Not a PO number or our reference." },
               payment_terms: { type: "string", description: "Payment terms as written, if any." },
               bank_name: { type: "string" },
               bank_sort_code: { type: "string", description: "e.g. '12-34-56'." },
@@ -1280,6 +1298,7 @@ Numbers must be plain — no £ symbol, no commas.`;
     opts.collectMeta({
       supplier_name: st(sd.name), supplier_address: st(sd.address), supplier_vat_number: st(sd.vat_number),
       supplier_utr: st(sd.utr), supplier_email: st(sd.email), supplier_phone: st(sd.phone),
+      invoice_number: st(sd.invoice_number),
       payment_terms: st(sd.payment_terms), bank_name: st(sd.bank_name), bank_sort_code: st(sd.bank_sort_code),
       bank_account_number: st(sd.bank_account_number), bank_account_name: st(sd.bank_account_name),
     });
@@ -2819,6 +2838,12 @@ export async function processLabourAppUpload(env: Env, args: {
 }) {
   let meta: LabourAppMeta | null = null;
   const extracted = await extractLabourLines(env, args.file, (m) => { meta = m; });
+  await assertNotDuplicateLabourInvoice(env, {
+    projectId: args.projectId,
+    supplierId: args.counterpartySupplierId,
+    invoiceNumber: (meta as LabourAppMeta | null)?.invoice_number ?? null,
+    fileName: args.file.name,
+  });
   const created = await createAfpFromLines(env, {
     projectId: args.projectId,
     direction: "incoming_labour",
@@ -3389,6 +3414,9 @@ applications.post("/project/:projectId/upload-labour", async (c) => {
     });
     return c.json(result);
   } catch (e) {
+    if (e instanceof DuplicateLabourInvoiceError) {
+      return c.json({ error: e.message }, 409);
+    }
     const msg = e instanceof Error ? e.message : String(e);
     const code = /not found|not configured|upload a pricing/.test(msg) ? 400 : 500;
     return c.json({ error: msg }, code);
