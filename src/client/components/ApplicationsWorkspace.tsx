@@ -1,5 +1,6 @@
 // Portfolio-wide Applications workspace — every Application for Payment across
-// all projects in one place. Filter by direction / status, spot unassigned
+// all projects in one place. Filter by direction / project / subcontractor /
+// status, spot unassigned
 // labour apps (typically arrived via forwarded email) and assign the
 // subcontractor inline without opening each one.
 
@@ -40,6 +41,8 @@ export function ApplicationsWorkspace({ me }: { me: CurrentUser | null }) {
   const [projects, setProjects] = useState<ProjectOption[]>([]);
   const [space, setSpace] = useState<Space>("labour");
   const [status, setStatus] = useState<StatusFilter>("all");
+  const [projectFilter, setProjectFilter] = useState("");   // project id, "" = all
+  const [supplierFilter, setSupplierFilter] = useState(""); // supplier id, "" = all
   const [unassignedOnly, setUnassignedOnly] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -67,7 +70,22 @@ export function ApplicationsWorkspace({ me }: { me: CurrentUser | null }) {
   const spaceRows = rows.filter((r) => r.direction === direction);
   const spaceInbound = inbound.filter((i) => i.direction === direction);
 
+  // Filter choices come from the applications themselves, so every option
+  // matches at least one row in this space.
+  const projectOptions = useMemo(() => {
+    const m = new Map<string, { id: string; code: string; name: string }>();
+    for (const r of spaceRows) m.set(r.project_id, { id: r.project_id, code: r.project_code, name: r.project_name });
+    return [...m.values()].sort((a, b) => a.code.localeCompare(b.code));
+  }, [spaceRows]);
+  const supplierOptions = useMemo(() => {
+    const m = new Map<number, string>();
+    for (const r of spaceRows) if (r.counterparty_supplier_id != null) m.set(r.counterparty_supplier_id, r.supplier_name ?? `Supplier ${r.counterparty_supplier_id}`);
+    return [...m.entries()].map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name));
+  }, [spaceRows]);
+
   const visible = spaceRows
+    .filter((r) => !projectFilter || r.project_id === projectFilter)
+    .filter((r) => !isLabour || !supplierFilter || String(r.counterparty_supplier_id) === supplierFilter)
     .filter((r) => status === "all" || r.status === status)
     .filter((r) => !unassignedOnly || (isLabour && r.counterparty_supplier_id == null));
 
@@ -81,6 +99,11 @@ export function ApplicationsWorkspace({ me }: { me: CurrentUser | null }) {
   }), [spaceRows, spaceInbound, isLabour]);
 
   // Tab badge counts (across both directions) for at-a-glance attention
+  const filtered = projectFilter !== "" || (isLabour && supplierFilter !== "") || status !== "all" || unassignedOnly;
+  function switchSpace(next: Space) {
+    setSpace(next); setStatus("all"); setProjectFilter(""); setSupplierFilter(""); setUnassignedOnly(false);
+  }
+
   const labourCount = rows.filter((r) => r.direction === "incoming_labour").length
     + inbound.filter((i) => i.direction === "incoming_labour").length;
   const clientCount = rows.filter((r) => r.direction === "outgoing").length
@@ -107,14 +130,14 @@ export function ApplicationsWorkspace({ me }: { me: CurrentUser | null }) {
           <button
             type="button"
             className={`tab-btn${space === "labour" ? " active" : ""}`}
-            onClick={() => { setSpace("labour"); setStatus("all"); setUnassignedOnly(false); }}
+            onClick={() => switchSpace("labour")}
           >
             Labour applications <span className="count">{labourCount}</span>
           </button>
           <button
             type="button"
             className={`tab-btn${space === "client" ? " active" : ""}`}
-            onClick={() => { setSpace("client"); setStatus("all"); setUnassignedOnly(false); }}
+            onClick={() => switchSpace("client")}
           >
             Client applications <span className="count">{clientCount}</span>
           </button>
@@ -146,7 +169,17 @@ export function ApplicationsWorkspace({ me }: { me: CurrentUser | null }) {
         <div className="card" ref={cardRef}>
           <div className="card-hd sticky-bar" style={{ gap: 12, flexWrap: "wrap" }}>
             <h2 style={{ flex: 1 }}>{isLabour ? "Labour applications" : "Client applications"}</h2>
-            <select value={status} onChange={(e) => setStatus(e.target.value as StatusFilter)}>
+            <select value={projectFilter} onChange={(e) => setProjectFilter(e.target.value)} style={{ width: "auto", minWidth: 180 }} aria-label="Filter by project">
+              <option value="">All projects</option>
+              {projectOptions.map((p) => <option key={p.id} value={p.id}>{p.code} — {p.name}</option>)}
+            </select>
+            {isLabour && (
+              <select value={supplierFilter} onChange={(e) => setSupplierFilter(e.target.value)} style={{ width: "auto", minWidth: 180 }} aria-label="Filter by subcontractor">
+                <option value="">All subcontractors</option>
+                {supplierOptions.map((s) => <option key={s.id} value={String(s.id)}>{s.name}</option>)}
+              </select>
+            )}
+            <select value={status} onChange={(e) => setStatus(e.target.value as StatusFilter)} style={{ width: "auto", minWidth: 150 }} aria-label="Filter by status">
               <option value="all">All statuses</option>
               <option value="draft">Draft</option>
               <option value="pending_approval">Pending approval</option>
@@ -165,7 +198,7 @@ export function ApplicationsWorkspace({ me }: { me: CurrentUser | null }) {
           {loading ? (
             <div className="card-bd"><div className="muted">Loading…</div></div>
           ) : visible.length === 0 ? (
-            <div className="card-bd"><div className="empty">No {isLabour ? "labour" : "client"} applications{status !== "all" ? " match the current filter" : " yet"}.</div></div>
+            <div className="card-bd"><div className="empty">No {isLabour ? "labour" : "client"} applications{filtered ? " match the current filter" : " yet"}.</div></div>
           ) : (
             <ApplicationsTable
               rows={visible}
