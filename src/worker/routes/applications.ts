@@ -676,6 +676,36 @@ applications.get("/project/:projectId", async (c) => {
   return c.json(rows.results);
 });
 
+/**
+ * Labour certificates for the Accounts workspace, so a subbie's bill runs the
+ * same queues as a supplier invoice: submitted → certified (awaiting approval)
+ * → approved → pushed. Drafts aren't sent yet, so they stay out. A "paid" one
+ * with no Xero bill was keyed into Xero by hand before this existed, so it is
+ * history, not a queue item.
+ */
+applications.get("/_accounts-labour", async (c) => {
+  const denied = requirePermission(c, "commercial.view");
+  if (denied) return denied;
+  const rows = await c.env.DB.prepare(
+    `SELECT a.id, a.project_id, a.app_number, a.period_end, a.status,
+            a.certified_amount, a.amount_due, a.submitted_at, a.certified_at, a.certified_by,
+            a.pay_approved_at, a.pay_approved_by, a.pay_approval_note,
+            a.pay_released_at, a.pay_released_by,
+            a.xero_po_id, a.xero_po_number, a.xero_sync_status, a.xero_sync_error,
+            a.source_file_name, a.vat_pct,
+            p.code AS project_code, p.name AS project_name,
+            s.name AS supplier_name, s.cis_rate
+     FROM applications_for_payment a
+     JOIN projects p ON p.id = a.project_id
+     LEFT JOIN suppliers s ON s.id = a.counterparty_supplier_id
+     WHERE a.direction = 'incoming_labour'
+       AND (a.status IN ('submitted', 'certified')
+            OR (a.status = 'paid' AND (a.xero_po_id IS NOT NULL OR a.xero_sync_status = 'synced')))
+     ORDER BY COALESCE(a.certified_at, a.submitted_at) DESC`,
+  ).all();
+  return c.json(rows.results);
+});
+
 /** List AfPs awaiting approval (used by the inbox). Registered before "/:id"
  *  so the literal path is never captured as an id. */
 applications.get("/_pending-approval", async (c) => {
@@ -4389,27 +4419,67 @@ applications.post("/:id/release-payment", async (c) => {
   if (afp.xero_po_id) {
     return c.json({ error: `This certificate is already in Xero as bill ${afp.xero_po_number ?? afp.xero_po_id}.` }, 409);
   }
-  // Release signs off an approval — it doesn't stand in for one. Both earlier
-  // stages have to be on record separately: the QS certifying the value, and
-  // whoever approved it for payment.
+  // Release signs off a certified value — the QS's certificate is the first
+  // signature. In the Accounts queues a certified certificate goes straight to
+  // the approver, so a missing "commit for approval" is filled in by this
+  // approval rather than refused; one already committed keeps its record.
   if (afp.status !== "certified" && afp.status !== "paid") {
     return c.json({ error: "Certify the labour certificate before releasing it." }, 409);
-  }
-  if (!afp.pay_approved_at) {
-    return c.json({ error: "This certificate hasn't been approved for payment yet. It needs approving before it can be released." }, 400);
   }
 
   const body = await c.req.json<{ note?: string }>().catch(() => ({} as { note?: string }));
   const note = (body.note || "").trim();
   const when = new Date().toISOString();
   await c.env.DB.prepare(
-    "UPDATE applications_for_payment SET pay_released_at = ?, pay_released_by = ?, pay_release_note = ? WHERE id = ?",
-  ).bind(when, actor, note || null, id).run();
+    `UPDATE applications_for_payment
+        SET pay_approved_at = COALESCE(pay_approved_at, ?), pay_approved_by = COALESCE(pay_approved_by, ?),
+            pay_released_at = ?, pay_released_by = ?, pay_release_note = ?
+      WHERE id = ?`,
+  ).bind(when, actor, when, actor, note || null, id).run();
 
   // Approving does NOT push, same as the invoice side: the approver decides the
   // money, Accounts posts it. Approval unlocks the push on /xero/push-afp/:id,
   // which refuses anything unapproved.
   return c.json({ ok: true, pay_released_at: when, pushed: false });
+});
+
+/**
+ * Record that a labour certificate's bill was keyed into Xero by hand, so it
+ * leaves the Accounts queues and can never be pushed as a second bill. Kept on
+ * the push columns (status 'synced', the bill number the user gives, no bill
+ * id): every check that asks "is this in Xero?" already reads those.
+ */
+applications.post("/:id/already-in-xero", async (c) => {
+  const denied = requirePermission(c, "commercial.edit");
+  if (denied) return denied;
+  const id = Number(c.req.param("id"));
+  const body = await c.req.json<{ bill_number?: string }>().catch(() => ({} as { bill_number?: string }));
+  const bill = (body.bill_number || "").trim();
+  if (!bill) return c.json({ error: "Give the bill's number as it appears in Xero." }, 400);
+  const afp = await c.env.DB.prepare(
+    "SELECT id, direction, status, xero_po_id, xero_po_number, xero_sync_status FROM applications_for_payment WHERE id = ?",
+  ).bind(id).first<{ id: number; direction: string; status: string; xero_po_id: string | null; xero_po_number: string | null; xero_sync_status: string | null }>();
+  if (!afp) return c.json({ error: "not found" }, 404);
+  if (afp.direction !== "incoming_labour") return c.json({ error: "Only labour certificates are recorded this way." }, 400);
+  if (afp.status !== "certified" && afp.status !== "paid") {
+    return c.json({ error: "Certify the labour certificate first — this records the bill for a certified value." }, 409);
+  }
+  if (afp.xero_po_id || afp.xero_sync_status === "synced") {
+    return c.json({ error: `This certificate is already recorded in Xero as bill ${afp.xero_po_number ?? afp.xero_po_id ?? ""}.` }, 409);
+  }
+  const now = new Date().toISOString();
+  await c.env.DB.batch([
+    c.env.DB.prepare(
+      `UPDATE applications_for_payment
+          SET xero_po_number = ?, xero_synced_at = ?, xero_sync_status = 'synced', xero_sync_error = NULL
+        WHERE id = ?`,
+    ).bind(bill, now, id),
+    c.env.DB.prepare(
+      `INSERT INTO audit_log (entity_type, entity_id, action, actor, details, created_at)
+       VALUES ('afp', ?, 'keyed_in_xero_by_hand', ?, ?, ?)`,
+    ).bind(String(id), c.get("userEmail"), JSON.stringify({ bill_number: bill }), now),
+  ]);
+  return c.json({ ok: true });
 });
 
 /** Mark as paid. */

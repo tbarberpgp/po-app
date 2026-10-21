@@ -424,6 +424,9 @@ export type XeroInvoiceInput = {
   Contact: { ContactID?: string; Name?: string };
   Date: string;            // YYYY-MM-DD
   DueDate?: string;
+  /** A bill's number is the supplier's own invoice number; omitted on a sales
+   *  invoice so Xero numbers it. */
+  InvoiceNumber?: string;
   Reference?: string;      // our app number — shows on the Xero invoice
   Status?: "DRAFT" | "SUBMITTED" | "AUTHORISED";
   LineAmountTypes?: "Exclusive" | "Inclusive" | "NoTax";

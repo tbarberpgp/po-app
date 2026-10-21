@@ -1141,6 +1141,14 @@ export const api = {
       `/api/applications/${id}/release-payment`,
       { method: "POST", body: JSON.stringify({ note: note ?? "" }) },
     ),
+  /** Labour certificates in the Accounts queues (submitted onwards). */
+  listAccountsLabour: () => jfetch<AccountsLabourCert[]>(`/api/applications/_accounts-labour`),
+  /** Record a labour certificate's bill as keyed into Xero by hand. */
+  markAfpInXeroByHand: (id: number, bill_number: string) =>
+    jfetch<{ ok: true }>(`/api/applications/${id}/already-in-xero`, {
+      method: "POST",
+      body: JSON.stringify({ bill_number }),
+    }),
   markAfpPaid: (id: number, payment_reference?: string) =>
     jfetch<{ ok: true }>(`/api/applications/${id}/mark-paid`, {
       method: "POST",
@@ -1825,3 +1833,15 @@ export function fmtQty(n: number | null | undefined) {
   if (n == null) return "—";
   return n.toLocaleString("en-GB", { maximumFractionDigits: 2 });
 }
+
+/** A labour certificate as the Accounts workspace lists it. */
+export type AccountsLabourCert = {
+  id: number; project_id: string; app_number: number; period_end: string | null; status: string;
+  certified_amount: number | null; amount_due: number | null; submitted_at: string | null;
+  certified_at: string | null; certified_by: string | null;
+  pay_approved_at: string | null; pay_approved_by: string | null; pay_approval_note: string | null;
+  pay_released_at: string | null; pay_released_by: string | null;
+  xero_po_id: string | null; xero_po_number: string | null; xero_sync_status: string | null; xero_sync_error: string | null;
+  source_file_name: string | null; vat_pct: number | null;
+  project_code: string; project_name: string; supplier_name: string | null; cis_rate: number | null;
+};
