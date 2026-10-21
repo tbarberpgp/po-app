@@ -23,6 +23,7 @@ import { invoices } from "./routes/invoices";
 import { mailboxPull } from "./routes/mailboxPull";
 import { helpdesk } from "./routes/helpdesk";
 import { runMailboxPull } from "./graph";
+import { linkLabourToXero } from "./xero/labour-link";
 import { operatives } from "./routes/operatives";
 import { ownedPlant } from "./routes/ownedPlant";
 import { reports } from "./routes/reports";
@@ -186,6 +187,9 @@ export default {
     // until MS_GRAPH_* is configured). Reads mail in place, sidestepping M365's
     // external auto-forwarding block. Best-effort.
     ctx.waitUntil(runMailboxPull(env).catch((e) => console.error("mailbox pull failed:", e)));
+    // Labour bills still get keyed into Xero by hand now and then: tie each one
+    // to its certificate, and mark certificates paid once Xero has paid them.
+    ctx.waitUntil(linkLabourToXero(env).catch((e) => console.error("labour Xero link failed:", e)));
     // Scan a batch of new site/WhatsApp photos for delivery tickets each hour,
     // so tickets surface as pending check-ins without anyone pressing Scan.
     ctx.waitUntil(runWhatsappTicketScans(env).catch((e) => console.error("ticket scan failed:", e)));

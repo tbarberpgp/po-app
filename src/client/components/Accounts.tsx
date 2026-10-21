@@ -335,6 +335,26 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
     finally { setBusy(false); }
   }
 
+  /** Tie labour certificates to bills already in Xero. Also runs hourly. */
+  async function checkLabourXero() {
+    setBusy(true); setErr(null); setInfo(null);
+    try {
+      const r = await api.linkLabourXero();
+      const said = (rows: Array<{ supplier: string; app_number: number; bill: string }>) =>
+        rows.map((x) => `${x.supplier} #${x.app_number} (bill ${x.bill})`).join(", ");
+      const parts = [
+        r.linked_paid.length ? `Paid in Xero: ${said(r.linked_paid)}.` : "",
+        r.now_paid.length ? `Now paid: ${said(r.now_paid)}.` : "",
+        r.linked_owed.length ? `In Xero, owed: ${said(r.linked_owed)}.` : "",
+        r.amount_differs.length ? `Same invoice number but a different amount in Xero — check by hand: ${r.amount_differs.map((x) => `${x.supplier} #${x.app_number} (app £${x.value.toFixed(2)}, Xero £${x.xero_value.toFixed(2)})`).join(", ")}.` : "",
+        r.no_contact.length ? `Not found in Xero's contacts: ${r.no_contact.join(", ")}.` : "",
+      ].filter(Boolean);
+      setInfo(parts.length ? parts.join(" ") : "Checked Xero — nothing new to match.");
+      load();
+    } catch (e) { setErr(e instanceof Error ? e.message : "Couldn't check Xero"); }
+    finally { setBusy(false); }
+  }
+
   async function push(id: number) {
     setBusy(true); setErr(null); setInfo(null);
     try {
@@ -393,6 +413,12 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
             <Link className="btn ghost tiny" to="/accounts/xero-check" title="Compare a supplier's bills in Xero against the invoices logged here">
               Bills in Xero
             </Link>
+            {showLabour && canEdit && (
+              <button className="ghost tiny" disabled={busy} onClick={checkLabourXero}
+                title="Find labour bills already in Xero: certificates with one move to Pushed, as paid or owed">
+                Check labour in Xero
+              </button>
+            )}
             {canEdit && (
               <>
                 <input ref={fileRef} type="file" accept="application/pdf,.pdf,image/*" hidden onChange={upload} />
@@ -451,7 +477,7 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
                               {a.cis_rate != null && a.cis_rate > 0 && <span>CIS {a.cis_rate}%</span>}
                               {a.xero_sync_status === "failed" && <span style={{ color: "var(--danger)", fontWeight: 600 }} title={a.xero_sync_error ?? ""}>⚠ push failed</span>}
                             </div>
-                            <span className={`istatus ${st}`}>{a.status === "draft" ? "Needs review" : LABOUR_LABEL[t]}</span>
+                            <span className={`istatus ${st}`}>{a.status === "draft" ? "Needs review" : t === "pushed" && a.status === "paid" ? "Paid" : t === "pushed" ? "In Xero" : LABOUR_LABEL[t]}</span>
                           </div>
                           <div className="iamt">{money(a.certified_amount ?? a.amount_due)}</div>
                         </button>
@@ -679,12 +705,14 @@ function LabourCertDetail({ cert: a, canEdit, canRelease, onChanged }: {
         {row(a.certified_at ? "Certified (net)" : "Claimed (net)", <b>{money(net)}</b>)}
         {a.cis_rate != null && a.cis_rate > 0 && row("CIS", `${a.cis_rate}% — deducted on the bill (labour element only; see the certificate)`)}
         {a.submitted_at && row("Submitted", a.submitted_at.slice(0, 10))}
-        {a.certified_at && row("Certified", `${a.certified_by ?? "—"} on ${a.certified_at.slice(0, 10)}`)}
+        {a.certified_at && row("Certified", a.certified_by === "xero"
+          ? `matched to its Xero bill on ${a.certified_at.slice(0, 10)}`
+          : `${a.certified_by ?? "—"} on ${a.certified_at.slice(0, 10)}`)}
         {/* An approval from Accounts fills in the commit with the same stamp;
             only a separate, earlier commit is worth a line of its own. */}
         {a.pay_approved_at && a.pay_approved_at !== a.pay_released_at && row("Committed", `${a.pay_approved_by ?? "—"} on ${a.pay_approved_at.slice(0, 10)}${a.pay_approval_note ? ` — "${a.pay_approval_note}"` : ""}`)}
         {a.pay_released_at && row("Approved", `${a.pay_released_by ?? "—"} on ${a.pay_released_at.slice(0, 10)}`)}
-        {isCertInXero(a) && row("Xero", keyedByHand ? `Bill ${a.xero_po_number ?? ""} — keyed in by hand` : `Draft bill ${a.xero_po_number ?? ""}`)}
+        {isCertInXero(a) && row("Xero", `Bill ${a.xero_po_number ?? ""}${a.status === "paid" ? " — paid" : " — owed"}${keyedByHand || a.certified_by === "xero" ? " (keyed in by hand)" : ""}`)}
         {a.source_file_name && row("Invoice", a.source_file_name)}
       </div>
       {stage === "inbox" && a.status === "draft" && (
