@@ -40,7 +40,7 @@ function Icon({ name }: { name: keyof typeof ICON_PATHS }) {
 
 /** Collapsible sidebar section. Open/closed state persists per id so the
  *  layout a user sets up survives reloads. */
-function NavSection({ id, label, rail, onNavigate, children }: { id: string; label: string; rail: boolean; onNavigate?: () => void; children: ReactNode }) {
+function NavSection({ id, label, onNavigate, children }: { id: string; label: string; onNavigate?: () => void; children: ReactNode }) {
   const [open, setOpen] = useState(() => {
     try { return localStorage.getItem(`sidebar.sec.${id}`) !== "0"; } catch { return true; }
   });
@@ -57,13 +57,12 @@ function NavSection({ id, label, rail, onNavigate, children }: { id: string; lab
         <span>{label}</span>
         <svg className="nav-sec-chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9" /></svg>
       </button>
-      {/* The icon rail has no headings to unfold, so it always lists the items. */}
-      {(open || rail) && <nav onClick={onNavigate}>{children}</nav>}
+      {open && <nav onClick={onNavigate}>{children}</nav>}
     </div>
   );
 }
 
-export function Sidebar({ me, approvalsCount, onNavigate, viewAs }: { me: CurrentUser | null; approvalsCount: number; onNavigate?: () => void; viewAs?: { role: Role; onChange: (r: Role) => void } }) {
+export function Sidebar({ me, approvalsCount, onNavigate, onHide, viewAs }: { me: CurrentUser | null; approvalsCount: number; onNavigate?: () => void; onHide?: () => void; viewAs?: { role: Role; onChange: (r: Role) => void } }) {
   // Permission checks take the whole user, not just the role: a per-user grant
   // has to reach the nav, or a page someone was granted stays hidden from them.
   // `isAdmin` below is a genuine question about rank, so it keeps the role.
@@ -96,46 +95,35 @@ export function Sidebar({ me, approvalsCount, onNavigate, viewAs }: { me: Curren
     return () => window.removeEventListener("whatsnew-seen", read);
   }, []);
 
-  // Desktop only: fold the sidebar to an icon rail to give pages more width.
-  // Remembered per browser. The phone drawer ignores it and always shows names.
-  const [collapsed, setCollapsed] = useState(() => {
-    try { return localStorage.getItem("sidebar.collapsed") === "1"; } catch { return false; }
-  });
-  function toggleCollapsed() {
-    setCollapsed((c) => {
-      try { localStorage.setItem("sidebar.collapsed", c ? "0" : "1"); } catch { /* ignore */ }
-      return !c;
-    });
-  }
-
   return (
-    <aside className={`sidebar${collapsed ? " collapsed" : ""}`}>
+    <aside className="sidebar">
       <div className="sidebar-head">
-        <button type="button" className="nav-menu-btn" onClick={toggleCollapsed}
-          aria-label={collapsed ? "Expand menu" : "Collapse menu"} title={collapsed ? "Expand menu" : "Collapse menu"}>
-          <Icon name="menu" />
-        </button>
+        {onHide && (
+          <button type="button" className="nav-menu-btn" onClick={onHide} aria-label="Hide menu" title="Hide menu">
+            <Icon name="menu" />
+          </button>
+        )}
         <Link to="/" className="sidebar-logo" aria-label="PGP Home" onClick={onNavigate}>
           <img src="/logo.png" alt="PGP" />
         </Link>
       </div>
 
-      <NavSection id="delivery" rail={collapsed} label="Delivery" onNavigate={onNavigate}>
-        <NavLink to="/" end title={collapsed ? "Projects" : undefined}><Icon name="projects" /><span>Projects</span></NavLink>
-        <NavLink to="/programme" title={collapsed ? "Programme" : undefined}><Icon name="programme" /><span>Programme</span></NavLink>
-        <NavLink to="/deliveries" title={collapsed ? "Deliveries" : undefined}><Icon name="deliveries" /><span>Deliveries</span></NavLink>
-        {canDeliveryEdit && <NavLink to="/reports" title={collapsed ? "Reports" : undefined}><Icon name="reports" /><span>Reports</span></NavLink>}
+      <NavSection id="delivery" label="Delivery" onNavigate={onNavigate}>
+        <NavLink to="/" end><Icon name="projects" /><span>Projects</span></NavLink>
+        <NavLink to="/programme"><Icon name="programme" /><span>Programme</span></NavLink>
+        <NavLink to="/deliveries"><Icon name="deliveries" /><span>Deliveries</span></NavLink>
+        {canDeliveryEdit && <NavLink to="/reports"><Icon name="reports" /><span>Reports</span></NavLink>}
       </NavSection>
 
-      <NavSection id="commercial" rail={collapsed} label="Commercial" onNavigate={onNavigate}>
-        {canCommercialView && <NavLink to="/calendar" title={collapsed ? "Calendar" : undefined}><Icon name="calendar" /><span>Calendar</span></NavLink>}
-        {canCommercialView && <NavLink to="/applications" title={collapsed ? "Applications" : undefined}><Icon name="applications" /><span>Applications</span></NavLink>}
-        {canCommercialView && <NavLink to="/accounts" title={collapsed ? "Accounts" : undefined}><Icon name="accounts" /><span>Accounts</span></NavLink>}
-        <NavLink to="/pos" title={collapsed ? "Purchase Orders" : undefined}><Icon name="pos" /><span>Purchase Orders</span></NavLink>
+      <NavSection id="commercial" label="Commercial" onNavigate={onNavigate}>
+        {canCommercialView && <NavLink to="/calendar"><Icon name="calendar" /><span>Calendar</span></NavLink>}
+        {canCommercialView && <NavLink to="/applications"><Icon name="applications" /><span>Applications</span></NavLink>}
+        {canCommercialView && <NavLink to="/accounts"><Icon name="accounts" /><span>Accounts</span></NavLink>}
+        <NavLink to="/pos"><Icon name="pos" /><span>Purchase Orders</span></NavLink>
         {/* Two separate authorities land on this page: PO approval tiers, and
             the invoice release allowlist. Someone can hold either alone. */}
         {(me?.is_approver || me?.can_release_payables) && (
-          <NavLink to="/approvals" title={collapsed ? "Approvals" : undefined}>
+          <NavLink to="/approvals">
             <Icon name="approvals" /><span>Approvals</span>
             {approvalsCount > 0 && <span className="badge-count">{approvalsCount}</span>}
           </NavLink>
@@ -143,14 +131,14 @@ export function Sidebar({ me, approvalsCount, onNavigate, viewAs }: { me: Curren
       </NavSection>
 
       {(hasMaster || hasAdmin) && (
-        <NavSection id="data" rail={collapsed} label={dataLabel} onNavigate={onNavigate}>
-          {canViewMasterData && <NavLink to="/operatives" title={collapsed ? "Operatives" : undefined}><Icon name="operatives" /><span>Operatives</span></NavLink>}
-          {canViewMasterData && <NavLink to="/plant" title={collapsed ? "Plant register" : undefined}><Icon name="plant" /><span>Plant register</span></NavLink>}
-          {canViewMasterData && <NavLink to="/products" title={collapsed ? "Product library" : undefined}><Icon name="products" /><span>Product library</span></NavLink>}
-          {canViewMasterData && <NavLink to="/suppliers" title={collapsed ? "Approved suppliers" : undefined}><Icon name="suppliers" /><span>Approved suppliers</span></NavLink>}
-          {showDashboard && <NavLink to="/dashboard" title={collapsed ? "Dashboard" : undefined}><Icon name="dashboard" /><span>Dashboard</span></NavLink>}
-          {showAdmin && <NavLink to="/admin" title={collapsed ? "Admin" : undefined}><Icon name="admin" /><span>Admin</span></NavLink>}
-          {showDeleted && <NavLink to="/deleted-projects" title={collapsed ? "Deleted projects" : undefined}><Icon name="deleted" /><span>Deleted projects</span></NavLink>}
+        <NavSection id="data" label={dataLabel} onNavigate={onNavigate}>
+          {canViewMasterData && <NavLink to="/operatives"><Icon name="operatives" /><span>Operatives</span></NavLink>}
+          {canViewMasterData && <NavLink to="/plant"><Icon name="plant" /><span>Plant register</span></NavLink>}
+          {canViewMasterData && <NavLink to="/products"><Icon name="products" /><span>Product library</span></NavLink>}
+          {canViewMasterData && <NavLink to="/suppliers"><Icon name="suppliers" /><span>Approved suppliers</span></NavLink>}
+          {showDashboard && <NavLink to="/dashboard"><Icon name="dashboard" /><span>Dashboard</span></NavLink>}
+          {showAdmin && <NavLink to="/admin"><Icon name="admin" /><span>Admin</span></NavLink>}
+          {showDeleted && <NavLink to="/deleted-projects"><Icon name="deleted" /><span>Deleted projects</span></NavLink>}
         </NavSection>
       )}
 
@@ -158,20 +146,15 @@ export function Sidebar({ me, approvalsCount, onNavigate, viewAs }: { me: Curren
 
       {/* Help & changelog — sits below the working nav, above the user chip. */}
       <nav className="sidebar-foot" onClick={onNavigate}>
-        <NavLink to="/guide" title={collapsed ? "Guide & help" : undefined}><Icon name="guide" /><span>Guide &amp; help</span></NavLink>
-        <NavLink to="/whatsnew" title={collapsed ? "What's new" : undefined}>
+        <NavLink to="/guide"><Icon name="guide" /><span>Guide &amp; help</span></NavLink>
+        <NavLink to="/whatsnew">
           <Icon name="whatsnew" /><span>What's new</span>
           {whatsNewUnseen && <span className="nav-dot" aria-label="New updates" />}
         </NavLink>
       </nav>
       {/* Superadmin role preview, styled as one more row. Outside the <nav>
           above so opening it doesn't close the phone drawer. */}
-      {viewAs && collapsed && (
-        <button type="button" className="nav-viewas nav-viewas-rail" onClick={toggleCollapsed} title={`View as: ${ROLE_LABELS[viewAs.role]}`} aria-label="View as">
-          <Icon name="viewas" />
-        </button>
-      )}
-      {viewAs && !collapsed && (
+      {viewAs && (
         <label className="nav-viewas">
           <Icon name="viewas" /><span>View as</span>
           <select value={viewAs.role} onChange={(e) => viewAs.onChange(e.target.value as Role)}>
@@ -182,7 +165,7 @@ export function Sidebar({ me, approvalsCount, onNavigate, viewAs }: { me: Curren
 
 
       {me && (
-        <div className="sidebar-user" title={collapsed ? `${me.name?.trim() || nameFromEmail(me.email)} · ${ROLE_LABELS[me.role]}` : undefined}>
+        <div className="sidebar-user">
           <div className="avatar">{initials(me.name ?? me.email)}</div>
           <div className="meta">
             <div className="name">{me.name?.trim() || nameFromEmail(me.email)}</div>
@@ -194,6 +177,15 @@ export function Sidebar({ me, approvalsCount, onNavigate, viewAs }: { me: Curren
         </div>
       )}
     </aside>
+  );
+}
+
+/** Shown in place of a hidden sidebar: the same three-line button, top left. */
+export function ShowMenuButton({ onShow }: { onShow: () => void }) {
+  return (
+    <button type="button" className="nav-menu-btn nav-show-btn" onClick={onShow} aria-label="Show menu" title="Show menu">
+      <Icon name="menu" />
+    </button>
   );
 }
 

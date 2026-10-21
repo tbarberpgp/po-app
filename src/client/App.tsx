@@ -38,7 +38,7 @@ import { WhatsNew } from "./components/WhatsNew";
 // keeps that weight out of the main bundle so it only loads when an admin
 // actually opens /dashboard.
 const Dashboard = lazy(() => import("./components/Dashboard").then((m) => ({ default: m.Dashboard })));
-import { Sidebar } from "./components/Shell";
+import { ShowMenuButton, Sidebar } from "./components/Shell";
 import { api } from "./lib/api";
 import type { CurrentUser } from "../shared/types";
 import { ROLES, ROLE_LABELS, type Role } from "../shared/permissions";
@@ -48,6 +48,16 @@ export function App() {
   const [approvalsCount, setApprovalsCount] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [navOpen, setNavOpen] = useState(false);
+  // Desktop: the sidebar can be hidden completely to give pages the full
+  // width; a ☰ button top left brings it back. Shown by default, remembered
+  // per browser. Phones keep their own drawer and ignore this.
+  const [navHidden, setNavHidden] = useState(() => {
+    try { return localStorage.getItem("sidebar.hidden") === "1"; } catch { return false; }
+  });
+  function setNavHiddenSaved(h: boolean) {
+    try { localStorage.setItem("sidebar.hidden", h ? "1" : "0"); } catch { /* ignore */ }
+    setNavHidden(h);
+  }
   // Superadmin "view as" — preview the UI as another role (client-side role
   // override for the can() gating; the real auth is unchanged).
   const [viewAs, setViewAs] = useState<Role | null>(() => {
@@ -127,11 +137,13 @@ export function App() {
   }
 
   return (
-    <div className={`app${navOpen ? " nav-open" : ""}`}>
+    <div className={`app${navOpen ? " nav-open" : ""}${navHidden ? " nav-hidden" : ""}`}>
+      {navHidden && <ShowMenuButton onShow={() => setNavHiddenSaved(false)} />}
       <Sidebar
         me={effectiveMe}
         approvalsCount={approvalsCount}
         onNavigate={() => setNavOpen(false)}
+        onHide={() => setNavHiddenSaved(true)}
         viewAs={isSuper ? { role: viewAs ?? "superadmin", onChange: (r) => changeViewAs(r === "superadmin" ? null : r) } : undefined}
       />
       <div className="nav-backdrop" onClick={() => setNavOpen(false)} />
