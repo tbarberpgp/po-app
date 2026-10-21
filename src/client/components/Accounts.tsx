@@ -199,6 +199,23 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
     params.delete("invoice");
     setParams(params, { replace: true });
   }, [rows, params, setParams]);
+  // The same for a labour certificate (/accounts?labour=123) — where certifying
+  // on the certificate page sends you back to: its tab, the Labour subtab, and
+  // the certificate open.
+  const labourLinked = useRef(false);
+  useEffect(() => {
+    if (labourLinked.current || !labour.length) return;
+    const want = Number(params.get("labour"));
+    if (!want) return;
+    const a = labour.find((x) => x.id === want);
+    if (!a) return;
+    labourLinked.current = true;
+    setKind("labour");
+    setTab(labourTab(a));
+    setSelLabourId(want);
+    params.delete("labour");
+    setParams(params, { replace: true });
+  }, [labour, params, setParams]);
   useEffect(() => {
     load();
     api.listProjects().then((r) => setProjects(r as unknown as Project[])).catch(() => {});
@@ -554,7 +571,7 @@ function LabourCertDetail({ cert: a, canEdit, canRelease, onChanged }: {
           <h2 style={{ margin: "2px 0 0" }}>{a.supplier_name || "Unassigned subcontractor"} — #{a.app_number}</h2>
         </div>
         <span style={{ flex: 1 }} />
-        <Link className="btn ghost tiny" to={`/applications/${a.id}`}>Open certificate</Link>
+        <Link className="btn ghost tiny" to={`/applications/${a.id}?from=accounts`}>Open certificate</Link>
       </div>
       {err && <div className="flash error">{err}</div>}
       <div>
@@ -576,7 +593,7 @@ function LabourCertDetail({ cert: a, canEdit, canRelease, onChanged }: {
           <div className="muted" style={{ fontSize: 12.5, lineHeight: 1.5 }}>
             Waiting to be certified. Certify it on the certificate — it then moves to Awaiting approval.
           </div>
-          {canEdit && <Link className="btn accent" style={{ justifySelf: "start" }} to={`/applications/${a.id}`}>Open to certify</Link>}
+          {canEdit && <Link className="btn accent" style={{ justifySelf: "start" }} to={`/applications/${a.id}?from=accounts`}>Open to certify</Link>}
         </div>
       )}
       {stage === "held" && (canRelease
