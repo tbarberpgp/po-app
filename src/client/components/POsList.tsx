@@ -270,10 +270,8 @@ export function POsList({ me }: { me: CurrentUser | null }) {
                     <td className="center">
                       {r.delivery_state && r.delivery_state !== "none" ? (
                         <span
-                          className="pill"
-                          style={r.delivery_state === "full"
-                            ? { background: "var(--warn-soft)", color: "var(--warn)" }
-                            : { background: "var(--card-2)", color: "var(--muted)", border: "1px solid var(--line)", fontSize: 10 }}
+                          className={r.delivery_state === "full" ? "pill ok" : "pill"}
+                          style={r.delivery_state === "full" ? undefined : { background: "transparent", color: "var(--muted)", padding: 0, fontWeight: 400 }}
                           title={r.delivery_lines_total
                             ? `${r.delivery_lines_started ?? 0} of ${r.delivery_lines_total} lines have had a delivery`
                             : undefined}
