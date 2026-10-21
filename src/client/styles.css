@@ -112,7 +112,7 @@ a:hover { text-decoration: underline; }
 /* ── App shell ────────────────────────────────────────────────────────── */
 .app {
   display: grid;
-  grid-template-columns: 240px 1fr;
+  grid-template-columns: auto minmax(0, 1fr);   /* the sidebar sets its own width (full or icon rail) */
   min-height: 100vh;
 }
 
@@ -128,9 +128,39 @@ a:hover { text-decoration: underline; }
   align-self: start;
   height: 100vh;
   overflow-y: auto;   /* short windows: scroll the nav rather than clip the user chip */
+  overflow-x: hidden;
+  width: 240px;
+  transition: width var(--motion-fast) var(--motion-ease);
 }
+.sidebar-head { display: flex; align-items: center; gap: 6px; }
+.nav-menu-btn {
+  display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
+  width: 36px; height: 36px; min-height: 0; padding: 0; margin: 0;
+  border: 0; border-radius: var(--radius-md); background: transparent; color: var(--ink-2); cursor: pointer;
+}
+.nav-menu-btn:hover { background: var(--line); color: var(--ink); }
+
+/* Icon rail: the sidebar folded to its icons. Each item's name shows on hover
+   (title), section headings become thin dividers, and counts sit on the icon. */
+@media (min-width: 901px) {
+  .sidebar.collapsed { width: 68px; padding: 20px 10px; }
+  .sidebar.collapsed .sidebar-head { justify-content: center; }
+  .sidebar.collapsed .sidebar-logo,
+  .sidebar.collapsed .nav-sec-hd,
+  .sidebar.collapsed .sidebar-user .meta,
+  .sidebar.collapsed nav a > span:not(.badge-count):not(.nav-dot) { display: none; }
+  .sidebar.collapsed nav a { justify-content: center; padding: 9px 0; position: relative; }
+  .sidebar.collapsed .nav-sec + .nav-sec { border-top: 1px solid var(--line); padding-top: 14px; }
+  .sidebar.collapsed nav a .badge-count {
+    position: absolute; top: 1px; right: 3px; margin: 0;
+    font-size: 9.5px; padding: 0 5px; line-height: 15px;
+  }
+  .sidebar.collapsed .nav-dot { position: absolute; top: 7px; right: 12px; margin: 0; }
+  .sidebar.collapsed .sidebar-user { padding: 6px 0; border: 0; justify-content: center; }
+}
+@media (max-width: 900px) { .nav-menu-btn, .nav-viewas-rail { display: none; } }
 .sidebar-logo {
-  padding: 4px 8px 0;
+  padding: 0 4px;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -217,6 +247,7 @@ a:hover { text-decoration: underline; }
   transition: background var(--motion-fast);
 }
 .nav-viewas:hover { background: var(--line); }
+.nav-viewas-rail { justify-content: center; width: 100%; min-height: 0; border: 0; background: transparent; }
 .nav-viewas > span { white-space: nowrap; }
 .nav-viewas select {
   margin-left: auto; flex: 0 1 auto; min-width: 0; max-width: 112px; min-height: 0; width: auto;
