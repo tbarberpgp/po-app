@@ -555,7 +555,7 @@ export function POView({ me }: { me: CurrentUser | null }) {
                                       >
                                         {l.cost_code}
                                       </button>
-                                    : <span style={{ fontFamily: "ui-monospace, monospace" }}>{l.cost_code}</span>)}
+                                    : <span style={{ fontFamily: "var(--font-mono)" }}>{l.cost_code}</span>)}
                                   {words && (l.cost_code ? ` · ${words}` : words)}
                                 </div>
                               )}

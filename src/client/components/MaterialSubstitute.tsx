@@ -213,7 +213,7 @@ export function SubstituteModal({
                       }}
                     >
                       <div>
-                        <span className="badge" style={{ fontFamily: "ui-monospace, monospace", marginRight: 6 }}>{h.product_code}</span>
+                        <span className="badge" style={{ fontFamily: "var(--font-mono)", marginRight: 6 }}>{h.product_code}</span>
                         {h.description}
                       </div>
                       <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
