@@ -2,7 +2,7 @@
  * Tokens scoped to [data-theme] on <html>. Components use semantic vars.
  */
 
-@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap");
 
 :root,
 [data-theme="light"] {
@@ -66,8 +66,11 @@
 }
 
 :root {
-  --font-sans:  'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  --font-serif: 'Cambria', 'Source Serif Pro', Georgia, serif;
+  --font-sans:  'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono:  'IBM Plex Mono', ui-monospace, monospace;
+  /* Headings and big figures used to be Cambria; they now share the body face
+     so the app reads as one plain, industrial typeface. */
+  --font-serif: var(--font-sans);
   --radius-sm: 6px;
   --radius-md: 8px;
   --radius-lg: 12px;
@@ -89,14 +92,14 @@ body {
 }
 h1, h2, h3, .serif {
   font-family: var(--font-serif);
-  font-weight: 500;
-  letter-spacing: -0.01em;
+  font-weight: 600;
+  letter-spacing: -0.005em;
   margin: 0;
   color: var(--ink);
 }
-h1 { font-size: 28px; }
-h2 { font-size: 18px; }
-h3 { font-size: 16px; }
+h1 { font-size: 26px; }
+h2 { font-size: 17px; }
+h3 { font-size: 15px; }
 
 a { color: var(--accent-2); text-decoration: none; }
 a:hover { text-decoration: underline; }
@@ -131,7 +134,7 @@ a:hover { text-decoration: underline; }
   align-items: center;
   gap: 10px;
 }
-.sidebar-logo img { height: 22px; width: auto; display: block; }
+.sidebar-logo img { height: 34px; width: auto; display: block; }
 .sidebar-group { display: flex; flex-direction: column; gap: 2px; }
 .sidebar-group-label {
   font-size: 11px;
@@ -273,7 +276,7 @@ a:hover { text-decoration: underline; }
   margin-bottom: 4px;
 }
 .topbar h1 {
-  font-size: 22px;
+  font-size: 21px;
   display: flex;
   align-items: center;
   gap: 12px;
@@ -972,7 +975,7 @@ input[type="number"] { appearance: textfield; -moz-appearance: textfield; }
 .checkin-sheet { background: var(--paper); width: 100%; max-width: 480px; display: flex; flex-direction: column; min-height: 0; }
 .checkin-hd { display: flex; align-items: center; gap: 12px; padding: 13px 16px; border-bottom: 1px solid var(--line); background: var(--card); flex-shrink: 0; }
 .checkin-x { display: flex; align-items: center; justify-content: center; width: 36px; height: 36px; min-height: 0; border-radius: 9px; border: none; background: none; font-size: 21px; line-height: 1; cursor: pointer; padding: 0; flex-shrink: 0; }
-.checkin-title { font-family: Cambria, Georgia, serif; font-size: 19px; }
+.checkin-title { font-family: var(--font-serif); font-size: 19px; }
 .checkin-sub { font-size: 12px; color: var(--muted); }
 .checkin-dots { display: flex; gap: 5px; flex-shrink: 0; }
 .cdot { width: 7px; height: 7px; border-radius: 50%; background: var(--line-strong); }
@@ -994,7 +997,7 @@ input[type="number"] { appearance: textfield; -moz-appearance: textfield; }
 .cam-corner.bl { bottom: 94px; left: 16px; border-right: 0; border-top: 0; border-radius: 0 0 0 14px; }
 .cam-corner.br { bottom: 94px; right: 16px; border-left: 0; border-top: 0; border-radius: 0 0 14px 0; }
 .cam-ticket { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -58%) rotate(-2deg); width: 210px; background: #fbfbf7; border-radius: 8px; box-shadow: 0 10px 30px rgba(0,0,0,0.45); padding: 14px 16px 18px; z-index: 2; }
-.cam-ticket .ct-h { font-family: Cambria, Georgia, serif; font-weight: 600; font-size: 14px; color: #222; }
+.cam-ticket .ct-h { font-family: var(--font-serif); font-weight: 600; font-size: 14px; color: #222; }
 .cam-ticket .ct-sub { font-size: 10.5px; color: #8a8a8a; margin-bottom: 8px; }
 .cam-ticket .ct-line { height: 6px; background: #e6e3da; border-radius: 3px; margin: 7px 0; }
 .cam-ticket .ct-line.s { width: 60%; }
@@ -1005,7 +1008,7 @@ input[type="number"] { appearance: textfield; -moz-appearance: textfield; }
 
 /* Scanning step — ticket preview + detected fields. */
 .checkin-scanning { display: flex; flex-direction: column; gap: 16px; padding: 8px 0; }
-.sw-h { font-family: Cambria, Georgia, serif; font-weight: 600; font-size: 15px; color: var(--ink); }
+.sw-h { font-family: var(--font-serif); font-weight: 600; font-size: 15px; color: var(--ink); }
 .sw-sub { font-size: 11.5px; color: var(--muted); margin-bottom: 10px; }
 .sw-foot { font-size: 11px; color: var(--muted); margin-top: 10px; }
 .ck-det-hd { font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; font-weight: 600; color: var(--muted); padding: 14px 16px 2px; }
@@ -1224,7 +1227,7 @@ input[type="number"] { appearance: textfield; -moz-appearance: textfield; }
     background: var(--card); position: sticky; top: 0; z-index: 20;
   }
   .mobile-logo { display: inline-flex; align-items: center; }
-  .mobile-logo img { height: 22px; display: block; }
+  .mobile-logo img { height: 28px; display: block; }
   .nav-toggle {
     display: inline-flex; align-items: center; justify-content: center;
     width: 40px; height: 40px; padding: 0; font-size: 19px; line-height: 1;
@@ -1253,7 +1256,7 @@ input[type="number"] { appearance: textfield; -moz-appearance: textfield; }
 /* Admin approval thresholds — band → tier rows. */
 .thr { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
 .thr li { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: 14px; }
-.thr .band { font-family: var(--serif, Cambria, Georgia, serif); font-size: 15px; min-width: 130px; }
+.thr .band { font-family: var(--font-serif); font-size: 15px; min-width: 130px; }
 .thr .arr { color: var(--muted); }
 .thr .tier { font-weight: 600; }
 
@@ -2078,16 +2081,16 @@ body.rd-printing .rd-linedel, body.rd-printing .rd-addline, body.rd-printing .rd
 
 .acctx .inbox { background:var(--card); border:1px solid var(--line); border-radius:14px; overflow:hidden; position:sticky; top:14px; }
 .acctx .inbox-hd { padding:13px 16px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:10px; }
-.acctx .inbox-hd h2 { font-size:16px; margin:0; }
+.acctx .inbox-hd h2 { font-size:15px; margin:0; }
 .acctx .inbox-hd .count { margin-left:auto; font-size:12px; font-weight:700; color:var(--muted); background:var(--card-2); border:1px solid var(--line); border-radius:999px; padding:2px 9px; font-variant-numeric:tabular-nums; }
 .acctx .inbox-search { padding:10px 14px; border-bottom:1px solid var(--line); }
 .acctx .a-subtabs { display:flex; gap:6px; padding:10px 14px 0; }
-.acctx .a-subtabs button { flex:1; display:inline-flex; align-items:center; justify-content:center; gap:7px; padding:7px 10px; border:1px solid var(--line-strong); border-radius:9px; background:var(--card); color:var(--muted); font:500 12.5px 'Inter',sans-serif; cursor:pointer; }
+.acctx .a-subtabs button { flex:1; display:inline-flex; align-items:center; justify-content:center; gap:7px; padding:7px 10px; border:1px solid var(--line-strong); border-radius:9px; background:var(--card); color:var(--muted); font:500 12.5px var(--font-sans); cursor:pointer; }
 .acctx .a-subtabs button:hover { color:var(--ink); }
 .acctx .a-subtabs button.on { border-color:var(--accent); background:var(--accent-soft); color:var(--accent-2); }
 .acctx .a-subtabs .cnt { font-size:11px; font-weight:700; background:var(--line); color:var(--muted); border-radius:999px; padding:1px 7px; font-variant-numeric:tabular-nums; }
 .acctx .a-subtabs button.on .cnt { background:var(--card); color:var(--accent-2); }
-.acctx .inbox-search input { width:100%; border:1px solid var(--line-strong); background:var(--card); border-radius:9px; padding:8px 12px; font:400 13px 'Inter',sans-serif; color:var(--ink); }
+.acctx .inbox-search input { width:100%; border:1px solid var(--line-strong); background:var(--card); border-radius:9px; padding:8px 12px; font:400 13px var(--font-sans); color:var(--ink); }
 .acctx .inbox-search input:focus { outline:none; border-color:var(--accent); }
 .acctx .ilist { max-height:calc(100vh - 210px); overflow:auto; }
 .acctx .irow { display:grid; grid-template-columns:8px 1fr auto; gap:11px; align-items:start; width:100%; text-align:left; padding:12px 15px; border:0; border-bottom:1px solid var(--line); cursor:pointer; background:transparent; transition:background .12s; }
@@ -2120,7 +2123,7 @@ body.rd-printing .rd-linedel, body.rd-printing .rd-addline, body.rd-printing .rd
 .acctx .a-card { background:var(--card); border:1px solid var(--line); border-radius:14px; }
 .acctx .a-pad { padding:18px 20px; }
 .acctx .dhead { display:flex; align-items:flex-start; gap:14px; }
-.acctx .avatar { width:44px; height:44px; border-radius:11px; background:var(--navy); color:#fff; display:flex; align-items:center; justify-content:center; font-family:'Cambria',serif; font-weight:600; font-size:18px; flex:none; text-transform:uppercase; }
+.acctx .avatar { width:44px; height:44px; border-radius:11px; background:var(--navy); color:#fff; display:flex; align-items:center; justify-content:center; font-family:var(--font-serif); font-weight:600; font-size:18px; flex:none; text-transform:uppercase; }
 .acctx .dhead h1 { font-size:22px; line-height:1.15; margin:0; }
 .acctx .dhead .sub { font-size:12.5px; color:var(--muted); margin-top:3px; }
 .acctx .aichip { display:inline-flex; align-items:center; gap:6px; font-size:11px; font-weight:600; color:var(--navy); background:var(--navy-soft); border-radius:999px; padding:3px 10px; white-space:nowrap; }
@@ -2131,7 +2134,7 @@ body.rd-printing .rd-linedel, body.rd-printing .rd-addline, body.rd-printing .rd
 
 .acctx .vtoolbar { display:flex; align-items:center; gap:4px; padding:8px 10px; background:var(--navy); border-radius:13px 0 0 0; }
 @media (max-width:1120px){ .acctx .vtoolbar { border-radius:0; } }
-.acctx .vbtn { appearance:none; border:0; background:transparent; color:rgba(255,255,255,.82); height:30px; min-width:30px; padding:0 9px; border-radius:7px; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; gap:6px; font:600 12px 'Inter',sans-serif; }
+.acctx .vbtn { appearance:none; border:0; background:transparent; color:rgba(255,255,255,.82); height:30px; min-width:30px; padding:0 9px; border-radius:7px; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; gap:6px; font:600 12px var(--font-sans); }
 .acctx .vbtn:hover { background:rgba(255,255,255,.16); color:#fff; }
 .acctx .vspacer { flex:1; }
 .acctx .vport { background:#4a4d63; padding:14px; overflow:auto; height:500px; display:flex; justify-content:center; align-items:flex-start; }
@@ -2144,11 +2147,11 @@ body.rd-printing .rd-linedel, body.rd-printing .rd-addline, body.rd-printing .rd
 .acctx .field { display:flex; flex-direction:column; gap:5px; min-width:0; }
 .acctx .field.full { grid-column:1 / -1; }
 .acctx .field label { font-size:10px; letter-spacing:.07em; text-transform:uppercase; font-weight:600; color:var(--muted); }
-.acctx .field input, .acctx .field .ro { border:1px solid var(--line-strong); background:var(--card); border-radius:8px; padding:8px 11px; font:500 13.5px 'Inter',sans-serif; color:var(--ink); font-variant-numeric:tabular-nums; width:100%; }
+.acctx .field input, .acctx .field .ro { border:1px solid var(--line-strong); background:var(--card); border-radius:8px; padding:8px 11px; font:500 13.5px var(--font-sans); color:var(--ink); font-variant-numeric:tabular-nums; width:100%; }
 .acctx .field input:focus { outline:none; border-color:var(--accent); }
 .acctx .field input:disabled, .acctx .field .ro { background:var(--card-2); color:var(--ink-2); }
 .acctx .field.money input { font-weight:700; text-align:right; }
-.acctx select.a-sel { width:100%; appearance:none; border:1px solid var(--line-strong); background:var(--card); border-radius:8px; padding:9px 12px; font:500 13px 'Inter',sans-serif; color:var(--ink); cursor:pointer; }
+.acctx select.a-sel { width:100%; appearance:none; border:1px solid var(--line-strong); background:var(--card); border-radius:8px; padding:9px 12px; font:500 13px var(--font-sans); color:var(--ink); cursor:pointer; }
 .acctx select.a-sel:focus { outline:none; border-color:var(--accent); }
 
 .acctx .recon { display:grid; grid-template-columns:repeat(3,1fr) 1.15fr; border:1px solid var(--line); border-radius:12px; overflow:hidden; margin-bottom:14px; }
@@ -2156,7 +2159,7 @@ body.rd-printing .rd-linedel, body.rd-printing .rd-addline, body.rd-printing .rd
 .acctx .rcell { padding:13px 15px; border-right:1px solid var(--line); }
 .acctx .rcell:last-child { border-right:0; }
 .acctx .rcell .rl { font-size:10px; letter-spacing:.05em; text-transform:uppercase; font-weight:600; color:var(--muted); }
-.acctx .rcell .rv { font-family:'Cambria',serif; font-size:21px; font-weight:500; margin-top:5px; font-variant-numeric:tabular-nums; }
+.acctx .rcell .rv { font-family:var(--font-serif); font-size:21px; font-weight:500; margin-top:5px; font-variant-numeric:tabular-nums; }
 .acctx .rcell .rs { font-size:11px; color:var(--muted); margin-top:2px; }
 .acctx .rcell.match { background:var(--card-2); display:flex; flex-direction:column; justify-content:center; gap:6px; }
 .acctx .conf { display:flex; align-items:center; gap:9px; }
@@ -2200,7 +2203,7 @@ body.rd-printing .rd-linedel, body.rd-printing .rd-addline, body.rd-printing .rd
 .acctx-lb .lb-bar { display:flex; align-items:center; gap:8px; padding:12px 18px; color:#fff; }
 .acctx-lb .lb-bar .ti { font-weight:600; font-size:14px; }
 .acctx-lb .lb-bar .sp { flex:1; }
-.acctx-lb .lb-vbtn { appearance:none; border:0; background:rgba(255,255,255,.14); color:#fff; height:34px; padding:0 12px; border-radius:8px; cursor:pointer; font:600 12.5px 'Inter',sans-serif; }
+.acctx-lb .lb-vbtn { appearance:none; border:0; background:rgba(255,255,255,.14); color:#fff; height:34px; padding:0 12px; border-radius:8px; cursor:pointer; font:600 12.5px var(--font-sans); }
 .acctx-lb .lb-vbtn:hover { background:rgba(255,255,255,.26); }
 .acctx-lb .lb-stage { flex:1; overflow:auto; padding:20px; display:flex; justify-content:center; align-items:flex-start; }
 .acctx-lb .lb-frame { width:min(1000px,95vw); height:100%; border:0; background:#fff; }
@@ -2225,15 +2228,15 @@ body.rd-printing .rd-linedel, body.rd-printing .rd-addline, body.rd-printing .rd
 /* ── Cost code breakdown (PO line items) ─────────────────────────────────────
    The code itself is the control — dotted underline, because a bare mono
    "6003.30.M" gives no hint that clicking it explains anything. */
-.cost-code { font: inherit; font-family: ui-monospace, monospace; background: none; border: 0; padding: 0;
+.cost-code { font: inherit; font-family: var(--font-mono); background: none; border: 0; padding: 0;
   color: var(--muted); border-bottom: 1px dotted var(--line-strong); cursor: pointer; min-height: 0; }
 .cost-code:hover, .cost-code[aria-expanded="true"] { color: var(--ink); border-bottom-color: var(--accent); }
 .cc-panel { margin-top: 5px; padding: 8px 10px; background: var(--card-2); border: 1px solid var(--line);
   border-radius: var(--radius-md); display: grid; gap: 6px; max-width: 460px; }
 .cc-panel .cc-hd { display: flex; gap: 8px; align-items: baseline; }
-.cc-panel .cc-fmt { font-family: ui-monospace, monospace; color: var(--ink-2); }
+.cc-panel .cc-fmt { font-family: var(--font-mono); color: var(--ink-2); }
 .cc-seg { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; align-items: baseline; }
-.cc-seg > .cc-val { font-family: ui-monospace, monospace; font-weight: 600; color: var(--ink); text-align: right; }
+.cc-seg > .cc-val { font-family: var(--font-mono); font-weight: 600; color: var(--ink); text-align: right; }
 .cc-seg > .cc-what { color: var(--ink-2); }
 .cc-seg > .cc-what b { font-weight: 600; color: var(--ink); }
 .cc-seg > .cc-gloss { grid-column: 2; color: var(--muted); font-size: 11px; }
@@ -2244,8 +2247,8 @@ body.rd-printing .rd-linedel, body.rd-printing .rd-addline, body.rd-printing .rd
 .hd-fab {
   position: fixed; right: 20px; bottom: 20px; z-index: 60;
   display: inline-flex; align-items: center; gap: 8px;
-  padding: 10px 16px; border: 0; border-radius: 999px; cursor: pointer;
-  background: var(--accent); color: var(--accent-fg); font: inherit; font-weight: 600;
+  padding: 14px 24px; border: 0; border-radius: 999px; cursor: pointer;
+  background: var(--accent); color: var(--accent-fg); font: inherit; font-size: 16px; font-weight: 600;
   box-shadow: 0 4px 16px rgba(0,0,0,.25);
 }
 .hd-fab:hover { background: var(--accent-2); }

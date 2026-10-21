@@ -186,7 +186,7 @@ function EventChip({ it }: { it: PortfolioCalendarItem }) {
         textOverflow: "ellipsis",
       }}
     >
-      <span style={{ fontFamily: "ui-monospace, monospace", color, fontWeight: 600 }}>{it.project_code}</span>
+      <span style={{ fontFamily: "var(--font-mono)", color, fontWeight: 600 }}>{it.project_code}</span>
       <span style={{ color: "var(--ink-2)", overflow: "hidden", textOverflow: "ellipsis" }}>{it.label}</span>
     </div>
   );

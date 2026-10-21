@@ -979,7 +979,7 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
                                         )}
                                       </div>
                                       <div className="muted" style={{ fontSize: 11 }}>
-                                        {nameParts.code && <span style={{ fontFamily: "var(--font-mono, ui-monospace, monospace)" }}>{nameParts.code} · </span>}
+                                        {nameParts.code && <span style={{ fontFamily: "var(--font-mono)" }}>{nameParts.code} · </span>}
                                         {m.supplier.size === 1 ? [...m.supplier][0] : m.supplier.size > 1 ? "Mixed suppliers" : "Supplier TBC"}
                                         {m.lastOrdered && ` · last ordered ${fmtDate(m.lastOrdered)}`}
                                       </div>

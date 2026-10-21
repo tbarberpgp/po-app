@@ -239,7 +239,7 @@ function LibraryTab({
                           )}
                         </button>
                       </td>
-                      <td className="center"><span className="badge" style={{ fontFamily: "ui-monospace, monospace" }}>{p.product_code}</span></td>
+                      <td className="center"><span className="badge" style={{ fontFamily: "var(--font-mono)" }}>{p.product_code}</span></td>
                       <td className="muted">{p.element_code} · {p.element_name.replace(/^[A-Za-z]+ - /, "")}</td>
                       <td>
                         {p.description}
@@ -497,7 +497,7 @@ function ProductForm({
         </div>
         <div>
           <label>Code preview</label>
-          <input value={previewCode} readOnly style={{ fontFamily: "ui-monospace, monospace" }} />
+          <input value={previewCode} readOnly style={{ fontFamily: "var(--font-mono)" }} />
         </div>
       </div>
       <div style={{ marginTop: 12 }}>
@@ -1190,7 +1190,7 @@ function AlternateSupplierRow({
         {/* is_preferred is 0/1 from the DB — a bare && would render the 0. */}
         {row.is_preferred ? <span className="badge approved" style={{ marginLeft: 6, fontSize: 10 }}>preferred</span> : null}
       </td>
-      <td className="muted" style={{ fontFamily: "ui-monospace, monospace", fontSize: 12 }}>{row.supplier_sku ?? "—"}</td>
+      <td className="muted" style={{ fontFamily: "var(--font-mono)", fontSize: 12 }}>{row.supplier_sku ?? "—"}</td>
       <td className="num">{row.unit_cost != null ? fmtMoney(row.unit_cost) : <span className="muted">—</span>}</td>
       <td className="num">
         {delta == null ? (
@@ -1383,7 +1383,7 @@ function BulkPromoteModal({
                     {r.status === "pending" && <span className="badge draft">pending</span>}
                     {r.status === "creating" && <span className="badge pending dot">creating…</span>}
                     {r.status === "done" && (
-                      <span className="badge approved" style={{ fontFamily: "ui-monospace, monospace" }}>
+                      <span className="badge approved" style={{ fontFamily: "var(--font-mono)" }}>
                         ✓ {r.product_code}
                       </span>
                     )}

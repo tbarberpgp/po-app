@@ -294,7 +294,7 @@ export function SuppliersPage({ me }: { me: CurrentUser | null }) {
                           <div style={{ display: "flex", flexWrap: "nowrap", gap: 4, overflow: "hidden" }}
                             title={s.approved_elements.map((code) => elements.find((e) => e.code === code)?.name ?? code).join(", ")}>
                             {s.approved_elements.slice(0, 4).map((code) => (
-                              <span key={code} className="badge" style={{ fontFamily: "ui-monospace, monospace" }}>{code}</span>
+                              <span key={code} className="badge" style={{ fontFamily: "var(--font-mono)" }}>{code}</span>
                             ))}
                             {s.approved_elements.length > 4 && (
                               <span className="badge draft">+{s.approved_elements.length - 4}</span>
@@ -314,7 +314,7 @@ export function SuppliersPage({ me }: { me: CurrentUser | null }) {
                             read out mid-call without opening the supplier. */}
                         {s.pgp_account_number && (
                           <div
-                            style={{ fontFamily: "ui-monospace, monospace", fontSize: 11, whiteSpace: "nowrap", marginTop: 2 }}
+                            style={{ fontFamily: "var(--font-mono)", fontSize: 11, whiteSpace: "nowrap", marginTop: 2 }}
                             title={`Our PGP account number with ${s.name}`}
                           >
                             A/C {s.pgp_account_number}
@@ -412,7 +412,7 @@ export function SuppliersPage({ me }: { me: CurrentUser | null }) {
                       </td>
                       <td className="center">
                         {s.utr
-                          ? <span style={{ fontFamily: "ui-monospace, monospace", fontSize: 12 }}>{s.utr}</span>
+                          ? <span style={{ fontFamily: "var(--font-mono)", fontSize: 12 }}>{s.utr}</span>
                           : <span className="pill pending" style={{ fontSize: 10 }} title="No UTR on file — needed for CIS. Edit the subcontractor to add it.">Missing</span>}
                       </td>
                       <td className="center">
@@ -422,7 +422,7 @@ export function SuppliersPage({ me }: { me: CurrentUser | null }) {
                       </td>
                       <td className="center">
                         {s.vat_number
-                          ? <span style={{ fontFamily: "ui-monospace, monospace", fontSize: 12 }}>{s.vat_number}</span>
+                          ? <span style={{ fontFamily: "var(--font-mono)", fontSize: 12 }}>{s.vat_number}</span>
                           : <span className="muted" style={{ fontSize: 12 }}>—</span>}
                       </td>
                       <td className="muted" style={{ fontSize: 12, maxWidth: 230 }}>
@@ -436,7 +436,7 @@ export function SuppliersPage({ me }: { me: CurrentUser | null }) {
                             read out mid-call without opening the supplier. */}
                         {s.pgp_account_number && (
                           <div
-                            style={{ fontFamily: "ui-monospace, monospace", fontSize: 11, whiteSpace: "nowrap", marginTop: 2 }}
+                            style={{ fontFamily: "var(--font-mono)", fontSize: 11, whiteSpace: "nowrap", marginTop: 2 }}
                             title={`Our PGP account number with ${s.name}`}
                           >
                             A/C {s.pgp_account_number}
@@ -748,7 +748,7 @@ function SupplierForm({
                 onChange={() => toggleElement(e.code)}
                 style={{ minHeight: 0 }}
               />
-              <span style={{ fontFamily: "ui-monospace, monospace", color: "var(--muted)", fontSize: 11 }}>{e.code}</span>
+              <span style={{ fontFamily: "var(--font-mono)", color: "var(--muted)", fontSize: 11 }}>{e.code}</span>
               <span>{e.name}</span>
             </label>
           ))}
@@ -777,7 +777,7 @@ function SupplierForm({
             value={form.pgp_account_number}
             onChange={(e) => setForm({ ...form, pgp_account_number: e.target.value })}
             placeholder="e.g. POW001"
-            style={{ fontFamily: "ui-monospace, monospace" }}
+            style={{ fontFamily: "var(--font-mono)" }}
           />
         </div>
       </div>

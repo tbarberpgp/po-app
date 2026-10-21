@@ -531,7 +531,7 @@ function MailboxPullSection() {
         <div className="muted" style={{ fontSize: 12.5, lineHeight: 1.5 }}>
           Needs an Entra (Azure&nbsp;AD) app registration with the <b>Mail.Read</b> application permission, scoped to the
           shared mailboxes via an Application Access Policy. Then set the secrets:
-          <div style={{ fontFamily: "ui-monospace, monospace", fontSize: 11.5, background: "var(--card-2)", borderRadius: 6, padding: "8px 10px", marginTop: 6, whiteSpace: "pre-wrap", overflowX: "auto" }}>
+          <div style={{ fontFamily: "var(--font-mono)", fontSize: 11.5, background: "var(--card-2)", borderRadius: 6, padding: "8px 10px", marginTop: 6, whiteSpace: "pre-wrap", overflowX: "auto" }}>
             wrangler secret put MS_GRAPH_TENANT_ID{"\n"}wrangler secret put MS_GRAPH_CLIENT_ID{"\n"}wrangler secret put MS_GRAPH_CLIENT_SECRET{"\n"}wrangler secret put MS_GRAPH_MAILBOXES{"\n"}{'  # [{"mailbox":"accounts@powergridprojects.net","as":"invoices@pgpprojects.com","folder":"Inbox"}]'}
           </div>
         </div>

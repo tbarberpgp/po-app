@@ -193,7 +193,7 @@ function KpiCard({ label, value, sub, tone }: { label: string; value: number | s
   return (
     <div className="a-card" style={{ padding: "15px 17px", borderLeft: `3px solid ${bar}` }}>
       <div className="eyebrow" style={{ margin: 0 }}>{label}</div>
-      <div style={{ fontFamily: "Cambria, 'Source Serif Pro', Georgia, serif", fontSize: 30, lineHeight: 1.15 }}>{value}</div>
+      <div style={{ fontFamily: "var(--font-serif)", fontSize: 30, lineHeight: 1.15 }}>{value}</div>
       <div className="muted" style={{ fontSize: 11.5 }}>{sub}</div>
     </div>
   );
