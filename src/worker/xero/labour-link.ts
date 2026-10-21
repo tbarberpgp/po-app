@@ -2,7 +2,7 @@
 // (shared/labour-xero-link.ts says why). Runs hourly from the cron and on
 // demand from Accounts; `dry` reports what it would do and writes nothing.
 import type { Env } from "../env";
-import { findContactByName, listInvoices, parseXeroDate, type XeroInvoiceFull } from "./client";
+import { findContactByName, getInvoice, listInvoices, parseXeroDate, type XeroInvoiceFull } from "./client";
 import { planLabourLink, appValue, type LinkApp, type LinkBill } from "../../shared/labour-xero-link";
 import { isSandboxId } from "../sandbox";
 
@@ -18,13 +18,15 @@ export type LabourLinkResult = {
   linked_paid: LinkedRow[];
   linked_owed: LinkedRow[];
   now_paid: LinkedRow[];
+  paid_date_fixed: LinkedRow[];
   amount_differs: Array<LinkedRow & { xero_value: number }>;
   no_contact: string[];
 };
 
 export async function linkLabourToXero(env: Env, opts: { dry?: boolean } = {}): Promise<LabourLinkResult> {
   const dry = !!opts.dry;
-  const out: LabourLinkResult = { dry, linked_paid: [], linked_owed: [], now_paid: [], amount_differs: [], no_contact: [] };
+  const out: LabourLinkResult = { dry, linked_paid: [], linked_owed: [], now_paid: [], paid_date_fixed: [], amount_differs: [], no_contact: [] };
+  await fixPaidDates(env, out, dry);
   const rows = (await env.DB.prepare(
     `SELECT a.id, a.app_number, a.status, a.project_id, p.code AS project_code,
             a.certified_amount, a.this_period_net, a.amount_due, a.xero_po_id, a.xero_po_number,
@@ -67,7 +69,9 @@ export async function linkLabourToXero(env: Env, opts: { dry?: boolean } = {}): 
       const billNo = bill.InvoiceNumber || bill.InvoiceID;
       const row: LinkedRow = { id: a.id, app_number: a.app_number, project_code: a.project_code, supplier: a.supplier_name, bill: billNo, value: appValue(a) };
       if (plan.kind === "amount_differs") { out.amount_differs.push({ ...row, xero_value: plan.xero }); continue; }
-      const paidAt = parseXeroDate(bill.FullyPaidOnDate) ?? now;
+      // A listing doesn't carry the paid date, so a paid bill is fetched whole.
+      const isPaid = plan.kind === "now_paid" || plan.paid;
+      const paidAt = isPaid ? await paidDateOf(env, bill, now) : now;
       if (plan.kind === "now_paid") {
         out.now_paid.push(row);
         if (!dry) await env.DB.batch([
@@ -102,6 +106,46 @@ export async function linkLabourToXero(env: Env, opts: { dry?: boolean } = {}): 
     }
   }
   return out;
+}
+
+/** The day Xero paid the bill — from the bill itself if the listing left it
+ *  out — or `fallback` if Xero won't say. */
+async function paidDateOf(env: Env, bill: XeroInvoiceFull, fallback: string): Promise<string> {
+  const listed = parseXeroDate(bill.FullyPaidOnDate);
+  if (listed) return listed;
+  const full = await getInvoice(env, bill.InvoiceID).catch(() => null);
+  return parseXeroDate(full?.FullyPaidOnDate) ?? fallback;
+}
+
+/**
+ * The first version of this job stamped a paid certificate with the time it
+ * ran rather than the day Xero paid it (the listing has no paid date). Those
+ * rows give themselves away: paid_at is the very instant of xero_synced_at,
+ * which a real payment date never is. Each is read from Xero and put right
+ * once; after that it no longer matches.
+ */
+async function fixPaidDates(env: Env, out: LabourLinkResult, dry: boolean) {
+  const rows = (await env.DB.prepare(
+    `SELECT a.id, a.app_number, a.xero_po_id, a.xero_po_number, a.paid_at, a.certified_amount,
+            p.code AS project_code, s.name AS supplier
+       FROM applications_for_payment a
+       JOIN projects p ON p.id = a.project_id
+       LEFT JOIN suppliers s ON s.id = a.counterparty_supplier_id
+      WHERE a.direction = 'incoming_labour' AND a.status = 'paid' AND a.paid_by = 'xero'
+        AND a.xero_po_id IS NOT NULL AND a.paid_at = a.xero_synced_at`,
+  ).all<{ id: number; app_number: number; xero_po_id: string; xero_po_number: string | null; paid_at: string;
+    certified_amount: number | null; project_code: string; supplier: string | null }>()).results;
+  for (const r of rows) {
+    const bill = await getInvoice(env, r.xero_po_id).catch(() => null);
+    const paidAt = parseXeroDate(bill?.FullyPaidOnDate);
+    if (!paidAt) continue;
+    out.paid_date_fixed.push({ id: r.id, app_number: r.app_number, project_code: r.project_code, supplier: r.supplier ?? "", bill: r.xero_po_number ?? r.xero_po_id, value: r.certified_amount ?? 0 });
+    if (dry) continue;
+    await env.DB.batch([
+      env.DB.prepare("UPDATE applications_for_payment SET paid_at = ? WHERE id = ? AND paid_at = ?").bind(paidAt, r.id, r.paid_at),
+      audit(env, r.id, "paid_date_from_xero", { was: r.paid_at, now: paidAt, bill: r.xero_po_number }, new Date().toISOString()),
+    ]);
+  }
 }
 
 function audit(env: Env, id: number, action: string, details: unknown, at: string) {

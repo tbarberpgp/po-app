@@ -345,6 +345,7 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
       const parts = [
         r.linked_paid.length ? `Paid in Xero: ${said(r.linked_paid)}.` : "",
         r.now_paid.length ? `Now paid: ${said(r.now_paid)}.` : "",
+        r.paid_date_fixed.length ? `Paid date corrected from Xero: ${said(r.paid_date_fixed)}.` : "",
         r.linked_owed.length ? `In Xero, owed: ${said(r.linked_owed)}.` : "",
         r.amount_differs.length ? `Same invoice number but a different amount in Xero — check by hand: ${r.amount_differs.map((x) => `${x.supplier} #${x.app_number} (app £${x.value.toFixed(2)}, Xero £${x.xero_value.toFixed(2)})`).join(", ")}.` : "",
         r.no_contact.length ? `Not found in Xero's contacts: ${r.no_contact.join(", ")}.` : "",
