@@ -19,6 +19,7 @@ import {
   type InvLine, type PoLineRow,
 } from "../../shared/line-match";
 import { processLabourAppUpload, sha256Hex } from "./applications";
+import { DuplicateLabourInvoiceError } from "../labour-invoice-dupe";
 import { ensureXeroContact } from "./xero";
 import { createSalesInvoice, getInvoice, uploadAttachment } from "../xero/client";
 import { nextPONumber } from "./pos";
@@ -955,7 +956,9 @@ invoices.post("/:id/send-to-labour", async (c) => {
   const obj = await c.env.R2.get(inv.file_key);
   if (!obj) return c.json({ error: "Stored file is missing." }, 404);
 
-  const created = await processLabourAppUpload(c.env, {
+  let created: Awaited<ReturnType<typeof processLabourAppUpload>>;
+  try {
+    created = await processLabourAppUpload(c.env, {
     projectId,
     counterpartySupplierId: body.counterparty_supplier_id ?? inv.supplier_id ?? null,
     periodEnd,
@@ -966,7 +969,13 @@ invoices.post("/:id/send-to-labour", async (c) => {
       type: inv.file_type ?? "",
     },
     actor: c.get("userEmail"),
-  });
+    });
+  } catch (e) {
+    if (e instanceof DuplicateLabourInvoiceError) {
+      return c.json({ error: e.message }, 409);
+    }
+    throw e;
+  }
 
   await c.env.DB.prepare("UPDATE invoices SET status = 'dismissed', labour_afp_id = ? WHERE id = ?")
     .bind(created.id, id).run();

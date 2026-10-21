@@ -25,6 +25,7 @@ import { extractLabourLines, extractCertificateLines, createAfpFromLines, applyC
 import { ingestInvoice } from "./routes/invoices";
 import { isSpreadsheetFile } from "../shared/file-kind";
 import type { ExtractedLabourLine } from "./routes/applications";
+import { findDuplicateLabourInvoice } from "./labour-invoice-dupe";
 import { handleReportReply } from "./routes/site-reports";
 
 /** First reply paragraph only — drop quoted history ("On … wrote:", "> …", etc.). */
@@ -439,6 +440,22 @@ export async function handleInboundEmail(
         buffer: buf, name: fname, type: att.mimeType ?? "",
       }, (m) => { appMeta = m; });
       const appMetaJson = appMeta && Object.values(appMeta).some((v) => v != null) ? JSON.stringify(appMeta) : null;
+
+      // Same subcontractor's invoice already on this project — e.g. the PDF of
+      // a Word invoice that's already in. Different bytes, so the hash check
+      // above can't see it; skip it and say so in the reply.
+      if (project && direction === "incoming_labour") {
+        const same = await findDuplicateLabourInvoice(env, {
+          projectId: project.id,
+          supplierId: supplier?.id ?? null,
+          invoiceNumber: (appMeta as import("./routes/applications").LabourAppMeta | null)?.invoice_number ?? null,
+          fileName: fname,
+        }).catch(() => null);
+        if (same) {
+          duplicates.push({ file: fname, afp_id: same.id, app_number: same.app_number, status: same.status, project_code: project.code ?? null });
+          continue;
+        }
+      }
 
       // Keep the source file in R2 so it can attach to the Xero bill later —
       // whether the draft is created now or parked and resolved later.
