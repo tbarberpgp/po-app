@@ -132,14 +132,7 @@ export function App() {
         me={effectiveMe}
         approvalsCount={approvalsCount}
         onNavigate={() => setNavOpen(false)}
-        viewAs={isSuper && (
-          <label className="sidebar-viewas">
-            <span>View as</span>
-            <select value={viewAs ?? "superadmin"} onChange={(e) => changeViewAs(e.target.value === "superadmin" ? null : (e.target.value as Role))}>
-              {ROLES.map((r) => <option key={r} value={r}>{ROLE_LABELS[r]}</option>)}
-            </select>
-          </label>
-        )}
+        viewAs={isSuper ? { role: viewAs ?? "superadmin", onChange: (r) => changeViewAs(r === "superadmin" ? null : r) } : undefined}
       />
       <div className="nav-backdrop" onClick={() => setNavOpen(false)} />
       <div className="app-main">

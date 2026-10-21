@@ -207,6 +207,24 @@ a:hover { text-decoration: underline; }
 
 /* Help & changelog block, just above the user chip. */
 .sidebar-foot { display: flex; flex-direction: column; gap: 2px; }
+/* "View as" (superadmin): looks like the rows above; the current role sits
+   on the right in muted text and opens the role list. */
+.nav-viewas {
+  display: flex; align-items: center; gap: 10px;
+  margin: -16px 0 0; padding: 8px 10px; border-radius: var(--radius-md);
+  font-size: 13.5px; font-weight: 400; color: var(--ink); cursor: pointer;
+  text-transform: none; letter-spacing: 0;
+  transition: background var(--motion-fast);
+}
+.nav-viewas:hover { background: var(--line); }
+.nav-viewas > span { white-space: nowrap; }
+.nav-viewas select {
+  margin-left: auto; flex: 0 1 auto; min-width: 0; max-width: 112px; min-height: 0; width: auto;
+  padding: 0 2px; border: 0; background: transparent;
+  font: 400 12.5px var(--font-sans); color: var(--muted); text-align: right; cursor: pointer;
+}
+.nav-viewas select:focus { outline: none; }
+.nav-viewas:focus-within { box-shadow: 0 0 0 2px var(--accent); }
 .nav-dot { margin-left: auto; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex-shrink: 0; }
 
 /* "What's new" changelog entries. */
@@ -214,25 +232,6 @@ a:hover { text-decoration: underline; }
 .wn-latest { background: var(--accent-soft); color: var(--accent-2); border-radius: var(--radius-pill); padding: 1px 8px; font-size: 10px; letter-spacing: 0.04em; }
 .wn-list { margin: 6px 0 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; color: var(--ink-2); }
 .wn-list li::marker { color: var(--accent); }
-
-/* Superadmin "View as" picker, just above the user chip. The whole box is
-   the control: a label on the left, the role as a borderless select. */
-.sidebar-viewas {
-  display: flex; align-items: center; gap: 8px;
-  margin: 0 0 -8px; padding: 0 4px 0 12px;
-  border: 1px solid var(--line-strong); border-radius: 10px;
-  background: var(--card); cursor: pointer;
-  font-size: 12px; font-weight: 500; color: var(--muted);
-  text-transform: none; letter-spacing: 0;
-}
-.sidebar-viewas:hover { border-color: var(--ink-2); }
-.sidebar-viewas select {
-  flex: 1; min-width: 0; min-height: 0; margin: 0;
-  padding: 8px 6px; border: 0; background: transparent;
-  font: 600 13px var(--font-sans); color: var(--ink); cursor: pointer;
-}
-.sidebar-viewas select:focus { outline: none; }
-.sidebar-viewas:focus-within { border-color: var(--accent); }
 
 .sidebar-user {
   margin-top: auto;
