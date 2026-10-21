@@ -112,7 +112,7 @@ a:hover { text-decoration: underline; }
 /* ── App shell ────────────────────────────────────────────────────────── */
 .app {
   display: grid;
-  grid-template-columns: 240px 1fr;
+  grid-template-columns: 240px minmax(0, 1fr);
   min-height: 100vh;
 }
 
@@ -128,9 +128,32 @@ a:hover { text-decoration: underline; }
   align-self: start;
   height: 100vh;
   overflow-y: auto;   /* short windows: scroll the nav rather than clip the user chip */
+  overflow-x: hidden;
 }
+.sidebar-head { display: flex; align-items: center; gap: 6px; }
+.nav-menu-btn {
+  display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
+  width: 36px; height: 36px; min-height: 0; padding: 0; margin: 0;
+  border: 0; border-radius: var(--radius-md); background: transparent; color: var(--ink-2); cursor: pointer;
+}
+.nav-menu-btn:hover { background: var(--line); color: var(--ink); }
+
+/* Hidden sidebar (desktop): no sidebar at all, the page takes the full width,
+   and a fixed ☰ button top left brings it back. The page header makes room
+   for that button. Phones use their drawer instead, so none of this applies. */
+.nav-show-btn { display: none; }
+@media (min-width: 901px) {
+  .app.nav-hidden { grid-template-columns: minmax(0, 1fr); }
+  .app.nav-hidden .sidebar { display: none; }
+  .app.nav-hidden .nav-show-btn {
+    display: inline-flex; position: fixed; top: 16px; left: 14px; z-index: 40;
+    background: var(--card); border: 1px solid var(--line);
+  }
+  .app.nav-hidden .topbar { padding-left: 66px; }
+}
+@media (max-width: 900px) { .nav-menu-btn { display: none; } }
 .sidebar-logo {
-  padding: 4px 8px 0;
+  padding: 0 4px;
   display: flex;
   align-items: center;
   gap: 10px;

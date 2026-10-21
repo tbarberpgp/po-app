@@ -13,7 +13,10 @@ const ICON_PATHS: Record<string, ReactNode> = {
   reports: <><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" /><path d="M14 2v5h5" /><path d="M8 13h8" /><path d="M8 17h5" /></>,
   calendar: <><rect x="3" y="4" width="18" height="18" rx="2" /><path d="M3 10h18" /><path d="M8 2v4" /><path d="M16 2v4" /></>,
   applications: <><rect x="8" y="2" width="8" height="4" rx="1" /><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" /><path d="M9 12h6" /><path d="M9 16h4" /></>,
-  pos: <><rect x="2" y="4" width="20" height="5" rx="1" /><path d="M4 9v9a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9" /><path d="M10 13h4" /></>,
+  pos: <><circle cx="8" cy="21" r="1" /><circle cx="19" cy="21" r="1" /><path d="M2.05 2.05h2l2.66 12.42a2 2 0 0 0 2 1.58h9.78a2 2 0 0 0 1.95-1.57l1.65-7.43H5.12" /></>,
+  deliveries: <><path d="M12 3v9" /><path d="m8 8 4 4 4-4" /><path d="M3 13h5l1.5 3h5l1.5-3h5" /><path d="M3 13v6a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-6" /></>,
+  accounts: <><path d="M4 2v20l2-1 2 1 2-1 2 1 2-1 2 1 2-1 2 1V2l-2 1-2-1-2 1-2-1-2 1-2-1-2 1Z" /><path d="M16 8h-6a2 2 0 1 0 0 4h4a2 2 0 1 1 0 4H8" /><path d="M12 17.5v-11" /></>,
+  menu: <><line x1="4" y1="6" x2="20" y2="6" /><line x1="4" y1="12" x2="20" y2="12" /><line x1="4" y1="18" x2="20" y2="18" /></>,
   approvals: <polyline points="20 6 9 17 4 12" />,
   dashboard: <><line x1="6" y1="20" x2="6" y2="14" /><line x1="12" y1="20" x2="12" y2="10" /><line x1="18" y1="20" x2="18" y2="4" /></>,
   operatives: <><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><polyline points="16 11 18 13 22 9" /></>,
@@ -59,7 +62,7 @@ function NavSection({ id, label, onNavigate, children }: { id: string; label: st
   );
 }
 
-export function Sidebar({ me, approvalsCount, onNavigate, viewAs }: { me: CurrentUser | null; approvalsCount: number; onNavigate?: () => void; viewAs?: { role: Role; onChange: (r: Role) => void } }) {
+export function Sidebar({ me, approvalsCount, onNavigate, onHide, viewAs }: { me: CurrentUser | null; approvalsCount: number; onNavigate?: () => void; onHide?: () => void; viewAs?: { role: Role; onChange: (r: Role) => void } }) {
   // Permission checks take the whole user, not just the role: a per-user grant
   // has to reach the nav, or a page someone was granted stays hidden from them.
   // `isAdmin` below is a genuine question about rank, so it keeps the role.
@@ -94,21 +97,28 @@ export function Sidebar({ me, approvalsCount, onNavigate, viewAs }: { me: Curren
 
   return (
     <aside className="sidebar">
-      <Link to="/" className="sidebar-logo" aria-label="PGP Home" onClick={onNavigate}>
-        <img src="/logo.png" alt="PGP" />
-      </Link>
+      <div className="sidebar-head">
+        {onHide && (
+          <button type="button" className="nav-menu-btn" onClick={onHide} aria-label="Hide menu" title="Hide menu">
+            <Icon name="menu" />
+          </button>
+        )}
+        <Link to="/" className="sidebar-logo" aria-label="PGP Home" onClick={onNavigate}>
+          <img src="/logo.png" alt="PGP" />
+        </Link>
+      </div>
 
       <NavSection id="delivery" label="Delivery" onNavigate={onNavigate}>
         <NavLink to="/" end><Icon name="projects" /><span>Projects</span></NavLink>
         <NavLink to="/programme"><Icon name="programme" /><span>Programme</span></NavLink>
-        <NavLink to="/deliveries"><Icon name="pos" /><span>Deliveries</span></NavLink>
+        <NavLink to="/deliveries"><Icon name="deliveries" /><span>Deliveries</span></NavLink>
         {canDeliveryEdit && <NavLink to="/reports"><Icon name="reports" /><span>Reports</span></NavLink>}
       </NavSection>
 
       <NavSection id="commercial" label="Commercial" onNavigate={onNavigate}>
         {canCommercialView && <NavLink to="/calendar"><Icon name="calendar" /><span>Calendar</span></NavLink>}
         {canCommercialView && <NavLink to="/applications"><Icon name="applications" /><span>Applications</span></NavLink>}
-        {canCommercialView && <NavLink to="/accounts"><Icon name="pos" /><span>Accounts</span></NavLink>}
+        {canCommercialView && <NavLink to="/accounts"><Icon name="accounts" /><span>Accounts</span></NavLink>}
         <NavLink to="/pos"><Icon name="pos" /><span>Purchase Orders</span></NavLink>
         {/* Two separate authorities land on this page: PO approval tiers, and
             the invoice release allowlist. Someone can hold either alone. */}
@@ -167,6 +177,15 @@ export function Sidebar({ me, approvalsCount, onNavigate, viewAs }: { me: Curren
         </div>
       )}
     </aside>
+  );
+}
+
+/** Shown in place of a hidden sidebar: the same three-line button, top left. */
+export function ShowMenuButton({ onShow }: { onShow: () => void }) {
+  return (
+    <button type="button" className="nav-menu-btn nav-show-btn" onClick={onShow} aria-label="Show menu" title="Show menu">
+      <Icon name="menu" />
+    </button>
   );
 }
 
