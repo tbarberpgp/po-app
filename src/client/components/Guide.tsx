@@ -237,7 +237,7 @@ export function Guide({ me }: { me: CurrentUser | null }) {
 
               <h3>The other routes out</h3>
               <ol>
-                <li><strong>Send to labour</strong> — a supplier invoice that is really a subcontractor's own application (day-work with CIS) leaves Accounts and becomes a labour application. It shows in <em>Dismissed</em> carrying the application it turned into.</li>
+                <li><strong>Send to labour</strong> — a supplier invoice that is really a subcontractor's own application (day-work with CIS) becomes a labour certificate. It moves to <em>Inbox → Labour certificates</em> (marked <em>Needs review</em> if any lines didn't match the labour budget) and goes on from there like any other labour bill.</li>
                 {isAdmin
                   ? <li><strong>Overheads</strong> — company costs with no job. Coded to a nominal account instead of matched to a PO, then approved and pushed the same way. Admin only.</li>
                   : <li><strong>Overheads</strong> — company costs with no job are handled separately by Admins, and don't appear in your tabs.</li>}

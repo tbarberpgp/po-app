@@ -680,8 +680,9 @@ applications.get("/project/:projectId", async (c) => {
 /**
  * Labour certificates for the Accounts workspace, so a subbie's bill runs the
  * same queues as a supplier invoice: submitted → certified (awaiting approval)
- * → approved → pushed. A draft is only listed when it came in by email (its
- * lines need matching before it sends); a hand-made draft isn't sent yet. A "paid" one
+ * → approved → pushed. A draft is only listed when it came in by email or was
+ * sent over from a supplier invoice (its lines need matching before it sends);
+ * a hand-made draft isn't sent yet. A "paid" one
  * with no Xero bill was keyed into Xero by hand before this existed, so it is
  * history, not a queue item.
  */
@@ -704,6 +705,9 @@ applications.get("/_accounts-labour", async (c) => {
        AND (a.status IN ('submitted', 'certified')
             -- In by email but not sent on: some lines didn't match the budget.
             OR (a.status = 'draft' AND (a.created_by LIKE 'email:%' OR a.notes LIKE 'From inbound email%'))
+            -- Handed over from the supplier-invoice side ("Send to labour"):
+            -- it left that queue, so it has to land in this one.
+            OR (a.status = 'draft' AND EXISTS (SELECT 1 FROM invoices i WHERE i.labour_afp_id = a.id))
             OR (a.status = 'paid' AND (a.xero_po_id IS NOT NULL OR a.xero_sync_status = 'synced')))
      ORDER BY COALESCE(a.certified_at, a.submitted_at) DESC`,
   ).all();

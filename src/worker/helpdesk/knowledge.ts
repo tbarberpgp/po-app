@@ -90,7 +90,7 @@ Committing is not approving, and approving is not paying. The app never knows an
 The one thing no reason clears: an invoice coded to one job whose matched PO belongs to a different job. Approving would post the cost to the wrong job in Xero, so it is refused until the invoice is re-coded or an order on the right job is attached. Sibling contracts in the same site group count as different jobs.
 An invoice with no PO at all: attach one, or use "Raise PO" on the invoice to raise one retrospectively — it goes through the normal PO approval chain and links itself back.
 Goods collected from a trade counter rather than delivered: "Mark as collected" logs the receipt against the order's outstanding lines so the match can complete, with the invoice standing as the paperwork.
-A supplier invoice that is really a subcontractor's own application (day-work with CIS deducted) is handed over with "Send to labour": it leaves Accounts, becomes a labour application, and shows in Dismissed carrying the application it turned into.
+A supplier invoice that is really a subcontractor's own application (day-work with CIS deducted) is handed over with "Send to labour": it becomes a labour certificate and moves to Inbox → Labour certificates (marked Needs review if any lines didn't match the labour budget), then runs the labour queues like any other subbie's bill.
 Overheads are company costs with no job. They are admin-only, coded to a nominal account instead of matched to a PO, then approved and pushed the same way.
 Due dates: the app compares the due date printed on the invoice with the supplier's account payment terms and flags a disagreement of more than a few days.
 
