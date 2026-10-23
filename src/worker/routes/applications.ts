@@ -13,6 +13,7 @@ import { learnAliases, aliasMap, normText } from "../matchMemory";
 import { findSupplier } from "./invoices";
 import { emailAfpCertified } from "../notify";
 import type { AfpCisPreview } from "../../shared/types";
+import { buildAfpHistory, type AfpAuditRow, type AfpHistoryRow } from "../../shared/afp-history";
 import { isSandboxId } from "../sandbox";
 import { EXPENSES_SECTION, isExpenseSection, looksLikeExpenseLine } from "../../shared/afp-expenses";
 import { DAYWORKS_SECTION, isDayworkSection, looksLikeDayworkLine } from "../../shared/afp-dayworks";
@@ -622,7 +623,7 @@ applications.get("/", async (c) => {
     `SELECT a.id, a.project_id, a.direction, a.app_number, a.period_end, a.status,
             a.counterparty_supplier_id, a.total_invoice, a.certified_amount,
             a.amount_due, a.cumulative_value, a.expenses_amount, a.created_at, a.created_by,
-            a.attention_note, a.xero_po_id, a.xero_sync_status,
+            a.attention_note,
             CASE WHEN a.unmatched_lines_json IS NOT NULL AND a.unmatched_lines_json != ''
                  THEN 1 ELSE 0 END AS has_unmatched,
             p.code AS project_code, p.name AS project_name,
@@ -780,7 +781,9 @@ applications.get("/_accounts-labour", async (c) => {
             a.unmatched_lines_json,
             (SELECT COALESCE(SUM(ci.labour_total), 0)
                FROM contract_items ci JOIN material_snapshots ms ON ms.id = ci.snapshot_id
-              WHERE ms.project_id = a.project_id AND ms.is_active = 1) AS labour_budget
+              WHERE ms.project_id = a.project_id AND ms.is_active = 1) AS labour_budget,
+            EXISTS (SELECT 1 FROM audit_log l WHERE l.entity_type = 'afp' AND l.entity_id = CAST(a.id AS TEXT)
+                      AND l.action IN ('fast_track_certified', 'fast_track_pushed')) AS fast_tracked
      FROM applications_for_payment a
      JOIN projects p ON p.id = a.project_id
      LEFT JOIN suppliers s ON s.id = a.counterparty_supplier_id
@@ -825,6 +828,39 @@ applications.post("/:id/carry-as-billed", async (c) => {
   const carried = await carryWithoutLabourBudget(c.env.DB, id);
   const sent = await autoSubmitIfReady(c.env.DB, id, c.get("userEmail"));
   return c.json({ ok: true, carried, status: sent ? "submitted" : "draft" });
+});
+
+/** GET /api/applications/:id/history — who submitted, certified (or
+ *  fast-track certified), approved, pushed and paid it, and when. See
+ *  shared/afp-history.ts. Names come from users where the address has one. */
+applications.get("/:id/history", async (c) => {
+  const denied = requirePermission(c, "commercial.view");
+  if (denied) return denied;
+  const id = Number(c.req.param("id"));
+  const afp = await c.env.DB.prepare(
+    `SELECT submitted_at, submitted_by, certified_at, certified_by, certified_amount,
+            pay_released_at, pay_released_by, xero_po_id, xero_po_number, xero_sync_status, xero_synced_at,
+            paid_at, paid_by
+       FROM applications_for_payment WHERE id = ?`,
+  ).bind(id).first<AfpHistoryRow>();
+  if (!afp) return c.json({ error: "not found" }, 404);
+  const audits = (await c.env.DB.prepare(
+    `SELECT action, actor, details, created_at FROM audit_log
+      WHERE entity_type = 'afp' AND entity_id = ? ORDER BY created_at`,
+  ).bind(String(id)).all<AfpAuditRow>()).results;
+  const events = buildAfpHistory(afp, audits);
+  const emails = [...new Set(events.map((e) => e.by).filter((b): b is string => !!b && b.includes("@")).map((b) => b.replace(/^email:/, "").toLowerCase()))];
+  const names = new Map<string, string>();
+  if (emails.length) {
+    const rows = (await c.env.DB.prepare(
+      `SELECT lower(email) AS email, name FROM users WHERE lower(email) IN (${emails.map(() => "?").join(",")})`,
+    ).bind(...emails).all<{ email: string; name: string | null }>()).results;
+    for (const r of rows) if (r.name?.trim()) names.set(r.email, r.name.trim());
+  }
+  return c.json(events.map((e) => {
+    const key = e.by?.replace(/^email:/, "").toLowerCase();
+    return { ...e, by: (key && names.get(key)) ?? e.by?.replace(/^email:/, "") ?? null };
+  }));
 });
 
 /** List AfPs awaiting approval (used by the inbox). Registered before "/:id"

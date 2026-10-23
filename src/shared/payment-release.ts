@@ -118,15 +118,6 @@ export function isCertInXero(afp: ReleasableLabourCert): boolean {
   return !!afp.xero_po_id || afp.xero_sync_status === "synced";
 }
 
-/** "Pushed without certified": sent to Xero with Fast-track certify, skipping
- *  certify and approval (user's call, 2026-10-23, for an urgent pay run). The
- *  bill is in Xero but the value was never agreed, so it stays 'submitted' —
- *  owed, not cost — until someone certifies it on the certificate page. */
-export function isPushedUncertified(afp: ReleasableLabourCert): boolean {
-  return afp.status === "submitted" && isCertInXero(afp);
-}
-export const PUSHED_UNCERTIFIED_LABEL = "Pushed without certified";
-
 /** Signed off, so a push (or a retry of a failed one) is permitted. */
 export function isCertReleased(afp: ReleasableLabourCert): boolean {
   return !!afp.pay_released_at;

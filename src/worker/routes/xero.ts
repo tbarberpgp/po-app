@@ -525,6 +525,7 @@ xero.post("/push-afp/:id", async (c) => {
   }
   try {
     const result = await pushAfpToXero(c.env, Number(c.req.param("id")));
+    await logPush(c.env, Number(c.req.param("id")), c.get("userEmail"), result);
     return c.json(result);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -532,27 +533,69 @@ xero.post("/push-afp/:id", async (c) => {
   }
 });
 
-/** Fast-track certify: push a SUBMITTED labour claim to Xero at what was
- *  claimed, without certifying or approving it. It stays submitted and reads
- *  "Pushed without certified" until someone certifies it. */
+/** Who pushed a labour bill — the certificate's History reads it. */
+async function logPush(env: Env, id: number, actor: string, result: Awaited<ReturnType<typeof pushAfpToXero>>) {
+  if ("skipped" in result) return;
+  await env.DB.prepare(
+    `INSERT INTO audit_log (entity_type, entity_id, action, actor, details, created_at)
+     VALUES ('afp', ?, 'pushed_to_xero', ?, ?, ?)`,
+  ).bind(String(id), actor, JSON.stringify({ bill_id: result.xero_po_id, bill_number: result.xero_po_number ?? null }), new Date().toISOString()).run();
+}
+
+/**
+ * Fast-track certify (user's call, 2026-10-23): one click certifies a
+ * submitted labour claim at what was claimed, approves it for payment, and
+ * pushes it — the person clicking is the one certifying. It skips the checks
+ * the certify panel makes (days on site, over-budget and rate sign-off), and
+ * is then an ordinary certificate: Pushed, paid when Xero pays it. The audit
+ * row is what tells it apart, in the certificate's History.
+ *
+ * Certified BEFORE the push, so a Xero refusal leaves it in Ready to push with
+ * the reason and a retry, rather than a bill in Xero for an uncertified claim.
+ */
 xero.post("/fast-track-afp/:id", async (c) => {
-  const denied = requirePermission(c, "pos.push_to_xero");
+  const denied = requirePermission(c, "commercial.edit") ?? requirePermission(c, "pos.push_to_xero");
   if (denied) return denied;
   const nc = notConfigured(c.env);
   if (nc) return nc;
   const id = Number(c.req.param("id"));
+  const afp = await c.env.DB.prepare(
+    "SELECT id, direction, status, amount_due, xero_po_id, xero_sync_status FROM applications_for_payment WHERE id = ?",
+  ).bind(id).first<{ id: number; direction: string; status: string; amount_due: number | null; xero_po_id: string | null; xero_sync_status: string | null }>();
+  if (!afp) return c.json({ error: "not found" }, 404);
+  if (afp.direction !== "incoming_labour") return c.json({ error: "Only labour claims can be fast-tracked." }, 409);
+  if (afp.status !== "submitted") return c.json({ error: "Only a submitted claim can be fast-track certified." }, 409);
+  if (isCertInXero(afp)) return c.json({ error: "This claim is already in Xero." }, 409);
+  const amount = afp.amount_due ?? 0;
+  if (amount <= 0) return c.json({ error: "Nothing to certify — the claimed amount is zero." }, 409);
+
+  const actor = c.get("userEmail");
+  const now = new Date().toISOString();
+  const note = "Fast-track certify";
+  const db = c.env.DB;
+  const [upd] = await db.batch([
+    db.prepare(
+      `UPDATE applications_for_payment
+          SET status = 'certified', certified_at = ?, certified_by = ?, certified_amount = ?,
+              pay_approved_at = ?, pay_approved_by = ?, pay_approval_note = ?,
+              pay_released_at = ?, pay_released_by = ?, pay_release_note = ?
+        WHERE id = ? AND status = 'submitted'`,
+    ).bind(now, actor, amount, now, actor, note, now, actor, note, id),
+    db.prepare(
+      `INSERT INTO audit_log (entity_type, entity_id, action, actor, details, created_at)
+       SELECT 'afp', ?, 'fast_track_certified', ?, ?, ?
+        WHERE EXISTS (SELECT 1 FROM applications_for_payment WHERE id = ? AND certified_at = ? AND certified_by = ?)`,
+    ).bind(String(id), actor, JSON.stringify({ certified_amount: amount }), now, id, now, actor),
+  ]);
+  if (!upd.meta.changes) return c.json({ error: "Someone else changed this claim just now — reload and try again." }, 409);
+
   try {
-    const result = await pushAfpToXero(c.env, id, { fastTrack: true });
-    if (!("skipped" in result)) {
-      await c.env.DB.prepare(
-        `INSERT INTO audit_log (entity_type, entity_id, action, actor, details, created_at)
-         VALUES ('afp', ?, 'fast_track_pushed', ?, ?, ?)`,
-      ).bind(String(id), c.get("userEmail"), JSON.stringify({ xero_bill_id: result.xero_po_id }), new Date().toISOString()).run();
-    }
+    const result = await pushAfpToXero(c.env, id);
+    await logPush(c.env, id, actor, result);
     return c.json(result);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    return c.json({ error: msg }, 502);
+    return c.json({ error: `Certified and approved, but the Xero push failed: ${msg} Retry it from Ready to push.`, certified: true }, 502);
   }
 });
 
@@ -1023,7 +1066,7 @@ export async function pushPOToXero(env: Env, poId: string): Promise<
  * the Xero cross-reference on the AfP. Called from /push-afp/:id once the
  * certificate has been approved for payment.
  */
-export async function pushAfpToXero(env: Env, afpId: number, opts: { fastTrack?: boolean } = {}): Promise<
+export async function pushAfpToXero(env: Env, afpId: number): Promise<
   | { ok: true; xero_po_id: string; xero_po_number: string }
   | { ok: true; skipped: true; reason: string }
 > {
@@ -1067,14 +1110,7 @@ export async function pushAfpToXero(env: Env, afpId: number, opts: { fastTrack?:
   // including the release sign-off itself — that sets the column before calling
   // in, and so passes. The route pre-checks too, only to answer 403 instead of
   // 502; both read the same message.
-  //
-  // Fast-track certify skips certify and approval altogether: a submitted
-  // claim goes to Xero at what was claimed, and stays submitted in the app.
-  const fastTrack = !!opts.fastTrack;
-  if (fastTrack && afp.status !== "submitted") {
-    throw new Error("Fast-track certify is for a submitted claim — this one is already certified, so push it from Ready to push.");
-  }
-  if (!fastTrack && !isCertReleased(afp)) throw new Error(CERT_HELD_MESSAGE);
+  if (!isCertReleased(afp)) throw new Error(CERT_HELD_MESSAGE);
 
   // Wrap EVERYTHING (validation + the Xero call) so ANY failure is recorded on
   // the certificate as xero_sync_status='failed' with the reason — including the
@@ -1084,8 +1120,8 @@ export async function pushAfpToXero(env: Env, afpId: number, opts: { fastTrack?:
   const now = new Date().toISOString();
   try {
     if (afp.direction !== "incoming_labour") throw new Error("Only labour certificates push to Xero as bills");
-    if (!fastTrack && afp.status !== "certified" && afp.status !== "paid") throw new Error("Only certified labour certificates can be pushed");
-    if (!fastTrack && !afp.pay_approved_at) throw new Error("Approve this labour certificate for payment before pushing to Xero");
+    if (afp.status !== "certified" && afp.status !== "paid") throw new Error("Only certified labour certificates can be pushed");
+    if (!afp.pay_approved_at) throw new Error("Approve this labour certificate for payment before pushing to Xero");
     if (!afp.counterparty_supplier_id) throw new Error("Assign the subcontractor before pushing to Xero");
     if (afp.xero_po_id) {
       throw new Error(`This certificate is already in Xero as bill ${afp.xero_po_number ?? afp.xero_po_id} — void that bill in Xero first if you need to re-push.`);
@@ -1158,14 +1194,12 @@ export async function pushAfpToXero(env: Env, afpId: number, opts: { fastTrack?:
       Date: new Date().toISOString().split("T")[0],
       DueDate: dueDate,
       ...(theirNumber ? { InvoiceNumber: theirNumber } : {}),
-      // A fast-tracked bill says so in Xero too: its value is what was
-      // claimed, not an agreed certificate.
-      Reference: `${afp.project_code} Labour Cert #${afp.app_number}${fastTrack ? " (not certified)" : ""}`,
+      Reference: `${afp.project_code} Labour Cert #${afp.app_number}`,
       Status: "DRAFT",
       LineAmountTypes: "Exclusive",
       LineItems: [
         {
-          Description: `Labour ${fastTrack ? "claim (pushed without certifying)" : "certificate"} #${afp.app_number} — ${afp.project_code} ${afp.project_name} — period ending ${afp.period_end}${cisNote}`,
+          Description: `Labour certificate #${afp.app_number} — ${afp.project_code} ${afp.project_name} — period ending ${afp.period_end}${cisNote}`,
           Quantity: 1,
           UnitAmount: net,
           AccountCode: labourAccount,

@@ -12,7 +12,6 @@ import assert from "node:assert/strict";
 import {
   isCertAwaitingApproval,
   isCertInXero,
-  isPushedUncertified,
   isCertReadyToPush,
   isCertReleased,
   isAwaitingApproval,
@@ -217,17 +216,5 @@ describe("isReadyToPush / isCertReadyToPush", () => {
   test("an unapproved certificate is in neither queue", () => {
     assert.equal(isCertAwaitingApproval(cert()), false);
     assert.equal(isCertReadyToPush(cert()), false);
-  });
-});
-
-describe("isPushedUncertified", () => {
-  test("a submitted claim with a Xero bill was fast-tracked", () => {
-    assert.equal(isPushedUncertified({ status: "submitted", xero_po_id: "X1", xero_sync_status: "synced" }), true);
-  });
-  test("a failed fast-track is still just submitted", () => {
-    assert.equal(isPushedUncertified({ status: "submitted", xero_po_id: null, xero_sync_status: "failed" }), false);
-  });
-  test("certifying it afterwards makes it an ordinary pushed certificate", () => {
-    assert.equal(isPushedUncertified({ status: "certified", xero_po_id: "X1", xero_sync_status: "synced" }), false);
   });
 });
