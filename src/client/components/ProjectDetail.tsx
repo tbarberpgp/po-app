@@ -1586,10 +1586,8 @@ function ApplicationTermsSection({ project, onSaved, canEdit }: { project: Proje
 
   const clientVat = project.client_vat_pct ?? 20;
   const clientRet = project.client_retention_pct ?? project.retention_pct ?? 5;
-  const labourVat = project.labour_vat_pct ?? 20;
-  const labourRet = project.labour_retention_pct ?? project.retention_pct ?? 5;
   const vatLabel = (v: number) => VAT_OPTIONS.find((o) => o.value === v)?.label ?? `${v}%`;
-  const summary = `Client VAT ${clientVat}% · ret ${clientRet}%  |  Labour VAT ${labourVat}% · ret ${labourRet}%`;
+  const summary = `Client VAT ${clientVat}% · ret ${clientRet}%  |  Labour as billed`;
 
   return (
     <div style={{ borderTop: "1px solid var(--line)" }}>
@@ -1613,11 +1611,10 @@ function ApplicationTermsSection({ project, onSaved, canEdit }: { project: Proje
                 <span>Retention <b>{clientRet}%</b></span>
               </div>
             </div>
-            <div>
+<div>
               <div className="eyebrow">Labour applications (incoming)</div>
-              <div style={{ marginTop: 6, display: "flex", gap: 24 }}>
-                <span>VAT <b>{vatLabel(labourVat)}</b></span>
-                <span>Retention <b>{labourRet}%</b></span>
+              <div className="muted" style={{ marginTop: 6, fontSize: 12.5, lineHeight: 1.5 }}>
+                Stated as the subcontractor billed it. VAT, CIS and anything held back are Xero's, not set here.
               </div>
             </div>
             <div className="muted" style={{ gridColumn: "1 / -1", fontSize: 12 }}>
@@ -1636,15 +1633,11 @@ function ApplicationTermsSection({ project, onSaved, canEdit }: { project: Proje
               <input type="number" step="0.5" min="0" max="100" className="num" value={form.client_retention_pct}
                 onChange={(e) => setForm({ ...form, client_retention_pct: Number(e.target.value) })} style={{ width: "100%" }} />
             </div>
-            <div>
-              <div className="eyebrow" style={{ marginBottom: 8 }}>Labour applications (incoming)</div>
-              <label>VAT</label>
-              <select value={form.labour_vat_pct} onChange={(e) => setForm({ ...form, labour_vat_pct: Number(e.target.value) })} style={{ width: "100%" }}>
-                {VAT_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-              </select>
-              <label style={{ marginTop: 12 }}>Retention %</label>
-              <input type="number" step="0.5" min="0" max="100" className="num" value={form.labour_retention_pct}
-                onChange={(e) => setForm({ ...form, labour_retention_pct: Number(e.target.value) })} style={{ width: "100%" }} />
+<div>
+              <div className="eyebrow">Labour applications (incoming)</div>
+              <div className="muted" style={{ marginTop: 6, fontSize: 12.5, lineHeight: 1.5 }}>
+                Stated as the subcontractor billed it. VAT, CIS and anything held back are Xero's, not set here.
+              </div>
             </div>
             <div className="row" style={{ gridColumn: "1 / -1" }}>
               <button onClick={save} className="primary" disabled={busy}>Save</button>

@@ -1169,7 +1169,8 @@ export async function pushAfpToXero(env: Env, afpId: number, opts: { fastTrack?:
           Quantity: 1,
           UnitAmount: net,
           AccountCode: labourAccount,
-          TaxType: afp.vat_pct === 0 ? "NONE" : "INPUT2",
+          // No TaxType: VAT on a subbie's bill is Xero's call (the account's
+          // and contact's defaults), not ours — see labourStatesTheBill.
         },
       ],
     };

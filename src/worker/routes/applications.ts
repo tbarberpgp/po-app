@@ -227,6 +227,20 @@ export type PriorRow = {
  * AfP is being moved submitted → certified (the certified figures returned by
  * the client overwrite the snapshot, then freeze again).
  */
+/**
+ * The user's rule (2026-10-23): a labour certificate says what the subbie's bill
+ * says. "We don't do anything about VAT or anything — it's Xero's job." Latbuild
+ * billed £7,700 and the certificate read £7,315, because the project's 5% labour
+ * retention was taken off here; Asgard's 025 went to Xero £139.70 short the same
+ * way. So for labour, no retention and no VAT are worked out by this app.
+ */
+export function labourStatesTheBill<T extends { direction: string; retention_pct: number | null; vat_pct: number | null }>(
+  afp: T,
+): { retention_pct: number; vat_pct: number } {
+  if (afp.direction === "incoming_labour") return { retention_pct: 0, vat_pct: 0 };
+  return { retention_pct: afp.retention_pct ?? 0, vat_pct: afp.vat_pct ?? 0 };
+}
+
 async function recalcTotals(
   db: D1Database,
   afpId: number,
@@ -336,9 +350,12 @@ async function recalcTotals(
   // the subcontractor's position before this application, which the screen
   // shows and the over-budget gate needs. It just isn't subtracted.
   const thisPeriodNet = r2(periodNet({ cumulative, previousCertified, expensesAmount, dayworksAmount, basis: afp.claim_basis }));
-  const retentionAmount = r2(thisPeriodNet * (afp.retention_pct / 100));
+  // Labour states the bill's net and nothing else (labourStatesTheBill), so a
+  // retention or VAT rate left on an older labour row is not applied.
+  const { retention_pct: retPct, vat_pct: vatPct } = labourStatesTheBill(afp);
+  const retentionAmount = r2(thisPeriodNet * (retPct / 100));
   const amountDue = r2(thisPeriodNet - retentionAmount);
-  const vatAmount = r2(amountDue * (afp.vat_pct / 100));
+  const vatAmount = r2(amountDue * (vatPct / 100));
   const totalInvoice = r2(amountDue + vatAmount);
 
   await db
@@ -347,7 +364,11 @@ async function recalcTotals(
        SET contract_sum = ?, cumulative_value = ?, previous_certified = ?,
            this_period_net = ?, retention_amount = ?, amount_due = ?,
            vat_amount = ?, total_invoice = ?, expenses_amount = ?,
-           dayworks_amount = ?
+           dayworks_amount = ?,
+           -- Stored to match what was applied, so no screen shows a rate
+           -- that isn't being used.
+           retention_pct = CASE WHEN direction = 'incoming_labour' THEN 0 ELSE retention_pct END,
+           vat_pct = CASE WHEN direction = 'incoming_labour' THEN 0 ELSE vat_pct END
        WHERE id = ?`,
     )
     .bind(
@@ -401,6 +422,68 @@ async function autoSubmitIfReady(db: D1Database, afpId: number, actor: string): 
     .bind(new Date().toISOString(), actor, afpId)
     .run();
   return true;
+}
+
+/** A project's labour budget: the labour on its active pricing workbook. */
+async function projectLabourBudget(db: D1Database, projectId: string): Promise<number> {
+  const r = await db.prepare(
+    `SELECT COALESCE(SUM(ci.labour_total), 0) AS v
+       FROM contract_items ci JOIN material_snapshots s ON s.id = ci.snapshot_id
+      WHERE s.project_id = ? AND s.is_active = 1`,
+  ).bind(projectId).first<{ v: number }>();
+  return r?.v ?? 0;
+}
+
+/**
+ * On a job with no labour budget there is nothing for a subbie's lines to
+ * match, so every one of them sat unmatched and the certificate read £0
+ * against a bill for £7,700 (Latbuild #03 on 26006). The bill's figure is the
+ * claim: carry each priced line at what it billed — expenses as expenses, the
+ * rest as dayworks — recorded as resolutions, so each can still be undone on
+ * the certificate. Draft labour only; does nothing where a budget exists.
+ * Returns how many lines it carried.
+ */
+export async function carryWithoutLabourBudget(db: D1Database, afpId: number): Promise<number> {
+  const afp = await db.prepare(
+    `SELECT project_id, status, direction, unmatched_lines_json, resolved_lines_json
+       FROM applications_for_payment WHERE id = ?`,
+  ).bind(afpId).first<{
+    project_id: string; status: Status; direction: Direction;
+    unmatched_lines_json: string | null; resolved_lines_json: string | null;
+  }>();
+  if (!afp || afp.status !== "draft" || afp.direction !== "incoming_labour" || !afp.unmatched_lines_json) return 0;
+  if (await projectLabourBudget(db, afp.project_id) > 0) return 0;
+  const list: Array<Record<string, unknown>> = JSON.parse(afp.unmatched_lines_json);
+  const resolved: Array<Record<string, unknown>> = afp.resolved_lines_json ? JSON.parse(afp.resolved_lines_json) : [];
+  const keep: Array<Record<string, unknown>> = [];
+  const maxOrder = await db.prepare("SELECT COALESCE(MAX(display_order), 0) AS n FROM afp_lines WHERE afp_id = ?")
+    .bind(afpId).first<{ n: number }>();
+  let order = maxOrder?.n ?? 0;
+  let carried = 0;
+  for (const l of list) {
+    const v = typeof l.cumulative_value === "number" ? l.cumulative_value
+      : typeof l.this_period_value === "number" ? l.this_period_value : 0;
+    if (!v) { keep.push(l); continue; }
+    const expense = looksLikeExpenseLine(String(l.description ?? ""));
+    order += 1;
+    const ins = await db.prepare(
+      `INSERT INTO afp_lines
+         (afp_id, section, description, unit, qty, rate, contract_value,
+          percent_complete, cumulative_value, is_adhoc, display_order)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 100, ?, 1, ?) RETURNING id`,
+    ).bind(
+      afpId, expense ? EXPENSES_SECTION : DAYWORKS_SECTION, String(l.description ?? ""),
+      l.unit ? String(l.unit) : null, typeof l.qty === "number" ? l.qty : 1,
+      v, v, v, order,
+    ).first<{ id: number }>();
+    resolved.push({ ...l, resolution: { action: expense ? "add_as_expense" : "add_as_daywork", afp_line_id: ins!.id, by: "no-labour-budget" } });
+    carried += 1;
+  }
+  if (carried === 0) return 0;
+  await db.prepare("UPDATE applications_for_payment SET unmatched_lines_json = ?, resolved_lines_json = ? WHERE id = ?")
+    .bind(keep.length > 0 ? JSON.stringify(keep) : null, JSON.stringify(resolved), afpId).run();
+  await recalcTotals(db, afpId);
+  return carried;
 }
 
 /**
@@ -500,12 +583,9 @@ type ProjectTerms = {
 /** Pick the VAT + retention to snapshot onto a new AfP, by direction. Falls
  *  back to the legacy single retention_pct, then to sensible defaults. */
 function termsFor(direction: Direction, p: ProjectTerms): { vat_pct: number; retention_pct: number } {
-  if (direction === "incoming_labour") {
-    return {
-      vat_pct: p.labour_vat_pct ?? 20,
-      retention_pct: p.labour_retention_pct ?? p.retention_pct ?? 5,
-    };
-  }
+  // A subbie's bill is stated as it is. VAT, CIS and anything held back are
+  // Xero's to work out, not ours — see labourStatesTheBill.
+  if (direction === "incoming_labour") return { vat_pct: 0, retention_pct: 0 };
   return {
     vat_pct: p.client_vat_pct ?? 20,
     retention_pct: p.client_retention_pct ?? p.retention_pct ?? 5,
@@ -696,7 +776,11 @@ applications.get("/_accounts-labour", async (c) => {
             a.xero_po_id, a.xero_po_number, a.xero_sync_status, a.xero_sync_error,
             a.source_file_name, a.vat_pct,
             p.code AS project_code, p.name AS project_name,
-            s.name AS supplier_name, s.cis_rate
+            s.name AS supplier_name, s.cis_rate,
+            a.unmatched_lines_json,
+            (SELECT COALESCE(SUM(ci.labour_total), 0)
+               FROM contract_items ci JOIN material_snapshots ms ON ms.id = ci.snapshot_id
+              WHERE ms.project_id = a.project_id AND ms.is_active = 1) AS labour_budget
      FROM applications_for_payment a
      JOIN projects p ON p.id = a.project_id
      LEFT JOIN suppliers s ON s.id = a.counterparty_supplier_id
@@ -709,8 +793,38 @@ applications.get("/_accounts-labour", async (c) => {
             OR (a.status = 'draft' AND EXISTS (SELECT 1 FROM invoices i WHERE i.labour_afp_id = a.id))
             OR (a.status = 'paid' AND (a.xero_po_id IS NOT NULL OR a.xero_sync_status = 'synced')))
      ORDER BY COALESCE(a.certified_at, a.submitted_at) DESC`,
-  ).all();
-  return c.json(rows.results);
+  ).all<Record<string, unknown> & { unmatched_lines_json: string | null }>();
+  // What the bill states beyond the matched lines, so a draft doesn't read £0
+  // while the subbie has billed thousands.
+  return c.json(rows.results.map(({ unmatched_lines_json, ...r }) => {
+    let unmatched_value = 0;
+    try {
+      for (const l of (unmatched_lines_json ? JSON.parse(unmatched_lines_json) : []) as Array<Record<string, unknown>>) {
+        const v = typeof l.cumulative_value === "number" ? l.cumulative_value
+          : typeof l.this_period_value === "number" ? l.this_period_value : 0;
+        unmatched_value += v;
+      }
+    } catch { /* unreadable list: show what's matched */ }
+    return { ...r, unmatched_value };
+  }));
+});
+
+/** Carry a draft's unmatched lines at their billed value when its job has no
+ *  labour budget — for certificates read before that happened on arrival. */
+applications.post("/:id/carry-as-billed", async (c) => {
+  const denied = requirePermission(c, "commercial.edit");
+  if (denied) return denied;
+  const id = Number(c.req.param("id"));
+  const afp = await c.env.DB.prepare("SELECT project_id, status, direction FROM applications_for_payment WHERE id = ?")
+    .bind(id).first<{ project_id: string; status: Status; direction: Direction }>();
+  if (!afp) return c.json({ error: "not found" }, 404);
+  if (afp.direction !== "incoming_labour" || afp.status !== "draft") return c.json({ error: "Only a draft labour certificate can be carried as billed." }, 409);
+  if (await projectLabourBudget(c.env.DB, afp.project_id) > 0) {
+    return c.json({ error: "This job has a labour budget — match the lines on the certificate instead." }, 409);
+  }
+  const carried = await carryWithoutLabourBudget(c.env.DB, id);
+  const sent = await autoSubmitIfReady(c.env.DB, id, c.get("userEmail"));
+  return c.json({ ok: true, carried, status: sent ? "submitted" : "draft" });
 });
 
 /** List AfPs awaiting approval (used by the inbox). Registered before "/:id"
@@ -2307,6 +2421,8 @@ export async function createAfpFromLines(env: Env, args: {
     ).bind(JSON.stringify(unmatched), afpId).run();
   }
   await recalcTotals(env.DB, afpId);
+
+  if (isLabour) await carryWithoutLabourBudget(env.DB, afpId);
 
   // Received applications don't need director approval — if there's nothing to
   // reconcile (and, for labour, a subbie is known) it's "sent" immediately.
