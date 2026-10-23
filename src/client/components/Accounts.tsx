@@ -170,7 +170,9 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
   /** Hand the invoice to the labour pipeline. It becomes a labour certificate,
    *  so the screen follows it to Inbox → Labour certificates with it open —
    *  not to Dismissed, which is for things nobody needs to act on. */
-  async function sendToLabour(id: number, input: { project_id: string; counterparty_supplier_id: number | null; period_end: string }) {
+  /** Returns the error, if any, so the modal can show it where it was clicked
+   *  — the page's own banner is out of sight above a scrolled detail pane. */
+  async function sendToLabour(id: number, input: { project_id: string; counterparty_supplier_id: number | null; period_end: string }): Promise<string | null> {
     setBusy(true); setErr(null); setInfo(null);
     try {
       const r = await api.sendInvoiceToLabour(id, input);
@@ -180,8 +182,11 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
       setInfo(r.unmatched_count
         ? `Sent to labour as application ${r.app_number} — ${r.unmatched_count} line(s) need matching there.`
         : `Sent to labour as application ${r.app_number}.`);
+      return null;
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "Couldn't send this to labour.");
+      const msg = e instanceof Error ? e.message : "Couldn't send this to labour.";
+      setErr(msg);
+      return msg;
     } finally { setBusy(false); }
   }
 
@@ -988,7 +993,7 @@ function InvoiceDetail({ inv, projects, accounts, isAdmin, canEdit, canRelease, 
   onPatch: (b: Parameters<typeof api.updateInvoice>[1]) => void; onPush: () => void; onRelease: (note?: string) => void;
   onReload: () => void | Promise<void>; onReread: () => void; onDismiss: () => void; onUndismiss: () => void;
   suppliers: Supplier[];
-  onSendToLabour: (input: { project_id: string; counterparty_supplier_id: number | null; period_end: string }) => void | Promise<void>;
+  onSendToLabour: (input: { project_id: string; counterparty_supplier_id: number | null; period_end: string }) => Promise<string | null>;
 }) {
   const [f, setF] = useState({
     supplier_name: inv.supplier_name ?? "", invoice_number: inv.invoice_number ?? "",
@@ -1217,7 +1222,12 @@ function InvoiceDetail({ inv, projects, accounts, isAdmin, canEdit, canRelease, 
       {labourOpen && (
         <SendToLabourModal inv={inv} projects={projects} suppliers={suppliers} busy={busy}
           onCancel={() => setLabourOpen(false)}
-          onConfirm={async (input) => { setLabourOpen(false); await onSendToLabour(input); }} />
+          onConfirm={async (input) => {
+            // Stays open on a refusal, so the reason is read where it was asked.
+            const failed = await onSendToLabour(input);
+            if (!failed) setLabourOpen(false);
+            return failed;
+          }} />
       )}
     </>
   );
@@ -1230,8 +1240,9 @@ function InvoiceDetail({ inv, projects, accounts, isAdmin, canEdit, canRelease, 
 function SendToLabourModal({ inv, projects, suppliers, busy, onCancel, onConfirm }: {
   inv: Invoice; projects: Project[]; suppliers: Supplier[]; busy: boolean;
   onCancel: () => void;
-  onConfirm: (input: { project_id: string; counterparty_supplier_id: number | null; period_end: string }) => void;
+  onConfirm: (input: { project_id: string; counterparty_supplier_id: number | null; period_end: string }) => Promise<string | null>;
 }) {
+  const [err, setErr] = useState<string | null>(null);
   const [projectId, setProjectId] = useState(inv.project_id ?? "");
   const [supplierId, setSupplierId] = useState<string>(inv.supplier_id != null ? String(inv.supplier_id) : "");
   // The period this labour covers. The invoice date is the closest thing the
@@ -1281,12 +1292,13 @@ function SendToLabourModal({ inv, projects, suppliers, busy, onCancel, onConfirm
             <label htmlFor="stl-period">Period end</label>
             <input id="stl-period" type="date" value={periodEnd} onChange={(e) => setPeriodEnd(e.target.value)} />
           </div>
+          {err && <div className="flash error" style={{ margin: 0 }}>{err}</div>}
         </div>
         <div className="rd-pick-hd" style={{ borderBottom: 0, borderTop: "1px solid var(--line)", justifyContent: "flex-end" }}>
           <button className="ghost" disabled={busy} onClick={onCancel}>Cancel</button>
           <button className="accent" disabled={busy || !ready}
             title={ready ? "" : "Pick a project and a period end first"}
-            onClick={() => onConfirm({ project_id: projectId, counterparty_supplier_id: supplierId ? Number(supplierId) : null, period_end: periodEnd })}>
+            onClick={async () => { setErr(null); setErr(await onConfirm({ project_id: projectId, counterparty_supplier_id: supplierId ? Number(supplierId) : null, period_end: periodEnd })); }}>
             Send to labour
           </button>
         </div>
