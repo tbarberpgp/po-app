@@ -7,7 +7,7 @@ import { Topbar } from "./Shell";
 import { ProjectProgramme } from "./Programme";
 import { ProjectReports } from "./ProjectReports";
 import { ProjectOperations } from "./Operations";
-import { ForecastDashboard, Glance, DateCard, moneyTone, PrelimsTab, PortfolioCalendarPanel, ValuationScheduleUpload, LabourBreakdown, CommercialsHelpPanel, ProjectSettingsBlock, type ForecastDrill } from "./ProjectDetail";
+import { ForecastDashboard, Glance, DateCard, moneyTone, PrelimsTab, PortfolioCalendarPanel, ValuationScheduleUpload, LabourBreakdown, LabourBySubcontractorCard, CommercialsHelpPanel, ProjectSettingsBlock, type ForecastDrill } from "./ProjectDetail";
 import { DrillPanel, DrillKpi, type DrillData } from "./DrillPanel";
 import { AssignBudgetCell } from "./AssignBudgetCell";
 import {
@@ -702,10 +702,11 @@ export function GroupPage({ me }: { me: CurrentUser | null }) {
               </div>
             )}
 
-            {(cSub === "prelims" || cSub === "labour") && block === "all" && (
+            {cSub === "labour" && block === "all" && <CombinedLabour members={members} data={data} onPick={setBlock} />}
+            {cSub === "prelims" && block === "all" && (
               <div className="card"><div className="card-bd">
                 <p className="muted" style={{ margin: "4px 0 10px" }}>
-                  {cSub === "prelims" ? "Prelims expenditure" : "The labour BOQ"} is managed per contract — pick a block:
+                  Prelims expenditure is managed per contract — pick a block:
                 </p>
                 <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
                   {members.map((m) => <button key={m.id} className="ghost tiny" onClick={() => setBlock(m.id)}>{m.code} — {m.name}</button>)}
@@ -1349,6 +1350,134 @@ function GroupOverview({ scopeMembers, data, fc, contract, baseId, scopeLabel, o
           </div>
         </div>
       </div>
+    </>
+  );
+}
+
+/** Labour across every block at once. Each block keeps its own labour BOQ and
+ *  applications (managed per contract), so this only reads and sums what each
+ *  block already shows — the per-block BOQ, rate approvals and new applications
+ *  stay one click away on the block itself. */
+function CombinedLabour({ members, data, onPick }: {
+  members: Member[];
+  data: Record<string, BlockData>;
+  onPick: (id: string) => void;
+}) {
+  const blocks = members.map((m) => {
+    const d = data[m.id];
+    const rows = d?.labour ?? [];
+    const labour = rows.reduce((s, r) => s + r.labour_total, 0);
+    const expended = rows.reduce((s, r) => s + (r.expended ?? 0), 0);
+    const awaiting = labourAwaitingCertification(d?.labourAfps ?? []);
+    return { m, ready: !!d, rows, labour, expended, awaiting, afps: d?.labourAfps ?? [] };
+  });
+  const loading = blocks.some((b) => !b.ready);
+  const total = {
+    labour: blocks.reduce((s, b) => s + b.labour, 0),
+    expended: blocks.reduce((s, b) => s + b.expended, 0),
+    awaiting: blocks.reduce((s, b) => s + b.awaiting.total, 0),
+    awaitingCount: blocks.reduce((s, b) => s + b.awaiting.count, 0),
+  };
+  const allAfps = useMemo(() => blocks.flatMap((b) => b.afps), [data, members]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Sections in first-seen order across blocks, each block's figures side by side.
+  const sectionNames: string[] = [];
+  for (const b of blocks) for (const r of b.rows) if (!sectionNames.includes(r.section)) sectionNames.push(r.section);
+  const cell = (b: typeof blocks[number], section: string) => b.rows.find((r) => r.section === section);
+
+  const pctOf = (spent: number, budget: number) => (budget > 0 ? (spent / budget) * 100 : 0);
+  const bar = (spent: number, budget: number) => {
+    const pct = pctOf(spent, budget);
+    const over = budget > 0 && spent > budget;
+    const exact = budget > 0 && Math.abs(spent - budget) < 0.005;
+    return (
+      <>
+        <div className="bar"><div className={over ? "danger" : exact ? "ok" : ""} style={{ width: `${Math.min(100, pct)}%` }} /></div>
+        <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>{budget > 0 ? `${pct.toFixed(0)}%` : "—"}</div>
+      </>
+    );
+  };
+  const money = (n: number) => (Math.abs(n) < 0.005 ? <span className="muted">{fmtMoney(0)}</span> : fmtMoney(n));
+  const v = (ready: boolean, n: number) => (ready ? money(n) : "…");
+
+  return (
+    <>
+      <div className="kpis" style={{ marginBottom: 16 }}>
+        <DrillKpi label="Total labour" value={fmtMoney(total.labour)} sub={loading ? "loading blocks…" : `from ${members.length} block BOQs`} />
+        <DrillKpi label="Amount expended" value={fmtMoney(total.expended)} sub="certified so far" />
+        <DrillKpi label="Awaiting certification" value={fmtMoney(total.awaiting)}
+          sub={total.awaitingCount > 0 ? `${total.awaitingCount} submitted, not yet certified` : "nothing waiting"} />
+        <DrillKpi label="% expended" value={total.labour > 0 ? `${pctOf(total.expended, total.labour).toFixed(1)}%` : "—"} sub="of total labour" />
+      </div>
+
+      <div className="card">
+        <div className="card-hd"><h2 style={{ flex: 1 }}>Labour by block</h2><span className="muted" style={{ fontSize: 12 }}>budget vs certified · each block stays its own contract</span></div>
+        <table>
+          <thead><tr>
+            <th>Block</th><th className="num">Labour £</th><th className="num">Expended £</th><th className="num">Awaiting cert. £</th>
+            <th className="num">Remaining £</th><th className="center" style={{ width: 180 }}>Expenditure</th><th></th>
+          </tr></thead>
+          <tbody>
+            {blocks.map((b) => (
+              <tr key={b.m.id}>
+                <td><span style={{ fontWeight: 600 }}>{b.m.code}</span> <span className="muted">{b.m.name}</span></td>
+                <td className="num" style={{ fontWeight: 600 }}>{v(b.ready, b.labour)}</td>
+                <td className="num">{v(b.ready, b.expended)}</td>
+                <td className="num">{v(b.ready, b.awaiting.total)}{b.awaiting.count > 0 && <div className="muted" style={{ fontSize: 11 }}>{b.awaiting.count} app{b.awaiting.count === 1 ? "" : "s"}</div>}</td>
+                <td className="num" style={{ color: b.labour - b.expended < -0.005 ? "var(--danger)" : undefined }}>{b.ready ? fmtMoney(b.labour - b.expended) : "…"}</td>
+                <td>{b.ready && bar(b.expended, b.labour)}</td>
+                <td style={{ textAlign: "right" }}><button className="ghost tiny" onClick={() => onPick(b.m.id)}>Labour BOQ ›</button></td>
+              </tr>
+            ))}
+            <tr style={{ background: "var(--card-2)" }}>
+              <td style={{ fontWeight: 600, textAlign: "right" }}>Total</td>
+              <td className="num" style={{ fontWeight: 600 }}>{fmtMoney(total.labour)}</td>
+              <td className="num" style={{ fontWeight: 600 }}>{fmtMoney(total.expended)}</td>
+              <td className="num" style={{ fontWeight: 600 }}>{fmtMoney(total.awaiting)}</td>
+              <td className="num" style={{ fontWeight: 600 }}>{fmtMoney(total.labour - total.expended)}</td>
+              <td className="num" style={{ fontWeight: 600 }}>{total.labour > 0 ? `${pctOf(total.expended, total.labour).toFixed(0)}%` : "—"}</td>
+              <td></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      {sectionNames.length > 0 && (
+        <div className="card">
+          <div className="card-hd"><h2 style={{ flex: 1 }}>Labour by section</h2><span className="muted" style={{ fontSize: 12 }}>expended of budget, per block</span></div>
+          <table>
+            <thead><tr>
+              <th>Section</th>
+              {blocks.map((b) => <th key={b.m.id} className="num" title={b.m.name}>{b.m.code}</th>)}
+              <th className="num">Labour £</th><th className="num">Expended £</th><th className="center" style={{ width: 160 }}>Expenditure</th>
+            </tr></thead>
+            <tbody>
+              {sectionNames.map((s) => {
+                const budget = blocks.reduce((t, b) => t + (cell(b, s)?.labour_total ?? 0), 0);
+                const spent = blocks.reduce((t, b) => t + (cell(b, s)?.expended ?? 0), 0);
+                return (
+                  <tr key={s}>
+                    <td style={{ fontWeight: 600 }}>{s}</td>
+                    {blocks.map((b) => {
+                      const r = cell(b, s);
+                      return (
+                        <td key={b.m.id} className="num">
+                          {r ? <>{money(r.expended ?? 0)}<div className="muted" style={{ fontSize: 11 }}>of {fmtMoney(r.labour_total)}</div></> : <span className="muted">—</span>}
+                        </td>
+                      );
+                    })}
+                    <td className="num" style={{ fontWeight: 600 }}>{fmtMoney(budget)}</td>
+                    <td className="num">{money(spent)}</td>
+                    <td>{bar(spent, budget)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <LabourBySubcontractorCard afps={allAfps} expended={total.expended} />
     </>
   );
 }
