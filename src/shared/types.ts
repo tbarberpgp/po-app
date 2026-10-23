@@ -1136,9 +1136,9 @@ export type AfpLine = {
 
 /** Bundle returned by GET /api/applications/:id — the AfP, its lines, and the
  *  prior AfPs so the UI can show the previously-certified column. */
-/** The CIS deduction a labour certificate will carry when pushed to Xero.
- *  null on the detail payload = no CIS (client AfP, no subbie, or a 0%/unset
- *  rate). Computed from the labour element only — expenses sit outside CIS. */
+/** The subcontractor's CIS rate, shown for information: Xero works out and
+ *  takes the deduction, the app never does. null on the detail payload = no
+ *  CIS (client AfP, no subbie, or a 0%/unset rate). */
 /** GET /api/applications/:id/signin-days — the sign-in register read against
  *  a labour application's period (see shared/signin-days.ts). */
 export type AfpSigninDays = import("./signin-days").SigninSummary & {
@@ -1153,12 +1153,6 @@ export type AfpSigninDays = import("./signin-days").SigninSummary & {
 export type AfpCisPreview = {
   supplier_name: string;
   rate: number;
-  /** Certified net this period (what the labour line bills at). */
-  certified_net: number;
-  /** The CIS-liable part of that net — certified less this period's expenses. */
-  labour_base: number;
-  deduction: number;
-  net_payable: number;
 };
 
 export type AfpDetail = {

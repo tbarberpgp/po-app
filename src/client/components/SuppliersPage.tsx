@@ -407,8 +407,8 @@ export function SuppliersPage({ me }: { me: CurrentUser | null }) {
                       <td className="muted" style={{ fontSize: 13, whiteSpace: "nowrap" }}>{s.payment_terms ?? "—"}</td>
                       <td className="center">
                         {s.cis_rate == null
-                          ? <span className="pill pending" style={{ fontSize: 10 }} title="No CIS rate set — their labour certificates will push to Xero with no deduction. Edit the subcontractor to set it.">Not set</span>
-                          : <span className={`pill ${s.cis_rate === 0 ? "neutral" : "approved"}`} style={{ fontSize: 10 }} title={s.cis_rate === 0 ? "Gross payment status — no deduction taken" : `${s.cis_rate}% deducted from the labour element of their certificates`}>{cisRateLabel(s.cis_rate).replace("CIS ", "")}</span>}
+                          ? <span className="pill pending" style={{ fontSize: 10 }} title="No CIS rate set. For information only — Xero takes the deduction. Edit the subcontractor to set it.">Not set</span>
+                          : <span className={`pill ${s.cis_rate === 0 ? "neutral" : "approved"}`} style={{ fontSize: 10 }} title={s.cis_rate === 0 ? "Gross payment status — no deduction" : `${s.cis_rate}% CIS — for information; Xero takes the deduction`}>{cisRateLabel(s.cis_rate).replace("CIS ", "")}</span>}
                       </td>
                       <td className="center">
                         {s.utr
@@ -723,15 +723,15 @@ function SupplierForm({
 
       {form.is_labour_supplier && (
         <div style={{ marginTop: 12 }}>
-          <label>CIS deduction</label>
+          <label>CIS rate</label>
           <select value={form.cis_rate} onChange={(e) => setForm({ ...form, cis_rate: e.target.value })}>
             {CIS_RATES.map((r) => (
               <option key={String(r.value)} value={r.value == null ? "" : String(r.value)}>{r.label}</option>
             ))}
           </select>
           <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
-            Applied to the <b>labour element</b> of their certificates (expense lines sit outside CIS)
-            and shown as a deduction on the draft bill pushed to Xero. Verify the subbie with HMRC to
+            For information only — the rate is noted on the bill pushed to Xero, and Xero takes the
+            deduction. Verify the subbie with HMRC to
             confirm the rate{form.utr.trim() ? "" : " — their UTR is blank above"}.
           </div>
         </div>

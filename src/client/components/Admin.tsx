@@ -471,11 +471,6 @@ function XeroInvoiceConfig() {
           "Expense account pre-coded onto subcontractor labour-cert lines. Optional.",
           labour, setLabour, "expense",
         )}
-        {codeField(
-          "CIS deductions (liability)",
-          "Where the CIS deduction is posted — what you owe HMRC. Needed only for subcontractors on a 20% / 30% CIS rate.",
-          cis, setCis, "liability", "not set — bills for CIS-rated subbies are blocked until set",
-        )}
       </div>
       <p className="muted" style={{ margin: "16px 0", fontSize: 12 }}>
         Client-invoice VAT follows each project's setting (Commercials → Application terms): a project on

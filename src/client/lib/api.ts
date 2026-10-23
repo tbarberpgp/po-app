@@ -817,7 +817,7 @@ export const api = {
   undismissInvoice: (id: number) =>
     jfetch<{ ok: true; orphaned_afp_id: number | null }>(`/api/invoices/${id}/undismiss`, { method: "POST" }),
   /** Hand an invoice to the labour pipeline — it was a subbie's own application,
-   *  not a supplier bill, and only that side deducts CIS correctly. */
+   *  not a supplier bill, and only that side carries the CIS rate. */
   sendInvoiceToLabour: (id: number, input: {
     project_id: string; counterparty_supplier_id: number | null; period_end: string; notes?: string | null;
   }) => jfetch<{ ok: true; afp_id: number; app_number: number; unmatched_count: number }>(
