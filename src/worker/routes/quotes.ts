@@ -522,7 +522,7 @@ quotes.post("/upload", async (c) => {
   }
 
   const suppliers = await c.env.DB.prepare(
-    "SELECT id, name FROM suppliers ORDER BY name",
+    "SELECT id, name FROM suppliers ORDER BY name COLLATE NOCASE",
   )
     .all<{ id: number; name: string }>();
   if (suppliers.results.length === 0) {
