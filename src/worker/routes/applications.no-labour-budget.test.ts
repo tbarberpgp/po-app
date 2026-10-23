@@ -77,6 +77,21 @@ describe("carryWithoutLabourBudget", () => {
   });
 });
 
+describe("a bill's own deduction rows", () => {
+  test("a CIS row on the bill comes off nothing — the certificate still says £7,700", async () => {
+    const { db, id } = seed(null);
+    const withCis = [...LINES, { raw_line_no: 5, description: "CIS Tax @ 20%", cumulative_value: -1540 }];
+    db.prepare("UPDATE applications_for_payment SET unmatched_lines_json = ? WHERE id = ?").run(JSON.stringify(withCis), id);
+    await carryWithoutLabourBudget(d1(db), id);
+    const a = db.prepare("SELECT amount_due, unmatched_lines_json, resolved_lines_json FROM applications_for_payment WHERE id = ?").get(id) as
+      { amount_due: number; unmatched_lines_json: string | null; resolved_lines_json: string };
+    assert.equal(a.amount_due, 7700);
+    assert.equal(a.unmatched_lines_json, null, "nothing left blocking it from being sent");
+    const cis = (JSON.parse(a.resolved_lines_json) as Array<{ raw_line_no: number; resolution: { action: string } }>).find((r) => r.raw_line_no === 5);
+    assert.equal(cis?.resolution.action, "dismiss");
+  });
+});
+
 describe("labourStatesTheBill", () => {
   test("labour never has retention or VAT worked out here, whatever the row says", () => {
     assert.deepEqual(labourStatesTheBill({ direction: "incoming_labour", retention_pct: 5, vat_pct: 20 }), { retention_pct: 0, vat_pct: 0 });
