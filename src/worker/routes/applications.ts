@@ -403,6 +403,68 @@ async function autoSubmitIfReady(db: D1Database, afpId: number, actor: string): 
   return true;
 }
 
+/** A project's labour budget: the labour on its active pricing workbook. */
+async function projectLabourBudget(db: D1Database, projectId: string): Promise<number> {
+  const r = await db.prepare(
+    `SELECT COALESCE(SUM(ci.labour_total), 0) AS v
+       FROM contract_items ci JOIN material_snapshots s ON s.id = ci.snapshot_id
+      WHERE s.project_id = ? AND s.is_active = 1`,
+  ).bind(projectId).first<{ v: number }>();
+  return r?.v ?? 0;
+}
+
+/**
+ * On a job with no labour budget there is nothing for a subbie's lines to
+ * match, so every one of them sat unmatched and the certificate read £0
+ * against a bill for £7,700 (Latbuild #03 on 26006). The bill's figure is the
+ * claim: carry each priced line at what it billed — expenses as expenses, the
+ * rest as dayworks — recorded as resolutions, so each can still be undone on
+ * the certificate. Draft labour only; does nothing where a budget exists.
+ * Returns how many lines it carried.
+ */
+export async function carryWithoutLabourBudget(db: D1Database, afpId: number): Promise<number> {
+  const afp = await db.prepare(
+    `SELECT project_id, status, direction, unmatched_lines_json, resolved_lines_json
+       FROM applications_for_payment WHERE id = ?`,
+  ).bind(afpId).first<{
+    project_id: string; status: Status; direction: Direction;
+    unmatched_lines_json: string | null; resolved_lines_json: string | null;
+  }>();
+  if (!afp || afp.status !== "draft" || afp.direction !== "incoming_labour" || !afp.unmatched_lines_json) return 0;
+  if (await projectLabourBudget(db, afp.project_id) > 0) return 0;
+  const list: Array<Record<string, unknown>> = JSON.parse(afp.unmatched_lines_json);
+  const resolved: Array<Record<string, unknown>> = afp.resolved_lines_json ? JSON.parse(afp.resolved_lines_json) : [];
+  const keep: Array<Record<string, unknown>> = [];
+  const maxOrder = await db.prepare("SELECT COALESCE(MAX(display_order), 0) AS n FROM afp_lines WHERE afp_id = ?")
+    .bind(afpId).first<{ n: number }>();
+  let order = maxOrder?.n ?? 0;
+  let carried = 0;
+  for (const l of list) {
+    const v = typeof l.cumulative_value === "number" ? l.cumulative_value
+      : typeof l.this_period_value === "number" ? l.this_period_value : 0;
+    if (!v) { keep.push(l); continue; }
+    const expense = looksLikeExpenseLine(String(l.description ?? ""));
+    order += 1;
+    const ins = await db.prepare(
+      `INSERT INTO afp_lines
+         (afp_id, section, description, unit, qty, rate, contract_value,
+          percent_complete, cumulative_value, is_adhoc, display_order)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 100, ?, 1, ?) RETURNING id`,
+    ).bind(
+      afpId, expense ? EXPENSES_SECTION : DAYWORKS_SECTION, String(l.description ?? ""),
+      l.unit ? String(l.unit) : null, typeof l.qty === "number" ? l.qty : 1,
+      v, v, v, order,
+    ).first<{ id: number }>();
+    resolved.push({ ...l, resolution: { action: expense ? "add_as_expense" : "add_as_daywork", afp_line_id: ins!.id, by: "no-labour-budget" } });
+    carried += 1;
+  }
+  if (carried === 0) return 0;
+  await db.prepare("UPDATE applications_for_payment SET unmatched_lines_json = ?, resolved_lines_json = ? WHERE id = ?")
+    .bind(keep.length > 0 ? JSON.stringify(keep) : null, JSON.stringify(resolved), afpId).run();
+  await recalcTotals(db, afpId);
+  return carried;
+}
+
 /**
  * Budget vs claimed for an application's lines. Budget is the sum of the
  * non-variation (BOQ) line values; claimed is the cumulative value to date
@@ -696,7 +758,11 @@ applications.get("/_accounts-labour", async (c) => {
             a.xero_po_id, a.xero_po_number, a.xero_sync_status, a.xero_sync_error,
             a.source_file_name, a.vat_pct,
             p.code AS project_code, p.name AS project_name,
-            s.name AS supplier_name, s.cis_rate
+            s.name AS supplier_name, s.cis_rate,
+            a.unmatched_lines_json,
+            (SELECT COALESCE(SUM(ci.labour_total), 0)
+               FROM contract_items ci JOIN material_snapshots ms ON ms.id = ci.snapshot_id
+              WHERE ms.project_id = a.project_id AND ms.is_active = 1) AS labour_budget
      FROM applications_for_payment a
      JOIN projects p ON p.id = a.project_id
      LEFT JOIN suppliers s ON s.id = a.counterparty_supplier_id
@@ -709,8 +775,38 @@ applications.get("/_accounts-labour", async (c) => {
             OR (a.status = 'draft' AND EXISTS (SELECT 1 FROM invoices i WHERE i.labour_afp_id = a.id))
             OR (a.status = 'paid' AND (a.xero_po_id IS NOT NULL OR a.xero_sync_status = 'synced')))
      ORDER BY COALESCE(a.certified_at, a.submitted_at) DESC`,
-  ).all();
-  return c.json(rows.results);
+  ).all<Record<string, unknown> & { unmatched_lines_json: string | null }>();
+  // What the bill states beyond the matched lines, so a draft doesn't read £0
+  // while the subbie has billed thousands.
+  return c.json(rows.results.map(({ unmatched_lines_json, ...r }) => {
+    let unmatched_value = 0;
+    try {
+      for (const l of (unmatched_lines_json ? JSON.parse(unmatched_lines_json) : []) as Array<Record<string, unknown>>) {
+        const v = typeof l.cumulative_value === "number" ? l.cumulative_value
+          : typeof l.this_period_value === "number" ? l.this_period_value : 0;
+        unmatched_value += v;
+      }
+    } catch { /* unreadable list: show what's matched */ }
+    return { ...r, unmatched_value };
+  }));
+});
+
+/** Carry a draft's unmatched lines at their billed value when its job has no
+ *  labour budget — for certificates read before that happened on arrival. */
+applications.post("/:id/carry-as-billed", async (c) => {
+  const denied = requirePermission(c, "commercial.edit");
+  if (denied) return denied;
+  const id = Number(c.req.param("id"));
+  const afp = await c.env.DB.prepare("SELECT project_id, status, direction FROM applications_for_payment WHERE id = ?")
+    .bind(id).first<{ project_id: string; status: Status; direction: Direction }>();
+  if (!afp) return c.json({ error: "not found" }, 404);
+  if (afp.direction !== "incoming_labour" || afp.status !== "draft") return c.json({ error: "Only a draft labour certificate can be carried as billed." }, 409);
+  if (await projectLabourBudget(c.env.DB, afp.project_id) > 0) {
+    return c.json({ error: "This job has a labour budget — match the lines on the certificate instead." }, 409);
+  }
+  const carried = await carryWithoutLabourBudget(c.env.DB, id);
+  const sent = await autoSubmitIfReady(c.env.DB, id, c.get("userEmail"));
+  return c.json({ ok: true, carried, status: sent ? "submitted" : "draft" });
 });
 
 /** List AfPs awaiting approval (used by the inbox). Registered before "/:id"
@@ -2307,6 +2403,8 @@ export async function createAfpFromLines(env: Env, args: {
     ).bind(JSON.stringify(unmatched), afpId).run();
   }
   await recalcTotals(env.DB, afpId);
+
+  if (isLabour) await carryWithoutLabourBudget(env.DB, afpId);
 
   // Received applications don't need director approval — if there's nothing to
   // reconcile (and, for labour, a subbie is known) it's "sent" immediately.

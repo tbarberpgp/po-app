@@ -489,7 +489,7 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
                             </div>
                             <span className={`istatus ${st}`}>{a.status === "draft" ? "Needs review" : t === "pushed" && a.status === "paid" ? "Paid" : isPushedUncertified(a) ? PUSHED_UNCERTIFIED_LABEL : t === "pushed" ? "In Xero" : LABOUR_LABEL[t]}</span>
                           </div>
-                          <div className="iamt">{money(a.certified_amount ?? a.amount_due)}</div>
+                          <div className="iamt">{money(billedNet(a))}</div>
                         </button>
                       );
                     })}</>
@@ -577,6 +577,12 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
  *  mailbox, not yet certified) → certified, awaiting approval → approved, ready
  *  to push → pushed. Certifying IS the first signature here: there is no
  *  separate commit step between it and the approver. */
+/** What the subbie billed: the certificate's figure plus anything still on
+ *  lines that matched nothing. A draft otherwise reads £0 against a real bill. */
+function billedNet(a: AccountsLabourCert): number {
+  return (a.certified_amount ?? a.amount_due ?? 0) + (a.unmatched_value ?? 0);
+}
+
 function labourTab(a: AccountsLabourCert): Tab {
   if (isCertInXero(a)) return "pushed";
   if (isCertReadyToPush(a)) return "ready";
@@ -671,6 +677,7 @@ function LabourCertDetail({ cert: a, canEdit, canRelease, onChanged }: {
   const [note, setNote] = useState("");
   const stage = labourTab(a);
   const net = a.certified_amount ?? a.amount_due ?? 0;
+  const noBudget = (a.labour_budget ?? 0) <= 0;
   const keyedByHand = isCertInXero(a) && !a.xero_po_id;
   /** A bill typed straight into Xero before labour ran through here. Recording
    *  it takes the certificate out of the queues so it can't be pushed twice. */
@@ -718,7 +725,11 @@ function LabourCertDetail({ cert: a, canEdit, canRelease, onChanged }: {
       <div>
         {row("Project", `${a.project_code} ${a.project_name}`)}
         {row("Period ending", a.period_end ?? "—")}
-        {row(a.certified_at ? "Certified (net)" : "Claimed (net)", <b>{money(net)}</b>)}
+        {row(a.certified_at ? "Certified (net)" : "Claimed (net)", <>
+          <b>{money(billedNet(a))}</b>
+          {a.unmatched_value > 0 && <span className="muted"> — {money(a.unmatched_value)} of it not on a line yet</span>}
+        </>)}
+        {noBudget && row("Note", `${a.project_code} ${a.project_name} has no labour budget — the bill's lines are carried at what they billed.`)}
         {a.cis_rate != null && a.cis_rate > 0 && row("CIS", `${a.cis_rate}% — for information; Xero takes the deduction`)}
         {a.submitted_at && row("Submitted", a.submitted_at.slice(0, 10))}
         {a.certified_at && row("Certified", a.certified_by === "xero"
@@ -737,7 +748,17 @@ function LabourCertDetail({ cert: a, canEdit, canRelease, onChanged }: {
             Some of its lines didn't match the labour budget, or it has no subcontractor yet. Sort them on the
             certificate — it's sent for certifying as soon as the last one is done.
           </div>
-          {canEdit && <Link className="btn accent" style={{ justifySelf: "start" }} to={`/applications/${a.id}?from=accounts`}>Open to review</Link>}
+          {canEdit && (
+            <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+              {noBudget && a.unmatched_value > 0 && (
+                <button className="accent" disabled={busy} onClick={() => run(() => api.carryAfpAsBilled(a.id))}
+                  title="Put every line on at what the bill says — this job has no labour budget to match them to">
+                  Carry as billed ({money(a.unmatched_value)})
+                </button>
+              )}
+              <Link className={`btn ${noBudget && a.unmatched_value > 0 ? "ghost" : "accent"}`} to={`/applications/${a.id}?from=accounts`}>Open to review</Link>
+            </div>
+          )}
         </div>
       )}
       {stage === "inbox" && a.status !== "draft" && (

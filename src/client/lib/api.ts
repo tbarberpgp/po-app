@@ -748,6 +748,8 @@ export const api = {
     ),
   /** Push a certified labour certificate to Xero as a draft PO to the subbie. */
   /** Fast-track certify: push a submitted labour claim to Xero uncertified. */
+  carryAfpAsBilled: (id: number) =>
+    jfetch<{ ok: true; carried: number; status: string }>(`/api/applications/${id}/carry-as-billed`, { method: "POST" }),
   xeroFastTrackAfp: (id: number) =>
     jfetch<{ ok: true; xero_po_id: string; xero_po_number: string }>(
       `/api/xero/fast-track-afp/${id}`,
@@ -1864,4 +1866,8 @@ export type AccountsLabourCert = {
   xero_po_id: string | null; xero_po_number: string | null; xero_sync_status: string | null; xero_sync_error: string | null;
   source_file_name: string | null; vat_pct: number | null;
   project_code: string; project_name: string; supplier_name: string | null; cis_rate: number | null;
+  /** Billed on lines that matched nothing yet — not in amount_due. */
+  unmatched_value: number;
+  /** Labour on the job's active pricing workbook; 0 = none. */
+  labour_budget: number;
 };
