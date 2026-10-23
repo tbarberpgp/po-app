@@ -998,6 +998,10 @@ export type ApplicationListItem = {
   status: AfpStatus;
   counterparty_supplier_id: number | null;
   supplier_name: string | null;
+  /** Set once a labour bill is in Xero — with status 'submitted' it was
+   *  fast-tracked ("Pushed without certified"). */
+  xero_po_id?: string | null;
+  xero_sync_status?: string | null;
   total_invoice: number | null;
   certified_amount: number | null;
   amount_due: number | null;
