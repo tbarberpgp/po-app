@@ -16,6 +16,7 @@ import type { AfpCisPreview } from "../../shared/types";
 import { buildAfpHistory, type AfpAuditRow, type AfpHistoryRow } from "../../shared/afp-history";
 import { isSandboxId } from "../sandbox";
 import { EXPENSES_SECTION, isExpenseSection, looksLikeExpenseLine } from "../../shared/afp-expenses";
+import { isLabourDeduction } from "../../shared/labour-deductions";
 import { DAYWORKS_SECTION, isDayworkSection, looksLikeDayworkLine } from "../../shared/afp-dayworks";
 import { normaliseAttentionNote } from "../../shared/afp-attention";
 import { PRELIM_CLAIM } from "../labour-expended";
@@ -465,6 +466,13 @@ export async function carryWithoutLabourBudget(db: D1Database, afpId: number): P
     const v = typeof l.cumulative_value === "number" ? l.cumulative_value
       : typeof l.this_period_value === "number" ? l.this_period_value : 0;
     if (!v) { keep.push(l); continue; }
+    // A deduction row is the bill's own CIS/retention/discount line. It's Xero's
+    // to apply, so it is set aside rather than taken off (or added to) the claim.
+    if (isLabourDeduction(l)) {
+      resolved.push({ ...l, resolution: { action: "dismiss", by: "deduction-is-xeros" } });
+      carried += 1;
+      continue;
+    }
     const expense = looksLikeExpenseLine(String(l.description ?? ""));
     order += 1;
     const ins = await db.prepare(
@@ -1402,6 +1410,8 @@ For each line, return:
 
 You only need to populate the value fields you can find — leave the others null.
 Skip headers, sub-totals, retention rows, VAT rows, payment-summary rows.
+Also skip every deduction: CIS tax, retention, discounts, contra-charges, "less …"
+rows. Deductions are applied elsewhere; return only the work billed.
 Numbers must be plain — no £ symbol, no commas.`;
 
   const response = await client.messages.create({
@@ -2128,7 +2138,11 @@ export async function createAfpFromLines(env: Env, args: {
   ).bind(args.projectId).first<{ id: number }>();
   if (!snap) throw new Error("upload a pricing workbook first");
 
-  const extracted = args.extracted;
+  // A labour bill's own deduction rows (CIS, retention, VAT, discounts) are not
+  // work, and nothing is taken off a subbie's bill here — Xero does that.
+  const extracted = args.direction === "incoming_labour"
+    ? args.extracted.filter((l) => !isLabourDeduction(l))
+    : args.extracted;
   // Variation rows (from the workbook's Variations tab) are extra work beyond
   // the BOQ — they're added as ad-hoc lines, not matched to contract items.
   const variationLines = extracted.filter((l) => l.is_variation);
@@ -3625,8 +3639,8 @@ applications.post("/:id/unmatched/:rawLineNo/resolve", async (c) => {
   }>();
 
   const afp = await c.env.DB.prepare(
-    "SELECT id, status, unmatched_lines_json, resolved_lines_json FROM applications_for_payment WHERE id = ?",
-  ).bind(id).first<{ id: number; status: Status; unmatched_lines_json: string | null; resolved_lines_json: string | null }>();
+    "SELECT id, status, direction, unmatched_lines_json, resolved_lines_json FROM applications_for_payment WHERE id = ?",
+  ).bind(id).first<{ id: number; status: Status; direction: Direction; unmatched_lines_json: string | null; resolved_lines_json: string | null }>();
   if (!afp) return c.json({ error: "not found" }, 404);
   if (afp.status !== "draft") return c.json({ error: "AfP not editable" }, 409);
 
@@ -3635,6 +3649,11 @@ applications.post("/:id/unmatched/:rawLineNo/resolve", async (c) => {
   const idx = list.findIndex((l) => Number(l.raw_line_no) === rawLineNo);
   if (idx < 0) return c.json({ error: "unmatched line not found" }, 404);
   const line = list[idx];
+  // Nothing comes off a subbie's bill here: CIS, retention and the rest are
+  // Xero's. A deduction row can only be dismissed, never put on the claim.
+  if (afp.direction === "incoming_labour" && body.action !== "dismiss" && isLabourDeduction(line)) {
+    return c.json({ error: "That's a deduction (CIS, retention, VAT or similar). Deductions are taken in Xero, not here — dismiss this line." }, 409);
+  }
 
   // What we record so the action can be reversed by the undo endpoint.
   let resolution: Record<string, unknown>;
