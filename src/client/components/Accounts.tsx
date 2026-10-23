@@ -167,14 +167,16 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
     api.listInboundApplications().then((r) => setTray(r.filter((i) => i.direction === "incoming_labour"))).catch(() => {});
   }
 
-  /** Hand the invoice to the labour pipeline. It leaves this queue for the
-   *  Dismissed tab carrying the AfP it became, so the trail stays readable. */
+  /** Hand the invoice to the labour pipeline. It becomes a labour certificate,
+   *  so the screen follows it to Inbox → Labour certificates with it open —
+   *  not to Dismissed, which is for things nobody needs to act on. */
   async function sendToLabour(id: number, input: { project_id: string; counterparty_supplier_id: number | null; period_end: string }) {
     setBusy(true); setErr(null); setInfo(null);
     try {
       const r = await api.sendInvoiceToLabour(id, input);
       load();
       setSelId(null);
+      setKind("labour"); setTab("inbox"); setSelLabourId(r.afp_id);
       setInfo(r.unmatched_count
         ? `Sent to labour as application ${r.app_number} — ${r.unmatched_count} line(s) need matching there.`
         : `Sent to labour as application ${r.app_number}.`);
@@ -235,7 +237,9 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
       else if (tab === "held") { if (!isAwaitingApproval(r)) return false; }
       else if (tab === "ready") { if (!isReadyToPush(r)) return false; }
       else if (tab === "pushed") { if (r.status !== "pushed") return false; }
-      else if (tab === "dismissed") { if (r.status !== "dismissed") return false; }
+      // One sent to labour is stored as dismissed, but it wasn't set aside: it
+      // lives on as a labour certificate, and that's where it's shown.
+      else if (tab === "dismissed") { if (r.status !== "dismissed" || r.labour_afp_id != null) return false; }
       // Inbox is what still needs coding, matching or approving. A held invoice
       // has had all three done to it and is waiting on someone else, so it
       // moves to Held rather than sitting in the queue looking outstanding.
@@ -719,8 +723,8 @@ function LabourCertDetail({ cert: a, canEdit, canRelease, onChanged }: {
       {stage === "inbox" && a.status === "draft" && (
         <div style={{ display: "grid", gap: 8 }}>
           <div className="muted" style={{ fontSize: 12.5, lineHeight: 1.5 }}>
-            In by email, but some of its lines didn't match the labour budget. Match them on the certificate —
-            it's sent for certifying as soon as the last one is done.
+            Some of its lines didn't match the labour budget, or it has no subcontractor yet. Sort them on the
+            certificate — it's sent for certifying as soon as the last one is done.
           </div>
           {canEdit && <Link className="btn accent" style={{ justifySelf: "start" }} to={`/applications/${a.id}?from=accounts`}>Open to review</Link>}
         </div>
