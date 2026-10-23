@@ -488,7 +488,7 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
                               {a.cis_rate != null && a.cis_rate > 0 && <span>CIS {a.cis_rate}%</span>}
                               {a.xero_sync_status === "failed" && <span style={{ color: "var(--danger)", fontWeight: 600 }} title={a.xero_sync_error ?? ""}>⚠ push failed</span>}
                             </div>
-                            <span className={`istatus ${st}`}>{a.status === "draft" ? "Needs review" : t === "pushed" && a.status === "paid" ? "Paid" : a.fast_tracked ? "Fast-track certified" : t === "pushed" ? "In Xero" : LABOUR_LABEL[t]}</span>
+                            <span className={`istatus ${st}`}>{a.status === "draft" ? "Needs review" : t === "pushed" && a.status === "paid" ? "Paid" : t === "pushed" ? "Pushed" : LABOUR_LABEL[t]}</span>
                           </div>
                           <div className="iamt">{money(billedNet(a))}</div>
                         </button>
@@ -732,7 +732,7 @@ function LabourCertDetail({ cert: a, canEdit, canRelease, onChanged }: {
         {noBudget && row("Note", `${a.project_code} ${a.project_name} has no labour budget — the bill's lines are carried at what they billed.`)}
         {a.cis_rate != null && a.cis_rate > 0 && row("CIS", `${a.cis_rate}% — for information; Xero takes the deduction`)}
         {a.submitted_at && row("Submitted", a.submitted_at.slice(0, 10))}
-        {a.certified_at && row(a.fast_tracked ? "Fast-track certified" : "Certified", a.certified_by === "xero"
+        {a.certified_at && row("Certified", a.certified_by === "xero"
           ? `matched to its Xero bill on ${a.certified_at.slice(0, 10)}`
           : `${a.certified_by ?? "—"} on ${a.certified_at.slice(0, 10)}`)}
         {/* An approval from Accounts fills in the commit with the same stamp;
