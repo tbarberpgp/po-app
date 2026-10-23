@@ -747,6 +747,12 @@ export const api = {
       { method: "POST" },
     ),
   /** Push a certified labour certificate to Xero as a draft PO to the subbie. */
+  /** Fast-track certify: push a submitted labour claim to Xero uncertified. */
+  xeroFastTrackAfp: (id: number) =>
+    jfetch<{ ok: true; xero_po_id: string; xero_po_number: string }>(
+      `/api/xero/fast-track-afp/${id}`,
+      { method: "POST" },
+    ),
   xeroPushAfp: (id: number) =>
     jfetch<{ ok: true; xero_po_id: string; xero_po_number: string }>(
       `/api/xero/push-afp/${id}`,

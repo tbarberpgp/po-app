@@ -11,7 +11,7 @@ import { Topbar } from "./Shell";
 import type { CurrentUser, InboundApplication, Invoice, InvoiceMatch, InvoiceMatchLine, MatchSummary, Project, Supplier } from "../../shared/types";
 import { NON_GOODS_LINE_IDS, PAYMENT_SCHEDULE_LINE_ID, SERVICE_CHARGE_LINE_ID } from "../../shared/line-match";
 import { poStatusHint, poDeliveryLabel } from "../../shared/po-delivery-status";
-import { isAwaitingApproval, isReadyToPush, isCertReadyToPush, isCertInXero } from "../../shared/payment-release";
+import { isAwaitingApproval, isReadyToPush, isCertReadyToPush, isCertInXero, isPushedUncertified, PUSHED_UNCERTIFIED_LABEL } from "../../shared/payment-release";
 
 // Amounts render in the invoice's OWN currency — a $ or € invoice shown with a
 // £ sign misreports what we owe. Falls back to sterling when unknown.
@@ -482,7 +482,7 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
                               {a.cis_rate != null && a.cis_rate > 0 && <span>CIS {a.cis_rate}%</span>}
                               {a.xero_sync_status === "failed" && <span style={{ color: "var(--danger)", fontWeight: 600 }} title={a.xero_sync_error ?? ""}>⚠ push failed</span>}
                             </div>
-                            <span className={`istatus ${st}`}>{a.status === "draft" ? "Needs review" : t === "pushed" && a.status === "paid" ? "Paid" : t === "pushed" ? "In Xero" : LABOUR_LABEL[t]}</span>
+                            <span className={`istatus ${st}`}>{a.status === "draft" ? "Needs review" : t === "pushed" && a.status === "paid" ? "Paid" : isPushedUncertified(a) ? PUSHED_UNCERTIFIED_LABEL : t === "pushed" ? "In Xero" : LABOUR_LABEL[t]}</span>
                           </div>
                           <div className="iamt">{money(a.certified_amount ?? a.amount_due)}</div>
                         </button>
@@ -682,6 +682,12 @@ function LabourCertDetail({ cert: a, canEdit, canRelease, onChanged }: {
     if (!reason.trim()) { setErr("Say why it's being uncertified."); return; }
     run(() => api.uncertifyAfp(a.id, reason.trim()));
   }
+  /** Straight to Xero at what was claimed — no certify, no approval. It
+   *  stays uncertified ("Pushed without certified") until someone certifies it. */
+  function fastTrack() {
+    if (!confirm(`Fast-track certify ${a.supplier_name ?? "this claim"} #${a.app_number}?\n\nIt goes to Xero now as a draft bill for ${money(net)} (what was claimed), without certifying or approving it. It will read "${PUSHED_UNCERTIFIED_LABEL}" until someone certifies it.`)) return;
+    run(() => api.xeroFastTrackAfp(a.id));
+  }
   async function run(f: () => Promise<unknown>) {
     setBusy(true); setErr(null);
     try { await f(); onChanged(); }
@@ -734,7 +740,24 @@ function LabourCertDetail({ cert: a, canEdit, canRelease, onChanged }: {
           <div className="muted" style={{ fontSize: 12.5, lineHeight: 1.5 }}>
             Waiting to be certified. Certify it on the certificate — it then moves to Awaiting approval.
           </div>
-          {canEdit && <Link className="btn accent" style={{ justifySelf: "start" }} to={`/applications/${a.id}?from=accounts`}>Open to certify</Link>}
+          {canEdit && (
+            <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+              <Link className="btn accent" to={`/applications/${a.id}?from=accounts`}>Open to certify</Link>
+              <button className="ghost" disabled={busy} onClick={fastTrack}
+                title="Push to Xero now at the claimed value, without certifying or approving">
+                {a.xero_sync_status === "failed" ? "Retry fast-track certify" : "Fast-track certify"}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+      {isPushedUncertified(a) && (
+        <div style={{ display: "grid", gap: 8 }}>
+          <div className="muted" style={{ fontSize: 12.5, lineHeight: 1.5 }}>
+            <b>{PUSHED_UNCERTIFIED_LABEL}.</b> It went to Xero at the claimed value without being certified or approved.
+            Certify it on the certificate when you can — if the certified value differs, change the bill in Xero to match.
+          </div>
+          {canEdit && <Link className="btn ghost" style={{ justifySelf: "start" }} to={`/applications/${a.id}?from=accounts`}>Open to certify</Link>}
         </div>
       )}
       {stage === "held" && (canRelease

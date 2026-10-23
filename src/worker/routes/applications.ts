@@ -542,7 +542,7 @@ applications.get("/", async (c) => {
     `SELECT a.id, a.project_id, a.direction, a.app_number, a.period_end, a.status,
             a.counterparty_supplier_id, a.total_invoice, a.certified_amount,
             a.amount_due, a.cumulative_value, a.expenses_amount, a.created_at, a.created_by,
-            a.attention_note,
+            a.attention_note, a.xero_po_id, a.xero_sync_status,
             CASE WHEN a.unmatched_lines_json IS NOT NULL AND a.unmatched_lines_json != ''
                  THEN 1 ELSE 0 END AS has_unmatched,
             p.code AS project_code, p.name AS project_name,
