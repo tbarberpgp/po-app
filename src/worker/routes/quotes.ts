@@ -521,8 +521,10 @@ quotes.post("/upload", async (c) => {
     if (!p) return c.json({ error: "project not found" }, 404);
   }
 
+  // Hidden suppliers are names we don't buy from (see migration 0127), so they
+  // shouldn't be offered as the source of a quote.
   const suppliers = await c.env.DB.prepare(
-    "SELECT id, name FROM suppliers ORDER BY name",
+    "SELECT id, name FROM suppliers WHERE hidden = 0 ORDER BY name",
   )
     .all<{ id: number; name: string }>();
   if (suppliers.results.length === 0) {
