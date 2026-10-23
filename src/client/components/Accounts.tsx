@@ -708,7 +708,7 @@ function LabourCertDetail({ cert: a, canEdit, canRelease, onChanged }: {
         {row("Project", `${a.project_code} ${a.project_name}`)}
         {row("Period ending", a.period_end ?? "—")}
         {row(a.certified_at ? "Certified (net)" : "Claimed (net)", <b>{money(net)}</b>)}
-        {a.cis_rate != null && a.cis_rate > 0 && row("CIS", `${a.cis_rate}% — deducted on the bill (labour element only; see the certificate)`)}
+        {a.cis_rate != null && a.cis_rate > 0 && row("CIS", `${a.cis_rate}% — for information; Xero takes the deduction`)}
         {a.submitted_at && row("Submitted", a.submitted_at.slice(0, 10))}
         {a.certified_at && row("Certified", a.certified_by === "xero"
           ? `matched to its Xero bill on ${a.certified_at.slice(0, 10)}`
@@ -763,7 +763,7 @@ function LabourCertDetail({ cert: a, canEdit, canRelease, onChanged }: {
         </button>
       )}
       <div className="muted" style={{ fontSize: 11.5, lineHeight: 1.5 }}>
-        Pushes as a draft bill with the CIS deduction and the subcontractor's invoice attached.
+        Pushes as a draft bill at the full value with the subcontractor's invoice attached; Xero takes any CIS deduction.
         Don't key labour bills into Xero by hand — they'd be paid twice. The push refuses an invoice
         number the subcontractor already has a bill for.
       </div>

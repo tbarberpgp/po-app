@@ -712,17 +712,15 @@ function LabourPayApproval({ afp, cis, certified, claimed, budget, canEdit, canR
       <div className="card-bd">
         <div className="eyebrow" style={{ marginBottom: 8 }}>Commit for approval</div>
         <div className="row" style={{ gap: 24, flexWrap: "wrap", marginBottom: 12 }}>
-          {metric("Certified (to pay)", cis ? fmtMoney(cis.net_payable) : fmtMoney(certified))}
-          {cis && metric(`CIS @ ${cis.rate}%`, `− ${fmtMoney(cis.deduction)}`, "#b45309")}
+          {metric("Certified", fmtMoney(certified))}
+          {cis && metric("CIS", `${cis.rate}%`)}
           {metric("Claimed", fmtMoney(claimed))}
           {metric("Budget", fmtMoney(budget), overBudget ? "#b45309" : undefined)}
         </div>
         {cis && (
           <div className="muted" style={{ fontSize: 12, marginBottom: 12, lineHeight: 1.6 }}>
-            {cis.supplier_name} is on a <b>{cis.rate}% CIS</b> rate. Certified {fmtMoney(cis.certified_net)}
-            {cis.labour_base < cis.certified_net - 0.005 && <> · labour element {fmtMoney(cis.labour_base)} (expenses of {fmtMoney(cis.certified_net - cis.labour_base)} sit outside CIS)</>}
-            {" "}· deduction {fmtMoney(cis.deduction)} · <b>{fmtMoney(cis.net_payable)} payable</b>. The draft bill carries the
-            deduction as a separate line; VAT (if any) is still calculated on the full labour value.
+            {cis.supplier_name} is on a <b>{cis.rate}% CIS</b> rate. The bill goes to Xero at the full certified
+            value — Xero works out and takes the CIS deduction.
           </div>
         )}
         {err && <div className="flash error" style={{ marginBottom: 8 }}>{err}</div>}
@@ -1089,9 +1087,8 @@ function CertifyPanel({
       {cisRate != null && cisRate > 0 && (
         <div className="card-bd" style={{ borderTop: "1px solid var(--line)" }}>
           <div className="muted" style={{ fontSize: 12.5 }}>
-            A <b>{cisRate}%</b> CIS deduction applies to the labour element of this certificate. The exact
-            deduction and net payable are shown once it's certified — expenses sit outside CIS, so the base
-            is worked out server-side rather than guessed at here.
+            This subcontractor is on a <b>{cisRate}%</b> CIS rate. Certify the full value — Xero works out
+            and takes the CIS deduction, not the app.
           </div>
         </div>
       )}

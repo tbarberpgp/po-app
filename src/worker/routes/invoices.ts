@@ -919,9 +919,8 @@ invoices.post("/:id/undismiss", async (c) => {
  *  Subcontractors bill on their own template — a day-work sheet with CIS
  *  deducted from the labour element — and those arrive in the Accounts inbox
  *  looking like any other supplier invoice. Paid as an ordinary bill the CIS
- *  deduction is lost: `invoices` has no field for it. The labour side already
- *  works it out from the supplier's cis_rate, excluding expenses, and pushes
- *  the right thing to Xero.
+ *  rate is lost: `invoices` has no field for it. The labour side carries the
+ *  supplier's cis_rate onto the bill, and Xero takes the deduction.
  *
  *  So this re-runs the SAME stored file through processLabourAppUpload — the
  *  entry point the labour mailbox uses — and dismisses the invoice, recording

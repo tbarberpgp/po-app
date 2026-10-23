@@ -494,37 +494,6 @@ xero.post("/push-po/:id", async (c) => {
   }
 });
 
-/** This period's CIS-liable labour for a certificate: certified net less this
- *  period's expense movement (expense-section lines sit outside CIS). Exported
- *  so the certificate view shows the same deduction the Xero bill will carry. */
-export async function cisLabourBase(
-  env: Env,
-  afp: { id: number; project_id: string; app_number: number; counterparty_supplier_id: number | null },
-  net: number,
-): Promise<number> {
-  const certExpr = "COALESCE(contract_value,0) * COALESCE(certified_percent, percent_complete, 0) / 100.0";
-  const expenseWhere = "(lower(COALESCE(section,'')) LIKE '%expense%' OR category = 'expenses')";
-  try {
-    const cur = await env.DB.prepare(
-      `SELECT COALESCE(SUM(${certExpr}),0) AS v FROM afp_lines WHERE afp_id = ? AND ${expenseWhere}`,
-    ).bind(afp.id).first<{ v: number }>();
-    const prev = await env.DB.prepare(
-      `SELECT COALESCE(SUM(${certExpr}),0) AS v FROM afp_lines
-        WHERE ${expenseWhere} AND afp_id = (
-          SELECT id FROM applications_for_payment
-           WHERE project_id = ? AND direction = 'incoming_labour'
-             AND counterparty_supplier_id IS ? AND app_number < ?
-             AND status IN ('certified','paid')
-           ORDER BY app_number DESC LIMIT 1)`,
-    ).bind(afp.project_id, afp.counterparty_supplier_id, afp.app_number).first<{ v: number }>();
-    const expensesThisPeriod = Math.max(0, (cur?.v ?? 0) - (prev?.v ?? 0));
-    return Math.max(0, net - expensesThisPeriod);
-  } catch {
-    // Lines unavailable — deduct on the full net rather than skipping CIS.
-    return net;
-  }
-}
-
 /** Tie labour certificates to the bills already in Xero for them (keyed by
  *  hand): certified at that value, paid once Xero has paid it. `?dry=1`
  *  reports without writing. Also runs hourly from the cron. */
@@ -1123,20 +1092,12 @@ export async function pushAfpToXero(env: Env, afpId: number): Promise<
     if (!labourAccount) {
       throw new Error("Set a Xero labour account code in Admin → Xero before pushing labour bills so the draft bill is coded to an expense account.");
     }
-    // CIS: the subcontractor's deduction rate applies to the labour element of
-    // this period's certified net (expense lines are outside CIS). Shown as a
-    // negative line so the draft bill nets to the amount actually payable.
-    const cisRate = supplierRow.cis_rate != null && supplierRow.cis_rate > 0 ? supplierRow.cis_rate : 0;
-    let cisAmount = 0;
-    let cisAccount: string | null = null;
-    if (cisRate > 0) {
-      cisAccount = accountCodeOnly(await settingValue(env.DB, "xero_cis_account_code"));
-      if (!cisAccount) {
-        throw new Error(`${supplierRow.name} has a ${cisRate}% CIS rate — set a Xero CIS deduction account code in Admin → Xero before pushing their bills.`);
-      }
-      const base = await cisLabourBase(env, afp, net);
-      cisAmount = Math.round(base * cisRate) / 100;
-    }
+    // CIS is Xero's job, not ours (user's rule, 2026-10-23): the bill goes in
+    // at the full certified value and Xero works out and posts the deduction
+    // from the contact's CIS settings. The app only says which rate the subbie
+    // is on, as information on the line — deducting here as well would take
+    // it twice.
+    const cisNote = supplierRow.cis_rate != null ? ` — CIS ${supplierRow.cis_rate}%` : "";
 
     // The subbie's own invoice number, as read from their document. It goes on
     // the bill as its number (what Xero shows for a payable), and it is how a
@@ -1171,21 +1132,12 @@ export async function pushAfpToXero(env: Env, afpId: number): Promise<
       LineAmountTypes: "Exclusive",
       LineItems: [
         {
-          Description: `Labour certificate #${afp.app_number} — ${afp.project_code} ${afp.project_name} — period ending ${afp.period_end}`,
+          Description: `Labour certificate #${afp.app_number} — ${afp.project_code} ${afp.project_name} — period ending ${afp.period_end}${cisNote}`,
           Quantity: 1,
           UnitAmount: net,
           AccountCode: labourAccount,
           TaxType: afp.vat_pct === 0 ? "NONE" : "INPUT2",
         },
-        // CIS is deducted from the payment, not the VATable value — VAT (if
-        // any) stays calculated on the full labour line above.
-        ...(cisAmount > 0 ? [{
-          Description: `CIS deduction @ ${cisRate}% (labour element)`,
-          Quantity: 1,
-          UnitAmount: -cisAmount,
-          AccountCode: cisAccount!,
-          TaxType: "NONE",
-        }] : []),
       ],
     };
 

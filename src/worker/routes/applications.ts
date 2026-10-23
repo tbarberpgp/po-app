@@ -11,7 +11,6 @@ import type { Env, Variables } from "../env";
 import { hasDirectorAuthority, isReleaseApprover, requirePermission } from "../auth";
 import { learnAliases, aliasMap, normText } from "../matchMemory";
 import { findSupplier } from "./invoices";
-import { cisLabourBase } from "./xero";
 import { emailAfpCertified } from "../notify";
 import type { AfpCisPreview } from "../../shared/types";
 import { isSandboxId } from "../sandbox";
@@ -941,9 +940,9 @@ applications.get("/:id", async (c) => {
     l.previously_certified = l.contract_item_id != null ? (prevByItem.get(Number(l.contract_item_id)) ?? 0) : 0;
   }
 
-  // CIS preview for a labour certificate — the exact deduction the Xero bill
-  // will carry (same helper the push uses, so the two can't drift). Only for a
-  // subbie on a >0% rate; best-effort, never fails the certificate view.
+  // The subbie's CIS rate, for information only — Xero works out and takes
+  // the deduction, the app doesn't. Only for a subbie on a >0% rate;
+  // best-effort, never fails the certificate view.
   let cis: AfpCisPreview | null = null;
   const row = afp as AfpRow & { certified_amount: number | null; amount_due: number | null };
   if (row.direction === "incoming_labour" && row.counterparty_supplier_id != null) {
@@ -951,18 +950,8 @@ applications.get("/:id", async (c) => {
       const sup = await c.env.DB.prepare("SELECT name, cis_rate FROM suppliers WHERE id = ?")
         .bind(row.counterparty_supplier_id)
         .first<{ name: string; cis_rate: number | null }>();
-      const net = row.certified_amount ?? row.amount_due ?? 0;
-      if (sup?.cis_rate != null && sup.cis_rate > 0 && net > 0) {
-        const base = await cisLabourBase(c.env, row, net);
-        const deduction = Math.round(base * sup.cis_rate) / 100;
-        cis = {
-          supplier_name: sup.name,
-          rate: sup.cis_rate,
-          certified_net: net,
-          labour_base: base,
-          deduction,
-          net_payable: net - deduction,
-        };
+      if (sup?.cis_rate != null && sup.cis_rate > 0) {
+        cis = { supplier_name: sup.name, rate: sup.cis_rate };
       }
     } catch (e) { console.warn("CIS preview skipped:", e instanceof Error ? e.message : e); }
   }
