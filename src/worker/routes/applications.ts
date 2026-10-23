@@ -227,6 +227,20 @@ export type PriorRow = {
  * AfP is being moved submitted → certified (the certified figures returned by
  * the client overwrite the snapshot, then freeze again).
  */
+/**
+ * The user's rule (2026-10-23): a labour certificate says what the subbie's bill
+ * says. "We don't do anything about VAT or anything — it's Xero's job." Latbuild
+ * billed £7,700 and the certificate read £7,315, because the project's 5% labour
+ * retention was taken off here; Asgard's 025 went to Xero £139.70 short the same
+ * way. So for labour, no retention and no VAT are worked out by this app.
+ */
+export function labourStatesTheBill<T extends { direction: string; retention_pct: number | null; vat_pct: number | null }>(
+  afp: T,
+): { retention_pct: number; vat_pct: number } {
+  if (afp.direction === "incoming_labour") return { retention_pct: 0, vat_pct: 0 };
+  return { retention_pct: afp.retention_pct ?? 0, vat_pct: afp.vat_pct ?? 0 };
+}
+
 async function recalcTotals(
   db: D1Database,
   afpId: number,
@@ -336,9 +350,12 @@ async function recalcTotals(
   // the subcontractor's position before this application, which the screen
   // shows and the over-budget gate needs. It just isn't subtracted.
   const thisPeriodNet = r2(periodNet({ cumulative, previousCertified, expensesAmount, dayworksAmount, basis: afp.claim_basis }));
-  const retentionAmount = r2(thisPeriodNet * (afp.retention_pct / 100));
+  // Labour states the bill's net and nothing else (labourStatesTheBill), so a
+  // retention or VAT rate left on an older labour row is not applied.
+  const { retention_pct: retPct, vat_pct: vatPct } = labourStatesTheBill(afp);
+  const retentionAmount = r2(thisPeriodNet * (retPct / 100));
   const amountDue = r2(thisPeriodNet - retentionAmount);
-  const vatAmount = r2(amountDue * (afp.vat_pct / 100));
+  const vatAmount = r2(amountDue * (vatPct / 100));
   const totalInvoice = r2(amountDue + vatAmount);
 
   await db
@@ -347,7 +364,11 @@ async function recalcTotals(
        SET contract_sum = ?, cumulative_value = ?, previous_certified = ?,
            this_period_net = ?, retention_amount = ?, amount_due = ?,
            vat_amount = ?, total_invoice = ?, expenses_amount = ?,
-           dayworks_amount = ?
+           dayworks_amount = ?,
+           -- Stored to match what was applied, so no screen shows a rate
+           -- that isn't being used.
+           retention_pct = CASE WHEN direction = 'incoming_labour' THEN 0 ELSE retention_pct END,
+           vat_pct = CASE WHEN direction = 'incoming_labour' THEN 0 ELSE vat_pct END
        WHERE id = ?`,
     )
     .bind(
@@ -562,12 +583,9 @@ type ProjectTerms = {
 /** Pick the VAT + retention to snapshot onto a new AfP, by direction. Falls
  *  back to the legacy single retention_pct, then to sensible defaults. */
 function termsFor(direction: Direction, p: ProjectTerms): { vat_pct: number; retention_pct: number } {
-  if (direction === "incoming_labour") {
-    return {
-      vat_pct: p.labour_vat_pct ?? 20,
-      retention_pct: p.labour_retention_pct ?? p.retention_pct ?? 5,
-    };
-  }
+  // A subbie's bill is stated as it is. VAT, CIS and anything held back are
+  // Xero's to work out, not ours — see labourStatesTheBill.
+  if (direction === "incoming_labour") return { vat_pct: 0, retention_pct: 0 };
   return {
     vat_pct: p.client_vat_pct ?? 20,
     retention_pct: p.client_retention_pct ?? p.retention_pct ?? 5,

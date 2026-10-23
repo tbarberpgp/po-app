@@ -9,7 +9,7 @@ import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import { carryWithoutLabourBudget } from "./applications";
+import { carryWithoutLabourBudget, labourStatesTheBill } from "./applications";
 
 /** Just enough of D1 over node:sqlite for these queries. */
 function d1(db: DatabaseSync): D1Database {
@@ -45,7 +45,7 @@ function seed(labourTotal: number | null) {
     .run(snap.id, labourTotal);
   const afp = db.prepare(
     `INSERT INTO applications_for_payment (project_id, direction, app_number, status, unmatched_lines_json, period_end, created_at, created_by, retention_pct, vat_pct)
-     VALUES ('p', 'incoming_labour', 1, 'draft', ?, '2026-10-20', 't', 't', 0, 0) RETURNING id`,
+     VALUES ('p', 'incoming_labour', 1, 'draft', ?, '2026-10-20', 't', 't', 5, 20) RETURNING id`,
   ).get(JSON.stringify(LINES)) as { id: number };
   return { db, id: afp.id };
 }
@@ -57,7 +57,12 @@ describe("carryWithoutLabourBudget", () => {
     const a = db.prepare("SELECT amount_due, dayworks_amount, unmatched_lines_json, resolved_lines_json FROM applications_for_payment WHERE id = ?").get(id) as
       { amount_due: number; dayworks_amount: number; unmatched_lines_json: string | null; resolved_lines_json: string };
     assert.equal(a.dayworks_amount, 7700);
-    assert.equal(a.amount_due, 7700, "no retention on this one, so what's due is what was billed");
+    // 26006 carries 5% labour retention and 20% VAT. Neither is ours to apply:
+    // the bill said £7,700, so the certificate says £7,700.
+    assert.equal(a.amount_due, 7700);
+    const t = db.prepare("SELECT total_invoice, retention_pct, vat_pct FROM applications_for_payment WHERE id = ?").get(id) as
+      { total_invoice: number; retention_pct: number; vat_pct: number };
+    assert.deepEqual({ ...t }, { total_invoice: 7700, retention_pct: 0, vat_pct: 0 });
     assert.equal(a.unmatched_lines_json, null);
     // Recorded as resolutions, so the certificate's undo still works on each.
     const res = JSON.parse(a.resolved_lines_json) as Array<{ resolution: { action: string; afp_line_id: number } }>;
@@ -69,5 +74,14 @@ describe("carryWithoutLabourBudget", () => {
     assert.equal(await carryWithoutLabourBudget(d1(db), id), 0);
     const a = db.prepare("SELECT unmatched_lines_json FROM applications_for_payment WHERE id = ?").get(id) as { unmatched_lines_json: string | null };
     assert.equal(JSON.parse(a.unmatched_lines_json!).length, 4);
+  });
+});
+
+describe("labourStatesTheBill", () => {
+  test("labour never has retention or VAT worked out here, whatever the row says", () => {
+    assert.deepEqual(labourStatesTheBill({ direction: "incoming_labour", retention_pct: 5, vat_pct: 20 }), { retention_pct: 0, vat_pct: 0 });
+  });
+  test("a client application keeps its own terms", () => {
+    assert.deepEqual(labourStatesTheBill({ direction: "outgoing", retention_pct: 5, vat_pct: 20 }), { retention_pct: 5, vat_pct: 20 });
   });
 });

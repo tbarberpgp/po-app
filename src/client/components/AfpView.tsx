@@ -540,6 +540,16 @@ export function AfpView({ me }: { me: CurrentUser | null }) {
             )}
             <Field label="This period (net)" value={fmtMoney(afp.this_period_net ?? 0)} />
           </div>
+          {afp.direction === "incoming_labour" ? (
+            // A subbie's bill is stated as billed. VAT, CIS and anything held
+            // back are Xero's to work out, so none of it is shown as ours.
+            <div className="card-bd" style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 24, borderTop: "1px solid var(--line)" }}>
+              <Field label="Billed (net)" value={<b>{fmtMoney(afp.amount_due ?? 0)}</b>} />
+              <div className="muted" style={{ gridColumn: "2 / -1", fontSize: 12.5, alignSelf: "center" }}>
+                As the subcontractor billed it. VAT and CIS are worked out in Xero.
+              </div>
+            </div>
+          ) : (
           <div className="card-bd" style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 24, borderTop: "1px solid var(--line)" }}>
             <Field label={`Retention (${afp.retention_pct}%)`} value={`-${fmtMoney(afp.retention_amount ?? 0)}`} />
             <Field label="Amount due (ex VAT)" value={<b>{fmtMoney(afp.amount_due ?? 0)}</b>} />
@@ -549,6 +559,7 @@ export function AfpView({ me }: { me: CurrentUser | null }) {
               value={<span style={{ fontWeight: 700, color: "var(--accent-2)" }}>{fmtMoney(afp.total_invoice ?? 0)}</span>}
             />
           </div>
+          )}
           {afp.status === "certified" && afp.certified_amount != null && (
             <div className="card-bd" style={{ borderTop: "1px solid var(--line)", background: "var(--card-2)" }}>
               <div className="muted">
@@ -949,8 +960,10 @@ function CertifyPanel({
   onCertify: (amount: number, days: CertifyDays | null, split: TimeSplitPart[]) => void;
 }) {
   const claimed = afp.amount_due ?? 0;
-  const retPct = afp.retention_pct ?? 0;
-  const vatPct = afp.vat_pct ?? 0;
+  // Labour is certified at the bill's net — no retention or VAT of ours.
+  const isLabour = afp.direction === "incoming_labour";
+  const retPct = isLabour ? 0 : afp.retention_pct ?? 0;
+  const vatPct = isLabour ? 0 : afp.vat_pct ?? 0;
   const r2 = (n: number) => Math.round(n * 100) / 100;
 
   const [raw, setRaw] = useState(claimed.toFixed(2));
