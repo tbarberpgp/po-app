@@ -2131,6 +2131,9 @@ function RateVarianceBanner({
     return s + (l.qty ?? 0) * (l.expected_rate - l.rate);
   }, 0);
   const n = flaggedLines.length;
+  // Collapsed to a one-line "Needs attention" strip by default — the full
+  // table of off-rate lines pushed the application itself off the screen.
+  const [open, setOpen] = useState(false);
 
   if (overridden) {
     return (
@@ -2150,19 +2153,27 @@ function RateVarianceBanner({
 
   return (
     <div className="card" style={{ marginTop: 16, background: "var(--warn-soft, #fff7ed)", borderLeft: "4px solid var(--warn, #ea580c)" }}>
-      <div className="card-hd">
-        <h2 style={{ flex: 1 }}>⚠ Rate variance — {n} line{n === 1 ? "" : "s"} off the agreed rate</h2>
-        {canFix && (
-          <button className="accent" onClick={onApplyAll} disabled={busy} title="Set every flagged line to its agreed live/BOQ rate">
+      <div className="card-hd" style={{ cursor: "pointer" }} onClick={() => setOpen((o) => !o)} aria-expanded={open}
+        title={open ? "Hide the off-rate lines" : "Show the off-rate lines"}>
+        <span style={{ marginRight: 10, fontSize: 16, lineHeight: 1, width: 16, display: "inline-block" }}>{open ? "▾" : "▸"}</span>
+        <h3 style={{ flex: 1, fontFamily: "var(--font-sans)", fontSize: 14, fontWeight: 500 }}>
+          <b style={{ color: "var(--warn, #ea580c)", letterSpacing: "0.04em" }}>⚠ NEEDS ATTENTION</b>
+          <span className="muted" style={{ fontWeight: 400 }}>
+            {" · "}Rate variance — {n} line{n === 1 ? "" : "s"} off the agreed rate
+          </span>
+        </h3>
+        {open && canFix && (
+          <button className="accent" onClick={(e) => { e.stopPropagation(); onApplyAll(); }} disabled={busy} title="Set every flagged line to its agreed live/BOQ rate">
             Apply live rate to all
           </button>
         )}
-        {canFix && isDirector && (
-          <button className="ghost" onClick={onSignOff} disabled={busy} title="Sign off the rate variance with a reason">
+        {open && canFix && isDirector && (
+          <button className="ghost" onClick={(e) => { e.stopPropagation(); onSignOff(); }} disabled={busy} title="Sign off the rate variance with a reason">
             Sign off variance
           </button>
         )}
       </div>
+      {open && (<>
       <div className="muted" style={{ margin: "0 20px 8px", fontSize: 13 }}>
         This labour application is valued at rates that differ from the agreed live rates. It can't be certified until the rates are corrected (apply the live rate) or a director signs off the variance.
         {Math.abs(impact) > 0.005 && (
@@ -2206,6 +2217,7 @@ function RateVarianceBanner({
           })}
         </tbody>
       </table>
+      </>)}
     </div>
   );
 }
