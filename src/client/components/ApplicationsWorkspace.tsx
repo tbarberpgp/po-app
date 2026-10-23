@@ -7,7 +7,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api, fmtDate, fmtMoney } from "../lib/api";
-import { isPushedUncertified, PUSHED_UNCERTIFIED_LABEL } from "../../shared/payment-release";
 import { Topbar } from "./Shell";
 import { useStickyCard } from "../lib/sticky";
 import { can } from "../../shared/permissions";
@@ -288,7 +287,7 @@ export function ApplicationsTable({
               </td>
               <td>{fmtDate(r.period_end)}</td>
               <td className="center">
-                <span className={`pill ${STATUS_PILL[r.status]}`}>{isPushedUncertified(r) ? PUSHED_UNCERTIFIED_LABEL : STATUS_LABEL[r.status]}</span>
+                <span className={`pill ${STATUS_PILL[r.status]}`}>{STATUS_LABEL[r.status]}</span>
                 {r.has_unmatched === 1 && (
                   <span className="pill pending" style={{ marginLeft: 6, fontSize: 10 }} title="Some uploaded lines still need review">review</span>
                 )}

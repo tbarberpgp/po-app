@@ -27,6 +27,7 @@ export async function linkLabourToXero(env: Env, opts: { dry?: boolean } = {}): 
   const dry = !!opts.dry;
   const out: LabourLinkResult = { dry, linked_paid: [], linked_owed: [], now_paid: [], paid_date_fixed: [], amount_differs: [], no_contact: [] };
   await fixPaidDates(env, out, dry);
+  if (!dry) await certifyFirstFastTracks(env);
   const rows = (await env.DB.prepare(
     `SELECT a.id, a.app_number, a.status, a.project_id, p.code AS project_code,
             a.certified_amount, a.this_period_net, a.amount_due, a.xero_po_id, a.xero_po_number,
@@ -124,6 +125,30 @@ async function paidDateOf(env: Env, bill: XeroInvoiceFull, fallback: string): Pr
  * which a real payment date never is. Each is read from Xero and put right
  * once; after that it no longer matches.
  */
+/** The first Fast-track certify (live 2026-10-23 for about an hour) pushed a
+ *  claim without certifying it, leaving it 'submitted' with a bill in Xero.
+ *  The user's rule since: a fast-track IS a certificate, by whoever clicked.
+ *  So certify those at what was pushed, by that person, at that time — read
+ *  from the `fast_track_pushed` audit row. Idempotent: only 'submitted' rows. */
+async function certifyFirstFastTracks(env: Env) {
+  const ft = `(SELECT %s FROM audit_log l
+                WHERE l.entity_type = 'afp' AND l.entity_id = CAST(applications_for_payment.id AS TEXT)
+                  AND l.action = 'fast_track_pushed' ORDER BY l.created_at LIMIT 1)`;
+  const at = ft.replace("%s", "l.created_at"), by = ft.replace("%s", "l.actor");
+  const r = await env.DB.prepare(
+    `UPDATE applications_for_payment
+        SET status = 'certified', certified_at = ${at}, certified_by = ${by},
+            certified_amount = COALESCE(certified_amount, amount_due),
+            pay_approved_at = COALESCE(pay_approved_at, ${at}), pay_approved_by = COALESCE(pay_approved_by, ${by}),
+            pay_approval_note = COALESCE(pay_approval_note, 'Fast-track certify'),
+            pay_released_at = COALESCE(pay_released_at, ${at}), pay_released_by = COALESCE(pay_released_by, ${by}),
+            pay_release_note = COALESCE(pay_release_note, 'Fast-track certify')
+      WHERE direction = 'incoming_labour' AND status = 'submitted' AND xero_po_id IS NOT NULL
+        AND ${at} IS NOT NULL`,
+  ).run();
+  if (r.meta.changes) console.log(`Certified ${r.meta.changes} claim(s) fast-tracked before fast-track certified them`);
+}
+
 async function fixPaidDates(env: Env, out: LabourLinkResult, dry: boolean) {
   const rows = (await env.DB.prepare(
     `SELECT a.id, a.app_number, a.xero_po_id, a.xero_po_number, a.paid_at, a.certified_amount,

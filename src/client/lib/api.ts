@@ -747,12 +747,6 @@ export const api = {
       { method: "POST" },
     ),
   /** Push a certified labour certificate to Xero as a draft PO to the subbie. */
-  /** Fast-track certify: push a submitted labour claim to Xero uncertified. */
-  xeroFastTrackAfp: (id: number) =>
-    jfetch<{ ok: true; xero_po_id: string; xero_po_number: string }>(
-      `/api/xero/fast-track-afp/${id}`,
-      { method: "POST" },
-    ),
   xeroPushAfp: (id: number) =>
     jfetch<{ ok: true; xero_po_id: string; xero_po_number: string }>(
       `/api/xero/push-afp/${id}`,
@@ -1158,6 +1152,10 @@ export const api = {
     }>(`/api/xero/link-labour`, { method: "POST" });
   },
   /** Take a labour certificate back from certified to submitted. */
+  /** Fast-track certify: certify at the claimed value, approve, push. */
+  xeroFastTrackAfp: (id: number) =>
+    jfetch<{ ok: true; xero_po_id: string; xero_po_number: string }>(`/api/xero/fast-track-afp/${id}`, { method: "POST" }),
+  getAfpHistory: (id: number) => jfetch<AfpHistoryEntry[]>(`/api/applications/${id}/history`),
   uncertifyAfp: (id: number, reason: string) =>
     jfetch<{ ok: true }>(`/api/applications/${id}/uncertify`, {
       method: "POST",
@@ -1855,6 +1853,8 @@ export function fmtQty(n: number | null | undefined) {
 }
 
 /** A labour certificate as the Accounts workspace lists it. */
+export type AfpHistoryEntry = { at: string; what: string; by: string | null; detail?: string | null };
+
 export type AccountsLabourCert = {
   id: number; project_id: string; app_number: number; period_end: string | null; status: string;
   certified_amount: number | null; amount_due: number | null; created_by: string | null; submitted_at: string | null;
@@ -1864,4 +1864,6 @@ export type AccountsLabourCert = {
   xero_po_id: string | null; xero_po_number: string | null; xero_sync_status: string | null; xero_sync_error: string | null;
   source_file_name: string | null; vat_pct: number | null;
   project_code: string; project_name: string; supplier_name: string | null; cis_rate: number | null;
+  /** 1 when it was certified with Fast-track certify. */
+  fast_tracked?: number;
 };

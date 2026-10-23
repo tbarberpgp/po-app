@@ -14,7 +14,8 @@ import { afpDocLabel } from "../../shared/types";
 import { parseMoney, parsePositiveMoney } from "../../shared/money";
 import type { AfpDetail, AfpLine, AfpStatus, CurrentUser, ApplicationForPayment, AfpSigninDays } from "../../shared/types";
 import { daysDisagree, daysLine } from "../../shared/signin-days";
-import { isCertAwaitingApproval, isCertInXero, isPushedUncertified, PUSHED_UNCERTIFIED_LABEL } from "../../shared/payment-release";
+import { isCertAwaitingApproval, isCertInXero } from "../../shared/payment-release";
+import { AfpHistory } from "./AfpHistory";
 import { isExpenseSection } from "../../shared/afp-expenses";
 import { isDayworkSection } from "../../shared/afp-dayworks";
 import { dayworksTotal, isSplittableBoqLine, scaleSplit, type TimeSplitPart } from "../../shared/afp-time-split";
@@ -277,7 +278,7 @@ export function AfpView({ me }: { me: CurrentUser | null }) {
       <Topbar
         crumbs={<><Link to="/">Projects</Link> · <Link to={`/projects/${afp.project_id}`}>{afp.project_code}</Link> · #{afp.app_number}</>}
         title={`${afpDocLabel(afp.direction, afp.status)} #${afp.app_number}`}
-        status={<span className={`pill ${statusPill(afp.status)}`}>{isPushedUncertified(afp) ? PUSHED_UNCERTIFIED_LABEL : afp.status}</span>}
+        status={<span className={`pill ${statusPill(afp.status)}`}>{afp.status}</span>}
         actions={
           <>
             {/* A labour certificate past draft sits in the Accounts queues, so
@@ -287,7 +288,7 @@ export function AfpView({ me }: { me: CurrentUser | null }) {
             )}
             <button className="ghost" onClick={downloadPdf} disabled={busy} title="Download as PDF">↓ PDF</button>
             <button className="ghost" onClick={downloadXlsx} disabled={busy} title="Download as Excel">↓ Excel</button>
-            {canEdit && afp.source_file_name && afp.status !== "certified" && afp.status !== "paid" && !isCertInXero(afp) && (
+            {canEdit && afp.source_file_name && afp.status !== "certified" && afp.status !== "paid" && (
               <button className="ghost" onClick={rereadSource} disabled={busy}
                 title="Re-read the attached document with the current reader and recalculate the claimed figures">Re-read file</button>
             )}
@@ -486,11 +487,11 @@ export function AfpView({ me }: { me: CurrentUser | null }) {
           />
         )}
 
-        {isPushedUncertified(afp) && (
-          <div className="flash" style={{ marginTop: 16 }}>
-            <b>{PUSHED_UNCERTIFIED_LABEL}.</b> This claim went to Xero{afp.xero_po_number ? ` as bill ${afp.xero_po_number}` : ""} at
-            the claimed {fmtMoney(afp.amount_due ?? 0)} with Fast-track certify — it hasn't been certified or approved.
-            Certify it here when you can; if the certified value differs, change the bill in Xero to match.
+        {!isOutgoing && afp.status !== "draft" && (
+          <div className="card" style={{ marginTop: 16 }}>
+            <div className="card-bd">
+              <AfpHistory afpId={afp.id} version={`${afp.status}|${afp.certified_at}|${afp.pay_released_at}|${afp.xero_po_id}|${afp.paid_at}`} />
+            </div>
           </div>
         )}
 

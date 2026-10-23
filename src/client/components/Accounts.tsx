@@ -11,7 +11,8 @@ import { Topbar } from "./Shell";
 import type { CurrentUser, InboundApplication, Invoice, InvoiceMatch, InvoiceMatchLine, MatchSummary, Project, Supplier } from "../../shared/types";
 import { NON_GOODS_LINE_IDS, PAYMENT_SCHEDULE_LINE_ID, SERVICE_CHARGE_LINE_ID } from "../../shared/line-match";
 import { poStatusHint, poDeliveryLabel } from "../../shared/po-delivery-status";
-import { isAwaitingApproval, isReadyToPush, isCertReadyToPush, isCertInXero, isPushedUncertified, PUSHED_UNCERTIFIED_LABEL } from "../../shared/payment-release";
+import { isAwaitingApproval, isReadyToPush, isCertReadyToPush, isCertInXero } from "../../shared/payment-release";
+import { AfpHistory } from "./AfpHistory";
 
 // Amounts render in the invoice's OWN currency — a $ or € invoice shown with a
 // £ sign misreports what we owe. Falls back to sterling when unknown.
@@ -487,7 +488,7 @@ export function Accounts({ me }: { me: CurrentUser | null }) {
                               {a.cis_rate != null && a.cis_rate > 0 && <span>CIS {a.cis_rate}%</span>}
                               {a.xero_sync_status === "failed" && <span style={{ color: "var(--danger)", fontWeight: 600 }} title={a.xero_sync_error ?? ""}>⚠ push failed</span>}
                             </div>
-                            <span className={`istatus ${st}`}>{a.status === "draft" ? "Needs review" : t === "pushed" && a.status === "paid" ? "Paid" : isPushedUncertified(a) ? PUSHED_UNCERTIFIED_LABEL : t === "pushed" ? "In Xero" : LABOUR_LABEL[t]}</span>
+                            <span className={`istatus ${st}`}>{a.status === "draft" ? "Needs review" : t === "pushed" && a.status === "paid" ? "Paid" : t === "pushed" ? "In Xero" : LABOUR_LABEL[t]}</span>
                           </div>
                           <div className="iamt">{money(a.certified_amount ?? a.amount_due)}</div>
                         </button>
@@ -687,10 +688,9 @@ function LabourCertDetail({ cert: a, canEdit, canRelease, onChanged }: {
     if (!reason.trim()) { setErr("Say why it's being uncertified."); return; }
     run(() => api.uncertifyAfp(a.id, reason.trim()));
   }
-  /** Straight to Xero at what was claimed — no certify, no approval. It
-   *  stays uncertified ("Pushed without certified") until someone certifies it. */
+  /** Certify at what was claimed, approve and push, in one click — by you. */
   function fastTrack() {
-    if (!confirm(`Fast-track certify ${a.supplier_name ?? "this claim"} #${a.app_number}?\n\nIt goes to Xero now as a draft bill for ${money(net)} (what was claimed), without certifying or approving it. It will read "${PUSHED_UNCERTIFIED_LABEL}" until someone certifies it.`)) return;
+    if (!confirm(`Fast-track certify ${a.supplier_name ?? "this claim"} #${a.app_number}?\n\nIt's certified and approved by you at ${money(net)} (what was claimed), skipping the days, budget and rate checks, then pushed to Xero as a draft bill.`)) return;
     run(() => api.xeroFastTrackAfp(a.id));
   }
   async function run(f: () => Promise<unknown>) {
@@ -721,7 +721,7 @@ function LabourCertDetail({ cert: a, canEdit, canRelease, onChanged }: {
         {row(a.certified_at ? "Certified (net)" : "Claimed (net)", <b>{money(net)}</b>)}
         {a.cis_rate != null && a.cis_rate > 0 && row("CIS", `${a.cis_rate}% — for information; Xero takes the deduction`)}
         {a.submitted_at && row("Submitted", a.submitted_at.slice(0, 10))}
-        {a.certified_at && row("Certified", a.certified_by === "xero"
+        {a.certified_at && row(a.fast_tracked ? "Fast-track certified" : "Certified", a.certified_by === "xero"
           ? `matched to its Xero bill on ${a.certified_at.slice(0, 10)}`
           : `${a.certified_by ?? "—"} on ${a.certified_at.slice(0, 10)}`)}
         {/* An approval from Accounts fills in the commit with the same stamp;
@@ -749,20 +749,9 @@ function LabourCertDetail({ cert: a, canEdit, canRelease, onChanged }: {
             <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
               <Link className="btn accent" to={`/applications/${a.id}?from=accounts`}>Open to certify</Link>
               <button className="ghost" disabled={busy} onClick={fastTrack}
-                title="Push to Xero now at the claimed value, without certifying or approving">
-                {a.xero_sync_status === "failed" ? "Retry fast-track certify" : "Fast-track certify"}
-              </button>
+                title="Certify at the claimed value, approve and push to Xero in one go">Fast-track certify</button>
             </div>
           )}
-        </div>
-      )}
-      {isPushedUncertified(a) && (
-        <div style={{ display: "grid", gap: 8 }}>
-          <div className="muted" style={{ fontSize: 12.5, lineHeight: 1.5 }}>
-            <b>{PUSHED_UNCERTIFIED_LABEL}.</b> It went to Xero at the claimed value without being certified or approved.
-            Certify it on the certificate when you can — if the certified value differs, change the bill in Xero to match.
-          </div>
-          {canEdit && <Link className="btn ghost" style={{ justifySelf: "start" }} to={`/applications/${a.id}?from=accounts`}>Open to certify</Link>}
         </div>
       )}
       {stage === "held" && (canRelease
@@ -790,6 +779,7 @@ function LabourCertDetail({ cert: a, canEdit, canRelease, onChanged }: {
           Already in Xero
         </button>
       )}
+      <AfpHistory afpId={a.id} version={`${a.status}|${a.certified_at}|${a.pay_released_at}|${a.xero_po_id}`} />
       <div className="muted" style={{ fontSize: 11.5, lineHeight: 1.5 }}>
         Pushes as a draft bill at the full value with the subcontractor's invoice attached; Xero takes any CIS deduction.
         Don't key labour bills into Xero by hand — they'd be paid twice. The push refuses an invoice
