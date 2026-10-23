@@ -1870,6 +1870,4 @@ export type AccountsLabourCert = {
   unmatched_value: number;
   /** Labour on the job's active pricing workbook; 0 = none. */
   labour_budget: number;
-  /** 1 when it was certified with Fast-track certify. */
-  fast_tracked?: number;
 };

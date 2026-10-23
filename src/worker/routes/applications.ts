@@ -781,9 +781,7 @@ applications.get("/_accounts-labour", async (c) => {
             a.unmatched_lines_json,
             (SELECT COALESCE(SUM(ci.labour_total), 0)
                FROM contract_items ci JOIN material_snapshots ms ON ms.id = ci.snapshot_id
-              WHERE ms.project_id = a.project_id AND ms.is_active = 1) AS labour_budget,
-            EXISTS (SELECT 1 FROM audit_log l WHERE l.entity_type = 'afp' AND l.entity_id = CAST(a.id AS TEXT)
-                      AND l.action IN ('fast_track_certified', 'fast_track_pushed')) AS fast_tracked
+              WHERE ms.project_id = a.project_id AND ms.is_active = 1) AS labour_budget
      FROM applications_for_payment a
      JOIN projects p ON p.id = a.project_id
      LEFT JOIN suppliers s ON s.id = a.counterparty_supplier_id
