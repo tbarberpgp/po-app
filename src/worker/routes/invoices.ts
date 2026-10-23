@@ -955,7 +955,8 @@ invoices.post("/:id/send-to-labour", async (c) => {
   const obj = await c.env.R2.get(inv.file_key);
   if (!obj) return c.json({ error: "Stored file is missing." }, 404);
 
-  let created: Awaited<ReturnType<typeof processLabourAppUpload>>;
+  let created: { id: number; app_number: number; matched_count: number | null; unmatched_count: number };
+  let reused = false;
   try {
     created = await processLabourAppUpload(c.env, {
     projectId,
@@ -970,10 +971,23 @@ invoices.post("/:id/send-to-labour", async (c) => {
     actor: c.get("userEmail"),
     });
   } catch (e) {
-    if (e instanceof DuplicateLabourInvoiceError) {
-      return c.json({ error: e.message }, 409);
-    }
-    throw e;
+    if (!(e instanceof DuplicateLabourInvoiceError)) throw e;
+    // Sent before, restored, and sent again: Restore keeps the draft it made,
+    // so the second send meets its own first attempt and was refused — the
+    // invoice could then go nowhere. A draft no other invoice is tied to is
+    // that same document, so pick it back up rather than make a second one.
+    // Anything past draft, or another invoice's, is a real duplicate.
+    const other = e.dupe.status === "draft"
+      ? await c.env.DB.prepare("SELECT id FROM invoices WHERE labour_afp_id = ? AND id <> ? LIMIT 1")
+          .bind(e.dupe.id, id).first<{ id: number }>()
+      : null;
+    if (e.dupe.status !== "draft" || other) return c.json({ error: e.message }, 409);
+    const row = await c.env.DB.prepare("SELECT unmatched_lines_json FROM applications_for_payment WHERE id = ?")
+      .bind(e.dupe.id).first<{ unmatched_lines_json: string | null }>();
+    let unmatched = 0;
+    try { unmatched = row?.unmatched_lines_json ? (JSON.parse(row.unmatched_lines_json) as unknown[]).length : 0; } catch { /* count is only for the message */ }
+    created = { id: e.dupe.id, app_number: e.dupe.app_number, matched_count: null, unmatched_count: unmatched };
+    reused = true;
   }
 
   await c.env.DB.prepare("UPDATE invoices SET status = 'dismissed', labour_afp_id = ? WHERE id = ?")
@@ -981,6 +995,7 @@ invoices.post("/:id/send-to-labour", async (c) => {
   await logInvoice(c.env, id, "sent_to_labour", c.get("userEmail"), {
     afp_id: created.id, project_id: projectId, period_end: periodEnd,
     matched_lines: created.matched_count, unmatched_lines: created.unmatched_count,
+    ...(reused ? { reused_draft: true } : {}),
   });
   return c.json({ ok: true, afp_id: created.id, app_number: created.app_number, unmatched_count: created.unmatched_count });
 });
