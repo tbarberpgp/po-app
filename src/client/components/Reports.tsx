@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Topbar } from "./Shell";
 import { api, fmtDate } from "../lib/api";
+import { downloadReportsZip, zipNotice } from "../lib/report-zip";
 import { SiteReportDoc } from "./SiteReportDoc";
 import { ReportDrawer } from "./ReportDrawer";
 import { GroupedReports } from "./ReportsList";
@@ -244,6 +245,20 @@ export function Reports() {
     })();
     return () => { cancelled = true; };
   }, [printReports]);
+  // Bulk "Download .zip" = each selected report as its own PDF, zipped.
+  const [zipping, setZipping] = useState<{ done: number; total: number } | null>(null);
+  const stopZip = useRef(false);
+  async function bulkZip() {
+    const sel2 = rows.filter((r) => selected.has(r.id));
+    if (sel2.length === 0) return;
+    stopZip.current = false;
+    setErr(null); setNotice(null); setZipping({ done: 0, total: sel2.length });
+    try {
+      const r = await downloadReportsZip(sel2, `site-reports-${new Date().toISOString().slice(0, 10)}.zip`, (p) => setZipping({ done: p.done, total: p.total }), () => stopZip.current);
+      (r.ok === 0 && !r.cancelled ? setErr : setNotice)(zipNotice(r));
+    } catch (e) { setErr(e instanceof Error ? e.message : "zip download failed"); }
+    finally { setZipping(null); }
+  }
   function bulkCsv() {
     const sel2 = rows.filter((r) => selected.has(r.id));
     const esc = (s: string) => `"${String(s ?? "").replace(/"/g, '""')}"`;
@@ -487,6 +502,9 @@ export function Reports() {
                 <span><span className="n">{selected.size}</span> selected</span>
                 <span className="grow" />
                 <button className="bbtn" disabled={busy} onClick={bulkPdf}>↓ Export PDF</button>
+                {zipping
+                  ? <button className="bbtn" onClick={() => { stopZip.current = true; }}>Downloading {zipping.done}/{zipping.total}… Stop</button>
+                  : <button className="bbtn" disabled={busy} onClick={bulkZip}>⤓ Download .zip</button>}
                 <button className="bbtn" onClick={bulkCsv}>⤓ Export CSV</button>
                 <button className="bbtn accent" disabled={busy} onClick={bulkShare}>⤢ Share</button>
                 <span className="bulk-x" onClick={() => setSelected(new Set())}>✕ Clear</span>

@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api, fmtDate } from "../lib/api";
+import { downloadReportsZip, zipNotice } from "../lib/report-zip";
 import { ReportDrawer } from "./ReportDrawer";
 import { GroupedReports } from "./ReportsList";
 
@@ -95,6 +96,22 @@ export function ProjectReports({ projectId, canEdit, members }: {
     for (const id of selected) { try { await api.sendSiteReport(id); sent++; } catch { failed++; } }
     setBusy(false); setSelected(new Set()); refresh();
     setNotice(`Emailed ${sent} report${sent === 1 ? "" : "s"}${failed ? `, ${failed} failed (check the project's manager emails)` : ""}.`);
+  }
+  // Bulk "Download" = a .zip holding each selected report as its own PDF.
+  const [zipping, setZipping] = useState<{ done: number; total: number } | null>(null);
+  const stopZip = useRef(false);
+  async function bulkZip() {
+    const sel2 = shown.filter((r) => selected.has(r.id));
+    if (sel2.length === 0) return;
+    stopZip.current = false;
+    setErr(null); setNotice(null); setZipping({ done: 0, total: sel2.length });
+    const code = memberList ? memberList.map((m) => m.code).join("-") : (sel2[0].project_code ?? projectId);
+    const kind = period === "all" ? "site" : period;
+    try {
+      const r = await downloadReportsZip(sel2, `${code} ${kind} reports.zip`, (p) => setZipping({ done: p.done, total: p.total }), () => stopZip.current);
+      (r.ok === 0 && !r.cancelled ? setErr : setNotice)(zipNotice(r));
+    } catch (e) { setErr(e instanceof Error ? e.message : "zip download failed"); }
+    finally { setZipping(null); }
   }
   function bulkCsv() {
     const sel2 = shown.filter((r) => selected.has(r.id));
@@ -197,6 +214,9 @@ export function ProjectReports({ projectId, canEdit, members }: {
         {selected.size > 0 && (
           <div className="bulkbar">
             <span><b>{selected.size}</b> selected</span>
+            {zipping
+              ? <button className="btn ghost tiny" onClick={() => { stopZip.current = true; }}>Downloading {zipping.done}/{zipping.total}… Stop</button>
+              : <button className="btn ghost tiny" disabled={busy} onClick={bulkZip}>⤓ Download</button>}
             <button className="btn ghost tiny" disabled={busy} onClick={bulkEmail}>✉ Email</button>
             <button className="btn ghost tiny" onClick={bulkCsv}>⤓ CSV</button>
             <button className="btn ghost tiny" onClick={() => setSelected(new Set())}>Clear</button>
