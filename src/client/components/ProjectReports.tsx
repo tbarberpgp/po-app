@@ -97,11 +97,11 @@ export function ProjectReports({ projectId, canEdit, members }: {
     setBusy(false); setSelected(new Set()); refresh();
     setNotice(`Emailed ${sent} report${sent === 1 ? "" : "s"}${failed ? `, ${failed} failed (check the project's manager emails)` : ""}.`);
   }
-  // Bulk "Download" = a .zip holding each selected report as its own PDF.
+  // "Download" = a .zip holding each report as its own PDF — either the ticked
+  // ones (bulk bar) or everything the current filter shows ("Download all").
   const [zipping, setZipping] = useState<{ done: number; total: number } | null>(null);
   const stopZip = useRef(false);
-  async function bulkZip() {
-    const sel2 = shown.filter((r) => selected.has(r.id));
+  async function bulkZip(sel2: ReportRow[]) {
     if (sel2.length === 0) return;
     stopZip.current = false;
     setErr(null); setNotice(null); setZipping({ done: 0, total: sel2.length });
@@ -209,6 +209,9 @@ export function ProjectReports({ projectId, canEdit, members }: {
             <button className={`seg-btn${period === "weekly" ? " active" : ""}`} onClick={() => setPeriod("weekly")}>Weekly</button>
           </div>
           <span className="pill" style={{ marginLeft: 8 }}>{shown.length}</span>
+          {shown.length > 0 && (zipping
+            ? <button className="btn ghost tiny" style={{ marginLeft: 8 }} onClick={() => { stopZip.current = true; }}>Downloading {zipping.done}/{zipping.total}… Stop</button>
+            : <button className="btn ghost tiny" style={{ marginLeft: 8 }} disabled={busy} onClick={() => bulkZip(shown)} title="Every report in this list, one PDF each, in a .zip">⤓ Download all</button>)}
         </div>
 
         {selected.size > 0 && (
@@ -216,7 +219,7 @@ export function ProjectReports({ projectId, canEdit, members }: {
             <span><b>{selected.size}</b> selected</span>
             {zipping
               ? <button className="btn ghost tiny" onClick={() => { stopZip.current = true; }}>Downloading {zipping.done}/{zipping.total}… Stop</button>
-              : <button className="btn ghost tiny" disabled={busy} onClick={bulkZip}>⤓ Download</button>}
+              : <button className="btn ghost tiny" disabled={busy} onClick={() => bulkZip(shown.filter((r) => selected.has(r.id)))}>⤓ Download</button>}
             <button className="btn ghost tiny" disabled={busy} onClick={bulkEmail}>✉ Email</button>
             <button className="btn ghost tiny" onClick={bulkCsv}>⤓ CSV</button>
             <button className="btn ghost tiny" onClick={() => setSelected(new Set())}>Clear</button>

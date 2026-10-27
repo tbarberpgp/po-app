@@ -245,11 +245,11 @@ export function Reports() {
     })();
     return () => { cancelled = true; };
   }, [printReports]);
-  // Bulk "Download .zip" = each selected report as its own PDF, zipped.
+  // "Download .zip" = each report as its own PDF, zipped — either the ticked
+  // ones (bulk bar) or everything the current filter shows ("Download all").
   const [zipping, setZipping] = useState<{ done: number; total: number } | null>(null);
   const stopZip = useRef(false);
-  async function bulkZip() {
-    const sel2 = rows.filter((r) => selected.has(r.id));
+  async function bulkZip(sel2: ReportRow[]) {
     if (sel2.length === 0) return;
     stopZip.current = false;
     setErr(null); setNotice(null); setZipping({ done: 0, total: sel2.length });
@@ -495,6 +495,9 @@ export function Reports() {
               <button className={period === "daily" ? "on" : ""} onClick={() => setPeriod("daily")}>Daily</button>
               <button className={period === "weekly" ? "on" : ""} onClick={() => setPeriod("weekly")}>Weekly</button>
             </div>
+            {filtered.length > 0 && (zipping
+              ? <button className="btn ghost tiny" onClick={() => { stopZip.current = true; }}>Downloading {zipping.done}/{zipping.total}… Stop</button>
+              : <button className="btn ghost tiny" disabled={busy} onClick={() => bulkZip(filtered)} title="Every report in this list, one PDF each, in a .zip">⤓ Download all</button>)}
           </div>
           {selected.size > 0 && (
             <div style={{ padding: "12px 20px 0" }}>
@@ -504,7 +507,7 @@ export function Reports() {
                 <button className="bbtn" disabled={busy} onClick={bulkPdf}>↓ Export PDF</button>
                 {zipping
                   ? <button className="bbtn" onClick={() => { stopZip.current = true; }}>Downloading {zipping.done}/{zipping.total}… Stop</button>
-                  : <button className="bbtn" disabled={busy} onClick={bulkZip}>⤓ Download .zip</button>}
+                  : <button className="bbtn" disabled={busy} onClick={() => bulkZip(rows.filter((r) => selected.has(r.id)))}>⤓ Download .zip</button>}
                 <button className="bbtn" onClick={bulkCsv}>⤓ Export CSV</button>
                 <button className="bbtn accent" disabled={busy} onClick={bulkShare}>⤢ Share</button>
                 <span className="bulk-x" onClick={() => setSelected(new Set())}>✕ Clear</span>
