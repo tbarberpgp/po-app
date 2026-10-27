@@ -7,4 +7,4 @@ UPDATE qitp_sections
    SET items = replace(items, '"Downpipes reinstalled and connected to drainage"', '"Downpipes reinstalled"')
  WHERE project_id = (SELECT id FROM projects WHERE code = '26004')
    AND title = 'Re-site & Reinstall'
-   AND items LIKE '%"Downpipes reinstalled and connected to drainage"%';
+   AND instr(items, '"Downpipes reinstalled and connected to drainage"') > 0;
