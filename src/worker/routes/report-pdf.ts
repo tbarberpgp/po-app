@@ -60,31 +60,67 @@ export async function shrinkPhoto(env: Env, bytes: ArrayBuffer, maxPx = 1600): P
   return { data: new Uint8Array(bytes), mime: "" };
 }
 
+/** Longest edge for an embedded photo. The gallery is three across at 130px
+ *  tall (~60mm wide), so 700px is ~300dpi there. Was the 1600px default, which
+ *  made each weekly report resize and embed up to 24 full-size photos — the
+ *  main reason a report took well over a minute to render. File size tracks
+ *  pixel count (see shrinkPhoto), so this also shrinks the PDF several-fold. */
+const PHOTO_MAX_PX = 700;
+
 /** Pull the report's photos out of R2, downscale them, and inline them as data
- *  URIs (Browser Rendering can't reach the Access-gated /api/operations/file URLs). */
+ *  URIs (Browser Rendering can't reach the Access-gated /api/operations/file URLs).
+ *  Batches of 6, as the QITP record does, rather than one at a time. */
 async function inlinePhotos(env: Env, sections: ReportSections): Promise<Array<{ src: string; caption: string }>> {
   const out: Array<{ src: string; caption: string }> = [];
-  for (const p of (sections.photos ?? []).slice(0, 24)) {
-    try {
-      const key = new URL(p.url, "http://x").searchParams.get("key");
-      if (!key) continue;
-      const obj = await env.R2.get(key);
-      if (!obj) continue;
-      const original = await obj.arrayBuffer();
-      const shrunk = await shrinkPhoto(env, original);
-      const mime = shrunk.mime || obj.httpMetadata?.contentType || "image/jpeg";
-      out.push({ src: `data:${mime};base64,${toBase64(shrunk.data)}`, caption: p.caption || "" });
-    } catch { /* skip a photo that won't load */ }
+  const list = (sections.photos ?? []).slice(0, 24);
+  const BATCH = 6;
+  for (let i = 0; i < list.length; i += BATCH) {
+    const batch = await Promise.all(list.slice(i, i + BATCH).map(async (p) => {
+      try {
+        const key = new URL(p.url, "http://x").searchParams.get("key");
+        if (!key) return null;
+        const obj = await env.R2.get(key);
+        if (!obj) return null;
+        const shrunk = await shrinkPhoto(env, await obj.arrayBuffer(), PHOTO_MAX_PX);
+        const mime = shrunk.mime || obj.httpMetadata?.contentType || "image/jpeg";
+        return { src: `data:${mime};base64,${toBase64(shrunk.data)}`, caption: p.caption || "" };
+      } catch { return null; }   // skip a photo that won't load
+    }));
+    for (const ph of batch) if (ph) out.push(ph);
   }
   return out;
 }
 
+/** R2 key for a report's rendered PDF. Hashes the photo-less HTML, so any
+ *  change to the report (regenerated, "Edit for client") or to the template
+ *  itself lands on a new key and the stale copy is simply never read again. */
+async function pdfCacheKey(report: ReportForPdf, sections: ReportSections): Promise<string> {
+  const html = `${PHOTO_MAX_PX}|${reportPdfHtml(report, sections, [])}`;
+  const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(html));
+  const hex = Array.from(new Uint8Array(d), (b) => b.toString(16).padStart(2, "0")).join("");
+  return `report-pdf/${report.id}-${hex.slice(0, 32)}.pdf`;
+}
+
 /** Render the report HTML to PDF bytes. Returns null when Browser Rendering is
- *  not available (binding unset / launch fails) so the caller keeps the email. */
+ *  not available (binding unset / launch fails) so the caller keeps the email.
+ *  A rendered PDF is kept in R2, so the same report downloads instantly the
+ *  next time (a whole-project zip re-downloads in seconds). */
 export async function renderReportPdf(env: Env, report: ReportForPdf): Promise<Uint8Array | null> {
   if (!env.BROWSER) return null;
   let sections: ReportSections;
   try { sections = JSON.parse(report.data_json || "{}") as ReportSections; } catch { sections = {} as ReportSections; }
+  const key = await pdfCacheKey(report, sections);
+  try {
+    const hit = await env.R2.get(key);
+    if (hit) return new Uint8Array(await hit.arrayBuffer());
+  } catch { /* cache is best-effort — fall through and render */ }
+  const pdf = await renderUncached(env, report, sections);
+  if (pdf) await env.R2.put(key, pdf, { httpMetadata: { contentType: "application/pdf" } }).catch(() => {});
+  return pdf;
+}
+
+async function renderUncached(env: Env, report: ReportForPdf, sections: ReportSections): Promise<Uint8Array | null> {
+  if (!env.BROWSER) return null;
   const photos = await inlinePhotos(env, sections);
   const html = reportPdfHtml(report, sections, photos);
   // Browser Rendering has a concurrent-session limit, so launch() can fail
