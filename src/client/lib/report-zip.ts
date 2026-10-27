@@ -3,11 +3,16 @@ import { saveBlob, type BatchProgress, type BatchResult } from "./qitp-records";
 
 /** Batch-download site reports as a ZIP of separate PDFs — one file per report.
  *
- *  Same shape as the QITP batch (see qitp-records.ts): built in the browser, one
- *  report at a time, because each PDF is a Browser Rendering pass of several
- *  seconds and the binding caps concurrent sessions. One failed report is
- *  skipped and named, not fatal to the batch.
+ *  Built in the browser, like the QITP batch (see qitp-records.ts), but three
+ *  reports at a time rather than one: each PDF is a Browser Rendering pass of
+ *  tens of seconds, and strictly one-by-one made a 19-report project take most
+ *  of an hour. Three stays under the binding's concurrent-session cap (the
+ *  server also retries a busy launch). One failed or stuck report is skipped
+ *  and named, not fatal to the batch.
  */
+
+const PARALLEL = 3;
+const PER_REPORT_TIMEOUT_MS = 180_000;
 
 export type ReportRef = {
   id: number;
@@ -32,23 +37,28 @@ export async function downloadReportsZip(
   const failed: string[] = [];
   let done = 0;
   let cancelled = false;
+  let next = 0;
 
-  for (const r of reports) {
-    if (isCancelled()) { cancelled = true; break; }
-    const label = fileName(r);
-    onProgress({ done, total: reports.length, current: label });
-    try {
-      const res = await fetch(`/api/site-reports/${r.id}/pdf`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      // Two reports can share a name (a regenerated period) — keep both.
-      const name = files[`${label}.pdf`] ? `${label} (${r.id}).pdf` : `${label}.pdf`;
-      files[name] = new Uint8Array(await res.arrayBuffer());
-    } catch {
-      failed.push(label);
+  async function worker() {
+    while (next < reports.length) {
+      if (isCancelled()) { cancelled = true; return; }
+      const r = reports[next++];
+      const label = fileName(r);
+      try {
+        const res = await fetch(`/api/site-reports/${r.id}/pdf`, { signal: AbortSignal.timeout(PER_REPORT_TIMEOUT_MS) });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const bytes = new Uint8Array(await res.arrayBuffer());
+        // Two reports can share a name (a regenerated period) — keep both.
+        files[files[`${label}.pdf`] ? `${label} (${r.id}).pdf` : `${label}.pdf`] = bytes;
+      } catch {
+        failed.push(label);
+      }
+      done += 1;
+      onProgress({ done, total: reports.length, current: label });
     }
-    done += 1;
-    onProgress({ done, total: reports.length, current: label });
   }
+  onProgress({ done, total: reports.length, current: "" });
+  await Promise.all(Array.from({ length: Math.min(PARALLEL, reports.length) }, worker));
 
   const names = Object.keys(files);
   if (names.length) {
