@@ -247,14 +247,14 @@ export function Reports() {
   }, [printReports]);
   // "Download .zip" = each report as its own PDF, zipped — either the ticked
   // ones (bulk bar) or everything the current filter shows ("Download all").
-  const [zipping, setZipping] = useState<{ done: number; total: number } | null>(null);
+  const [zipping, setZipping] = useState<{ done: number; total: number; retrying?: boolean } | null>(null);
   const stopZip = useRef(false);
   async function bulkZip(sel2: ReportRow[]) {
     if (sel2.length === 0) return;
     stopZip.current = false;
     setErr(null); setNotice(null); setZipping({ done: 0, total: sel2.length });
     try {
-      const r = await downloadReportsZip(sel2, `site-reports-${new Date().toISOString().slice(0, 10)}.zip`, (p) => setZipping({ done: p.done, total: p.total }), () => stopZip.current);
+      const r = await downloadReportsZip(sel2, `site-reports-${new Date().toISOString().slice(0, 10)}.zip`, (p) => setZipping({ done: p.done, total: p.total, retrying: p.current.startsWith("retrying") }), () => stopZip.current);
       (r.ok === 0 && !r.cancelled ? setErr : setNotice)(zipNotice(r));
     } catch (e) { setErr(e instanceof Error ? e.message : "zip download failed"); }
     finally { setZipping(null); }
@@ -496,7 +496,7 @@ export function Reports() {
               <button className={period === "weekly" ? "on" : ""} onClick={() => setPeriod("weekly")}>Weekly</button>
             </div>
             {filtered.length > 0 && (zipping
-              ? <button className="btn ghost tiny" onClick={() => { stopZip.current = true; }}>Downloading {zipping.done}/{zipping.total}… Stop</button>
+              ? <button className="btn ghost tiny" onClick={() => { stopZip.current = true; }}>Downloading {zipping.done}/{zipping.total}{zipping.retrying ? " · retrying" : ""}… Stop</button>
               : <button className="btn ghost tiny" disabled={busy} onClick={() => bulkZip(filtered)} title="Every report in this list, one PDF each, in a .zip">⤓ Download all</button>)}
           </div>
           {selected.size > 0 && (
@@ -506,7 +506,7 @@ export function Reports() {
                 <span className="grow" />
                 <button className="bbtn" disabled={busy} onClick={bulkPdf}>↓ Export PDF</button>
                 {zipping
-                  ? <button className="bbtn" onClick={() => { stopZip.current = true; }}>Downloading {zipping.done}/{zipping.total}… Stop</button>
+                  ? <button className="bbtn" onClick={() => { stopZip.current = true; }}>Downloading {zipping.done}/{zipping.total}{zipping.retrying ? " · retrying" : ""}… Stop</button>
                   : <button className="bbtn" disabled={busy} onClick={() => bulkZip(rows.filter((r) => selected.has(r.id)))}>⤓ Download .zip</button>}
                 <button className="bbtn" onClick={bulkCsv}>⤓ Export CSV</button>
                 <button className="bbtn accent" disabled={busy} onClick={bulkShare}>⤢ Share</button>
