@@ -67,11 +67,18 @@ export async function shrinkPhoto(env: Env, bytes: ArrayBuffer, maxPx = 1600): P
  *  pixel count (see shrinkPhoto), so this also shrinks the PDF several-fold. */
 const PHOTO_MAX_PX = 700;
 
+/** Largest original embedded as-is when the resize fails; past it the photo
+ *  prints as a placeholder tile. Same limit and reason as the cabin record
+ *  (qitp-pdf.ts): an original the Images binding won't take, inlined as base64
+ *  into the HTML and again over the browser socket, can blow the Worker's
+ *  128MB memory limit — and then the whole report fails, not just the photo. */
+const ORIGINAL_MAX_BYTES = 1_500_000;
+
 /** Pull the report's photos out of R2, downscale them, and inline them as data
  *  URIs (Browser Rendering can't reach the Access-gated /api/operations/file URLs).
  *  Batches of 6, as the QITP record does, rather than one at a time. */
-async function inlinePhotos(env: Env, sections: ReportSections): Promise<Array<{ src: string; caption: string }>> {
-  const out: Array<{ src: string; caption: string }> = [];
+async function inlinePhotos(env: Env, sections: ReportSections): Promise<Array<{ src: string | null; caption: string }>> {
+  const out: Array<{ src: string | null; caption: string }> = [];
   const list = (sections.photos ?? []).slice(0, 24);
   const BATCH = 6;
   for (let i = 0; i < list.length; i += BATCH) {
@@ -82,6 +89,11 @@ async function inlinePhotos(env: Env, sections: ReportSections): Promise<Array<{
         const obj = await env.R2.get(key);
         if (!obj) return null;
         const shrunk = await shrinkPhoto(env, await obj.arrayBuffer(), PHOTO_MAX_PX);
+        // shrinkPhoto returns an empty mime when it fell back to the original.
+        if (!shrunk.mime && shrunk.data.byteLength > ORIGINAL_MAX_BYTES) {
+          console.warn(`report PDF: photo ${key} could not be resized (${shrunk.data.byteLength} bytes) — placeholder tile`);
+          return { src: null, caption: p.caption || "" };
+        }
         const mime = shrunk.mime || obj.httpMetadata?.contentType || "image/jpeg";
         return { src: `data:${mime};base64,${toBase64(shrunk.data)}`, caption: p.caption || "" };
       } catch { return null; }   // skip a photo that won't load
@@ -153,7 +165,7 @@ export async function reportPdfAttachment(env: Env, report: ReportForPdf, filena
 }
 
 /** Standalone, print-ready HTML of the report (PGP house style, inline CSS). */
-export function reportPdfHtml(report: ReportForPdf, s: ReportSections, photos: Array<{ src: string; caption: string }>): string {
+export function reportPdfHtml(report: ReportForPdf, s: ReportSections, photos: Array<{ src: string | null; caption: string }>): string {
   const daily = report.period_type === "daily";
   const projName = report.project_id ? (report.project_name || report.project_code || "Project") : "Portfolio roll-up";
   const dateStr = daily ? fmtDate(report.period_start) : `${fmtDate(report.period_start)} – ${fmtDate(report.period_end)}`;
@@ -200,7 +212,7 @@ export function reportPdfHtml(report: ReportForPdf, s: ReportSections, photos: A
     : list(s.hse ?? []);
 
   const photosBody = photos.length
-    ? `<div class="gal">${photos.map((p) => `<figure><img src="${p.src}"/>${p.caption ? `<figcaption>${esc(p.caption)}</figcaption>` : ""}</figure>`).join("")}</div>`
+    ? `<div class="gal">${photos.map((p) => `<figure>${p.src ? `<img src="${p.src}"/>` : `<div class="noimg">Photo held in the app — too large to reproduce here.</div>`}${p.caption ? `<figcaption>${esc(p.caption)}</figcaption>` : ""}</figure>`).join("")}</div>`
     : "";
 
   // Sections hidden via "Edit for client" are dropped; free-form sections the
@@ -242,7 +254,7 @@ export function reportPdfHtml(report: ReportForPdf, s: ReportSections, photos: A
   table.lt td { padding: 5px 6px; border-bottom: 1px solid #f0eee7; } table.lt td.n, table.lt th.n { text-align: right; } table.lt tr.tot td { border-top: 2px solid #e6e3da; border-bottom: 0; }
   .tag { font-size: 10px; padding: 1px 7px; border-radius: 12px; } .tag.ok { background: #e7f6ec; color: #1f9d55; } .tag.warn { background: #fdecd2; color: #b8731a; }
   .sgrid { display: flex; gap: 10px; margin-bottom: 6px; } .sb { border: 1px solid #e6e3da; border-radius: 9px; padding: 7px 14px; text-align: center; } .sb .n { display: block; font-size: 18px; font-weight: 700; } .sb .n.ok { color: #1f9d55; } .sb .n.warn { color: #c47d1a; } .sb .n.bad { color: #c0392b; } .sb span:last-child { font-size: 10px; color: #6a6d8a; }
-  .gal { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; } .gal figure { margin: 0; } .gal img { width: 100%; height: 130px; object-fit: cover; border-radius: 8px; border: 1px solid #e6e3da; } .gal figcaption { font-size: 10px; color: #6a6d8a; margin-top: 3px; }
+  .gal { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; } .gal figure { margin: 0; } .gal img { width: 100%; height: 130px; object-fit: cover; border-radius: 8px; border: 1px solid #e6e3da; } .gal .noimg { height: 130px; box-sizing: border-box; display: flex; align-items: center; justify-content: center; text-align: center; padding: 0 12px; font-size: 10px; font-style: italic; color: #6a6d8a; border-radius: 8px; border: 1px dashed #e6e3da; } .gal figcaption { font-size: 10px; color: #6a6d8a; margin-top: 3px; }
   .foot { margin-top: 16px; padding-top: 8px; border-top: 1px solid #e6e3da; font-size: 10px; color: #9a9cb0; }
   </style></head><body>
     <div class="mast">

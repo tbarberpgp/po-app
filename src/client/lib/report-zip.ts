@@ -7,12 +7,35 @@ import { saveBlob, type BatchProgress, type BatchResult } from "./qitp-records";
  *  reports at a time rather than one: each PDF is a Browser Rendering pass of
  *  tens of seconds, and strictly one-by-one made a 19-report project take most
  *  of an hour. Three stays under the binding's concurrent-session cap (the
- *  server also retries a busy launch). One failed or stuck report is skipped
- *  and named, not fatal to the batch.
+ *  server also retries a busy launch). A report the server couldn't render
+ *  (5xx, network drop, timeout) is tried again after a pause, one at a time —
+ *  Browser Rendering refuses new browsers for minutes at a stretch when another
+ *  batch (a cabin export, say) is holding sessions, and those reports used to
+ *  be dropped. Only one that still fails after every retry is skipped and
+ *  named; it never sinks the batch.
  */
 
 const PARALLEL = 3;
 const PER_REPORT_TIMEOUT_MS = 180_000;
+/** Pause before each retry round. ~100s in all, past the few-minute outages
+ *  seen on the binding (2026-10-29). */
+const RETRY_WAITS_MS = [10_000, 30_000, 60_000];
+
+class PdfError extends Error {
+  constructor(message: string, readonly retryable: boolean) { super(message); }
+}
+
+async function fetchPdf(id: number): Promise<Uint8Array> {
+  let res: Response;
+  try {
+    res = await fetch(`/api/site-reports/${id}/pdf`, { signal: AbortSignal.timeout(PER_REPORT_TIMEOUT_MS) });
+  } catch (e) {
+    throw new PdfError(e instanceof Error ? e.message : "network error", true);
+  }
+  // 4xx (no permission, report deleted) won't change on a retry.
+  if (!res.ok) throw new PdfError(`HTTP ${res.status}`, res.status >= 500 || res.status === 429);
+  return new Uint8Array(await res.arrayBuffer());
+}
 
 export type ReportRef = {
   id: number;
@@ -37,28 +60,48 @@ export async function downloadReportsZip(
   const failed: string[] = [];
   let done = 0;
   let cancelled = false;
-  let next = 0;
+  const progress = (current: string) => onProgress({ done, total: reports.length, current });
 
-  async function worker() {
-    while (next < reports.length) {
-      if (isCancelled()) { cancelled = true; return; }
-      const r = reports[next++];
-      const label = fileName(r);
-      try {
-        const res = await fetch(`/api/site-reports/${r.id}/pdf`, { signal: AbortSignal.timeout(PER_REPORT_TIMEOUT_MS) });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const bytes = new Uint8Array(await res.arrayBuffer());
-        // Two reports can share a name (a regenerated period) — keep both.
-        files[files[`${label}.pdf`] ? `${label} (${r.id}).pdf` : `${label}.pdf`] = bytes;
-      } catch {
-        failed.push(label);
-      }
-      done += 1;
-      onProgress({ done, total: reports.length, current: label });
-    }
+  // Waits out a retry pause, but notices Stop within half a second.
+  async function pause(ms: number) {
+    for (let t = 0; t < ms && !isCancelled(); t += 500) await new Promise((r) => setTimeout(r, 500));
   }
-  onProgress({ done, total: reports.length, current: "" });
-  await Promise.all(Array.from({ length: Math.min(PARALLEL, reports.length) }, worker));
+
+  progress("");
+  let pending = reports;
+  for (let round = 0; pending.length && !cancelled; round++) {
+    if (round > 0) {
+      progress(`retrying ${pending.length}`);
+      await pause(RETRY_WAITS_MS[round - 1]);
+      if (isCancelled()) { cancelled = true; break; }
+    }
+    const lastRound = round === RETRY_WAITS_MS.length;
+    const queue = pending;
+    const retry: ReportRef[] = [];
+    let next = 0;
+    async function worker() {
+      while (next < queue.length) {
+        if (isCancelled()) { cancelled = true; return; }
+        const r = queue[next++];
+        const label = fileName(r);
+        try {
+          const bytes = await fetchPdf(r.id);
+          // Two reports can share a name (a regenerated period) — keep both.
+          files[files[`${label}.pdf`] ? `${label} (${r.id}).pdf` : `${label}.pdf`] = bytes;
+        } catch (e) {
+          if (e instanceof PdfError && e.retryable && !lastRound) { retry.push(r); continue; }
+          failed.push(label);
+        }
+        done += 1;
+        progress(label);
+      }
+    }
+    // First pass three at a time; retries one at a time, to ease off a busy binding.
+    const width = round === 0 ? PARALLEL : 1;
+    await Promise.all(Array.from({ length: Math.min(width, queue.length) }, worker));
+    // Retries keep the original order, so the zip still fills in date order.
+    pending = queue.filter((r) => retry.includes(r));
+  }
 
   const names = Object.keys(files);
   if (names.length) {

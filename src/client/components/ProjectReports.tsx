@@ -99,7 +99,7 @@ export function ProjectReports({ projectId, canEdit, members }: {
   }
   // "Download" = a .zip holding each report as its own PDF — either the ticked
   // ones (bulk bar) or everything the current filter shows ("Download all").
-  const [zipping, setZipping] = useState<{ done: number; total: number } | null>(null);
+  const [zipping, setZipping] = useState<{ done: number; total: number; retrying?: boolean } | null>(null);
   const stopZip = useRef(false);
   async function bulkZip(sel2: ReportRow[]) {
     if (sel2.length === 0) return;
@@ -108,7 +108,7 @@ export function ProjectReports({ projectId, canEdit, members }: {
     const code = memberList ? memberList.map((m) => m.code).join("-") : (sel2[0].project_code ?? projectId);
     const kind = period === "all" ? "site" : period;
     try {
-      const r = await downloadReportsZip(sel2, `${code} ${kind} reports.zip`, (p) => setZipping({ done: p.done, total: p.total }), () => stopZip.current);
+      const r = await downloadReportsZip(sel2, `${code} ${kind} reports.zip`, (p) => setZipping({ done: p.done, total: p.total, retrying: p.current.startsWith("retrying") }), () => stopZip.current);
       (r.ok === 0 && !r.cancelled ? setErr : setNotice)(zipNotice(r));
     } catch (e) { setErr(e instanceof Error ? e.message : "zip download failed"); }
     finally { setZipping(null); }
@@ -210,7 +210,7 @@ export function ProjectReports({ projectId, canEdit, members }: {
           </div>
           <span className="pill" style={{ marginLeft: 8 }}>{shown.length}</span>
           {shown.length > 0 && (zipping
-            ? <button className="btn ghost tiny" style={{ marginLeft: 8 }} onClick={() => { stopZip.current = true; }}>Downloading {zipping.done}/{zipping.total}… Stop</button>
+            ? <button className="btn ghost tiny" style={{ marginLeft: 8 }} onClick={() => { stopZip.current = true; }}>Downloading {zipping.done}/{zipping.total}{zipping.retrying ? " · retrying" : ""}… Stop</button>
             : <button className="btn ghost tiny" style={{ marginLeft: 8 }} disabled={busy} onClick={() => bulkZip(shown)} title="Every report in this list, one PDF each, in a .zip">⤓ Download all</button>)}
         </div>
 
@@ -218,7 +218,7 @@ export function ProjectReports({ projectId, canEdit, members }: {
           <div className="bulkbar">
             <span><b>{selected.size}</b> selected</span>
             {zipping
-              ? <button className="btn ghost tiny" onClick={() => { stopZip.current = true; }}>Downloading {zipping.done}/{zipping.total}… Stop</button>
+              ? <button className="btn ghost tiny" onClick={() => { stopZip.current = true; }}>Downloading {zipping.done}/{zipping.total}{zipping.retrying ? " · retrying" : ""}… Stop</button>
               : <button className="btn ghost tiny" disabled={busy} onClick={() => bulkZip(shown.filter((r) => selected.has(r.id)))}>⤓ Download</button>}
             <button className="btn ghost tiny" disabled={busy} onClick={bulkEmail}>✉ Email</button>
             <button className="btn ghost tiny" onClick={bulkCsv}>⤓ CSV</button>
