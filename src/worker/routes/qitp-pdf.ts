@@ -19,7 +19,7 @@ type Item = { text: string; hold?: boolean; photo?: string; entry?: string };
 type Section = { id: number; seq: number; title: string; point_type: string | null; responsible: string[]; items: Item[] };
 type Rec = { section_id: number; status: string; checks: boolean[]; entries: string[]; inspector: string | null; company: string | null; notes: string | null };
 type Sign = { section_id: number; party: string; signed_name: string; signature: string | null; signed_at: string };
-type Pic = { id: number; section_id: number; item_index: number | null; caption: string | null; src: string };
+type Pic = { id: number; section_id: number; item_index: number | null; caption: string | null; src: string | null };
 
 const esc = (s: unknown) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c] as string));
 const parseArr = (s: string | null): unknown[] => { if (!s) return []; try { const v = JSON.parse(s); return Array.isArray(v) ? v : []; } catch { return []; } };
@@ -46,6 +46,13 @@ function isReleased(sec: Section, signs: Sign[]): boolean {
  *  1600px produced a 24MB file no one could email. */
 const PHOTO_MAX_PX = 1000;
 
+/** Largest original embedded as-is when the resize fails. Past this a photo is
+ *  shown as a placeholder plate instead: cabin T8 carries a 64-megapixel, 20MB
+ *  photo the Images binding won't take, and inlining that original (as base64,
+ *  inside the HTML, then again over the browser socket) blew the Worker's 128MB
+ *  memory limit on every attempt — the whole record failed, not just the photo. */
+const ORIGINAL_MAX_BYTES = 1_500_000;
+
 /** Pull a cabin's photos from R2, downscale them and inline as data URIs —
  *  Browser Rendering can't reach the /pub photo URLs from inside the render.
  *  Every photo is included by design; cabins run 3–56 photos, so the ceiling is
@@ -63,6 +70,11 @@ async function inlineCabinPhotos(
         const obj = await env.R2.get(r.file_key);
         if (!obj) return null;
         const shrunk = await shrinkPhoto(env, await obj.arrayBuffer(), PHOTO_MAX_PX);
+        // shrinkPhoto returns an empty mime when it fell back to the original.
+        if (!shrunk.mime && shrunk.data.byteLength > ORIGINAL_MAX_BYTES) {
+          console.warn(`cabin PDF: photo ${r.id} could not be resized (${shrunk.data.byteLength} bytes) — placeholder plate`);
+          return { id: r.id, section_id: r.section_id, item_index: r.item_index, caption: r.caption, src: null };
+        }
         const mime = shrunk.mime || obj.httpMetadata?.contentType || "image/jpeg";
         return { id: r.id, section_id: r.section_id, item_index: r.item_index, caption: r.caption, src: `data:${mime};base64,${toBase64(shrunk.data)}` };
       } catch { return null; }        // a photo that won't load must not lose the whole record
@@ -240,7 +252,7 @@ function cabinPdfHtml(d: {
         const where = p.item_index != null && s.items[p.item_index]
           ? `Item ${p.item_index + 1} — ${s.items[p.item_index].text}` : "General section evidence";
         return `<figure class="plate">
-          <img src="${p.src}" alt=""/>
+          ${p.src ? `<img src="${p.src}" alt=""/>` : `<div class="noimg">Photograph held on the app record — too large to reproduce in this document.</div>`}
           <figcaption><span class="pno">Photo ${plate}</span>${esc(where)}${p.caption ? ` — ${esc(p.caption)}` : ""}</figcaption>
         </figure>`;
       }).join("")}</div>` : "";
@@ -318,6 +330,8 @@ function cabinPdfHtml(d: {
   .plates { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-bottom: 10px; }
   .plate { margin: 0; border: 0.6pt solid #000; background: #fff; -webkit-print-color-adjust: exact; break-inside: avoid; page-break-inside: avoid; }
   .plate img { width: 100%; height: 232px; object-fit: contain; display: block; }
+  .plate .noimg { height: 232px; display: flex; align-items: center; justify-content: center; text-align: center;
+                  padding: 0 18pt; font-size: 8pt; font-style: italic; }
   .plate figcaption { font-size: 7.8pt; padding: 3pt 5pt; line-height: 1.3; border-top: 0.6pt solid #000; }
   .pno { font-weight: bold; text-transform: uppercase; letter-spacing: .05em; margin-right: 5px; }
   </style></head><body>
