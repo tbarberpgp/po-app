@@ -6,6 +6,7 @@ import { looksLikeOurPoNumber } from "../../shared/line-match";
 import { GroupedCombobox, type ComboGroup, type ComboOption } from "./GroupedCombobox";
 import { api, fmtMoney, type AccountsLabourCert } from "../lib/api";
 import { isSpreadsheetFile } from "../../shared/file-kind";
+import { isRetryableExtractError } from "../../shared/extract-retry";
 import { can } from "../../shared/permissions";
 import { Topbar } from "./Shell";
 import type { CurrentUser, InboundApplication, Invoice, InvoiceMatch, InvoiceMatchLine, MatchSummary, Project, Supplier } from "../../shared/types";
@@ -964,7 +965,11 @@ function InvoiceViewer({ inv }: { inv: Invoice }) {
           that decide where this invoice belongs get shown against the paper
           they were read from. */}
       {!isPdf && !isSheet && <InvoicePickups inv={inv} dims={imgDims} />}
-      {inv.extract_error && <div className="flash" style={{ margin: "10px 12px", background: "var(--warn-soft)", color: "var(--warn)", fontSize: 12 }}>Couldn't auto-read this one — enter the figures by hand.</div>}
+      {inv.extract_error && <div className="flash" style={{ margin: "10px 12px", background: "var(--warn-soft)", color: "var(--warn)", fontSize: 12 }}>
+        {isRetryableExtractError(inv.extract_error)
+          ? "The AI couldn't read this one — the reader was refused or busy, not the document. The app tries again every hour; Re-read tries now, or enter the figures by hand."
+          : "Couldn't auto-read this one — enter the figures by hand."}
+      </div>}
 
       {lb && (
         <div className="acctx-lb" onClick={(e) => { if (e.target === e.currentTarget) setLb(false); }}>
