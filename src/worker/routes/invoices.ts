@@ -7,6 +7,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import type { Env, Variables } from "../env";
 import { cleanRegion, clampRegion, regionSchema, type ReadRegion } from "../../shared/read-regions";
 import { norm } from "../../shared/doc-fields";
+import { isRetryableExtractError, EXTRACT_RETRY_DAYS, EXTRACT_RETRY_BATCH } from "../../shared/extract-retry";
 import { looksLikeOurPoNumber, supplierRefKey, supplierNameOverlap } from "../../shared/line-match";
 import { isReleaseApprover, requirePermission, subjectOf } from "../auth";
 import { isReleased, needsApprovalBeforeRelease } from "../../shared/payment-release";
@@ -1038,9 +1039,72 @@ invoices.post("/:id/reextract", async (c) => {
     ).run();
     return c.json({ ok: true, po_number: ex.po_number });
   } catch (e) {
-    return c.json({ error: e instanceof Error ? e.message : "Re-read failed." }, 500);
+    const msg = e instanceof Error ? e.message : "Re-read failed.";
+    // Keep the latest failure on the row, so the invoice says why it has no
+    // lines and the hourly retry knows whether it's worth another go.
+    await c.env.DB.prepare("UPDATE invoices SET extract_error = ? WHERE id = ?").bind(msg, id).run().catch(() => {});
+    return c.json({ error: msg }, 500);
   }
 });
+
+/** Hourly: re-read invoices whose first read failed for a reason that clears
+ *  up by itself (see isRetryableExtractError), so a bad run fixes itself
+ *  instead of leaving an invoice with no lines until someone clicks Re-read.
+ *
+ *  Only unapproved inbox rows with no lines yet. Unlike Re-read, which a person
+ *  asks for, this never overwrites anything already on the row: whatever was
+ *  typed in by hand while the read was failing stays, and the document only
+ *  fills the gaps. */
+export async function retryFailedExtractions(env: Env): Promise<{ tried: number; read: number }> {
+  if (!env.ANTHROPIC_API_KEY) return { tried: 0, read: 0 };
+  const since = new Date(Date.now() - EXTRACT_RETRY_DAYS * 86_400_000).toISOString();
+  const rows = (await env.DB.prepare(
+    `SELECT id, file_key, file_type, file_name, extract_error FROM invoices
+      WHERE extract_error IS NOT NULL AND file_key IS NOT NULL AND status = 'inbox' AND approved_at IS NULL
+        AND (lines_json IS NULL OR lines_json = '[]') AND received_at >= ?
+      ORDER BY received_at DESC LIMIT 50`,
+  ).bind(since).all<{ id: number; file_key: string; file_type: string | null; file_name: string | null; extract_error: string }>()).results
+    .filter((r) => isRetryableExtractError(r.extract_error))
+    .slice(0, EXTRACT_RETRY_BATCH);
+
+  let read = 0;
+  for (const inv of rows) {
+    const obj = await env.R2.get(inv.file_key);
+    if (!obj) continue;
+    try {
+      const ex = await extractInvoice(env, { buffer: await obj.arrayBuffer(), name: inv.file_name ?? "invoice", type: inv.file_type ?? "" });
+      const supplierId = await findSupplier(env, ex.supplier_name, ex.supplier_vat_number);
+      const refPo = await resolvePoRef(env, ex.po_number);
+      let proj: { id: string } | null = refPo ? { id: refPo.project_id } : await projectFromPoRef(env, ex.po_number);
+      if (!proj && ex.delivery_address) proj = await projectFromDeliveryAddress(env, ex.delivery_address);
+      // The WHERE repeats the pick-up conditions: if someone pushed, dismissed
+      // or lined it up by hand during the Claude call, their version stands.
+      await env.DB.prepare(
+        `UPDATE invoices SET supplier_id = COALESCE(supplier_id, ?), supplier_name = COALESCE(supplier_name, ?),
+           invoice_number = COALESCE(invoice_number, ?), extracted_po_ref = COALESCE(extracted_po_ref, ?),
+           supplier_order_ref = COALESCE(supplier_order_ref, ?), invoice_date = COALESCE(invoice_date, ?),
+           due_date = COALESCE(due_date, ?), currency = COALESCE(currency, ?), net_amount = COALESCE(net_amount, ?),
+           vat_amount = COALESCE(vat_amount, ?), gross_amount = COALESCE(gross_amount, ?), lines_json = ?,
+           extracted_meta_json = COALESCE(extracted_meta_json, ?), kind = COALESCE(kind, ?),
+           project_id = COALESCE(project_id, ?), matched_po_id = COALESCE(matched_po_id, ?), extract_error = NULL
+         WHERE id = ? AND status = 'inbox' AND approved_at IS NULL AND (lines_json IS NULL OR lines_json = '[]')`,
+      ).bind(
+        supplierId, ex.supplier_name, ex.invoice_number, ex.po_number, ex.supplier_order_ref, ex.invoice_date,
+        ex.due_date ?? dueDateFromTerms(ex.invoice_date, ex.payment_terms), ex.currency ?? "GBP",
+        ex.net_amount, ex.vat_amount, ex.gross_amount, JSON.stringify(ex.lines), extractedMetaJson(ex),
+        proj ? "project" : null, proj?.id ?? null, refPo?.id ?? null, inv.id,
+      ).run();
+      read++;
+    } catch (e) {
+      // A different failure this time (say, one that won't clear) replaces
+      // the old one, which is what stops the retrying.
+      const msg = e instanceof Error ? e.message : "extraction failed";
+      await env.DB.prepare("UPDATE invoices SET extract_error = ? WHERE id = ?").bind(msg, inv.id).run();
+      console.error(`invoice ${inv.id} re-read failed:`, msg);
+    }
+  }
+  return { tried: rows.length, read };
+}
 
 /** Create (or link) an approved supplier from the invoice's extracted details
  *  — name plus the address, VAT number, contact, payment terms and bank

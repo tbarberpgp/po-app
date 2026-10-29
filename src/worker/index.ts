@@ -19,7 +19,7 @@ import { xero } from "./routes/xero";
 import { variations } from "./routes/variations";
 import { operations, runAutoSignouts, runHsPackReleases, runWhatsappTicketScans } from "./routes/operations";
 import { qitp } from "./routes/qitp";
-import { invoices } from "./routes/invoices";
+import { invoices, retryFailedExtractions } from "./routes/invoices";
 import { mailboxPull } from "./routes/mailboxPull";
 import { helpdesk } from "./routes/helpdesk";
 import { runMailboxPull } from "./graph";
@@ -187,6 +187,11 @@ export default {
     // until MS_GRAPH_* is configured). Reads mail in place, sidestepping M365's
     // external auto-forwarding block. Best-effort.
     ctx.waitUntil(runMailboxPull(env).catch((e) => console.error("mailbox pull failed:", e)));
+    // Re-read invoices whose read failed for a passing reason (an API refusal
+    // or overload) — each run lands on a different machine, so the next one
+    // usually gets through. Without this they sit with no lines until someone
+    // notices and clicks Re-read.
+    ctx.waitUntil(retryFailedExtractions(env).catch((e) => console.error("invoice re-read retry failed:", e)));
     // Labour bills still get keyed into Xero by hand now and then: tie each one
     // to its certificate, and mark certificates paid once Xero has paid them.
     ctx.waitUntil(linkLabourToXero(env).catch((e) => console.error("labour Xero link failed:", e)));
