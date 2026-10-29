@@ -119,12 +119,12 @@ function AttendanceMap({ signins }: { signins: SiteSignin[] }) {
       const L = await import("leaflet");
       if (cancelled || !ref.current) return;
       map = L.map(ref.current, { scrollWheelZoom: false });
-      // CARTO Voyager — a clean, lightly-coloured basemap (roads, parks, water)
-      // with labels: Google-Maps-like but far less busy than raw OSM.
-      L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png", {
-        subdomains: "abcd",
-        maxZoom: 20,
-        attribution: "&copy; OpenStreetMap &copy; CARTO",
+      // Standard OpenStreetMap tiles — keyless. CARTO's basemaps began
+      // watermarking every tile "API KEY REQUIRED" in Oct 2026. OSM's tile
+      // policy needs the attribution and a Referer, which browsers send.
+      L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        maxZoom: 19,
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
       }).addTo(map);
       for (const p of points) {
         L.circleMarker([p.lat, p.lng], { radius: 7, color: "#ee5d2b", fillColor: "#ee5d2b", fillOpacity: 0.85, weight: 2 })
