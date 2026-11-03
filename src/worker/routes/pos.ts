@@ -12,6 +12,7 @@ import { requirePermission, subjectOf } from "../auth";
 import { can } from "../../shared/permissions";
 import { buildCostCode, derivedProjectNumber } from "../../shared/types";
 import { pushPOToXero } from "./xero";
+import { summarisePoPayment, type PoBill } from "../../shared/po-payment";
 import { isSandboxId } from "../sandbox";
 
 export const pos = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -534,18 +535,26 @@ pos.get("/", async (c) => {
   // are: binding the returned ids would put an unfiltered register straight into
   // D1's 100-parameter ceiling, and that failure is silent — the whole list
   // would come back empty rather than wrong. `where` always carries at least
-  // the deleted-project clause, and the two conditions below are unconditional,
+  // the deleted-project clause, and the condition below is unconditional,
   // so the WHERE here is never empty.
+  //
+  // The same read carries each pushed invoice's Xero bill state, which is how
+  // the list answers "has Xero paid for this order?" (shared/po-payment.ts).
   const invRows = (await c.env.DB.prepare(
-    `SELECT i.matched_po_id AS po_id, i.invoice_number
+    `SELECT i.matched_po_id AS po_id, i.invoice_number, i.xero_bill_id,
+            COALESCE(i.base_net_amount, i.net_amount) AS net, i.gross_amount AS gross,
+            i.paid_at, i.amount_paid, i.xero_bill_status
        FROM invoices i
        JOIN purchase_orders po ON po.id = i.matched_po_id
        JOIN projects p ON p.id = po.project_id
-      WHERE ${[...where, "i.status != 'dismissed'", "TRIM(COALESCE(i.invoice_number, '')) != ''"].join(" AND ")}
+      WHERE ${[...where, "i.status != 'dismissed'"].join(" AND ")}
       ORDER BY i.invoice_date ASC, i.id ASC`,
-  ).bind(...binds).all<{ po_id: string; invoice_number: string }>()).results;
+  ).bind(...binds).all<{ po_id: string; invoice_number: string | null; xero_bill_id: string | null } & PoBill>()).results;
   const invByPo = new Map<string, string[]>();
+  const billsByPo = new Map<string, PoBill[]>();
   for (const r of invRows) {
+    if (r.xero_bill_id) billsByPo.set(r.po_id, [...(billsByPo.get(r.po_id) ?? []), r]);
+    if (!r.invoice_number?.trim()) continue;
     const list = invByPo.get(r.po_id) ?? [];
     // One invoice number can reach an order twice — the same document booked in
     // from the mailbox and by hand. Quote it once.
@@ -563,6 +572,7 @@ pos.get("/", async (c) => {
       delivery_lines_started: d.lines_started,
       delivery_lines_total: d.lines_total,
       invoice_numbers: invByPo.get(String(r.id)) ?? [],
+      xero_payment: summarisePoPayment(billsByPo.get(String(r.id)) ?? [], (r as Record<string, unknown>).total_value as number | null),
     };
   }));
 });

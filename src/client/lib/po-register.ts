@@ -53,12 +53,16 @@ export function poStatusLabel(s: POStatus): string {
   return t.charAt(0).toUpperCase() + t.slice(1);
 }
 
-/** Where the push to Xero got to, spelled out — no tick glyph, which a PDF
- *  standard font can't encode. */
+/** Where the order stands in Xero, spelled out — no tick glyph, which a PDF
+ *  standard font can't encode. Payment on its bills first; the legacy PO push
+ *  state only for an order with no bill in Xero. */
 export function poXeroStatusLabel(po: PurchaseOrder): string {
+  const pay = po.xero_payment?.state;
+  if (pay === "paid") return "Paid";
+  if (pay === "part") return "Part paid";
+  if (pay === "unpaid") return "Unpaid";
   if (po.xero_sync_status === "synced") return "Synced";
   if (po.xero_sync_status === "failed") return "Push failed";
-  if (po.xero_sync_status === "pending") return "Queued";
   return "";
 }
 

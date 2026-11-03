@@ -8,6 +8,7 @@ import { displayPerson } from "../lib/people";
 import type { CurrentUser, PurchaseOrder } from "../../shared/types";
 import { poDeliveryLabel } from "../../shared/po-delivery-status";
 import { PoRegisterExport } from "./PoRegisterExport";
+import { XeroPaidCell, XeroPaidPill } from "./XeroPaidCell";
 import { isApprovedNotIssued, supplierHasStaleCopy } from "../lib/po-register";
 import { ActivityRow, type Activity } from "./POView";
 
@@ -264,40 +265,14 @@ export function POsList({ me }: { me: CurrentUser | null }) {
                       {r.order_type === "framework" && <span className="pill info" style={{ fontSize: 10, marginLeft: 4 }}>framework</span>}
                       {r.order_type === "call_off" && <span className="pill neutral" style={{ fontSize: 10, marginLeft: 4 }}>call-off</span>}
                       {r.category === "prelims" && <span className="pill warn" style={{ fontSize: 10, marginLeft: 4 }}>prelim</span>}
-                      {r.paid_at && (
-                        <span className="pill approved" style={{ fontSize: 10, marginLeft: 4 }} title={`Settled in Xero on ${fmtDate(r.paid_at)}`}>paid</span>
-                      )}
+                      <XeroPaidPill po={r} />
                       {r.is_overdrawn && (
                         <span className="badge over" style={{ marginLeft: 4 }} title="One or more lines have been called off past the agreed qty or cost">
                           overdrawn
                         </span>
                       )}
                     </td>
-                    {!openId && <td className="center">
-                      {r.xero_sync_status === "synced" ? (
-                        <span
-                          className="pill approved"
-                          style={{ fontSize: 10 }}
-                          title={r.xero_po_number ? `Xero PO ${r.xero_po_number}` : "Synced to Xero"}
-                        >
-                          ✓ {r.xero_po_number ?? "synced"}
-                        </span>
-                      ) : r.xero_sync_status === "failed" ? (
-                        <span
-                          className="pill rejected"
-                          style={{ fontSize: 10 }}
-                          title={r.xero_sync_error ?? "Last Xero push failed"}
-                        >
-                          failed
-                        </span>
-                      ) : r.status === "approved" || r.status === "issued" ? (
-                        <span className="pill draft" style={{ fontSize: 10 }} title="Not yet pushed to Xero">
-                          pending
-                        </span>
-                      ) : (
-                        <span className="muted" style={{ fontSize: 11 }}>—</span>
-                      )}
-                    </td>}
+                    {!openId && <td className="center"><XeroPaidCell po={r} /></td>}
                     {showingDeleted && (
                       <td className="muted">{fmtDate(r.deleted_at)}<br />{r.deleted_by}</td>
                     )}

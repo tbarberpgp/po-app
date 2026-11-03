@@ -560,7 +560,7 @@ export async function downloadInvoiceAttachment(
 export async function listInvoices(
   env: Env,
   where: string,
-  opts?: { modifiedSince?: Date; maxPages?: number; summaryOnly?: boolean },
+  opts?: { modifiedSince?: Date; maxPages?: number; summaryOnly?: boolean; ids?: string[] },
 ): Promise<XeroInvoiceFull[]> {
   const conn = await getValidConnection(env);
   const maxPages = opts?.maxPages ?? 20;
@@ -573,6 +573,7 @@ export async function listInvoices(
   for (let page = 1; page <= maxPages; page++) {
     const q = new URLSearchParams();
     if (where) q.set("where", where);
+    if (opts?.ids?.length) q.set("IDs", opts.ids.join(","));
     q.set("page", String(page));
     if (opts?.summaryOnly) q.set("summaryOnly", "true");
     const body = await xeroFetch(env, conn, "GET", `/Invoices?${q.toString()}`, undefined, headers) as {
