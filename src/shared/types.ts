@@ -1572,6 +1572,21 @@ export type CheckedInTicket = {
   }>;
 };
 
+/** An order due on site today, or past its delivery date with nothing received —
+ *  the rows behind the Deliveries "Expected today" and "Overdue" counts. */
+export type DueDelivery = {
+  id: string;
+  po_number: string;
+  supplier: string;
+  delivery_date: string;
+  total_value: number;
+  status: string;
+  project_id: string;
+  project_code: string;
+  /** 1 when something has already been logged (only possible on today's rows). */
+  received: number;
+};
+
 export type DeliveryTicketCandidate = {
   id: number;
   /** Present on the cross-project deliveries inbox — which site the scan lives on. */

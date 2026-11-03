@@ -5,8 +5,8 @@
 // (sidebar → Delivery → Deliveries) and the project Operations → Deliveries tab.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { api, fmtQty } from "../lib/api";
-import type { CheckedInTicket, DeliveryTicketCandidate, CurrentUser, VarianceReport } from "../../shared/types";
+import { api, fmtMoney, fmtQty } from "../lib/api";
+import type { CheckedInTicket, DeliveryTicketCandidate, CurrentUser, DueDelivery, VarianceReport } from "../../shared/types";
 import { ConfBar, CandidateCheckIn, usePoLinkReason, needsPoLinkReason } from "./Operations";
 import { RegionBoxes, FieldCrop } from "./ReadRegions";
 import { PdfHighlightViewer } from "./PdfHighlightViewer";
@@ -188,13 +188,84 @@ function useRotatedFit(rot: number, portRef: React.RefObject<HTMLDivElement | nu
   return style;
 }
 
-function KpiCard({ label, value, sub, tone }: { label: string; value: number | string; sub: string; tone: "info" | "warn" | "good" }) {
-  const bar = tone === "warn" ? "var(--warn)" : tone === "good" ? "var(--success)" : "var(--navy)";
+/** One cell of the KPI strip. A count that needs someone is drawn in the warning
+ *  colour; a zero fades back. A tile that has somewhere to take you is a button
+ *  that opens the list behind the number. */
+function KpiTile({ label, value, sub, alert, active, onClick }: {
+  label: string; value: number; sub: string; alert?: boolean; active?: boolean; onClick?: () => void;
+}) {
+  const cls = `dl-kpi${alert && value ? " alert" : ""}${!value ? " zero" : ""}${active ? " on" : ""}`;
+  const body = (
+    <>
+      <span className="dl-kpi-label">{label}</span>
+      <span className="dl-kpi-value">{value.toLocaleString("en-GB")}</span>
+      <span className="dl-kpi-sub">{sub}</span>
+    </>
+  );
+  return onClick && value
+    ? <button type="button" className={cls} onClick={onClick} title="Show the list">{body}</button>
+    : <div className={cls}>{body}</div>;
+}
+
+function daysLate(date: string, today: string): number {
+  return Math.round((Date.parse(today) - Date.parse(date)) / 86_400_000);
+}
+
+/** The orders behind "Expected today" and "Overdue": who is meant to be
+ *  delivering, to which site, and how late. Shown in the detail pane whenever
+ *  there is no ticket to look at, so an empty inbox still says what's coming. */
+function DueDeliveries({ due, focus, onFocus }: {
+  due: DueDelivery[];
+  focus: "overdue" | "today";
+  onFocus: (f: "overdue" | "today") => void;
+}) {
+  const today = new Date().toISOString().slice(0, 10);
+  const overdue = due.filter((d) => d.delivery_date < today);
+  const dueToday = due.filter((d) => d.delivery_date === today);
+  const list = focus === "today" ? dueToday : overdue;
   return (
-    <div className="a-card" style={{ padding: "15px 17px", borderLeft: `3px solid ${bar}` }}>
-      <div className="eyebrow" style={{ margin: 0 }}>{label}</div>
-      <div style={{ fontFamily: "var(--font-serif)", fontSize: 30, lineHeight: 1.15 }}>{value}</div>
-      <div className="muted" style={{ fontSize: 11.5 }}>{sub}</div>
+    <div className="a-card dl-due">
+      <div className="dl-due-hd">
+        <h2>Waiting on delivery</h2>
+        <div className="dl-chips">
+          <button className={focus === "overdue" ? "on" : ""} onClick={() => onFocus("overdue")}>Overdue<span className="cnt">{overdue.length}</span></button>
+          <button className={focus === "today" ? "on" : ""} onClick={() => onFocus("today")}>Due today<span className="cnt">{dueToday.length}</span></button>
+        </div>
+      </div>
+      {list.length === 0
+        ? <div className="muted" style={{ padding: "18px 18px 20px", fontSize: 13 }}>
+            {focus === "today" ? "No orders are due on site today." : "Nothing is overdue — every order past its delivery date has had something received."}
+          </div>
+        : (
+          <div className="dl-due-list">
+            {list.map((d) => {
+              const late = daysLate(d.delivery_date, today);
+              // Never sent to the supplier, so it can't be late from their side.
+              const notSent = d.status === "draft" ? "never issued" : d.status === "pending_approval" ? "awaiting approval" : null;
+              return (
+                <Link key={d.id} className="dl-due-row" to={`/pos/${d.id}`}>
+                  <div style={{ minWidth: 0 }}>
+                    <div className="isup">{d.supplier}</div>
+                    <div className="imeta">
+                      <span className="num">{d.po_number}</span>
+                      <span className="proj">{d.project_code}</span>
+                      {notSent && <span>· {notSent}</span>}
+                    </div>
+                  </div>
+                  <div style={{ textAlign: "right" }}>
+                    <div className={`dl-due-when${late > 0 && !notSent ? " late" : ""}`}>
+                      {late > 0 ? `${late} day${late === 1 ? "" : "s"} late` : d.received ? "part arrived" : "due today"}
+                    </div>
+                    <div className="imeta" style={{ justifyContent: "flex-end" }}>
+                      <span>{fmtDate(d.delivery_date)}</span>
+                      <span>· {fmtMoney(d.total_value)}</span>
+                    </div>
+                  </div>
+                </Link>
+              );
+            })}
+          </div>
+        )}
     </div>
   );
 }
@@ -648,14 +719,24 @@ function CheckedInDetail({ ticket }: { ticket: CheckedInTicket }) {
 }
 
 /** The shared two-pane split: ticket inbox left, selected ticket right. */
-function TicketSplit({ rows, projects, onReload, emptyHint, checkedIn = [] }: {
+function TicketSplit({ rows, projects, onReload, emptyHint, checkedIn = [], chip: chipProp, onChip, idle, showIdle = false, onPick }: {
   rows: DeliveryTicketCandidate[];
   projects: Awaited<ReturnType<typeof api.listProjects>>;
   onReload: () => void;
   emptyHint: string;
   checkedIn?: CheckedInTicket[];
+  /** Pass both to let the page's KPI tiles drive the filter. */
+  chip?: Chip;
+  onChip?: (c: Chip) => void;
+  /** Shown in the detail pane when there's no ticket to show — or instead of
+   *  one while `showIdle` is set, until a row is picked. */
+  idle?: React.ReactNode;
+  showIdle?: boolean;
+  onPick?: () => void;
 }) {
-  const [chip, setChip] = useState<Chip>("all");
+  const [ownChip, setOwnChip] = useState<Chip>("all");
+  const chip = chipProp ?? ownChip;
+  const setChip = onChip ?? setOwnChip;
   const [search, setSearch] = useState("");
   const [selId, setSelId] = useState<number | null>(null);
   const [doneSelId, setDoneSelId] = useState<number | null>(null);
@@ -684,6 +765,7 @@ function TicketSplit({ rows, projects, onReload, emptyHint, checkedIn = [] }: {
   }, [rows, chip, terms, searching]);
 
   const sel = visible.find((r) => r.id === selId) ?? visible[0] ?? null;
+  const idleShown = !!idle && (showIdle || !sel);
   // Only tickets whose order number is printed on them count as matched — a
   // guess in this column is what the counts were hiding.
   const matchedCount = rows.filter(isConfirmed).length;
@@ -712,11 +794,14 @@ function TicketSplit({ rows, projects, onReload, emptyHint, checkedIn = [] }: {
     <div className="a-split">
       <aside className="inbox">
         <div className="inbox-hd"><h2>Ticket inbox</h2><span className="count">{searching ? `${shownCount} of ${chipTotal}` : shownCount}</span></div>
-        <div style={{ display: "flex", gap: 6, padding: "0 12px 8px", flexWrap: "wrap" }}>
-          {([["all", `All ${rows.length}`], ["matched", `Matched ${matchedCount}`], ["needs", `Needs checking ${rows.length - matchedCount}`],
-            ...(mismatchCount ? [["mismatch", `Doesn't match ${mismatchCount}`]] : []),
-            ...(checkedIn.length ? [["done", `Checked in ${checkedIn.length}`]] : [])] as Array<[Chip, string]>).map(([k, label]) => (
-            <button key={k} className={chip === k ? "primary tiny" : "ghost tiny"} onClick={() => setChip(k)}>{label}</button>
+        <div className="dl-chips" style={{ padding: "10px 14px 0" }}>
+          {([["all", "All", rows.length], ["matched", "Matched", matchedCount], ["needs", "Needs checking", rows.length - matchedCount],
+            ...(mismatchCount ? [["mismatch", "Doesn't match", mismatchCount]] : []),
+            ...(checkedIn.length ? [["done", "Checked in", checkedIn.length]] : [])] as Array<[Chip, string, number]>).map(([k, label, n]) => (
+            <button key={k} className={chip === k ? "on" : ""} onClick={() => setChip(k)}
+              title={k === "done" ? "The most recent check-ins" : undefined}>
+              {label}<span className="cnt">{n}</span>
+            </button>
           ))}
         </div>
         <div className="inbox-search" style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -749,16 +834,20 @@ function TicketSplit({ rows, projects, onReload, emptyHint, checkedIn = [] }: {
               </button>
             ))
           ) : visible.length === 0
-            ? <div className="muted" style={{ padding: "18px 15px", fontSize: 13, lineHeight: 1.5 }}>
-                {searching
-                  ? <>No ticket matches “{search.trim()}”. <button className="ghost tiny" onClick={() => setSearch("")}>Clear</button></>
-                  : emptyHint}
-              </div>
+            ? (searching
+              ? <div className="muted" style={{ padding: "18px 15px", fontSize: 13, lineHeight: 1.5 }}>
+                  No ticket matches “{search.trim()}”. <button className="ghost tiny" onClick={() => setSearch("")}>Clear</button>
+                </div>
+              : <div className="dl-empty">
+                  <span className="dl-empty-tick" aria-hidden>✓</span>
+                  <div className="dl-empty-ti">{rows.length ? "Nothing in this view" : "All caught up"}</div>
+                  <div className="muted">{rows.length ? "No pending ticket fits this filter." : emptyHint}</div>
+                </div>)
             : visible.map((r) => {
               const st = state(r);
               const dot = st === "po" ? "matched" : st === "line" || st === "supplier" ? "review" : "none";
               return (
-                <button key={r.id} className={`irow${sel?.id === r.id ? " on" : ""}`} onClick={() => setSelId(r.id)}>
+                <button key={r.id} className={`irow${!idleShown && sel?.id === r.id ? " on" : ""}`} onClick={() => { setSelId(r.id); onPick?.(); }}>
                   <span className={`idot ${dot}`} />
                   <div style={{ minWidth: 0 }}>
                     <div className="isup">{r.supplier_name || "Unknown supplier"}</div>
@@ -796,6 +885,8 @@ function TicketSplit({ rows, projects, onReload, emptyHint, checkedIn = [] }: {
           ? (doneSel
             ? <CheckedInDetail ticket={doneSel} />
             : <div className="a-card a-pad"><div className="muted" style={{ fontSize: 13 }}>Select a checked-in ticket to see where it went.</div></div>)
+          : idleShown
+            ? idle
           : !sel
             ? <div className="a-card a-pad"><div className="muted" style={{ fontSize: 13 }}>Select a ticket to review and check in against its purchase order.</div></div>
             : <TicketDetail cand={sel} projects={projects} onActioned={onReload} />}
@@ -809,40 +900,56 @@ export function DeliveriesWorkspace(_props: { me: CurrentUser | null }) {
   const [kpi, setKpi] = useState<Kpi | null>(null);
   const [rows, setRows] = useState<DeliveryTicketCandidate[]>([]);
   const [done, setDone] = useState<CheckedInTicket[]>([]);
+  const [due, setDue] = useState<DueDelivery[]>([]);
   const [projects, setProjects] = useState<Awaited<ReturnType<typeof api.listProjects>>>([]);
   const [loading, setLoading] = useState(true);
+  const [chip, setChip] = useState<Chip>("all");
+  // Which list the detail pane shows when it isn't showing a ticket, and
+  // whether a KPI click has asked for it in place of the selected ticket.
+  const [dueFocus, setDueFocus] = useState<"overdue" | "today">("overdue");
+  const [showDue, setShowDue] = useState(false);
 
   async function reload() {
     try {
       const r = await api.opsDeliveriesInbox();
-      setKpi(r.kpi); setRows(r.candidates); setDone(r.checked_in ?? []);
+      setKpi(r.kpi); setRows(r.candidates); setDone(r.checked_in ?? []); setDue(r.due ?? []);
     } catch { /* keep whatever we have */ }
     finally { setLoading(false); }
   }
   useEffect(() => { reload(); api.listProjects().then(setProjects).catch(() => {}); }, []);
 
+  const openDue = (f: "overdue" | "today") => { setDueFocus(f); setShowDue(true); if (chip === "done") setChip("all"); };
+  const openChip = (c: Chip) => { setChip(c); setShowDue(false); };
+
   return (
     <div className="acctx">
-      <div style={{ display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap", marginBottom: 14 }}>
+      <div style={{ marginBottom: 16 }}>
         <h1 style={{ margin: 0 }}>Deliveries</h1>
-        <span className="muted" style={{ fontSize: 13.5 }}>Delivery tickets scanned from WhatsApp &amp; email across every live site — confirm each against its purchase order.</span>
+        <div className="muted" style={{ fontSize: 13.5, marginTop: 2 }}>Delivery tickets scanned from WhatsApp &amp; email across every live site — confirm each against its purchase order.</div>
       </div>
 
       {kpi && (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14, marginBottom: 16 }}>
-          <KpiCard label="Expected today" value={kpi.expected_today} sub="from open POs" tone="info" />
-          <KpiCard label="Overdue" value={kpi.overdue} sub={kpi.overdue ? "past delivery date, nothing received" : "none outstanding"} tone={kpi.overdue ? "warn" : "good"} />
-          <KpiCard label="Checked in today" value={kpi.checked_in_today} sub="against a PO" tone="good" />
-          <KpiCard label="Needs a PO" value={kpi.needs_po} sub={kpi.needs_po ? "tickets with no order matched" : "all tickets matched"} tone={kpi.needs_po ? "warn" : "good"} />
-          <KpiCard label="Doesn't match the PO" value={kpi.variance ?? 0}
-            sub={kpi.variance ? "order number right, goods don't agree" : "quantities agree where checkable"}
-            tone={kpi.variance ? "warn" : "good"} />
+        <div className="dl-kpis">
+          <KpiTile label="Expected today" value={kpi.expected_today} sub="open POs due on site"
+            active={showDue && dueFocus === "today"} onClick={() => openDue("today")} />
+          <KpiTile label="Overdue" value={kpi.overdue} sub={kpi.overdue ? "past delivery date, nothing received" : "none outstanding"} alert
+            active={showDue && dueFocus === "overdue"} onClick={() => openDue("overdue")} />
+          <KpiTile label="Checked in today" value={kpi.checked_in_today} sub="delivery lines logged"
+            active={!showDue && chip === "done"} onClick={done.length ? () => openChip("done") : undefined} />
+          <KpiTile label="Needs a PO" value={kpi.needs_po} sub={kpi.needs_po ? "tickets with no order matched" : "all tickets matched"} alert
+            active={!showDue && chip === "needs"} onClick={() => openChip("needs")} />
+          <KpiTile label="Doesn't match the PO" value={kpi.variance ?? 0}
+            sub={kpi.variance ? "order number right, goods don't agree" : "quantities agree where checkable"} alert
+            active={!showDue && chip === "mismatch"} onClick={() => openChip("mismatch")} />
         </div>
       )}
 
       {loading
         ? <div className="muted" style={{ fontSize: 13 }}>Loading the ticket inbox…</div>
-        : <TicketSplit rows={rows} projects={projects} onReload={reload} checkedIn={done} emptyHint="No pending tickets anywhere — new WhatsApp delivery photos appear here after each scan." />}
+        : <TicketSplit rows={rows} projects={projects} onReload={reload} checkedIn={done}
+            chip={chip} onChip={openChip} showIdle={showDue} onPick={() => setShowDue(false)}
+            idle={<DueDeliveries due={due} focus={dueFocus} onFocus={setDueFocus} />}
+            emptyHint="No pending tickets anywhere — new WhatsApp delivery photos appear here after each scan." />}
     </div>
   );
 }

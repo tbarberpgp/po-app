@@ -2161,6 +2161,46 @@ body.rd-printing .rd-linedel, body.rd-printing .rd-addline, body.rd-printing .rd
 .acctx .istatus.ready { background:var(--success-soft); color:var(--success); }
 .acctx .istatus.none { background:var(--danger-soft); color:var(--danger); }
 
+/* Deliveries — KPI strip. One card split by hairlines rather than five boxes:
+   the numbers read as a row, and colour is spent only on counts that need
+   someone (amber), never on zeros. Tiles with a list behind them are buttons. */
+.acctx .dl-kpis { display:grid; grid-template-columns:repeat(5, minmax(0, 1fr)); background:var(--card); border:1px solid var(--line); border-radius:14px; overflow:hidden; margin-bottom:18px; }
+@media (max-width:1100px){ .acctx .dl-kpis { grid-template-columns:repeat(3, minmax(0, 1fr)); } }
+@media (max-width:640px){ .acctx .dl-kpis { grid-template-columns:repeat(2, minmax(0, 1fr)); } }
+.acctx .dl-kpi { display:flex; flex-direction:column; align-items:flex-start; justify-content:flex-start; gap:3px; max-width:none; box-shadow:none; min-width:0; padding:15px 18px 16px; text-align:left; border:0; border-right:1px solid var(--line); border-radius:0; background:transparent; color:var(--ink); font:inherit; position:relative; }
+.acctx .dl-kpi:last-child { border-right:0; }
+.acctx button.dl-kpi { cursor:pointer; transition:background var(--motion-fast) var(--motion-ease); }
+.acctx button.dl-kpi:hover { background:var(--card-2); }
+.acctx .dl-kpi.on { background:var(--card-2); }
+.acctx .dl-kpi.on::after { content:""; position:absolute; left:0; right:0; bottom:0; height:2px; background:var(--ink); }
+.acctx .dl-kpi-label { font-size:12px; font-weight:600; color:var(--muted); }
+.acctx .dl-kpi-value { font-size:28px; font-weight:600; line-height:1.15; letter-spacing:-0.01em; font-variant-numeric:tabular-nums; }
+.acctx .dl-kpi-sub { font-size:11.5px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.acctx .dl-kpi.alert .dl-kpi-value { color:var(--warn); }
+.acctx .dl-kpi.zero .dl-kpi-value { color:var(--line-strong); }
+
+/* Filter chips — the ticket inbox views and the due list's overdue/today. */
+.acctx .dl-chips { display:flex; gap:6px; flex-wrap:wrap; }
+.acctx .dl-chips button { display:inline-flex; align-items:center; gap:6px; padding:5px 10px; border:1px solid var(--line); border-radius:999px; background:var(--card); color:var(--muted); font:500 12.5px var(--font-sans); cursor:pointer; }
+.acctx .dl-chips button:hover { color:var(--ink); border-color:var(--line-strong); }
+.acctx .dl-chips button.on { background:var(--ink); border-color:var(--ink); color:var(--card); }
+.acctx .dl-chips .cnt { font-size:11px; font-weight:700; color:inherit; opacity:.7; font-variant-numeric:tabular-nums; }
+
+.acctx .dl-empty { padding:34px 20px 38px; text-align:center; font-size:13px; line-height:1.5; }
+.acctx .dl-empty-tick { display:inline-grid; place-items:center; width:38px; height:38px; border-radius:50%; background:var(--success-soft); color:var(--success); font-size:18px; font-weight:700; margin-bottom:10px; }
+.acctx .dl-empty-ti { font-size:15px; font-weight:600; color:var(--ink); margin-bottom:2px; }
+
+/* Waiting on delivery — the orders behind Expected today / Overdue. */
+.acctx .dl-due { overflow:hidden; }
+.acctx .dl-due-hd { display:flex; align-items:center; gap:12px; flex-wrap:wrap; padding:13px 16px; border-bottom:1px solid var(--line); }
+.acctx .dl-due-hd h2 { font-size:15px; margin:0; flex:1; }
+.acctx .dl-due-list { max-height:calc(100vh - 290px); overflow:auto; }
+.acctx .dl-due-row { display:grid; grid-template-columns:minmax(0, 1fr) auto; gap:14px; align-items:center; padding:11px 16px; border-bottom:1px solid var(--line); color:inherit; text-decoration:none; transition:background var(--motion-fast); }
+.acctx .dl-due-row:last-child { border-bottom:0; }
+.acctx .dl-due-row:hover { background:var(--card-2); }
+.acctx .dl-due-when { font-size:13px; font-weight:600; color:var(--ink-2); font-variant-numeric:tabular-nums; white-space:nowrap; }
+.acctx .dl-due-when.late { color:var(--warn); }
+
 .acctx .detail { display:flex; flex-direction:column; gap:18px; min-width:0; }
 .acctx .a-card { background:var(--card); border:1px solid var(--line); border-radius:14px; }
 .acctx .a-pad { padding:18px 20px; }
