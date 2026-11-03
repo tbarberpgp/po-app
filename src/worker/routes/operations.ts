@@ -1846,6 +1846,25 @@ operations.get("/deliveries-inbox", async (c) => {
     ).bind(today).first<{ n: number }>();
     kpi.checked_in_today = chk?.n ?? 0;
   } catch { /* tables may predate migrations */ }
+
+  // The orders behind those two counts, so the numbers can be acted on rather
+  // than just read. Same rule as the KPI: due today, or past due with nothing
+  // ever received. Oldest first — the longest-overdue is the one to chase.
+  let due: unknown[] = [];
+  try {
+    due = (await c.env.DB.prepare(
+      `SELECT po.id, po.po_number, po.supplier, po.delivery_date, po.total_value, po.status,
+              p.id AS project_id, p.code AS project_code,
+              EXISTS (SELECT 1 FROM site_deliveries d WHERE d.po_id = po.id) AS received
+         FROM purchase_orders po JOIN projects p ON p.id = po.project_id
+        WHERE po.status NOT IN ('deleted','rejected') AND po.order_type != 'framework'
+          AND p.deleted_at IS NULL AND p.completed_at IS NULL AND po.delivery_date IS NOT NULL
+          AND (po.delivery_date = ?1
+               OR (po.delivery_date < ?1 AND NOT EXISTS (SELECT 1 FROM site_deliveries d WHERE d.po_id = po.id)))
+        ORDER BY po.delivery_date ASC, po.po_number ASC
+        LIMIT 200`,
+    ).bind(today).all()).results;
+  } catch { due = []; }
   kpi.needs_po = (candidates as Array<{ method?: string }>).filter((x) => x.method === "none").length;
   // Tickets whose GOODS disagree with the order they matched. Counted here and
   // not in SQL because the comparison needs the ticket's parsed items, which
@@ -1892,7 +1911,7 @@ operations.get("/deliveries-inbox", async (c) => {
     });
   } catch { checkedIn = []; }
 
-  return c.json({ kpi, candidates, checked_in: checkedIn });
+  return c.json({ kpi, candidates, checked_in: checkedIn, due });
 });
 
 /** Pending ticket candidates (scanned, look like tickets, not yet actioned),

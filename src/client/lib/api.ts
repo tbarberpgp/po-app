@@ -1463,9 +1463,10 @@ export const api = {
   /** Cross-project deliveries inbox: every pending ticket + the KPI strip. */
   opsDeliveriesInbox: () =>
     jfetch<{
-      kpi: { expected_today: number; overdue: number; checked_in_today: number; needs_po: number };
+      kpi: { expected_today: number; overdue: number; checked_in_today: number; needs_po: number; variance?: number };
       candidates: import("../../shared/types").DeliveryTicketCandidate[];
       checked_in: import("../../shared/types").CheckedInTicket[];
+      due?: import("../../shared/types").DueDelivery[];
     }>("/api/operations/deliveries-inbox"),
   opsTicketCandidates: (projectId: string) =>
     jfetch<{ unscanned: number; candidates: DeliveryTicketCandidate[] }>(
