@@ -4,6 +4,7 @@ import { api, fmtDate, fmtMoney, fmtQty } from "../lib/api";
 import { PAYMENT_TERMS_OPTIONS, APPLICATION_CADENCES } from "../../shared/payment-terms";
 import { ContractUpload } from "./ContractUpload";
 import { ContractPanel } from "./ContractPanel";
+import { XeroPaidCell } from "./XeroPaidCell";
 import { Topbar } from "./Shell";
 import { can } from "../../shared/permissions";
 import { displayPerson } from "../lib/people";
@@ -1331,15 +1332,7 @@ function ProjectPOsPanel({ rows }: { rows: ProjectPORow[] }) {
                     </span>
                   )}
                 </td>
-                <td className="center">
-                  {r.xero_sync_status === "synced" ? (
-                    <span className="pill approved" style={{ fontSize: 10 }} title={r.xero_po_number ?? ""}>✓ {r.xero_po_number ?? "synced"}</span>
-                  ) : r.xero_sync_status === "failed" ? (
-                    <span className="pill rejected" style={{ fontSize: 10 }} title={r.xero_sync_error ?? ""}>failed</span>
-                  ) : (
-                    <span className="muted" style={{ fontSize: 11 }}>—</span>
-                  )}
-                </td>
+                <td className="center"><XeroPaidCell po={r} /></td>
                 <td>
                   {summary ? (
                     <button

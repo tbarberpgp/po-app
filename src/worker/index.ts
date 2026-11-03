@@ -24,6 +24,7 @@ import { mailboxPull } from "./routes/mailboxPull";
 import { helpdesk } from "./routes/helpdesk";
 import { runMailboxPull } from "./graph";
 import { linkLabourToXero } from "./xero/labour-link";
+import { syncSupplierBillPayments } from "./xero/paid";
 import { operatives } from "./routes/operatives";
 import { ownedPlant } from "./routes/ownedPlant";
 import { reports } from "./routes/reports";
@@ -195,6 +196,10 @@ export default {
     // Labour bills still get keyed into Xero by hand now and then: tie each one
     // to its certificate, and mark certificates paid once Xero has paid them.
     ctx.waitUntil(linkLabourToXero(env).catch((e) => console.error("labour Xero link failed:", e)));
+    // Mark the supplier bills we pushed as paid once Xero has paid them, so each
+    // order shows whether its money has gone out. The webhook only catches what
+    // happens while it is wired up; this catches the rest.
+    ctx.waitUntil(syncSupplierBillPayments(env).catch((e) => console.error("supplier bill paid sync failed:", e)));
     // Scan a batch of new site/WhatsApp photos for delivery tickets each hour,
     // so tickets surface as pending check-ins without anyone pressing Scan.
     ctx.waitUntil(runWhatsappTicketScans(env).catch((e) => console.error("ticket scan failed:", e)));

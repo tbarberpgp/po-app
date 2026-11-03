@@ -8,6 +8,7 @@ import { displayPerson } from "../lib/people";
 import type { CurrentUser, PurchaseOrder } from "../../shared/types";
 import { poDeliveryLabel } from "../../shared/po-delivery-status";
 import { PoRegisterExport } from "./PoRegisterExport";
+import { XeroPaidCell } from "./XeroPaidCell";
 import { isApprovedNotIssued, supplierHasStaleCopy } from "../lib/po-register";
 import { ActivityRow, type Activity } from "./POView";
 
@@ -270,31 +271,7 @@ export function POsList({ me }: { me: CurrentUser | null }) {
                         </span>
                       )}
                     </td>
-                    {!openId && <td className="center">
-                      {r.xero_sync_status === "synced" ? (
-                        <span
-                          className="pill approved"
-                          style={{ fontSize: 10 }}
-                          title={r.xero_po_number ? `Xero PO ${r.xero_po_number}` : "Synced to Xero"}
-                        >
-                          ✓ {r.xero_po_number ?? "synced"}
-                        </span>
-                      ) : r.xero_sync_status === "failed" ? (
-                        <span
-                          className="pill rejected"
-                          style={{ fontSize: 10 }}
-                          title={r.xero_sync_error ?? "Last Xero push failed"}
-                        >
-                          failed
-                        </span>
-                      ) : r.status === "approved" || r.status === "issued" ? (
-                        <span className="pill draft" style={{ fontSize: 10 }} title="Not yet pushed to Xero">
-                          pending
-                        </span>
-                      ) : (
-                        <span className="muted" style={{ fontSize: 11 }}>—</span>
-                      )}
-                    </td>}
+                    {!openId && <td className="center"><XeroPaidCell po={r} /></td>}
                     {showingDeleted && (
                       <td className="muted">{fmtDate(r.deleted_at)}<br />{r.deleted_by}</td>
                     )}
