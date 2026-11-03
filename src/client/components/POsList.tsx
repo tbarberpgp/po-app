@@ -53,8 +53,10 @@ export function POsList({ me }: { me: CurrentUser | null }) {
   const canDelete = can(me, "pos.delete");
   // The order the delete dialog is open for — null when it's closed.
   const [deleting, setDeleting] = useState<Row | null>(null);
-  // The order open in the side panel — clicking a row previews it in place.
-  const [openId, setOpenId] = useState<string | null>(null);
+  // The order picked in the list. On a wide screen the panel is always open:
+  // it shows the picked order, or the top of the list until one is picked.
+  const [pickedId, setPickedId] = useState<string | null>(null);
+  const wide = useWideScreen();
   // Deleted orders are only ever fetched when they're asked for by name, so
   // the columns that explain the deletion earn their space only on that view.
   const showingDeleted = status === "deleted";
@@ -96,6 +98,7 @@ export function POsList({ me }: { me: CurrentUser | null }) {
     const c = typeof av === "string" && typeof bv === "string" ? av.localeCompare(bv) : Number(av) - Number(bv);
     return sortDir === "asc" ? c : -c;
   });
+  const openId = shown.some((r) => r.id === pickedId) ? pickedId : wide ? shown[0]?.id ?? null : null;
   const total = shown.reduce((s, r) => s + (r.total_value ?? 0), 0);
   // How an export labels this slice — the filter, the search and how much of
   // the register it covers.
@@ -223,7 +226,7 @@ export function POsList({ me }: { me: CurrentUser | null }) {
               <tbody>
                 {shown.map((r) => (
                   <tr key={r.id}
-                    onClick={() => setOpenId((cur) => (cur === r.id ? null : r.id))}
+                    onClick={() => setPickedId(!wide && openId === r.id ? null : r.id)}
                     style={{ cursor: "pointer", ...(openId === r.id ? { background: "var(--accent-soft)", boxShadow: "inset 3px 0 0 var(--accent)" } : {}) }}>
                     <td><Link to={`/pos/${r.id}`} onClick={(e) => e.stopPropagation()}>{r.po_number}</Link></td>
                     <td>{r.supplier}</td>
@@ -312,7 +315,7 @@ export function POsList({ me }: { me: CurrentUser | null }) {
         {openId && (
           <POPeek
             id={openId}
-            onClose={() => setOpenId(null)}
+            onClose={wide ? undefined : () => setPickedId(null)}
             onDelete={canDelete && !showingDeleted ? (r) => { setErr(null); setNotice(null); setDeleting(r); } : undefined}
           />
         )}
@@ -328,6 +331,20 @@ export function POsList({ me }: { me: CurrentUser | null }) {
       </main>
     </>
   );
+}
+
+/** Room for the list and the panel side by side. Narrower than this the
+ *  panel only opens on a click, so the list keeps the width on a phone. */
+function useWideScreen(): boolean {
+  const query = "(min-width: 1100px)";
+  const [wide, setWide] = useState(() => window.matchMedia(query).matches);
+  useEffect(() => {
+    const mq = window.matchMedia(query);
+    const on = () => setWide(mq.matches);
+    mq.addEventListener("change", on);
+    return () => mq.removeEventListener("change", on);
+  }, []);
+  return wide;
 }
 
 /**
@@ -359,7 +376,7 @@ function DeliveryPill({ po }: { po: PurchaseOrder }) {
  * One order previewed beside the list: what was ordered, and its audit trail —
  * who raised it and when lives here rather than as columns on every row.
  */
-function POPeek({ id, onClose, onDelete }: { id: string; onClose: () => void; onDelete?: (r: Row) => void }) {
+function POPeek({ id, onClose, onDelete }: { id: string; onClose?: () => void; onDelete?: (r: Row) => void }) {
   const [po, setPo] = useState<Row & { lines: PurchaseOrder["lines"] } | null>(null);
   const [activity, setActivity] = useState<Activity>([]);
   useEffect(() => {
@@ -381,7 +398,7 @@ function POPeek({ id, onClose, onDelete }: { id: string; onClose: () => void; on
               <span className={`pill ${po.status}`}>{po.status.replace("_", " ")}</span>
               <DeliveryPill po={po} />
             </div>
-            <button className="ghost tiny" onClick={onClose} title="Close">✕</button>
+            {onClose && <button className="ghost tiny" onClick={onClose} title="Close">✕</button>}
           </div>
           <div className="card-bd" style={{ display: "grid", gridTemplateColumns: "110px 1fr", gap: "6px 12px", fontSize: 13 }}>
             {fact("Supplier", po.supplier)}
