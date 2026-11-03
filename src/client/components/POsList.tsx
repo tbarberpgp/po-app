@@ -9,6 +9,7 @@ import type { CurrentUser, PurchaseOrder } from "../../shared/types";
 import { poDeliveryLabel } from "../../shared/po-delivery-status";
 import { PoRegisterExport } from "./PoRegisterExport";
 import { isApprovedNotIssued, supplierHasStaleCopy } from "../lib/po-register";
+import { ActivityRow, type Activity } from "./POView";
 
 type PickProject = { id: string; code: string; name: string; site_group_name?: string | null };
 
@@ -52,6 +53,8 @@ export function POsList({ me }: { me: CurrentUser | null }) {
   const canDelete = can(me, "pos.delete");
   // The order the delete dialog is open for — null when it's closed.
   const [deleting, setDeleting] = useState<Row | null>(null);
+  // The order open in the side panel — clicking a row previews it in place.
+  const [openId, setOpenId] = useState<string | null>(null);
   // Deleted orders are only ever fetched when they're asked for by name, so
   // the columns that explain the deletion earn their space only on that view.
   const showingDeleted = status === "deleted";
@@ -173,7 +176,8 @@ export function POsList({ me }: { me: CurrentUser | null }) {
           </div>
         )}
 
-        <div className="card" ref={cardRef}>
+        <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
+        <div className="card" ref={cardRef} style={{ flex: 1, minWidth: 0 }}>
           <div className="card-hd sticky-bar" style={{ flexWrap: "wrap", gap: 10 }}>
             <h2>All purchase orders</h2>
             <span className="pill neutral">{shown.length}{shown.length !== rows.length ? ` of ${rows.length}` : ""}</span>
@@ -211,19 +215,17 @@ export function POsList({ me }: { me: CurrentUser | null }) {
                   <SortTh k="supplier" label="Supplier" />
                   <SortTh k="total_value" label="Value" className="num" />
                   <SortTh k="status" label="Status" className="center" />
-                  <SortTh k="delivery" label="Delivery" className="center" />
-                  <th className="center">Xero</th>
-                  <SortTh k="created_at" label="Raised" />
-                  <SortTh k="created_by" label="By" />
+                  {!openId && <th className="center">Xero</th>}
                   {showingDeleted && <th>Deleted</th>}
                   {showingDeleted && <th>Reason</th>}
-                  {canDelete && !showingDeleted && <th style={{ width: 80 }}></th>}
                 </tr>
               </thead>
               <tbody>
                 {shown.map((r) => (
-                  <tr key={r.id}>
-                    <td><Link to={`/pos/${r.id}`}>{r.po_number}</Link></td>
+                  <tr key={r.id}
+                    onClick={() => setOpenId((cur) => (cur === r.id ? null : r.id))}
+                    style={{ cursor: "pointer", ...(openId === r.id ? { background: "var(--accent-soft)", boxShadow: "inset 3px 0 0 var(--accent)" } : {}) }}>
+                    <td><Link to={`/pos/${r.id}`} onClick={(e) => e.stopPropagation()}>{r.po_number}</Link></td>
                     <td>{r.supplier}</td>
                     <td className="num">{fmtMoney(r.total_value)}</td>
                     <td className="center">
@@ -235,6 +237,7 @@ export function POsList({ me }: { me: CurrentUser | null }) {
                       >
                         {r.status.replace("_", " ")}
                       </span>
+                      <DeliveryPill po={r} />
                       {/* Stale beats not-issued: an amendment clears issued_at,
                           so a superseded order matches both, and only one of
                           them tells you a supplier is acting on wrong figures. */}
@@ -267,28 +270,7 @@ export function POsList({ me }: { me: CurrentUser | null }) {
                         </span>
                       )}
                     </td>
-                    <td className="center">
-                      {r.delivery_state && r.delivery_state !== "none" ? (
-                        <span
-                          className="pill"
-                          style={r.delivery_state === "full"
-                            ? { background: "var(--warn-soft)", color: "var(--warn)" }
-                            : { background: "var(--card-2)", color: "var(--muted)", border: "1px solid var(--line)", fontSize: 10 }}
-                          title={r.delivery_lines_total
-                            ? `${r.delivery_lines_started ?? 0} of ${r.delivery_lines_total} lines have had a delivery`
-                            : undefined}
-                        >
-                          {poDeliveryLabel({
-                            state: r.delivery_state,
-                            lines_delivered: r.delivery_lines_delivered ?? 0,
-                            lines_started: r.delivery_lines_started ?? 0,
-                            lines_total: r.delivery_lines_total ?? 0,
-                            drops: r.delivery_drops ?? 0,
-                          })}
-                        </span>
-                      ) : <span className="muted" style={{ fontSize: 11 }}>—</span>}
-                    </td>
-                    <td className="center">
+                    {!openId && <td className="center">
                       {r.xero_sync_status === "synced" ? (
                         <span
                           className="pill approved"
@@ -312,9 +294,7 @@ export function POsList({ me }: { me: CurrentUser | null }) {
                       ) : (
                         <span className="muted" style={{ fontSize: 11 }}>—</span>
                       )}
-                    </td>
-                    <td className="muted">{fmtDate(r.created_at)}</td>
-                    <td className="muted" title={[r.created_by_name, r.created_by].filter(Boolean).join(" · ") || undefined}>{displayPerson(r.created_by_name, r.created_by)}</td>
+                    </td>}
                     {showingDeleted && (
                       <td className="muted">{fmtDate(r.deleted_at)}<br />{r.deleted_by}</td>
                     )}
@@ -323,22 +303,19 @@ export function POsList({ me }: { me: CurrentUser | null }) {
                         {r.deletion_reason ?? "—"}
                       </td>
                     )}
-                    {canDelete && !showingDeleted && (
-                      <td>
-                        <button
-                          className="ghost tiny"
-                          title={`Delete ${r.po_number}`}
-                          onClick={() => { setErr(null); setNotice(null); setDeleting(r); }}
-                        >
-                          Delete
-                        </button>
-                      </td>
-                    )}
                   </tr>
                 ))}
               </tbody>
             </table>
           )}
+        </div>
+        {openId && (
+          <POPeek
+            id={openId}
+            onClose={() => setOpenId(null)}
+            onDelete={canDelete && !showingDeleted ? (r) => { setErr(null); setNotice(null); setDeleting(r); } : undefined}
+          />
+        )}
         </div>
 
         {deleting && (
@@ -350,6 +327,108 @@ export function POsList({ me }: { me: CurrentUser | null }) {
         )}
       </main>
     </>
+  );
+}
+
+/**
+ * Whether the goods are here, next to whether the order is signed off — the
+ * two things you scan the register for. Rejected and deleted orders have
+ * nothing coming, so they carry no delivery state.
+ */
+function DeliveryPill({ po }: { po: PurchaseOrder }) {
+  if (po.status === "rejected" || po.status === "deleted") return null;
+  const state = po.delivery_state ?? "none";
+  const [label, cls] = state === "full" ? ["fully delivered", "approved"]
+    : state === "part" ? ["part delivered", "warn"]
+    : ["not delivered", "neutral"];
+  return (
+    <span className={`pill ${cls}`} style={{ marginLeft: 4 }}
+      title={poDeliveryLabel({
+        state,
+        lines_delivered: po.delivery_lines_delivered ?? 0,
+        lines_started: po.delivery_lines_started ?? 0,
+        lines_total: po.delivery_lines_total ?? 0,
+        drops: po.delivery_drops ?? 0,
+      })}>
+      {label}
+    </span>
+  );
+}
+
+/**
+ * One order previewed beside the list: what was ordered, and its audit trail —
+ * who raised it and when lives here rather than as columns on every row.
+ */
+function POPeek({ id, onClose, onDelete }: { id: string; onClose: () => void; onDelete?: (r: Row) => void }) {
+  const [po, setPo] = useState<Row & { lines: PurchaseOrder["lines"] } | null>(null);
+  const [activity, setActivity] = useState<Activity>([]);
+  useEffect(() => {
+    setPo(null);
+    api.getPO(id).then((p) => setPo(p as Row & { lines: PurchaseOrder["lines"] })).catch(() => setPo(null));
+    api.getPOActivity(id).then(setActivity).catch(() => setActivity([]));
+  }, [id]);
+  const fact = (label: string, value: React.ReactNode) => (
+    <><span className="muted">{label}</span><span>{value}</span></>
+  );
+  return (
+    <aside className="card" style={{ width: 420, flex: "0 0 420px", position: "sticky", top: 16, maxHeight: "calc(100vh - 32px)", overflow: "auto" }}>
+      {!po ? <div className="card-bd muted">Loading…</div> : (
+        <>
+          <div className="card-hd" style={{ alignItems: "flex-start" }}>
+            <div style={{ flex: 1 }}>
+              <div className="muted" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".08em" }}>Purchase order</div>
+              <h2 style={{ margin: "2px 0 6px" }}>{po.po_number}</h2>
+              <span className={`pill ${po.status}`}>{po.status.replace("_", " ")}</span>
+              <DeliveryPill po={po} />
+            </div>
+            <button className="ghost tiny" onClick={onClose} title="Close">✕</button>
+          </div>
+          <div className="card-bd" style={{ display: "grid", gridTemplateColumns: "110px 1fr", gap: "6px 12px", fontSize: 13 }}>
+            {fact("Supplier", po.supplier)}
+            {fact("Project", `${po.project_code} · ${po.project_name}`)}
+            {fact("Category", po.category === "prelims" ? "Prelims" : "Materials")}
+            {fact("Needed by", po.delivery_date ? fmtDate(po.delivery_date) : "—")}
+            {fact("Xero", po.xero_po_number ?? (po.xero_sync_status ?? "—"))}
+          </div>
+          <div className="card-bd" style={{ borderTop: "1px solid var(--line)" }}>
+            {po.lines.map((l, i) => (
+              <div key={l.id ?? i} style={{ display: "flex", gap: 12, fontSize: 13, padding: "4px 0" }}>
+                <span style={{ flex: 1 }}>{l.item}<div className="muted" style={{ fontSize: 12 }}>{l.qty} {l.unit} × {fmtMoney(l.unit_cost)}</div></span>
+                <span className="num">{fmtMoney(l.line_total)}</span>
+              </div>
+            ))}
+            <div style={{ display: "flex", justifyContent: "space-between", borderTop: "1.5px solid var(--ink)", marginTop: 8, paddingTop: 8, fontWeight: 700 }}>
+              <span>Total</span><span>{fmtMoney(po.total_value)}</span>
+            </div>
+          </div>
+          <div className="card-bd" style={{ borderTop: "1px solid var(--line)", display: "flex", gap: 8 }}>
+            <Link className="btn accent" to={`/pos/${po.id}`} style={{ flex: 1, textAlign: "center" }}>
+              {po.status === "pending_approval" ? "Review & approve →" : "Open full PO →"}
+            </Link>
+            {onDelete && <button className="ghost" onClick={() => onDelete(po)}>Delete</button>}
+          </div>
+          <div className="card-hd" style={{ borderTop: "1px solid var(--line)" }}><h3>Audit trail</h3></div>
+          <div className="card-bd">
+            {activity.length === 0
+              ? [
+                  ["Raised by", displayPerson(po.created_by_name, po.created_by), po.created_at],
+                  ["Approved by", po.approved_by, po.approved_at],
+                  ["Issued to supplier", po.supplier, po.issued_at],
+                  ["Pushed to Xero", po.xero_po_number, po.xero_synced_at],
+                  ["Paid in Xero", null, po.paid_at],
+                ].filter(([, , at]) => at).map(([what, who, at]) => (
+                  <div key={what} style={{ display: "flex", gap: 8, fontSize: 13, padding: "5px 0" }}>
+                    <span style={{ flex: 1 }}><span className="muted">{what}</span> {who && <b>{who}</b>}</span>
+                    <span className="muted">{fmtDate(at)}</span>
+                  </div>
+                ))
+              : activity.map((a, idx) => (
+                <ActivityRow key={a.id} entry={a} highlight={idx === activity.length - 1 && po.status === "pending_approval"} />
+              ))}
+          </div>
+        </>
+      )}
+    </aside>
   );
 }
 
