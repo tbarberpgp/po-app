@@ -45,7 +45,7 @@ function columns(o: PoListExport): Col[] {
     { label: "Delivery date", wch: 13, fmt: "date", get: (p) => asDate(p.delivery_date) },
     { label: "Delivery", wch: 17, get: (p) => poDeliveryStateLabel(p.delivery_state) },
     { label: "Drops", wch: 7, get: (p) => p.delivery_drops ?? null },
-    { label: "Paid", wch: 13, fmt: "date", get: (p) => asDate(p.paid_at) },
+    { label: "Paid", wch: 13, fmt: "date", get: (p) => asDate(p.xero_payment?.last_paid_at ?? p.paid_at) },
   );
   if (o.showDeleted) {
     cols.push(

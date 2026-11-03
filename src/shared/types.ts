@@ -2,6 +2,7 @@ import type { VarianceReport } from "./delivery-variance";
 export type { VarianceReport, VarianceIssue } from "./delivery-variance";
 import type { MatchIssue, MatchSummary } from "./line-match";
 import type { PoDeliveryState, PoBilledState, PoDeliverySummary } from "./po-delivery-status";
+import type { PoPayment } from "./po-payment";
 
 export type Project = {
   /** Client payment terms for this contract, e.g. "45 days from application". */
@@ -461,6 +462,9 @@ export type PurchaseOrder = {
    *  drop. An empty list is not "unbilled" — an invoice can sit in the inbox
    *  matched to no order at all. */
   invoice_numbers?: string[];
+  /** Whether Xero has paid the supplier bills behind this order. Set by
+   *  GET /api/pos only — see `po-payment.ts` for what counts as paid. */
+  xero_payment?: PoPayment;
   /** The order's delivery register — one entry per delivery NOTE, oldest
    *  first. Set by GET /api/pos/:id only; the list carries the counts, not the
    *  notes themselves. */
