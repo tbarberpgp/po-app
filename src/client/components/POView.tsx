@@ -17,7 +17,7 @@ type Row = PurchaseOrder & {
   call_offs?: Array<{ id: string; po_number: string; status: string; total_value: number; created_at: string }>;
   parent?: { id: string; po_number: string } | null;
 };
-type Activity = Awaited<ReturnType<typeof api.getPOActivity>>;
+export type Activity = Awaited<ReturnType<typeof api.getPOActivity>>;
 
 export function POView({ me }: { me: CurrentUser | null }) {
   const { id } = useParams<{ id: string }>();
@@ -1442,7 +1442,7 @@ function ReasonExplainer({ po }: { po: PurchaseOrder }) {
   );
 }
 
-function ActivityRow({ entry, highlight }: { entry: Activity[number]; highlight: boolean }) {
+export function ActivityRow({ entry, highlight }: { entry: Activity[number]; highlight: boolean }) {
   const overturn = entry.details ? tryParseOverturn(entry.details) : null;
   return (
     <div className="activity-row">
