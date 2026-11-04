@@ -9,6 +9,11 @@
 // "paid" deliberately needs the order to be billed in full as well. One bill
 // of three paid, with the other two still to arrive, is not a paid order — it
 // is "part", and calling it paid would hide exactly the money still to go out.
+//
+// "Billed in full" is measured net OR gross. POs are meant to be net, but some
+// were raised at shelf prices with VAT in (Toolstation, Screwfix, B&Q…): a
+// £57.00 order billed £47.50 + VAT, paid in full, read as "part paid" against
+// the net figure alone — 9 such orders on the first live sync (2026-11-03).
 
 import { poBilledState } from "./po-delivery-status";
 
@@ -17,6 +22,9 @@ export type PoBill = {
   net: number | null;
   /** Gross of VAT, in the bill's currency — what Xero's AmountPaid is in. */
   gross: number | null;
+  /** Gross of VAT in pounds, for an order raised with VAT in. Falls back to
+   *  `gross` when absent. */
+  gross_gbp?: number | null;
   paid_at: string | null;
   amount_paid: number | null;
   xero_bill_status: string | null;
@@ -40,10 +48,11 @@ const VOID = new Set(["VOIDED", "DELETED"]);
 
 export function summarisePoPayment(bills: PoBill[], poValue: number | null | undefined): PoPayment {
   const live = bills.filter((b) => !VOID.has((b.xero_bill_status ?? "").toUpperCase()));
-  let billed = 0, paid = 0, nPaid = 0, last: string | null = null, anyMoney = false;
+  let billed = 0, billedGross = 0, paid = 0, nPaid = 0, last: string | null = null, anyMoney = false;
   for (const b of live) {
     const net = b.net ?? 0;
     billed += net;
+    billedGross += b.gross_gbp ?? b.gross ?? net;
     if (b.paid_at) {
       nPaid++;
       paid += net;
@@ -57,8 +66,11 @@ export function summarisePoPayment(bills: PoBill[], poValue: number | null | und
   const base = { bills: live.length, bills_paid: nPaid, billed_net: billed, paid_net: paid };
   if (live.length === 0) return { ...base, state: "none", last_paid_at: null };
   if (!anyMoney) return { ...base, state: "unpaid", last_paid_at: null };
-  const covered = poBilledState(billed, poValue);
-  const allPaid = nPaid === live.length && (covered === "full" || covered === "over" || covered === "unknown");
+  // Gross counts only on a match, never on "over": a £100 order billed £90 + VAT
+  // is £108 gross and still has £10 to bill.
+  const net = poBilledState(billed, poValue);
+  const covered = net === "full" || net === "over" || net === "unknown" || poBilledState(billedGross, poValue) === "full";
+  const allPaid = nPaid === live.length && covered;
   return { ...base, state: allPaid ? "paid" : "part", last_paid_at: allPaid ? last : null };
 }
 

@@ -543,6 +543,7 @@ pos.get("/", async (c) => {
   const invRows = (await c.env.DB.prepare(
     `SELECT i.matched_po_id AS po_id, i.invoice_number, i.xero_bill_id,
             COALESCE(i.base_net_amount, i.net_amount) AS net, i.gross_amount AS gross,
+            COALESCE(i.base_gross_amount, i.gross_amount) AS gross_gbp,
             i.paid_at, i.amount_paid, i.xero_bill_status
        FROM invoices i
        JOIN purchase_orders po ON po.id = i.matched_po_id
