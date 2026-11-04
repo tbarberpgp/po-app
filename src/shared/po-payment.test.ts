@@ -34,6 +34,22 @@ describe("summarisePoPayment", () => {
     assert.equal(p.last_paid_at, null);
   });
 
+  test("an order raised with VAT in is 'paid' once its bill is paid in full", () => {
+    // PO-26001-0018: £57.00 at shelf price, billed £47.50 + £9.50 VAT.
+    const p = summarisePoPayment([bill({ net: 47.5, gross: 57, paid_at: "2026-10-02T00:00:00.000Z" })], 57);
+    assert.equal(p.state, "paid");
+  });
+
+  test("a bill whose VAT carries it past a net order doesn't make it billed in full", () => {
+    const p = summarisePoPayment([bill({ net: 90, gross: 108, paid_at: "2026-10-02T00:00:00.000Z" })], 100);
+    assert.equal(p.state, "part");
+  });
+
+  test("an order raised with VAT in but only part billed is still 'part'", () => {
+    const p = summarisePoPayment([bill({ net: 20, gross: 24, paid_at: "2026-10-02T00:00:00.000Z" })], 57);
+    assert.equal(p.state, "part");
+  });
+
   test("one of two bills paid is 'part'", () => {
     const p = summarisePoPayment([bill({ net: 50, paid_at: "2026-10-02T00:00:00.000Z" }), bill({ net: 50 })], 100);
     assert.equal(p.state, "part");
