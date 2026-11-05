@@ -353,6 +353,9 @@ export type POLine = {
   // (or "manual", for a check-in with no ticket) each portion of `received_qty`
   // actually came from. Set by GET /api/pos/:id.
   received_qty?: number;
+  /** This line on the order's own delivery rule — null for carriage and other
+   *  charges that never arrive. Set by GET /api/pos/:id. */
+  delivery_state?: "none" | "part" | "full" | null;
   deliveries?: Array<{
     /** Which delivery note this receipt came in on — one note can book the
      *  same line in several times, so rows are not notes. */

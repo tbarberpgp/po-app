@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, fmtDate, fmtMoney, fmtQty } from "../lib/api";
 import { downloadPdf, generatePoPdf } from "../lib/po-pdf";
@@ -945,9 +946,11 @@ export function POView({ me }: { me: CurrentUser | null }) {
    ticket is still recognisable as which ticket it is. A PDF can't be
    thumbnailed in the page, and an image that fails to load shouldn't leave a
    broken icon behind — both fall back to a plain link. */
-function TicketThumb(
-  { url, type, label, size, kind = "ticket" }:
-  { url: string; type: string | null; label: string; size: number; kind?: "ticket" | "invoice" },
+export function TicketThumb(
+  { url, type, label, size, kind = "ticket", text }:
+  { url: string; type: string | null; label: string; size: number; kind?: "ticket" | "invoice";
+    /** Show this as a link instead of a thumbnail — same lightbox on click. */
+    text?: string },
 ) {
   const [lb, setLb] = useState(false);
   const [broken, setBroken] = useState(false);
@@ -965,6 +968,9 @@ function TicketThumb(
   }, [lb]);
 
   if (isPdf || broken) {
+    if (text) {
+      return <a href={url} target="_blank" rel="noreferrer" title={`${label} — opens the ${noun}`}>{text} ↗</a>;
+    }
     return (
       <a className="ghost tiny" href={url} target="_blank" rel="noreferrer" style={{ flex: "0 0 auto" }}>
         {isPdf ? `${kind === "invoice" ? "Invoice" : "Ticket"} (PDF) ↗` : `Open ${noun} ↗`}
@@ -977,7 +983,10 @@ function TicketThumb(
   const thumbSrc = `${url}${url.includes("?") ? "&" : "?"}w=${size * 2}`;
   return (
     <>
-      <img
+      {text ? (
+        <a href={url} title={`${label} — click to view the ${noun}`}
+          onClick={(e) => { e.preventDefault(); e.stopPropagation(); setLb(true); }}>{text}</a>
+      ) : <img
         src={thumbSrc}
         alt={kind === "invoice" ? `${label} — supplier invoice` : `${label} — delivery note`}
         title={`${label} — click to enlarge`}
@@ -988,8 +997,10 @@ function TicketThumb(
           width: size, height: size, flex: "0 0 auto", objectFit: "cover", objectPosition: "top",
           borderRadius: 6, border: "1px solid var(--line)", background: "#fff", cursor: "zoom-in",
         }}
-      />
-      {lb && (
+      />}
+      {/* Portalled to <body>: inside a sticky, scrolling panel (the PO list's
+          preview) the overlay would otherwise sit under the page header. */}
+      {lb && createPortal(
         <div className="acctx-lb" onClick={(e) => { if (e.target === e.currentTarget) setLb(false); }}>
           <div className="lb-bar">
             <div className="ti">{label}</div>
@@ -1000,7 +1011,8 @@ function TicketThumb(
           <div className="lb-stage" onClick={(e) => { if (e.target === e.currentTarget) setLb(false); }}>
             <img className="lb-img" src={url} alt={kind === "invoice" ? `${label} — supplier invoice` : `${label} — delivery note`} />
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </>
   );

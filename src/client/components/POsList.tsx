@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { api, fmtDate, fmtMoney } from "../lib/api";
+import { api, fmtDate, fmtMoney, fmtQty } from "../lib/api";
 import { Topbar } from "./Shell";
 import { useStickyCard } from "../lib/sticky";
 import { can } from "../../shared/permissions";
@@ -10,7 +10,8 @@ import { poDeliveryLabel } from "../../shared/po-delivery-status";
 import { PoRegisterExport } from "./PoRegisterExport";
 import { XeroPaidCell, XeroPaidPill } from "./XeroPaidCell";
 import { isApprovedNotIssued, supplierHasStaleCopy } from "../lib/po-register";
-import { ActivityRow, type Activity } from "./POView";
+import { ActivityRow, TicketThumb, type Activity } from "./POView";
+import type { PoDeliveryDrop } from "../../shared/types";
 
 type PickProject = { id: string; code: string; name: string; site_group_name?: string | null };
 
@@ -352,7 +353,7 @@ function DeliveryPill({ po }: { po: PurchaseOrder }) {
  * who raised it and when lives here rather than as columns on every row.
  */
 function POPeek({ id, onClose, onDelete }: { id: string; onClose?: () => void; onDelete?: (r: Row) => void }) {
-  const [po, setPo] = useState<Row & { lines: PurchaseOrder["lines"] } | null>(null);
+  const [po, setPo] = useState<Row & { lines: PurchaseOrder["lines"]; deliveries?: PoDeliveryDrop[] } | null>(null);
   const [activity, setActivity] = useState<Activity>([]);
   useEffect(() => {
     setPo(null);
@@ -385,7 +386,9 @@ function POPeek({ id, onClose, onDelete }: { id: string; onClose?: () => void; o
           <div className="card-bd" style={{ borderTop: "1px solid var(--line)" }}>
             {po.lines.map((l, i) => (
               <div key={l.id ?? i} style={{ display: "flex", gap: 12, fontSize: 13, padding: "4px 0" }}>
-                <span style={{ flex: 1 }}>{l.item}<div className="muted" style={{ fontSize: 12 }}>{l.qty} {l.unit} × {fmtMoney(l.unit_cost)}</div></span>
+                <span style={{ flex: 1 }}>{l.item}<div className="muted" style={{ fontSize: 12 }}>{l.qty} {l.unit} × {fmtMoney(l.unit_cost)}</div>
+                  {po.status !== "rejected" && po.status !== "deleted" && (po.delivery_state ?? "none") !== "none" && <LineDelivery line={l} wholeOrder={(po.deliveries ?? []).filter((d) => d.whole_order)} />}
+                </span>
                 <span className="num">{fmtMoney(l.line_total)}</span>
               </div>
             ))}
@@ -421,6 +424,51 @@ function POPeek({ id, onClose, onDelete }: { id: string; onClose?: () => void; o
         </>
       )}
     </aside>
+  );
+}
+
+/**
+ * Whether this line has arrived, and on which delivery notes — each DN number
+ * opens the ticket photo. Only shown once something has landed on the order;
+ * before that every line would just repeat the header's "not delivered".
+ */
+function LineDelivery({ line, wholeOrder }: { line: PurchaseOrder["lines"][number]; wholeOrder: PoDeliveryDrop[] }) {
+  const state = line.delivery_state;
+  if (state == null) return null;
+  // One entry per note, not per receipt row — a note can book a line in several times.
+  const notes = new Map<string, { dn: string | null; date: string; qty: number; unit: string | null; url: string | null; type: string | null }>();
+  for (const d of line.deliveries ?? []) {
+    const n = notes.get(d.note);
+    if (n) n.qty += d.qty;
+    else notes.set(d.note, { dn: d.dn, date: d.date, qty: d.qty, unit: d.unit, url: d.ticket_url, type: d.ticket_type });
+  }
+  // Signed for as a whole order: that note covers this line too.
+  if (notes.size === 0) {
+    for (const d of wholeOrder) {
+      notes.set(d.key, { dn: d.dn, date: d.delivered_at, qty: NaN, unit: null, url: d.tickets[0]?.url ?? null, type: d.tickets[0]?.type ?? null });
+    }
+  }
+  const [label, cls] = state === "full" ? ["✓ delivered", "approved"]
+    : state === "part" ? ["part delivered", "warn"]
+    : ["not delivered", "neutral"];
+  return (
+    <div style={{ marginTop: 4, display: "flex", flexDirection: "column", gap: 3, alignItems: "flex-start" }}>
+      <span className={`pill ${cls}`} style={{ fontSize: 11 }}>{label}</span>
+      {[...notes.values()].map((n, i) => {
+        const name = n.dn ? `DN ${n.dn}` : "Delivery note";
+        return (
+          <span key={i} style={{ fontSize: 12 }}>
+            {n.url
+              ? <TicketThumb url={n.url} type={n.type} label={name} size={0} text={name} />
+              : <span className="muted" title="Logged without a ticket photo">{n.dn ? name : "No ticket"}</span>}
+            <span className="muted">
+              {" · "}{fmtDate(n.date)}
+              {Number.isFinite(n.qty) ? ` · ${fmtQty(n.qty)}${n.unit ? ` ${n.unit}` : ""}` : " · whole order"}
+            </span>
+          </span>
+        );
+      })}
+    </div>
   );
 }
 
