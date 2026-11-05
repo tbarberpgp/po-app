@@ -6,7 +6,7 @@ import { learnAliases } from "../matchMemory";
 import { normText } from "../../shared/line-match";
 import { pricedBudget, overBudgetBy, type PricedBudgetInput } from "../../shared/budget";
 import { committedAgainstBudgetLine, type SpendLine } from "../../shared/committed-spend";
-import { summarisePoDeliveries, deliveryNoteKey, suspectedDuplicateReceipts, PO_DELIVERY_NOTE_COLUMNS, PO_DELIVERY_NOTE_JOIN, type PoLineRef, type PoDeliveryRow } from "../../shared/po-delivery-status";
+import { summarisePoDeliveries, isDeliverableLine, deliveryNoteKey, suspectedDuplicateReceipts, PO_DELIVERY_NOTE_COLUMNS, PO_DELIVERY_NOTE_JOIN, type PoLineRef, type PoDeliveryRow } from "../../shared/po-delivery-status";
 import { emailApprovers, emailRequesterDecision, emailFrameworkOverdraw, FRAMEWORK_OVERDRAW_RECIPIENTS } from "../notify";
 import { requirePermission, subjectOf } from "../auth";
 import { can } from "../../shared/permissions";
@@ -1192,11 +1192,18 @@ pos.get("/:id", async (c) => {
 
   // The order-level state, on the shared rule — so this page, the PO list and
   // the awaiting list can't disagree about whether the order has landed.
-  const deliverySummary = summarisePoDeliveries(
-    id,
-    lines.results.map((l) => ({ id: Number(l.id), po_id: id, qty: l.qty == null ? null : Number(l.qty), item: l.item == null ? null : String(l.item) })),
-    receipts.results.map((r) => ({ ...r, po_id: id, completes_po: r.completes_po ?? 0 })),
-  );
+  const lineRefs = lines.results.map((l) => ({ id: Number(l.id), po_id: id, qty: l.qty == null ? null : Number(l.qty), item: l.item == null ? null : String(l.item) }));
+  const receiptRefs = receipts.results.map((r) => ({ ...r, po_id: id, completes_po: r.completes_po ?? 0 }));
+  const deliverySummary = summarisePoDeliveries(id, lineRefs, receiptRefs);
+  // Each line on the same rule, run one line at a time — so a line reads
+  // delivered here exactly when it counts towards the order's "x of y lines".
+  // Carriage and other charges are never delivered, so they carry no state.
+  const lineDeliveryState = (lineId: number): "none" | "part" | "full" | null => {
+    const ref = lineRefs.find((l) => l.id === lineId);
+    if (!ref || !isDeliverableLine(ref.item)) return null;
+    const one = summarisePoDeliveries(id, [ref], receiptRefs);
+    return one.lines_delivered === 1 ? "full" : one.lines_started === 1 ? "part" : "none";
+  };
 
   // For a framework order, show how much of each line has already been drawn
   // down by its live call-offs — matched by item description, the same rule the
@@ -1326,6 +1333,7 @@ pos.get("/:id", async (c) => {
       resource_name: cost_code ? l.link_resource_name ?? null : null,
       resource_usage: cost_code ? l.link_resource_usage ?? null : null,
       deliveries, received_qty: deliveries.reduce((s, d) => s + d.qty, 0),
+      delivery_state: lineDeliveryState(Number(l.id)),
     };
     if (drawByItem) {
       const drawn = drawByItem.get(String(l.item ?? "").toLowerCase()) ?? { qty: 0, value: 0 };
