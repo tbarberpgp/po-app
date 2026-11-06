@@ -1857,7 +1857,7 @@ operations.get("/deliveries-inbox", async (c) => {
               OR po.created_at >= ?)
        ORDER BY po.created_at ASC
        LIMIT 500`;
-  const windowStart = new Date(Date.now() - 46 * 86_400_000).toISOString();
+  const windowStart = new Date(Date.now() - 16 * 86_400_000).toISOString(); // UNCONFIRMED_WINDOW_DAYS + 1
   try {
     arrival = (await c.env.DB.prepare(arrivalSql(true)).bind(windowStart).all<ArrivalRow>()).results;
   } catch {

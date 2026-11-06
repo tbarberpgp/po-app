@@ -195,7 +195,7 @@ export function ArrivalTracker({ rows, focus, onFocus, onSorChanged }: {
 
           {section(
             `Nothing from the supplier yet (${b.unconfirmed.length})`,
-            `Sent in the last ${UNCONFIRMED_WINDOW_DAYS} days with no SOR and no date phoned in. Grouped by supplier, so one call covers several — then use "Set promised date" on the PO.`,
+            `Raised in the last ${UNCONFIRMED_WINDOW_DAYS} days with no SOR and no date phoned in. NO DATE = the PO has no delivery date at all — add one. Grouped by supplier, so one call covers several; then use "Set promised date" on the PO.`,
           )}
           {groups.length === 0 && empty("Every order sent in the last few weeks has a date from its supplier.")}
           {groups.map(([supplier, rs]) => {
@@ -211,20 +211,23 @@ export function ArrivalTracker({ rows, focus, onFocus, onSorChanged }: {
                     <div className="imeta">
                       <span>{rs.length} order{rs.length === 1 ? "" : "s"}</span>
                       <span className="proj">{[...new Set(rs.map((r) => r.project_code))].join(" · ")}</span>
-                      <span>· {rs.slice(0, 3).map((r) => r.po_number).join(", ")}{rs.length > 3 ? "…" : ""}</span>
+                      {rs.some((r) => !r.required_date) && <span style={{ color: "var(--danger)", fontWeight: 600 }}>· {rs.filter((r) => !r.required_date).length} with no date at all</span>}
                     </div>
                   </div>
                   <div style={{ textAlign: "right" }}>
-                    <div className="dl-due-when late">{daysBetween(rs[0].created_at, today)} days waiting</div>
+                    <div className="dl-due-when late">{(() => { const n = daysBetween(rs[0].created_at, today); return `${n} day${n === 1 ? "" : "s"} waiting`; })()}</div>
                     <div className="imeta" style={{ justifyContent: "flex-end" }}><span>{fmtMoney(total)}</span></div>
                   </div>
                 </summary>
                 {rs.map((r) => (
                   <Link key={r.id} className="dl-due-row" to={`/pos/${r.id}`} style={{ paddingLeft: 32, background: "var(--card-2)" }}>
                     <div className="imeta" style={{ marginTop: 0 }}>
+                      {r.required_date
+                        ? <span style={flag("var(--card-2)", "var(--muted)")}>Required {fmtDate(r.required_date).replace(/ \d{4}$/, "")}</span>
+                        : <span style={flag("var(--danger-soft, #f8dcd6)", "var(--danger)")}>No date</span>}
                       <span className="num">{r.po_number}</span><span className="proj">{r.project_code}</span>
                       <span>· raised {fmtDate(r.created_at)}</span>
-                      {r.required_date && <span>· required {fmtDate(r.required_date)}</span>}
+                      {r.status === "pending_approval" && <span>· awaiting approval</span>}
                     </div>
                     <div className="imeta" style={{ justifyContent: "flex-end", marginTop: 0 }}><span>{fmtMoney(r.total_value)}</span></div>
                   </Link>
@@ -641,7 +644,10 @@ function ArrivalBoard({ today, week, b, pendingSors, groups, onConfirm }: {
             <div style={{ fontWeight: 600, fontSize: 13 }}>{supplier}</div>
             <div className="imeta" style={{ marginTop: 2 }}><span>{rs.length} order{rs.length === 1 ? "" : "s"}</span><span className="proj">{[...new Set(rs.map((r) => r.project_code))].join(" · ")}</span></div>
             <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6 }}>
-              <span style={flag("var(--card-2)", "var(--muted)")}>No SOR</span>
+              <span style={{ display: "flex", gap: 4 }}>
+                <span style={flag("var(--card-2)", "var(--muted)")}>No SOR</span>
+                {rs.some((r) => !r.required_date) && <span style={flag("var(--danger-soft, #f8dcd6)", "var(--danger)")}>{rs.filter((r) => !r.required_date).length} no date</span>}
+              </span>
               <span style={{ fontSize: 12, fontWeight: 600, color: "var(--warn)" }}>{daysBetween(rs[0].created_at, today)}d waiting</span>
             </div>
           </button>

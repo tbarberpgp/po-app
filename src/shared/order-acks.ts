@@ -56,10 +56,11 @@ export type ArrivalBuckets = {
   unconfirmed: ArrivalRow[];
 };
 
-/** How far back "No confirmation" looks. Older orders with nothing received are
- *  mostly goods that came and were never booked (see the missing-GRN pile), not
- *  orders anyone is still waiting to hear about. */
-export const UNCONFIRMED_WINDOW_DAYS = 45;
+/** How far back "To confirm" looks: orders raised in the last 15 days, and
+ *  every order from here on. Older ones with nothing received are mostly goods
+ *  that came and were never booked (the missing-GRN pile), not orders anyone is
+ *  still waiting to hear about — left alone by choice. */
+export const UNCONFIRMED_WINDOW_DAYS = 15;
 /** Statuses that have gone (or are about to go) to the supplier. A PO still
  *  awaiting approval can't be chased for a confirmation. */
 const SENT = new Set(["approved", "issued"]);
@@ -88,7 +89,10 @@ export function bucketArrivals(rows: ArrivalRow[], today: string): ArrivalBucket
       else if (n === 0) out.today.push(r);
       else if (n <= 7) out.week.push(r);
     }
-    if (!r.promised_date && SENT.has(r.status) && daysBetween(r.created_at, today) <= UNCONFIRMED_WINDOW_DAYS) {
+    // Waiting on the supplier: sent, no promised date. Or no date at all —
+    // flagged even while awaiting approval, since that's ours to fix.
+    const recent = daysBetween(r.created_at, today) <= UNCONFIRMED_WINDOW_DAYS;
+    if (recent && !r.promised_date && (SENT.has(r.status) || (r.status === "pending_approval" && !r.required_date))) {
       out.unconfirmed.push(r);
     }
   }
