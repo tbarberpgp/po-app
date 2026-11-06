@@ -5,14 +5,16 @@
 // (sidebar → Delivery → Deliveries) and the project Operations → Deliveries tab.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { api, fmtMoney, fmtQty } from "../lib/api";
-import type { CheckedInTicket, DeliveryTicketCandidate, CurrentUser, DueDelivery, VarianceReport } from "../../shared/types";
+import { api, fmtQty } from "../lib/api";
+import type { CheckedInTicket, DeliveryTicketCandidate, CurrentUser, VarianceReport } from "../../shared/types";
 import { ConfBar, CandidateCheckIn, usePoLinkReason, needsPoLinkReason } from "./Operations";
 import { RegionBoxes, FieldCrop } from "./ReadRegions";
 import { PdfHighlightViewer } from "./PdfHighlightViewer";
 import { poDeliveryLabel, type PoDeliverySummary } from "../../shared/po-delivery-status";
+import { ArrivalTracker, type ArrivalFocus } from "./ArrivalTracking";
+import { bucketArrivals, type ArrivalRow } from "../../shared/order-acks";
 
-type Kpi = { expected_today: number; overdue: number; checked_in_today: number; needs_po: number; variance?: number };
+type Kpi = { expected_today: number; overdue: number; checked_in_today: number; needs_po: number; variance?: number; sor_pending?: number };
 type Chip = "all" | "matched" | "needs" | "mismatch" | "done";
 
 function fmtDate(s: string | null | undefined): string {
@@ -205,69 +207,6 @@ function KpiTile({ label, value, sub, alert, active, onClick }: {
   return onClick && value
     ? <button type="button" className={cls} onClick={onClick} title="Show the list">{body}</button>
     : <div className={cls}>{body}</div>;
-}
-
-function daysLate(date: string, today: string): number {
-  return Math.round((Date.parse(today) - Date.parse(date)) / 86_400_000);
-}
-
-/** The orders behind "Expected today" and "Overdue": who is meant to be
- *  delivering, to which site, and how late. Shown in the detail pane whenever
- *  there is no ticket to look at, so an empty inbox still says what's coming. */
-function DueDeliveries({ due, focus, onFocus }: {
-  due: DueDelivery[];
-  focus: "overdue" | "today";
-  onFocus: (f: "overdue" | "today") => void;
-}) {
-  const today = new Date().toISOString().slice(0, 10);
-  const overdue = due.filter((d) => d.delivery_date < today);
-  const dueToday = due.filter((d) => d.delivery_date === today);
-  const list = focus === "today" ? dueToday : overdue;
-  return (
-    <div className="a-card dl-due">
-      <div className="dl-due-hd">
-        <h2>Waiting on delivery</h2>
-        <div className="dl-chips">
-          <button className={focus === "overdue" ? "on" : ""} onClick={() => onFocus("overdue")}>Overdue<span className="cnt">{overdue.length}</span></button>
-          <button className={focus === "today" ? "on" : ""} onClick={() => onFocus("today")}>Due today<span className="cnt">{dueToday.length}</span></button>
-        </div>
-      </div>
-      {list.length === 0
-        ? <div className="muted" style={{ padding: "18px 18px 20px", fontSize: 13 }}>
-            {focus === "today" ? "No orders are due on site today." : "Nothing is overdue — every order past its delivery date has had something received."}
-          </div>
-        : (
-          <div className="dl-due-list">
-            {list.map((d) => {
-              const late = daysLate(d.delivery_date, today);
-              // Never sent to the supplier, so it can't be late from their side.
-              const notSent = d.status === "draft" ? "never issued" : d.status === "pending_approval" ? "awaiting approval" : null;
-              return (
-                <Link key={d.id} className="dl-due-row" to={`/pos/${d.id}`}>
-                  <div style={{ minWidth: 0 }}>
-                    <div className="isup">{d.supplier}</div>
-                    <div className="imeta">
-                      <span className="num">{d.po_number}</span>
-                      <span className="proj">{d.project_code}</span>
-                      {notSent && <span>· {notSent}</span>}
-                    </div>
-                  </div>
-                  <div style={{ textAlign: "right" }}>
-                    <div className={`dl-due-when${late > 0 && !notSent ? " late" : ""}`}>
-                      {late > 0 ? `${late} day${late === 1 ? "" : "s"} late` : d.received ? "part arrived" : "due today"}
-                    </div>
-                    <div className="imeta" style={{ justifyContent: "flex-end" }}>
-                      <span>{fmtDate(d.delivery_date)}</span>
-                      <span>· {fmtMoney(d.total_value)}</span>
-                    </div>
-                  </div>
-                </Link>
-              );
-            })}
-          </div>
-        )}
-    </div>
-  );
 }
 
 /** What ARRIVED against what was ordered.
@@ -900,56 +839,71 @@ export function DeliveriesWorkspace(_props: { me: CurrentUser | null }) {
   const [kpi, setKpi] = useState<Kpi | null>(null);
   const [rows, setRows] = useState<DeliveryTicketCandidate[]>([]);
   const [done, setDone] = useState<CheckedInTicket[]>([]);
-  const [due, setDue] = useState<DueDelivery[]>([]);
+  const [arrival, setArrival] = useState<ArrivalRow[]>([]);
+  // Two tabs: what's coming (Delivery tracker) and what has come (Arrived).
+  const [mode, setMode] = useState<"tracker" | "arrived">("tracker");
   const [projects, setProjects] = useState<Awaited<ReturnType<typeof api.listProjects>>>([]);
   const [loading, setLoading] = useState(true);
   const [chip, setChip] = useState<Chip>("all");
-  // Which list the detail pane shows when it isn't showing a ticket, and
-  // whether a KPI click has asked for it in place of the selected ticket.
-  const [dueFocus, setDueFocus] = useState<"overdue" | "today">("overdue");
-  const [showDue, setShowDue] = useState(false);
+  const [dueFocus, setDueFocus] = useState<ArrivalFocus>("week");
 
   async function reload() {
     try {
       const r = await api.opsDeliveriesInbox();
-      setKpi(r.kpi); setRows(r.candidates); setDone(r.checked_in ?? []); setDue(r.due ?? []);
+      setKpi(r.kpi); setRows(r.candidates); setDone(r.checked_in ?? []); setArrival(r.arrival ?? []);
     } catch { /* keep whatever we have */ }
     finally { setLoading(false); }
   }
   useEffect(() => { reload(); api.listProjects().then(setProjects).catch(() => {}); }, []);
 
-  const openDue = (f: "overdue" | "today") => { setDueFocus(f); setShowDue(true); if (chip === "done") setChip("all"); };
-  const openChip = (c: Chip) => { setChip(c); setShowDue(false); };
+  const openChip = (c: Chip) => setChip(c);
+  const dueThisWeek = useMemo(() => {
+    const b = bucketArrivals(arrival, new Date().toISOString().slice(0, 10));
+    return b.today.length + b.week.length;
+  }, [arrival]);
 
   return (
     <div className="acctx">
       <div style={{ marginBottom: 16 }}>
         <h1 style={{ margin: 0 }}>Deliveries</h1>
-        <div className="muted" style={{ fontSize: 13.5, marginTop: 2 }}>Delivery tickets scanned from WhatsApp &amp; email across every live site — confirm each against its purchase order.</div>
+        <div className="muted" style={{ fontSize: 13.5, marginTop: 2 }}>
+          {mode === "tracker"
+            ? "Orders still to arrive, on the supplier's confirmed date (SORs read from accounts@ › SOR) or the date set on the PO."
+            : "What has come to site — delivery notes and delivery photos from the site WhatsApp groups. Confirm each against its order."}
+        </div>
       </div>
 
-      {kpi && (
-        <div className="dl-kpis">
-          <KpiTile label="Expected today" value={kpi.expected_today} sub="open POs due on site"
-            active={showDue && dueFocus === "today"} onClick={() => openDue("today")} />
-          <KpiTile label="Overdue" value={kpi.overdue} sub={kpi.overdue ? "past delivery date, nothing received" : "none outstanding"} alert
-            active={showDue && dueFocus === "overdue"} onClick={() => openDue("overdue")} />
-          <KpiTile label="Checked in today" value={kpi.checked_in_today} sub="delivery lines logged"
-            active={!showDue && chip === "done"} onClick={done.length ? () => openChip("done") : undefined} />
-          <KpiTile label="Needs a PO" value={kpi.needs_po} sub={kpi.needs_po ? "tickets with no order matched" : "all tickets matched"} alert
-            active={!showDue && chip === "needs"} onClick={() => openChip("needs")} />
-          <KpiTile label="Doesn't match the PO" value={kpi.variance ?? 0}
-            sub={kpi.variance ? "order number right, goods don't agree" : "quantities agree where checkable"} alert
-            active={!showDue && chip === "mismatch"} onClick={() => openChip("mismatch")} />
-        </div>
-      )}
+      <div className="a-subtabs" style={{ padding: 0, margin: "0 0 16px", maxWidth: 560 }}>
+        <button className={mode === "tracker" ? "on" : ""} onClick={() => setMode("tracker")}>
+          Delivery tracker<span className="cnt">{dueThisWeek}</span>
+        </button>
+        <button className={mode === "arrived" ? "on" : ""} onClick={() => setMode("arrived")}>
+          Arrived deliveries<span className="cnt">{rows.length}</span>
+        </button>
+      </div>
 
-      {loading
-        ? <div className="muted" style={{ fontSize: 13 }}>Loading the ticket inbox…</div>
-        : <TicketSplit rows={rows} projects={projects} onReload={reload} checkedIn={done}
-            chip={chip} onChip={openChip} showIdle={showDue} onPick={() => setShowDue(false)}
-            idle={<DueDeliveries due={due} focus={dueFocus} onFocus={setDueFocus} />}
-            emptyHint="No pending tickets anywhere — new WhatsApp delivery photos appear here after each scan." />}
+      {mode === "tracker" ? (
+        <ArrivalTracker rows={arrival} focus={dueFocus} onFocus={setDueFocus} onSorChanged={reload} />
+      ) : (
+        <>
+          {kpi && (
+            <div className="dl-kpis" style={{ gridTemplateColumns: "repeat(3, minmax(0, 1fr))" }}>
+              <KpiTile label="Checked in today" value={kpi.checked_in_today} sub="delivery lines logged"
+                active={chip === "done"} onClick={done.length ? () => openChip("done") : undefined} />
+              <KpiTile label="Needs a PO" value={kpi.needs_po} sub={kpi.needs_po ? "tickets with no order matched" : "all tickets matched"} alert
+                active={chip === "needs"} onClick={() => openChip("needs")} />
+              <KpiTile label="Doesn't match the PO" value={kpi.variance ?? 0}
+                sub={kpi.variance ? "order number right, goods don't agree" : "quantities agree where checkable"} alert
+                active={chip === "mismatch"} onClick={() => openChip("mismatch")} />
+            </div>
+          )}
+          {loading
+            ? <div className="muted" style={{ fontSize: 13 }}>Loading the ticket inbox…</div>
+            : <TicketSplit rows={rows} projects={projects} onReload={reload} checkedIn={done}
+                chip={chip} onChip={openChip}
+                emptyHint="No pending tickets anywhere — new WhatsApp delivery photos appear here after each scan." />}
+        </>
+      )}
     </div>
   );
 }

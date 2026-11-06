@@ -1317,6 +1317,9 @@ export type CreatePOInput = {
   supplier: string;
   notes?: string;
   delivery_date?: string;
+  /** We fetch it ourselves (trade counter) — it goes on the Delivery tracker's
+   *  "To collect" list, and delivery_date is the collect-by date. */
+  collect_by_us?: boolean;
   /** Optional: link this PO to a project variation (its value counts as that
    *  variation's material spend). */
   variation_id?: number | null;

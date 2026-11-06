@@ -1463,11 +1463,32 @@ export const api = {
   /** Cross-project deliveries inbox: every pending ticket + the KPI strip. */
   opsDeliveriesInbox: () =>
     jfetch<{
-      kpi: { expected_today: number; overdue: number; checked_in_today: number; needs_po: number; variance?: number };
+      kpi: { expected_today: number; overdue: number; checked_in_today: number; needs_po: number; variance?: number; sor_pending?: number };
       candidates: import("../../shared/types").DeliveryTicketCandidate[];
       checked_in: import("../../shared/types").CheckedInTicket[];
       due?: import("../../shared/types").DueDelivery[];
+      arrival?: import("../../shared/order-acks").ArrivalRow[];
     }>("/api/operations/deliveries-inbox"),
+  opsOrderAcks: (status: "recent" | "pending" | "all" = "recent") =>
+    jfetch<{ acks: import("../../shared/order-acks").OrderAckView[]; error?: string }>(`/api/operations/order-acks?status=${status}`),
+  opsAttachOrderAck: (id: number, poId: string) =>
+    jfetch<{ ack: import("../../shared/order-acks").OrderAckView | null }>(`/api/operations/order-acks/${id}/attach`, {
+      method: "POST", body: JSON.stringify({ po_id: poId }),
+    }),
+  opsDismissOrderAck: (id: number, reason?: string) =>
+    jfetch<{ ok: true }>(`/api/operations/order-acks/${id}/dismiss`, {
+      method: "POST", body: JSON.stringify({ reason }),
+    }),
+  opsPoArrival: (poId: string) =>
+    jfetch<import("../../shared/order-acks").PoArrival>(`/api/operations/po-arrival/${encodeURIComponent(poId)}`),
+  opsSetPromised: (poId: string, date: string, note?: string) =>
+    jfetch<{ ok: true }>(`/api/operations/po-arrival/${encodeURIComponent(poId)}/promised`, {
+      method: "POST", body: JSON.stringify({ date, note }),
+    }),
+  opsSetCollect: (poId: string, collect: boolean, collector?: string) =>
+    jfetch<{ ok: true }>(`/api/operations/po-arrival/${encodeURIComponent(poId)}/collect`, {
+      method: "POST", body: JSON.stringify({ collect, collector }),
+    }),
   opsTicketCandidates: (projectId: string) =>
     jfetch<{ unscanned: number; candidates: DeliveryTicketCandidate[] }>(
       `/api/operations/${projectId}/deliveries/ticket-candidates`),

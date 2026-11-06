@@ -1559,6 +1559,12 @@ pos.post("/", async (c) => {
     )
     .run();
 
+  // Collected by us rather than delivered. Its own statement so a database
+  // that hasn't had migration 0141 yet still raises the PO.
+  if (body.collect_by_us) {
+    await c.env.DB.prepare("UPDATE purchase_orders SET collect_by_us = 1 WHERE id = ?").bind(id).run().catch(() => {});
+  }
+
   // A custom supplier typed onto the PO joins the approved-suppliers register.
   await ensureApprovedSupplier(c.env.DB, body.supplier, actor);
 
