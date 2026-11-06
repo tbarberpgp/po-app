@@ -65,8 +65,12 @@ describe("bucketArrivals", () => {
     row({ po_number: "PO-26008-0014", supplier: "Toolstation", required_date: "2026-11-01", collect_by_us: 1 }),
     // Raised months ago with nothing received and no date: not "waiting to hear".
     row({ po_number: "PO-26003-0001", supplier: "Old Co", created_at: "2026-07-01T09:00:00Z" }),
-    // Still awaiting approval: can't chase a confirmation for it.
+    // Awaiting approval with NO date at all — flagged, that's ours to fix.
     row({ po_number: "PO-26004-0020", supplier: "Braddan", status: "pending_approval" }),
+    // Awaiting approval but dated: can't chase the supplier yet, not flagged.
+    row({ po_number: "PO-26004-0021", supplier: "Braddan", status: "pending_approval", required_date: "2026-11-20" }),
+    // Raised 16 days ago with no date: outside the 15-day window, left alone.
+    row({ po_number: "PO-26004-0009", supplier: "Eurocell", created_at: "2026-10-21T09:00:00Z" }),
   ];
   const b = bucketArrivals(rows, today);
   const nums = (rs: ArrivalRow[]) => rs.map((r) => r.po_number);
@@ -75,8 +79,8 @@ describe("bucketArrivals", () => {
   test("due today includes phoned-in dates", () => assert.deepEqual(nums(b.today), ["PO-26008-0015"]));
   test("this week falls back to our required-by", () => assert.deepEqual(nums(b.week), ["PO-26001-0118"]));
   test("collections only ever sit in To collect", () => assert.deepEqual(nums(b.collect), ["PO-26008-0014"]));
-  test("no confirmation = sent recently, no supplier date — oldest first", () => {
-    assert.deepEqual(nums(b.unconfirmed), ["PO-26001-0118", "PO-26001-0104"]);
+  test("to confirm = raised in the last 15 days with no supplier date — oldest first", () => {
+    assert.deepEqual(nums(b.unconfirmed), ["PO-26001-0118", "PO-26004-0020", "PO-26001-0104"]);
   });
 });
 
