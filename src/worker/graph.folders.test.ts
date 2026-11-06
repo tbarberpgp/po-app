@@ -220,6 +220,11 @@ describe("sorFolderPull", () => {
       const invList = g.urls.find((u) => u.includes("/mailFolders/inbox/messages?")) ?? "";
       assert.ok(sorList && !/hasAttachments/.test(sorList), "SOR folder: no attachment filter");
       assert.match(invList, /hasAttachments eq true/, "Invoices still filtered");
+      // An SOR dragged in today keeps its October received date — only the
+      // modified date says it's new to the folder.
+      assert.match(sorList, /lastModifiedDateTime ge 2026-11-06T09:00:00Z/, "SOR folder windowed on when it was moved in");
+      assert.ok(!/receivedDateTime ge/.test(sorList));
+      assert.match(invList, /receivedDateTime ge /, "other folders keep the received-date window");
     } finally { g.restore(); }
   });
 });
