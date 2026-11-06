@@ -200,3 +200,26 @@ describe("labourFolderSupplier", () => {
     );
   });
 });
+
+// The SOR folder: Accounts' rule files order acknowledgements there. Fixfast's
+// "will be delivered today between…" is the email itself, with no attachment,
+// so unlike every other folder the SOR folder must be listed WITHOUT the
+// hasAttachments filter.
+describe("sorFolderPull", () => {
+  const SOR_TREE = { root: { SOR: "SORF" } };
+  test("the SOR folder is listed whole, other folders by attachment", async () => {
+    const { db } = fakeDb({ [MAILBOX]: "2026-11-06T09:00:00Z" });
+    const g = fakeGraph(SOR_TREE, { SORF: [], inbox: [] });
+    try {
+      const r = await runMailboxPull(envWith(db, [
+        { mailbox: MAILBOX, as: "sor@pgpprojects.com", folder: "SOR" },
+        { mailbox: MAILBOX, as: "invoices@pgpprojects.com", folder: "inbox" },
+      ]));
+      assert.deepEqual(r.errors, []);
+      const sorList = g.urls.find((u) => u.includes("/mailFolders/SORF/messages?")) ?? "";
+      const invList = g.urls.find((u) => u.includes("/mailFolders/inbox/messages?")) ?? "";
+      assert.ok(sorList && !/hasAttachments/.test(sorList), "SOR folder: no attachment filter");
+      assert.match(invList, /hasAttachments eq true/, "Invoices still filtered");
+    } finally { g.restore(); }
+  });
+});

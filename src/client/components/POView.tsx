@@ -5,6 +5,7 @@ import { api, fmtDate, fmtMoney, fmtQty } from "../lib/api";
 import { downloadPdf, generatePoPdf } from "../lib/po-pdf";
 import { generatePoXlsx } from "../lib/po-xlsx";
 import { Topbar } from "./Shell";
+import { PoDeliveryCard } from "./ArrivalTracking";
 import { GroupedCombobox, type ComboGroup } from "./GroupedCombobox";
 import { can } from "../../shared/permissions";
 import { budgetMoneyHint, effectiveSpendRate, matSupplier, pickUnit, poLineBudgetMoney } from "../lib/commercials";
@@ -417,6 +418,7 @@ export function POView({ me }: { me: CurrentUser | null }) {
           {/* Left column ─ summary, lines, activity */}
           <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
             <SummaryCard po={po} />
+            {po.status !== "draft" && po.order_type !== "framework" && <PoDeliveryCard poId={po.id} canEdit={can(me, "delivery.edit")} />}
 
             <div className="card">
               <div className="card-hd" style={{ flexWrap: "wrap", gap: 8 }}>

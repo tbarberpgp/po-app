@@ -175,6 +175,7 @@ export function NewPO() {
   }, [projectId]);
   const [notes, setNotes] = useState("");
   const [deliveryDate, setDeliveryDate] = useState("");
+  const [collectByUs, setCollectByUs] = useState(false);
   const [variations, setVariations] = useState<Variation[]>([]);
   const [variationId, setVariationId] = useState<number | null>(null);
   // Pre-set from ?category=prelims (the "Raise prelim expenditure" entry point).
@@ -575,6 +576,7 @@ export function NewPO() {
           supplier: effectiveSupplier,
           notes: notes.trim() || undefined,
           delivery_date: deliveryDate || undefined,
+          collect_by_us: collectByUs || undefined,
           parent_po_id: frameworkId,
           order_type: "call_off",
           category,
@@ -647,6 +649,7 @@ export function NewPO() {
         supplier: effectiveSupplier,
         notes: notes.trim() || undefined,
         delivery_date: deliveryDate || undefined,
+        collect_by_us: collectByUs || undefined,
         variation_id: variationId,
         parent_po_id: frameworkId ?? (isCallOff ? (manualFrameworkId || undefined) : undefined),
         order_type: isFramework ? "framework" : isCallOff ? "call_off" : undefined,
@@ -778,8 +781,13 @@ export function NewPO() {
               </div>
             )}
             <div style={{ minWidth: 160 }}>
-              <label>Delivery date</label>
+              <label>{collectByUs ? "Collect by" : "Delivery date"}</label>
               <input type="date" value={deliveryDate} onChange={(e) => setDeliveryDate(e.target.value)} />
+              <label style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6, fontWeight: 500, cursor: "pointer" }}
+                title="We fetch it from the merchant ourselves — it shows under To collect on the Delivery tracker">
+                <input type="checkbox" checked={collectByUs} onChange={(e) => setCollectByUs(e.target.checked)} style={{ width: "auto" }} />
+                We'll collect it
+              </label>
             </div>
           </div>
           {!frameworkId && (

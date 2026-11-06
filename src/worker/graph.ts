@@ -103,9 +103,10 @@ export function graphConfigured(env: Env): boolean {
 
 /** The app-address local-part → ingest kind. Certificate mailboxes are skipped
  *  for now — their reply paths aren't yet reply-suppressed (phase 2). */
-function kindFromAs(as: string): "invoice" | "labour" | "client" | "cert" | "other" {
+function kindFromAs(as: string): "invoice" | "labour" | "client" | "cert" | "sor" | "other" {
   const local = (as.split("@")[0] || "").toLowerCase();
   if (/^invoices?$/.test(local)) return "invoice";
+  if (/^(sor|orders?|order-?acks?)$/.test(local)) return "sor";
   if (/cert/.test(local)) return "cert";
   if (/client/.test(local)) return "client";
   if (/(labour|application|apps?)/.test(local)) return "labour";
@@ -191,8 +192,12 @@ function odataTime(d: Date): string {
  *  afterwards wouldn't recover what Graph left out. The whole window is walked
  *  via @odata.nextLink and sorted here, oldest first, so the longest-waiting
  *  invoices go in first when a backlog is bigger than a page. */
-async function listMessages(token: string, mailbox: string, folder: string, since: Date): Promise<GraphMsg[]> {
-  const filter = encodeURIComponent(`hasAttachments eq true and receivedDateTime ge ${odataTime(since)}`);
+async function listMessages(token: string, mailbox: string, folder: string, since: Date, withAttachmentsOnly = true): Promise<GraphMsg[]> {
+  // Order acknowledgements are often the email itself — Fixfast's "will be
+  // delivered today between…" carries no attachment — so the SOR folder is read
+  // whole; every other folder only matters for its attached documents.
+  const filter = encodeURIComponent(
+    `${withAttachmentsOnly ? "hasAttachments eq true and " : ""}receivedDateTime ge ${odataTime(since)}`);
   let url: string =
     `${GRAPH}/users/${encodeURIComponent(mailbox)}/mailFolders/${encodeURIComponent(folder)}/messages` +
     `?$filter=${filter}&$select=id,subject,from,internetMessageId,receivedDateTime&$top=${PAGE_SIZE}`;
@@ -330,7 +335,7 @@ export async function runMailboxPull(env: Env): Promise<PullResult> {
     let msgs: GraphMsg[] = [];
     try {
       const folderId = await resolveFolder(token, cfg.mailbox, cfg.folder);
-      msgs = await listMessages(token, cfg.mailbox, folderId, since);
+      msgs = await listMessages(token, cfg.mailbox, folderId, since, kind !== "sor");
     } catch (e) {
       out.errors.push(`${cfg.mailbox} ${cfg.folder} list: ${e instanceof Error ? e.message : String(e)}`);
       continue; // watermark stays put — this window is retried next run

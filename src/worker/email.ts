@@ -28,6 +28,8 @@ import { isSpreadsheetFile } from "../shared/file-kind";
 import type { ExtractedLabourLine } from "./routes/applications";
 import { findDuplicateLabourInvoice } from "./labour-invoice-dupe";
 import { handleReportReply } from "./routes/site-reports";
+import { ingestOrderAckEmail } from "./order-acks";
+import { looksLikeOrderAck } from "../shared/order-acks";
 
 /** First reply paragraph only — drop quoted history ("On … wrote:", "> …", etc.). */
 function topReply(text: string): string {
@@ -278,6 +280,26 @@ export async function handleInboundEmail(
   // Checked FIRST so the aliases can't fall through to the other flows.
   if (/^(projects?|record|cc|copy|correspondence|clientmail)$/i.test(recipientLocal)) {
     await ingestClientCorrespondence(env, parsed, senderRaw, subject);
+    // Suppliers reply-all to order emails that CC projects@, so their order
+    // acknowledgements land here too. Read those for a promised delivery date
+    // as well — best-effort: the correspondence filing above is the job this
+    // address exists for, and a failed read must never bounce it.
+    if (looksLikeOrderAck(subject, parsed.text ?? null)) {
+      try {
+        await ingestOrderAckEmail(env, parsed, { source: "projects_email", sender: senderRaw, subject });
+      } catch (e) {
+        console.error("order acknowledgement read failed (projects@):", e instanceof Error ? e.message : e);
+      }
+    }
+    return;
+  }
+
+  // ── Supplier order acknowledgements — accounts@ › SOR, via the Graph pull ──
+  // An Outlook rule files SOR / "Acknowledgement" / "Order confirmation" /
+  // "will be delivered" mail into the SOR folder; the pull hands it over as
+  // sor@. Thrown, not swallowed, so a failed read is retried next hour.
+  if (/^(sor|orders?|order-?acks?)$/i.test(recipientLocal)) {
+    await ingestOrderAckEmail(env, parsed, { source: "sor_folder", sender: senderRaw, subject });
     return;
   }
 

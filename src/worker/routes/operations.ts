@@ -13,6 +13,7 @@ import { deliveryNoteDigits, deliveryNoteFromNotes, deliveryNoteKey, isSameDeliv
 import { sendReportEmail, recipientsFor } from "./site-reports";
 import { buildHsPack } from "../../shared/hs-pack-pdf";
 import { fuzzyFindPo } from "../poRef";
+import { ackChecks, type ArrivalRow } from "../../shared/order-acks";
 import { learnAliases, aliasMapsBySupplier, normText } from "../matchMemory";
 import { deliveryVariance, matchItemToLine, type VarianceLine, type PriorReceipt } from "../../shared/delivery-variance";
 import { poRefCore, supplierNameOverlap, poNumbersMatch } from "../../shared/line-match";
@@ -1281,7 +1282,7 @@ operations.delete("/plant/:id", async (c) => {
 // ── Phase 2: file-backed records (deliveries, RAMS, progress photos) ─────────
 // Binary lives in R2; metadata + keys in D1. Keys are prefixed + uuid'd.
 
-const FILE_PREFIXES = ["deliveries/", "rams/", "progress/"];
+const FILE_PREFIXES = ["deliveries/", "rams/", "progress/", "sor/"];
 const MAX_FILE_BYTES = 20_000_000; // 20 MB
 
 function sanitizeName(name: string): string {
@@ -1827,44 +1828,63 @@ operations.get("/deliveries-inbox", async (c) => {
     });
   } catch { candidates = []; }
 
-  // KPI strip. "Overdue" = an open PO past its delivery date with nothing ever
-  // received against it; "expected today" counts POs due today the same way.
-  const kpi = { expected_today: 0, overdue: 0, checked_in_today: 0, needs_po: 0, variance: 0 };
-  try {
-    const exp = await c.env.DB.prepare(
-      `SELECT
-         SUM(CASE WHEN po.delivery_date = ? THEN 1 ELSE 0 END) AS expected_today,
-         SUM(CASE WHEN po.delivery_date < ? AND NOT EXISTS (SELECT 1 FROM site_deliveries d WHERE d.po_id = po.id) THEN 1 ELSE 0 END) AS overdue
+  // What's still to arrive: every open order with nothing received, carrying
+  // the supplier's latest promised date (order acknowledgement or a phoned-in
+  // date) beside our own required-by. The client sorts these into Overdue / Due
+  // today / This week / To collect / No confirmation (shared/order-acks.ts).
+  // "Expected today" and "Overdue" count on the SAME date the lists show — the
+  // promised one where the supplier gave it, otherwise ours.
+  const kpi = { expected_today: 0, overdue: 0, checked_in_today: 0, needs_po: 0, variance: 0, sor_pending: 0 };
+  let arrival: ArrivalRow[] = [];
+  const arrivalSql = (withAcks: boolean) => `
+      SELECT po.id, po.po_number, po.supplier, po.status, po.total_value, po.created_at,
+             po.delivery_date AS required_date,
+             p.id AS project_id, p.code AS project_code,
+             ${withAcks ? `a.promised_date, a.source AS promised_source, a.supplier_order_ref AS promised_ref, a.promised_note,
+             COALESCE(po.collect_by_us, 0) AS collect_by_us, po.collector` : `NULL AS promised_date, NULL AS promised_source, NULL AS promised_ref, NULL AS promised_note,
+             0 AS collect_by_us, NULL AS collector`}
         FROM purchase_orders po JOIN projects p ON p.id = po.project_id
-       WHERE po.status NOT IN ('deleted','rejected') AND po.order_type != 'framework'
-         AND p.deleted_at IS NULL AND p.completed_at IS NULL AND po.delivery_date IS NOT NULL`,
-    ).bind(today, today).first<{ expected_today: number | null; overdue: number | null }>();
-    kpi.expected_today = exp?.expected_today ?? 0;
-    kpi.overdue = exp?.overdue ?? 0;
+        ${withAcks ? `LEFT JOIN (
+          SELECT po_id, promised_date, source, supplier_order_ref, promised_note,
+                 ROW_NUMBER() OVER (PARTITION BY po_id ORDER BY COALESCE(received_at, created_at) DESC, id DESC) AS rn
+            FROM order_acks
+           WHERE status = 'matched' AND po_id IS NOT NULL AND promised_date IS NOT NULL
+        ) a ON a.po_id = po.id AND a.rn = 1` : ""}
+       WHERE po.status IN ('pending_approval','approved','issued') AND po.order_type != 'framework'
+         AND p.deleted_at IS NULL AND p.completed_at IS NULL AND p.id <> 'sandbox'
+         AND NOT EXISTS (SELECT 1 FROM site_deliveries d WHERE d.po_id = po.id)
+         AND (po.delivery_date IS NOT NULL ${withAcks ? "OR a.promised_date IS NOT NULL OR COALESCE(po.collect_by_us, 0) = 1" : ""}
+              OR po.created_at >= ?)
+       ORDER BY po.created_at ASC
+       LIMIT 500`;
+  const windowStart = new Date(Date.now() - 46 * 86_400_000).toISOString();
+  try {
+    arrival = (await c.env.DB.prepare(arrivalSql(true)).bind(windowStart).all<ArrivalRow>()).results;
+  } catch {
+    // Migration 0141 not applied yet — the tracker still works on required-by dates.
+    try { arrival = (await c.env.DB.prepare(arrivalSql(false)).bind(windowStart).all<ArrivalRow>()).results; } catch { arrival = []; }
+  }
+  for (const r of arrival) {
+    const d = r.promised_date || r.required_date;
+    if (!d || r.collect_by_us) continue;
+    if (d === today) kpi.expected_today++;
+    else if (d < today) kpi.overdue++;
+  }
+  try {
     const chk = await c.env.DB.prepare(
       "SELECT COUNT(*) AS n FROM site_deliveries WHERE substr(created_at, 1, 10) = ?",
     ).bind(today).first<{ n: number }>();
     kpi.checked_in_today = chk?.n ?? 0;
   } catch { /* tables may predate migrations */ }
-
-  // The orders behind those two counts, so the numbers can be acted on rather
-  // than just read. Same rule as the KPI: due today, or past due with nothing
-  // ever received. Oldest first — the longest-overdue is the one to chase.
-  let due: unknown[] = [];
   try {
-    due = (await c.env.DB.prepare(
-      `SELECT po.id, po.po_number, po.supplier, po.delivery_date, po.total_value, po.status,
-              p.id AS project_id, p.code AS project_code,
-              EXISTS (SELECT 1 FROM site_deliveries d WHERE d.po_id = po.id) AS received
-         FROM purchase_orders po JOIN projects p ON p.id = po.project_id
-        WHERE po.status NOT IN ('deleted','rejected') AND po.order_type != 'framework'
-          AND p.deleted_at IS NULL AND p.completed_at IS NULL AND po.delivery_date IS NOT NULL
-          AND (po.delivery_date = ?1
-               OR (po.delivery_date < ?1 AND NOT EXISTS (SELECT 1 FROM site_deliveries d WHERE d.po_id = po.id)))
-        ORDER BY po.delivery_date ASC, po.po_number ASC
-        LIMIT 200`,
-    ).bind(today).all()).results;
-  } catch { due = []; }
+    const sp = await c.env.DB.prepare("SELECT COUNT(*) AS n FROM order_acks WHERE status = 'pending'").first<{ n: number }>();
+    kpi.sor_pending = sp?.n ?? 0;
+  } catch { /* 0141 not applied yet */ }
+
+  // Kept for older clients: the rows behind Expected today / Overdue.
+  const due = arrival
+    .filter((r) => !r.collect_by_us && (r.promised_date || r.required_date) && (r.promised_date || r.required_date)! <= today)
+    .map((r) => ({ ...r, delivery_date: (r.promised_date || r.required_date)!, received: 0 }));
   kpi.needs_po = (candidates as Array<{ method?: string }>).filter((x) => x.method === "none").length;
   // Tickets whose GOODS disagree with the order they matched. Counted here and
   // not in SQL because the comparison needs the ticket's parsed items, which
@@ -1911,7 +1931,170 @@ operations.get("/deliveries-inbox", async (c) => {
     });
   } catch { checkedIn = []; }
 
-  return c.json({ kpi, candidates, checked_in: checkedIn, due });
+  return c.json({ kpi, candidates, checked_in: checkedIn, due, arrival });
+});
+
+// ─── Order acknowledgements (SORs) ─────────────────────────────────────────
+// Read from accounts@ › SOR and from projects@ (order-acks.ts). Matched ones
+// put a promised date on their PO; the rest wait here for someone to pick.
+
+type AckRow = {
+  id: number; source: string; kind: string; sender: string | null; subject: string | null; received_at: string | null;
+  file_key: string | null; file_name: string | null; supplier_name: string | null; supplier_order_ref: string | null;
+  our_po_ref: string | null; ack_date: string | null; promised_date: string | null; promised_note: string | null;
+  delivery_address: string | null; goods_total: number | null; carriage: number | null; total_ex_vat: number | null;
+  extracted_json: string | null; po_id: string | null; matched_by: string | null; suggested_po_id: string | null;
+  suggest_reason: string | null; status: string; dismiss_reason: string | null; actioned_by: string | null; actioned_at: string | null;
+  po_number: string | null; po_status: string | null; po_total: number | null; po_required: string | null; project_code: string | null;
+  suggested_po_number: string | null;
+};
+
+const ACK_SELECT = `
+  SELECT a.*, po.po_number, po.status AS po_status, po.total_value AS po_total, po.delivery_date AS po_required,
+         p.code AS project_code, sp.po_number AS suggested_po_number
+    FROM order_acks a
+    LEFT JOIN purchase_orders po ON po.id = a.po_id
+    LEFT JOIN projects p ON p.id = po.project_id
+    LEFT JOIN purchase_orders sp ON sp.id = a.suggested_po_id`;
+
+function presentAck(r: AckRow) {
+  let lines: unknown[] = [];
+  let instructions: string | null = null;
+  try {
+    const ex = r.extracted_json ? JSON.parse(r.extracted_json) : null;
+    lines = Array.isArray(ex?.lines) ? ex.lines : [];
+    instructions = ex?.delivery_instructions ?? null;
+  } catch { /* keep empty */ }
+  const { extracted_json: _x, ...rest } = r;
+  void _x;
+  return {
+    ...rest,
+    lines,
+    delivery_instructions: instructions,
+    file_url: r.file_key ? `/api/operations/file?key=${encodeURIComponent(r.file_key)}` : null,
+    checks: r.po_id && r.po_status != null
+      ? ackChecks(r, { status: r.po_status, delivery_date: r.po_required, total_value: r.po_total ?? 0 })
+      : [],
+  };
+}
+
+operations.get("/order-acks", async (c) => {
+  const which = c.req.query("status") ?? "recent";
+  try {
+    // Dates typed in by hand live on the PO page, not in the email inbox.
+    const where = which === "pending" ? "WHERE a.status = 'pending' AND a.source <> 'manual'"
+      : which === "all" ? "WHERE a.source <> 'manual'"
+      : "WHERE a.source <> 'manual' AND (a.status = 'pending' OR COALESCE(a.received_at, a.created_at) >= ?)";
+    const stmt = c.env.DB.prepare(`${ACK_SELECT} ${where} ORDER BY COALESCE(a.received_at, a.created_at) DESC, a.id DESC LIMIT 300`);
+    const rows = (await (which === "recent" ? stmt.bind(new Date(Date.now() - 60 * 86_400_000).toISOString()) : stmt).all<AckRow>()).results;
+    return c.json({ acks: rows.map(presentAck) });
+  } catch (e) {
+    return c.json({ acks: [], error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+operations.post("/order-acks/:id/attach", async (c) => {
+  const id = Number(c.req.param("id"));
+  const body = await c.req.json<{ po_id?: string }>().catch(() => ({} as { po_id?: string }));
+  if (!body.po_id) return c.json({ error: "po_id required" }, 400);
+  const po = await c.env.DB.prepare("SELECT id, po_number FROM purchase_orders WHERE id = ? AND status != 'deleted'")
+    .bind(body.po_id).first<{ id: string; po_number: string }>();
+  if (!po) return c.json({ error: "PO not found" }, 404);
+  const prior = await c.env.DB.prepare("SELECT po_id, status FROM order_acks WHERE id = ?").bind(id).first<{ po_id: string | null; status: string }>();
+  if (!prior) return c.json({ error: "not found" }, 404);
+  const now = new Date().toISOString();
+  const who = c.get("userEmail");
+  await c.env.DB.batch([
+    c.env.DB.prepare(
+      `UPDATE order_acks SET po_id = ?, matched_by = 'manual', status = 'matched', dismiss_reason = NULL,
+              actioned_by = ?, actioned_at = ? WHERE id = ?`,
+    ).bind(po.id, who, now, id),
+    c.env.DB.prepare(
+      `INSERT INTO audit_log (entity_type, entity_id, action, actor, details, created_at) VALUES ('order_ack', ?, 'attach', ?, ?, ?)`,
+    ).bind(String(id), who, JSON.stringify({ from_po_id: prior.po_id, from_status: prior.status, to_po_id: po.id, to_po_number: po.po_number }), now),
+  ]);
+  const row = await c.env.DB.prepare(`${ACK_SELECT} WHERE a.id = ?`).bind(id).first<AckRow>();
+  return c.json({ ack: row ? presentAck(row) : null });
+});
+
+operations.post("/order-acks/:id/dismiss", async (c) => {
+  const id = Number(c.req.param("id"));
+  const body = await c.req.json<{ reason?: string }>().catch(() => ({} as { reason?: string }));
+  const now = new Date().toISOString();
+  const who = c.get("userEmail");
+  const prior = await c.env.DB.prepare("SELECT po_id, status FROM order_acks WHERE id = ?").bind(id).first<{ po_id: string | null; status: string }>();
+  if (!prior) return c.json({ error: "not found" }, 404);
+  await c.env.DB.batch([
+    c.env.DB.prepare(
+      `UPDATE order_acks SET status = 'dismissed', po_id = NULL, matched_by = NULL, dismiss_reason = ?,
+              actioned_by = ?, actioned_at = ? WHERE id = ?`,
+    ).bind((body.reason ?? "").trim() || "Not an order confirmation", who, now, id),
+    c.env.DB.prepare(
+      `INSERT INTO audit_log (entity_type, entity_id, action, actor, details, created_at) VALUES ('order_ack', ?, 'dismiss', ?, ?, ?)`,
+    ).bind(String(id), who, JSON.stringify({ from_po_id: prior.po_id, from_status: prior.status }), now),
+  ]);
+  return c.json({ ok: true });
+});
+
+/** Everything the PO page's Delivery card shows: how it arrives, every
+ *  acknowledgement attached to it, and the promised date in force. */
+operations.get("/po-arrival/:poId", async (c) => {
+  const poId = c.req.param("poId");
+  const po = await c.env.DB.prepare(
+    "SELECT id, po_number, status, delivery_date, total_value, COALESCE(collect_by_us, 0) AS collect_by_us, collector FROM purchase_orders WHERE id = ?",
+  ).bind(poId).first<{ id: string; po_number: string; status: string; delivery_date: string | null; total_value: number; collect_by_us: number; collector: string | null }>()
+    .catch(() => null);
+  if (!po) return c.json({ error: "not found" }, 404);
+  let acks: ReturnType<typeof presentAck>[] = [];
+  try {
+    acks = (await c.env.DB.prepare(`${ACK_SELECT} WHERE a.po_id = ? AND a.status = 'matched' ORDER BY COALESCE(a.received_at, a.created_at) DESC, a.id DESC`)
+      .bind(poId).all<AckRow>()).results.map(presentAck);
+  } catch { /* 0141 not applied */ }
+  const received = await c.env.DB.prepare("SELECT MIN(substr(delivered_at, 1, 10)) AS first, COUNT(*) AS n FROM site_deliveries WHERE po_id = ?")
+    .bind(poId).first<{ first: string | null; n: number }>().catch(() => null);
+  const current = acks.find((a) => a.promised_date) ?? null;
+  return c.json({
+    collect_by_us: !!po.collect_by_us,
+    collector: po.collector,
+    required_date: po.delivery_date,
+    promised_date: current?.promised_date ?? null,
+    promised: current,
+    acks,
+    received_first: received?.first ?? null,
+    received_count: received?.n ?? 0,
+  });
+});
+
+/** A date someone was given on the phone — Barwell and the other suppliers who
+ *  never send an acknowledgement. Recorded like one, so it's dated and named. */
+operations.post("/po-arrival/:poId/promised", async (c) => {
+  const poId = c.req.param("poId");
+  const body = await c.req.json<{ date?: string; note?: string }>().catch(() => ({} as { date?: string; note?: string }));
+  const date = (body.date ?? "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return c.json({ error: "date (YYYY-MM-DD) required" }, 400);
+  const po = await c.env.DB.prepare("SELECT id, supplier FROM purchase_orders WHERE id = ? AND status != 'deleted'")
+    .bind(poId).first<{ id: string; supplier: string }>();
+  if (!po) return c.json({ error: "PO not found" }, 404);
+  const now = new Date().toISOString();
+  const who = c.get("userEmail");
+  const note = (body.note ?? "").trim().slice(0, 200) || null;
+  await c.env.DB.prepare(
+    `INSERT INTO order_acks (dedupe_key, source, kind, sender, subject, received_at, supplier_name, promised_date, promised_note,
+                             po_id, matched_by, status, actioned_by, actioned_at, created_at)
+     VALUES (?, 'manual', 'delivery_notice', ?, 'Promised date entered by hand', ?, ?, ?, ?, ?, 'manual', 'matched', ?, ?, ?)`,
+  ).bind(`manual:${crypto.randomUUID()}`, who, now, po.supplier, date, note, po.id, who, now, now).run();
+  return c.json({ ok: true });
+});
+
+operations.post("/po-arrival/:poId/collect", async (c) => {
+  const poId = c.req.param("poId");
+  const body = await c.req.json<{ collect?: boolean; collector?: string }>().catch(() => ({} as { collect?: boolean; collector?: string }));
+  // Logistics only — deliberately NOT the PO amend route, which sends an
+  // approved order back for re-approval on any save.
+  const res = await c.env.DB.prepare("UPDATE purchase_orders SET collect_by_us = ?, collector = ? WHERE id = ? AND status != 'deleted'")
+    .bind(body.collect ? 1 : 0, body.collect ? ((body.collector ?? "").trim().slice(0, 80) || null) : null, poId).run();
+  if (!res.meta?.changes) return c.json({ error: "PO not found" }, 404);
+  return c.json({ ok: true });
 });
 
 /** Pending ticket candidates (scanned, look like tickets, not yet actioned),
