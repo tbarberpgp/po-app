@@ -1667,6 +1667,13 @@ export type DeliveryTicketCandidate = {
    *  notes, and without this a ticket against an order already recorded
    *  complete looked exactly like one against an untouched order. */
   po_delivery?: PoDeliverySummary | null;
+  /** A WhatsApp message saying goods arrived — not a delivery note. Weaker
+   *  evidence: shown flagged, and ticket_url is "" when no photo came with it. */
+  report?: boolean;
+  report_message?: string | null;
+  report_sender?: string | null;
+  /** A photo of goods arriving with no words at all — check with site. */
+  report_photo_only?: boolean;
 };
 
 /** Full reconciliation of one scanned ticket against a chosen (or best-guess) PO:

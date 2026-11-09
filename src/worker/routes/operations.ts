@@ -13,6 +13,7 @@ import { deliveryNoteDigits, deliveryNoteFromNotes, deliveryNoteKey, isSameDeliv
 import { sendReportEmail, recipientsFor } from "./site-reports";
 import { buildHsPack } from "../../shared/hs-pack-pdf";
 import { fuzzyFindPo } from "../poRef";
+import { ARRIVAL_REPORTS_FROM, ARRIVAL_SQL_LIKE, PAIR_WINDOW_MS, looksLikeArrivalText } from "../../shared/arrival-report";
 import { ackChecks, daysBetween, OVERDUE_CUTOFF_DAYS, type ArrivalRow } from "../../shared/order-acks";
 import { learnAliases, aliasMapsBySupplier, normText } from "../matchMemory";
 import { deliveryVariance, matchItemToLine, type VarianceLine, type PriorReceipt } from "../../shared/delivery-variance";
@@ -89,6 +90,12 @@ type ExtractedDelivery = {
    *  verification existed carry unchecked boxes and must not be drawn. */
   regions_verified?: boolean;
   items: Array<{ description: string; qty: number | null; unit: string | null; region?: ReadRegion | null }>;
+  /** Not a delivery note, but the photo shows a delivery HAPPENING — goods on
+   *  a lorry, being offloaded, fresh wrapped pallets at the gate. Filed as a
+   *  "photo only" arrival report for someone to check. */
+  delivery_in_progress?: boolean;
+  arriving_goods?: string;
+  arriving_supplier?: string;
   regions?: {
     po_number?: ReadRegion | null;
     supplier_name?: ReadRegion | null;
@@ -156,7 +163,7 @@ async function runDeliveryExtraction(env: Env, block: DeliveryContentBlock): Pro
       model: "claude-opus-4-7",
       max_tokens: 1024,
       system:
-        "You examine a photo or PDF from a construction site's WhatsApp group and decide whether it is a supplier's DELIVERY TICKET / delivery note / advice note (the document that comes with a material delivery). Many images are NOT delivery tickets — they are site/progress photos of buildings or works, training certificates (CPD, NPORS, CSCS, medical/fit-to-work), invoices, RAMS, or general paperwork. For anything that is not a genuine delivery note, set is_delivery_ticket=false and leave every other field as an empty string — do NOT invent or guess a PO number, supplier or date, and never output placeholder text like 'UNKNOWN' or 'N/A' (use an empty string). Only when it really is a delivery note, set is_delivery_ticket=true and fill the fields exactly as printed. Numeric fields must be plain numbers.",
+        "You examine a photo or PDF from a construction site's WhatsApp group and decide whether it is a supplier's DELIVERY TICKET / delivery note / advice note (the document that comes with a material delivery). Many images are NOT delivery tickets — they are site/progress photos of buildings or works, training certificates (CPD, NPORS, CSCS, medical/fit-to-work), invoices, RAMS, or general paperwork. For anything that is not a genuine delivery note, set is_delivery_ticket=false and leave every other field as an empty string — do NOT invent or guess a PO number, supplier or date, and never output placeholder text like 'UNKNOWN' or 'N/A' (use an empty string). Only when it really is a delivery note, set is_delivery_ticket=true and fill the fields exactly as printed. Separately, for a photo that is NOT a delivery note, say whether it shows a delivery happening or just happened (delivery_in_progress): goods still on a lorry or van, being offloaded or craned off, or freshly dropped pallets/boxes still wrapped or strapped as they came. Materials already being installed or used, stock stacked on the roof, and general progress photos are NOT. Numeric fields must be plain numbers.",
       tools: [
         {
           name: "extract_delivery_ticket",
@@ -165,6 +172,9 @@ async function runDeliveryExtraction(env: Env, block: DeliveryContentBlock): Pro
             type: "object" as const,
             properties: {
               is_delivery_ticket: { type: "boolean", description: "TRUE only if this image is a genuine supplier delivery ticket / delivery note / advice note. FALSE for site photos, certificates, invoices, RAMS or any other document." },
+              delivery_in_progress: { type: "boolean", description: "Only for a photo that is NOT a delivery note: TRUE if it shows goods arriving — on a lorry/van, being offloaded or craned off, or freshly dropped and still wrapped/strapped. FALSE for materials being installed or in use, and for progress photos. FALSE for delivery notes." },
+              arriving_goods: { type: "string", description: "When delivery_in_progress: one line on what is arriving, e.g. 'rooflight on a pallet on the back of a curtain-sider'. Else empty." },
+              arriving_supplier: { type: "string", description: "When delivery_in_progress: the supplier or haulier named on the lorry or packaging, if legible. Else empty." },
               rotation_degrees: { type: "number", enum: [0, 90, 180, 270], description: "How many degrees CLOCKWISE this image must be rotated for the printed text to read upright, left-to-right. 0 if it already reads upright. Site photos are often taken sideways: if the text runs bottom-to-top up the left side, answer 90; if upside down, 180; if it runs top-to-bottom down the right side, answer 270." },
               po_number: { type: "string", description: "OUR purchase order number, if the ticket quotes it. Ours always look like PO-26003-0040 — the letters PO, a five-digit project number, a four-digit sequence — and are sometimes printed without the 'PO-' prefix. ONLY a reference of that shape belongs here. The supplier's own references do NOT: a 'POR'/'SOR'/works-order number (POR117594, SOR458448), their sales-order number (1204155), a quote number (Q164563/AD28/07), a site or delivery name (DALLAS ROAD), or a customer-account code. Those go in supplier_invoice_ref. If the ticket quotes no reference of OUR shape, return an empty string — a supplier's own number put here reads as though the goods were matched to one of our orders when nothing on the paper says so." },
               supplier_name: { type: "string", description: "The supplier/company that issued the ticket — usually the letterhead. Empty string if unclear." },
@@ -215,7 +225,8 @@ async function runDeliveryExtraction(env: Env, block: DeliveryContentBlock): Pro
   const toolUse = response.content.find((b): b is Anthropic.ToolUseBlock => b.type === "tool_use");
   if (!toolUse) return { ok: false, status: 422, error: "Couldn't extract anything from the ticket." };
   const x = toolUse.input as {
-    is_delivery_ticket?: boolean; rotation_degrees?: number; po_number?: string; supplier_name?: string; delivery_note_number?: string;
+    is_delivery_ticket?: boolean; delivery_in_progress?: boolean; arriving_goods?: string; arriving_supplier?: string;
+    rotation_degrees?: number; po_number?: string; supplier_name?: string; delivery_note_number?: string;
     delivery_date?: string; supplier_invoice_ref?: string; summary?: string;
     items?: Array<{ description?: string; qty?: number; unit?: string; region?: unknown }>;
     regions?: Record<string, unknown>;
@@ -231,6 +242,9 @@ async function runDeliveryExtraction(env: Env, block: DeliveryContentBlock): Pro
     ok: true,
     extracted: {
       is_delivery_ticket: x.is_delivery_ticket === true,
+      delivery_in_progress: x.is_delivery_ticket !== true && x.delivery_in_progress === true,
+      arriving_goods: blankIfPlaceholder(x.arriving_goods ?? ""),
+      arriving_supplier: blankIfPlaceholder(x.arriving_supplier ?? ""),
       rotation_degrees: ([0, 90, 180, 270].includes(Number(x.rotation_degrees)) ? Number(x.rotation_degrees) : 0) as 0 | 90 | 180 | 270,
       po_number: poNumber,
       supplier_name: supplierName,
@@ -791,9 +805,10 @@ export async function runWhatsappTicketScans(env: Env): Promise<void> {
   const rows = await env.DB.prepare(
     `SELECT DISTINCT u.project_id AS pid
        FROM project_updates u JOIN projects p ON p.id = u.project_id
-      WHERE u.media_url IS NOT NULL AND p.deleted_at IS NULL AND p.id != 'sandbox'
+      WHERE (u.media_url IS NOT NULL OR (${ARRIVAL_TEXT_WHERE}))
+        AND p.deleted_at IS NULL AND p.id != 'sandbox'
         AND u.id NOT IN (SELECT update_id FROM delivery_ticket_scans WHERE update_id IS NOT NULL)`,
-  ).all<{ pid: string }>();
+  ).bind(...ARRIVAL_TEXT_BINDS).all<{ pid: string }>();
   const bases = new Set<string>();
   for (const r of rows.results) {
     try { bases.add((await siteScope(env, r.pid)).baseId); } catch { bases.add(r.pid); }
@@ -1490,6 +1505,306 @@ async function archiveTicketPhoto(env: Env, projectId: string, url: string): Pro
   }
 }
 
+
+// ─── Arrival reports: deliveries announced in WhatsApp without a ticket ─────
+// "BOC Delivery of 5 bottles of gas. 4 empties returned", or a photo of a
+// pallet captioned "rooflights arrived". Read as REPORTS — weaker than a signed
+// note — so they land in the same inbox flagged, and always wait for a person.
+// See shared/arrival-report.ts for the wording net and the pairing window.
+
+/** Text-only WhatsApp rows worth reading: recent, not a forwarded email, and
+ *  carrying one of the arrival words. Bound as ARRIVAL_TEXT_BINDS. */
+const ARRIVAL_TEXT_WHERE =
+  `u.media_url IS NULL AND u.body IS NOT NULL AND u.occurred_at >= ? AND COALESCE(u.source, '') NOT LIKE 'email%' AND (${ARRIVAL_SQL_LIKE.map(() => "lower(u.body) LIKE ?").join(" OR ")})`;
+const ARRIVAL_TEXT_BINDS = [ARRIVAL_REPORTS_FROM, ...ARRIVAL_SQL_LIKE];
+
+type ArrivalRead = {
+  is_arrival_report: boolean;
+  photo_matches_message: boolean;
+  supplier_name: string;
+  summary: string;
+  delivery_date: string;
+  items: Array<{ description: string; qty: number | null; unit: string | null }>;
+};
+
+/** Does this message say goods have ARRIVED — and if a photo is given, is it
+ *  of those goods? Claude fetches the photo by URL (no Worker download). */
+async function readArrivalReport(env: Env, text: string, photoUrl: string | null, sentAt: string): Promise<ArrivalRead | null> {
+  if (!env.ANTHROPIC_API_KEY) return null;
+  const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
+  const content: Anthropic.MessageParam["content"] = [];
+  const usePhoto = !!photoUrl && isSafeMediaUrl(photoUrl) && !/\.pdf(\?|$)/i.test(photoUrl);
+  if (usePhoto) content.push({ type: "image", source: { type: "url", url: photoUrl! } });
+  content.push({
+    type: "text",
+    text: `A message posted ${sentAt.slice(0, 16).replace("T", " ")} in a construction site's WhatsApp group${usePhoto ? ", with the photo above" : ""}:\n"""${text.slice(0, 1500)}"""\nRecord it via record_arrival.`,
+  });
+  try {
+    const r = await client.messages.create({
+      model: "claude-opus-4-7",
+      max_tokens: 700,
+      system: "You read messages from a UK construction site's WhatsApp group and decide whether one REPORTS that goods, materials or hired plant HAVE ARRIVED on site (delivered, received, arrived, dropped off, collected by us) — something that has already happened. It is NOT an arrival report when it is about a delivery that is expected, booked or on its way; when it says something has NOT come or asks whether it has; or when it is a progress update about work, labour or installation. Never invent a supplier or quantity that the message and photo don't show. Numbers must be plain.",
+      tools: [{
+        name: "record_arrival",
+        description: "Record whether the message reports an arrival, and what arrived.",
+        input_schema: {
+          type: "object" as const,
+          properties: {
+            is_arrival_report: { type: "boolean", description: "TRUE only if the message says goods/materials/plant have already arrived on site or been collected." },
+            photo_matches_message: { type: "boolean", description: "Only when a photo is given: TRUE if it shows the goods or delivery the message is about (e.g. gas cylinders for a gas delivery, a pallet just offloaded); FALSE for an unrelated site/progress photo. FALSE when no photo is given." },
+            supplier_name: { type: "string", description: "Who delivered, if the message or photo names them (e.g. 'BOC'). Empty string if not named." },
+            summary: { type: "string", description: "One line: what arrived, e.g. '5 size D propane cylinders delivered, 4 empties returned'." },
+            delivery_date: { type: "string", description: "The day it arrived, YYYY-MM-DD — the message's date unless it says otherwise ('delivered Tuesday')." },
+            items: {
+              type: "array",
+              items: { type: "object", properties: { description: { type: "string" }, qty: { type: "number" }, unit: { type: "string" } }, required: ["description"] },
+            },
+          },
+          required: ["is_arrival_report", "photo_matches_message", "supplier_name", "summary"],
+        },
+      }],
+      tool_choice: { type: "tool", name: "record_arrival" },
+      messages: [{ role: "user", content }],
+    });
+    const tu = r.content.find((b): b is Anthropic.ToolUseBlock => b.type === "tool_use");
+    const x = (tu?.input ?? {}) as Record<string, unknown>;
+    const str = (v: unknown) => blankIfPlaceholder(String(v ?? ""));
+    return {
+      is_arrival_report: x.is_arrival_report === true,
+      photo_matches_message: usePhoto && x.photo_matches_message === true,
+      supplier_name: str(x.supplier_name),
+      summary: str(x.summary),
+      delivery_date: /^\d{4}-\d{2}-\d{2}$/.test(String(x.delivery_date ?? "")) ? String(x.delivery_date) : sentAt.slice(0, 10),
+      items: (Array.isArray(x.items) ? (x.items as Array<Record<string, unknown>>) : [])
+        .map((i) => ({ description: str(i.description), qty: typeof i.qty === "number" ? i.qty : null, unit: i.unit ? String(i.unit) : null }))
+        .filter((i) => i.description),
+    };
+  } catch (e) {
+    console.warn("arrival report read failed", e instanceof Error ? e.message : e);
+    return null;
+  }
+}
+
+function supplierOverlap(a: string | null | undefined, b: string | null | undefined): number {
+  const at = nameTokens(a ?? ""), bt = nameTokens(b ?? "");
+  if (!at.size || !bt.size) return 0;
+  let hit = 0; for (const t of at) if (bt.has(t)) hit++;
+  return hit / Math.min(at.size, bt.size);
+}
+
+const windowAround = (at: string) => {
+  const t = Date.parse(at);
+  return [new Date(t - PAIR_WINDOW_MS).toISOString(), new Date(t + PAIR_WINDOW_MS).toISOString()] as const;
+};
+
+type ScanMsg = { id: number; media_url: string | null; sender: string | null; body: string | null; occurred_at: string; created_at: string };
+type ScanPo = { id: string; po_number: string; supplier: string | null; order_type: string | null; project_id: string; project_code: string; status?: string };
+
+/** File one message as an arrival report — unless it isn't one, or a ticket
+ *  from the same delivery already covers it. Text-only messages always leave a
+ *  row (pending report, or a dismissed marker) so they're never read twice. */
+export async function recordArrivalReport(env: Env, o: {
+  base: string; msg: ScanMsg; photoUrl: string | null; pos: ScanPo[]; actor: string; now: string;
+}): Promise<boolean> {
+  const at = o.msg.occurred_at || o.msg.created_at;
+  const [lo, hi] = windowAround(at);
+  const text = (o.msg.body ?? "").trim();
+  const ownPhoto = !!o.photoUrl;
+
+  // A text with no photo of its own: try the nearest non-ticket photo the same
+  // person sent around it — the read itself says whether it shows these goods.
+  let photoUrl = o.photoUrl;
+  if (!photoUrl && o.msg.sender) {
+    const near = await env.DB.prepare(
+      `SELECT u.media_url FROM project_updates u JOIN delivery_ticket_scans s ON s.update_id = u.id
+        WHERE s.project_id = ? AND s.is_ticket = 0 AND u.sender = ? AND u.media_url IS NOT NULL
+          AND u.occurred_at BETWEEN ? AND ?
+        ORDER BY ABS(julianday(u.occurred_at) - julianday(?)) LIMIT 1`,
+    ).bind(o.base, o.msg.sender, lo, hi, at).first<{ media_url: string }>().catch(() => null);
+    photoUrl = near?.media_url ?? null;
+  }
+
+  const marker = async (why: string) => {
+    if (ownPhoto) return; // the photo's own scan row already records it
+    await env.DB.prepare(
+      `INSERT INTO delivery_ticket_scans (project_id, update_id, photo_key, is_ticket, summary, extracted_json, status, occurred_at, scanned_at, scanned_by)
+       VALUES (?,?,?,0,?,?,'dismissed',?,?,?) ON CONFLICT(photo_key) DO NOTHING`,
+    ).bind(o.base, o.msg.id, `msg:${o.msg.id}`, why, JSON.stringify({ report: true, message: text, sender: o.msg.sender, not_filed: why }), at, o.now, o.actor).run().catch(() => {});
+  };
+
+  const read = await readArrivalReport(env, text, photoUrl, at);
+  if (!read) return false; // no AI key / read failed — a text is picked up again next run
+  if (!read.is_arrival_report) { await marker("Not an arrival report"); return false; }
+
+  // Already covered by a delivery note from the same drop?
+  const tickets = (await env.DB.prepare(
+    `SELECT s.id, s.supplier_name, u.sender FROM delivery_ticket_scans s LEFT JOIN project_updates u ON u.id = s.update_id
+      WHERE s.project_id = ? AND s.is_ticket = 1 AND COALESCE(json_extract(s.extracted_json, '$.report'), 0) = 0
+        AND s.occurred_at BETWEEN ? AND ?`,
+  ).bind(o.base, lo, hi).all<{ id: number; supplier_name: string | null; sender: string | null }>().catch(() => ({ results: [] }))).results;
+  const covered = tickets.find((t) => supplierOverlap(read.supplier_name, t.supplier_name) >= 0.5
+    || (!read.supplier_name && !!o.msg.sender && t.sender === o.msg.sender));
+  if (covered) { await marker(`Covered by delivery note scan #${covered.id}`); return false; }
+
+  // Supplier-name guess only — never a PO-number match, so it shows "Guessed".
+  let matchedId: string | null = null;
+  if (read.supplier_name) {
+    let best: { id: string; score: number } | null = null;
+    for (const po of o.pos) {
+      if (po.order_type === "framework") continue;
+      const sc = supplierOverlap(read.supplier_name, po.supplier);
+      if (sc >= 0.5 && (!best || sc > best.score)) best = { id: po.id, score: sc };
+    }
+    matchedId = best?.id ?? null;
+  }
+
+  // The photo came first and was filed "photo only": this message is its
+  // caption — give that report the words, rather than filing the drop twice.
+  if (o.msg.sender) {
+    const photoOnly = await env.DB.prepare(
+      `SELECT s.id, s.extracted_json FROM delivery_ticket_scans s JOIN project_updates u ON u.id = s.update_id
+        WHERE s.project_id = ? AND s.status = 'pending' AND json_extract(s.extracted_json, '$.photo_only') = 1
+          AND u.sender = ? AND s.occurred_at BETWEEN ? AND ?
+        ORDER BY ABS(julianday(s.occurred_at) - julianday(?)) LIMIT 1`,
+    ).bind(o.base, o.msg.sender, lo, hi, at).first<{ id: number; extracted_json: string }>().catch(() => null);
+    if (photoOnly) {
+      let prev: Record<string, unknown> = {};
+      try { prev = JSON.parse(photoOnly.extracted_json); } catch { /* start fresh */ }
+      const merged = { ...prev, photo_only: false, message: text, supplier_name: read.supplier_name || prev.supplier_name, summary: read.summary || prev.summary, items: read.items, delivery_date: read.delivery_date };
+      await env.DB.prepare(
+        `UPDATE delivery_ticket_scans SET extracted_json = ?, summary = ?, supplier_name = COALESCE(?, supplier_name), delivery_date = ? WHERE id = ?`,
+      ).bind(JSON.stringify(merged), read.summary || null, read.supplier_name || null, read.delivery_date, photoOnly.id).run();
+      await marker(`Caption for report #${photoOnly.id}`);
+      return false;
+    }
+  }
+
+  const attach = ownPhoto || read.photo_matches_message;
+  const key = attach && photoUrl ? await archiveTicketPhoto(env, o.base, photoUrl) : null;
+  const ex = {
+    is_delivery_ticket: false, report: true, rotation_degrees: 0,
+    po_number: "", supplier_name: read.supplier_name, delivery_note_number: "", delivery_date: read.delivery_date,
+    supplier_invoice_ref: "", summary: read.summary, items: read.items,
+    message: text, sender: o.msg.sender, has_photo: !!key,
+  };
+  await env.DB.prepare(
+    `INSERT INTO delivery_ticket_scans
+       (project_id, update_id, photo_key, is_ticket, supplier_name, delivery_date, summary, extracted_json,
+        matched_po_id, matched_by, status, occurred_at, scanned_at, scanned_by)
+     VALUES (?,?,?,1,?,?,?,?,?,?,'pending',?,?,?) ON CONFLICT(photo_key) DO NOTHING`,
+  ).bind(
+    o.base, o.msg.id, key ?? `msg:${o.msg.id}`, read.supplier_name || null, read.delivery_date, read.summary || text.slice(0, 120),
+    JSON.stringify(ex), matchedId, matchedId ? "supplier" : null, at, o.now, o.actor,
+  ).run();
+  return true;
+}
+
+/** A photo with no caption, sent around a pending text report by the same
+ *  person: if it shows those goods, it becomes the report's picture. */
+async function attachPhotoToReport(env: Env, base: string, msg: ScanMsg): Promise<boolean> {
+  if (!msg.sender || !msg.media_url) return false;
+  const at = msg.occurred_at || msg.created_at;
+  const [lo, hi] = windowAround(at);
+  const rep = await env.DB.prepare(
+    `SELECT s.id, s.extracted_json FROM delivery_ticket_scans s JOIN project_updates u ON u.id = s.update_id
+      WHERE s.project_id = ? AND s.status = 'pending' AND json_extract(s.extracted_json, '$.report') = 1
+        AND s.photo_key LIKE 'msg:%' AND u.sender = ? AND s.occurred_at BETWEEN ? AND ?
+      ORDER BY ABS(julianday(s.occurred_at) - julianday(?)) LIMIT 1`,
+  ).bind(base, msg.sender, lo, hi, at).first<{ id: number; extracted_json: string }>().catch(() => null);
+  if (!rep) return false;
+  let ex: Record<string, unknown> = {};
+  try { ex = JSON.parse(rep.extracted_json); } catch { return false; }
+  const read = await readArrivalReport(env, String(ex.message ?? ""), msg.media_url, at);
+  if (!read?.photo_matches_message) return false;
+  const key = await archiveTicketPhoto(env, base, msg.media_url);
+  if (!key) return false;
+  await env.DB.prepare("UPDATE delivery_ticket_scans SET photo_key = ?, extracted_json = ? WHERE id = ?")
+    .bind(key, JSON.stringify({ ...ex, has_photo: true }), rep.id).run().catch(() => {});
+  return true;
+}
+
+/** A photo with no words that plainly shows a delivery happening — the 4 Nov
+ *  rooflight strapped to a pallet on the back of the lorry. Filed as "photo
+ *  only" so nobody books it without asking site. One report per drop: a
+ *  second photo of the same delivery from the same person is not filed again,
+ *  and a delivery note from the same drop still wins. */
+export async function recordPhotoOnlyArrival(env: Env, o: {
+  base: string; msg: ScanMsg; goods: string; supplier: string; pos: ScanPo[]; actor: string; now: string;
+}): Promise<boolean> {
+  if (!o.msg.media_url) return false;
+  const at = o.msg.occurred_at || o.msg.created_at;
+  const [lo, hi] = windowAround(at);
+  const sameDrop = new Date(Date.parse(at) - 3_600_000).toISOString(), sameDropHi = new Date(Date.parse(at) + 3_600_000).toISOString();
+
+  // Already a pending report from this person within the hour — same drop.
+  if (o.msg.sender) {
+    const dup = await env.DB.prepare(
+      `SELECT s.id FROM delivery_ticket_scans s JOIN project_updates u ON u.id = s.update_id
+        WHERE s.project_id = ? AND s.status = 'pending' AND json_extract(s.extracted_json, '$.report') = 1
+          AND u.sender = ? AND s.occurred_at BETWEEN ? AND ? LIMIT 1`,
+    ).bind(o.base, o.msg.sender, sameDrop, sameDropHi).first<{ id: number }>().catch(() => null);
+    if (dup) return false;
+  }
+  // A delivery note from the same drop covers it.
+  const tickets = (await env.DB.prepare(
+    `SELECT s.id, s.supplier_name, u.sender FROM delivery_ticket_scans s LEFT JOIN project_updates u ON u.id = s.update_id
+      WHERE s.project_id = ? AND s.is_ticket = 1 AND COALESCE(json_extract(s.extracted_json, '$.report'), 0) = 0
+        AND s.occurred_at BETWEEN ? AND ?`,
+  ).bind(o.base, lo, hi).all<{ id: number; supplier_name: string | null; sender: string | null }>().catch(() => ({ results: [] }))).results;
+  if (tickets.some((t) => supplierOverlap(o.supplier, t.supplier_name) >= 0.5 || (!!o.msg.sender && t.sender === o.msg.sender))) return false;
+
+  let matchedId: string | null = null;
+  if (o.supplier) {
+    let best: { id: string; score: number } | null = null;
+    for (const po of o.pos) {
+      if (po.order_type === "framework") continue;
+      const sc = supplierOverlap(o.supplier, po.supplier);
+      if (sc >= 0.5 && (!best || sc > best.score)) best = { id: po.id, score: sc };
+    }
+    matchedId = best?.id ?? null;
+  }
+  const key = await archiveTicketPhoto(env, o.base, o.msg.media_url);
+  if (!key) return false;
+  const ex = {
+    is_delivery_ticket: false, report: true, photo_only: true, rotation_degrees: 0,
+    po_number: "", supplier_name: o.supplier, delivery_note_number: "", delivery_date: at.slice(0, 10),
+    supplier_invoice_ref: "", summary: o.goods, items: [], message: (o.msg.body ?? "").trim(), sender: o.msg.sender, has_photo: true,
+  };
+  await env.DB.prepare(
+    `INSERT INTO delivery_ticket_scans
+       (project_id, update_id, photo_key, is_ticket, supplier_name, delivery_date, summary, extracted_json,
+        matched_po_id, matched_by, status, occurred_at, scanned_at, scanned_by)
+     VALUES (?,?,?,1,?,?,?,?,?,?,'pending',?,?,?) ON CONFLICT(photo_key) DO NOTHING`,
+  ).bind(
+    o.base, o.msg.id, key, o.supplier || null, at.slice(0, 10), o.goods || "Delivery photo",
+    JSON.stringify(ex), matchedId, matchedId ? "supplier" : null, at, o.now, o.actor,
+  ).run();
+  return true;
+}
+
+/** A delivery note just came in: any pending text/photo report of the same
+ *  drop (same sender or same supplier, within the pairing window) is the same
+ *  delivery — set it aside so it can't be booked twice. */
+export async function supersedeArrivalReports(env: Env, base: string, msg: ScanMsg, supplier: string, scanUpdateId: number): Promise<void> {
+  const at = msg.occurred_at || msg.created_at;
+  const [lo, hi] = windowAround(at);
+  const reps = (await env.DB.prepare(
+    `SELECT s.id, s.supplier_name, u.sender FROM delivery_ticket_scans s LEFT JOIN project_updates u ON u.id = s.update_id
+      WHERE s.project_id = ? AND s.status = 'pending' AND json_extract(s.extracted_json, '$.report') = 1
+        AND s.occurred_at BETWEEN ? AND ?`,
+  ).bind(base, lo, hi).all<{ id: number; supplier_name: string | null; sender: string | null }>().catch(() => ({ results: [] }))).results;
+  for (const r of reps) {
+    const same = supplierOverlap(supplier, r.supplier_name) >= 0.5 || (!r.supplier_name && !!msg.sender && r.sender === msg.sender);
+    if (!same) continue;
+    await env.DB.prepare(
+      `UPDATE delivery_ticket_scans SET status = 'dismissed',
+              extracted_json = json_set(COALESCE(extracted_json, '{}'), '$.superseded_by_update', ?)
+        WHERE id = ? AND status = 'pending'`,
+    ).bind(scanUpdateId, r.id).run().catch(() => {});
+  }
+}
+
+
 /** Scan one batch of unscanned WhatsApp/site photos for a site scope. Shared
  *  by the manual "Scan" button and the hourly cron — tickets photographed into
  *  the group surface as pending check-ins WITHOUT anyone pressing anything. */
@@ -1508,14 +1823,14 @@ export async function scanWhatsappTicketBatch(
       WHERE u.project_id IN (${ph}) AND u.media_url IS NOT NULL
         AND u.id NOT IN (SELECT update_id FROM delivery_ticket_scans WHERE update_id IS NOT NULL)
       ORDER BY u.id ASC LIMIT ?`,
-  ).bind(...scope.memberIds, limit).all<{ id: number; media_url: string; sender: string | null; body: string | null; occurred_at: string; created_at: string }>();
+  ).bind(...scope.memberIds, limit).all<ScanMsg & { media_url: string }>();
 
   // Remaining backlog count so the UI can say "scan N more".
   const remainingRow = await env.DB.prepare(
     `SELECT COUNT(*) AS n FROM project_updates u
-      WHERE u.project_id IN (${ph}) AND u.media_url IS NOT NULL
+      WHERE u.project_id IN (${ph}) AND (u.media_url IS NOT NULL OR (${ARRIVAL_TEXT_WHERE}))
         AND u.id NOT IN (SELECT update_id FROM delivery_ticket_scans WHERE update_id IS NOT NULL)`,
-  ).bind(...scope.memberIds).first<{ n: number }>();
+  ).bind(...scope.memberIds, ...ARRIVAL_TEXT_BINDS).first<{ n: number }>();
 
   // POs we can match against — every contract in the site, not deleted.
   const pos = await env.DB.prepare(
@@ -1593,6 +1908,50 @@ export async function scanWhatsappTicketBatch(
       ).run();
     } catch (e) {
       console.error("failed to record ticket scan", p.id, e instanceof Error ? e.message : e);
+    }
+
+    // Arrivals without a delivery note. Best-effort: a failure here must never
+    // stop the ticket scan, and an unfiled report is retried on nothing — the
+    // photo is already marked scanned — so it only costs that one report.
+    const at = p.occurred_at || p.created_at;
+    try {
+      if (isTicket) {
+        await supersedeArrivalReports(env, base, p, ex?.supplier_name ?? "", p.id);
+      } else if (at >= ARRIVAL_REPORTS_FROM && base !== "sandbox") {
+        if (looksLikeArrivalText(p.body)) {
+          if (await recordArrivalReport(env, { base, msg: p, photoUrl: p.media_url, pos: pos.results, actor, now })) tickets++;
+        } else if (!(await attachPhotoToReport(env, base, p)) && ex?.delivery_in_progress) {
+          if (await recordPhotoOnlyArrival(env, { base, msg: p, goods: ex.arriving_goods ?? "", supplier: ex.arriving_supplier ?? "", pos: pos.results, actor, now })) tickets++;
+        }
+      }
+    } catch (e) {
+      console.warn("arrival report step failed", p.id, e instanceof Error ? e.message : e);
+    }
+  }
+
+  // Text-only messages that say something arrived.
+  if (base !== "sandbox") {
+    const texts = await env.DB.prepare(
+      `SELECT u.id, u.media_url, u.sender, u.body, u.occurred_at, u.created_at
+         FROM project_updates u
+        WHERE u.project_id IN (${ph}) AND ${ARRIVAL_TEXT_WHERE}
+          AND u.id NOT IN (SELECT update_id FROM delivery_ticket_scans WHERE update_id IS NOT NULL)
+        ORDER BY u.id ASC LIMIT ?`,
+    ).bind(...scope.memberIds, ...ARRIVAL_TEXT_BINDS, limit).all<ScanMsg>().catch(() => ({ results: [] as ScanMsg[] }));
+    for (const m of texts.results) {
+      scanned++;
+      try {
+        if (!looksLikeArrivalText(m.body)) {
+          await env.DB.prepare(
+            `INSERT INTO delivery_ticket_scans (project_id, update_id, photo_key, is_ticket, status, occurred_at, scanned_at, scanned_by)
+             VALUES (?,?,?,0,'dismissed',?,?,?) ON CONFLICT(photo_key) DO NOTHING`,
+          ).bind(base, m.id, `msg:${m.id}`, m.occurred_at || m.created_at, now, actor).run();
+          continue;
+        }
+        if (await recordArrivalReport(env, { base, msg: m, photoUrl: null, pos: pos.results, actor, now })) tickets++;
+      } catch (e) {
+        console.warn("arrival report failed", m.id, e instanceof Error ? e.message : e);
+      }
     }
   }
 
@@ -1759,7 +2118,16 @@ operations.get("/deliveries-inbox", async (c) => {
         }
         if (best) { method = "line"; conf = Math.min(90, 45 + best.hits * 15); guess_po_id = best.id; guess_po_number = best.po_number; guess_project_code = best.project_code; }
       }
-      return { ...rest, scanned_qty, scanned_unit, items, method, conf, guess_po_id, guess_po_number, guess_project_code, ticket_url: /^https?:\/\//i.test(key) ? key : `/api/operations/file?key=${encodeURIComponent(key)}` };
+      // An arrival report (a WhatsApp message, not a delivery note) carries the
+      // message itself; with no photo of the goods there's no file to show.
+      let report: { message: string; sender: string | null; photoOnly: boolean } | null = null;
+      try {
+        const ex = row.extracted_json ? JSON.parse(row.extracted_json) as Record<string, unknown> : null;
+        if (ex?.report === true) report = { message: String(ex.message ?? ""), sender: ex.sender ? String(ex.sender) : null, photoOnly: ex.photo_only === true };
+      } catch { /* not a report */ }
+      const ticket_url = key.startsWith("msg:") ? "" : /^https?:\/\//i.test(key) ? key : `/api/operations/file?key=${encodeURIComponent(key)}`;
+      return { ...rest, scanned_qty, scanned_unit, items, method, conf, guess_po_id, guess_po_number, guess_project_code, ticket_url,
+        report: !!report, report_message: report?.message || null, report_sender: report?.sender ?? null, report_photo_only: !!report?.photoOnly };
     });
 
     // Does what ARRIVED match what was ordered? The PO-number match above only
