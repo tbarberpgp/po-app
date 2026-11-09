@@ -90,6 +90,12 @@ type ExtractedDelivery = {
    *  verification existed carry unchecked boxes and must not be drawn. */
   regions_verified?: boolean;
   items: Array<{ description: string; qty: number | null; unit: string | null; region?: ReadRegion | null }>;
+  /** Not a delivery note, but the photo shows a delivery HAPPENING — goods on
+   *  a lorry, being offloaded, fresh wrapped pallets at the gate. Filed as a
+   *  "photo only" arrival report for someone to check. */
+  delivery_in_progress?: boolean;
+  arriving_goods?: string;
+  arriving_supplier?: string;
   regions?: {
     po_number?: ReadRegion | null;
     supplier_name?: ReadRegion | null;
@@ -157,7 +163,7 @@ async function runDeliveryExtraction(env: Env, block: DeliveryContentBlock): Pro
       model: "claude-opus-4-7",
       max_tokens: 1024,
       system:
-        "You examine a photo or PDF from a construction site's WhatsApp group and decide whether it is a supplier's DELIVERY TICKET / delivery note / advice note (the document that comes with a material delivery). Many images are NOT delivery tickets — they are site/progress photos of buildings or works, training certificates (CPD, NPORS, CSCS, medical/fit-to-work), invoices, RAMS, or general paperwork. For anything that is not a genuine delivery note, set is_delivery_ticket=false and leave every other field as an empty string — do NOT invent or guess a PO number, supplier or date, and never output placeholder text like 'UNKNOWN' or 'N/A' (use an empty string). Only when it really is a delivery note, set is_delivery_ticket=true and fill the fields exactly as printed. Numeric fields must be plain numbers.",
+        "You examine a photo or PDF from a construction site's WhatsApp group and decide whether it is a supplier's DELIVERY TICKET / delivery note / advice note (the document that comes with a material delivery). Many images are NOT delivery tickets — they are site/progress photos of buildings or works, training certificates (CPD, NPORS, CSCS, medical/fit-to-work), invoices, RAMS, or general paperwork. For anything that is not a genuine delivery note, set is_delivery_ticket=false and leave every other field as an empty string — do NOT invent or guess a PO number, supplier or date, and never output placeholder text like 'UNKNOWN' or 'N/A' (use an empty string). Only when it really is a delivery note, set is_delivery_ticket=true and fill the fields exactly as printed. Separately, for a photo that is NOT a delivery note, say whether it shows a delivery happening or just happened (delivery_in_progress): goods still on a lorry or van, being offloaded or craned off, or freshly dropped pallets/boxes still wrapped or strapped as they came. Materials already being installed or used, stock stacked on the roof, and general progress photos are NOT. Numeric fields must be plain numbers.",
       tools: [
         {
           name: "extract_delivery_ticket",
@@ -166,6 +172,9 @@ async function runDeliveryExtraction(env: Env, block: DeliveryContentBlock): Pro
             type: "object" as const,
             properties: {
               is_delivery_ticket: { type: "boolean", description: "TRUE only if this image is a genuine supplier delivery ticket / delivery note / advice note. FALSE for site photos, certificates, invoices, RAMS or any other document." },
+              delivery_in_progress: { type: "boolean", description: "Only for a photo that is NOT a delivery note: TRUE if it shows goods arriving — on a lorry/van, being offloaded or craned off, or freshly dropped and still wrapped/strapped. FALSE for materials being installed or in use, and for progress photos. FALSE for delivery notes." },
+              arriving_goods: { type: "string", description: "When delivery_in_progress: one line on what is arriving, e.g. 'rooflight on a pallet on the back of a curtain-sider'. Else empty." },
+              arriving_supplier: { type: "string", description: "When delivery_in_progress: the supplier or haulier named on the lorry or packaging, if legible. Else empty." },
               rotation_degrees: { type: "number", enum: [0, 90, 180, 270], description: "How many degrees CLOCKWISE this image must be rotated for the printed text to read upright, left-to-right. 0 if it already reads upright. Site photos are often taken sideways: if the text runs bottom-to-top up the left side, answer 90; if upside down, 180; if it runs top-to-bottom down the right side, answer 270." },
               po_number: { type: "string", description: "OUR purchase order number, if the ticket quotes it. Ours always look like PO-26003-0040 — the letters PO, a five-digit project number, a four-digit sequence — and are sometimes printed without the 'PO-' prefix. ONLY a reference of that shape belongs here. The supplier's own references do NOT: a 'POR'/'SOR'/works-order number (POR117594, SOR458448), their sales-order number (1204155), a quote number (Q164563/AD28/07), a site or delivery name (DALLAS ROAD), or a customer-account code. Those go in supplier_invoice_ref. If the ticket quotes no reference of OUR shape, return an empty string — a supplier's own number put here reads as though the goods were matched to one of our orders when nothing on the paper says so." },
               supplier_name: { type: "string", description: "The supplier/company that issued the ticket — usually the letterhead. Empty string if unclear." },
@@ -216,7 +225,8 @@ async function runDeliveryExtraction(env: Env, block: DeliveryContentBlock): Pro
   const toolUse = response.content.find((b): b is Anthropic.ToolUseBlock => b.type === "tool_use");
   if (!toolUse) return { ok: false, status: 422, error: "Couldn't extract anything from the ticket." };
   const x = toolUse.input as {
-    is_delivery_ticket?: boolean; rotation_degrees?: number; po_number?: string; supplier_name?: string; delivery_note_number?: string;
+    is_delivery_ticket?: boolean; delivery_in_progress?: boolean; arriving_goods?: string; arriving_supplier?: string;
+    rotation_degrees?: number; po_number?: string; supplier_name?: string; delivery_note_number?: string;
     delivery_date?: string; supplier_invoice_ref?: string; summary?: string;
     items?: Array<{ description?: string; qty?: number; unit?: string; region?: unknown }>;
     regions?: Record<string, unknown>;
@@ -232,6 +242,9 @@ async function runDeliveryExtraction(env: Env, block: DeliveryContentBlock): Pro
     ok: true,
     extracted: {
       is_delivery_ticket: x.is_delivery_ticket === true,
+      delivery_in_progress: x.is_delivery_ticket !== true && x.delivery_in_progress === true,
+      arriving_goods: blankIfPlaceholder(x.arriving_goods ?? ""),
+      arriving_supplier: blankIfPlaceholder(x.arriving_supplier ?? ""),
       rotation_degrees: ([0, 90, 180, 270].includes(Number(x.rotation_degrees)) ? Number(x.rotation_degrees) : 0) as 0 | 90 | 180 | 270,
       po_number: poNumber,
       supplier_name: supplierName,
@@ -1645,6 +1658,27 @@ export async function recordArrivalReport(env: Env, o: {
     matchedId = best?.id ?? null;
   }
 
+  // The photo came first and was filed "photo only": this message is its
+  // caption — give that report the words, rather than filing the drop twice.
+  if (o.msg.sender) {
+    const photoOnly = await env.DB.prepare(
+      `SELECT s.id, s.extracted_json FROM delivery_ticket_scans s JOIN project_updates u ON u.id = s.update_id
+        WHERE s.project_id = ? AND s.status = 'pending' AND json_extract(s.extracted_json, '$.photo_only') = 1
+          AND u.sender = ? AND s.occurred_at BETWEEN ? AND ?
+        ORDER BY ABS(julianday(s.occurred_at) - julianday(?)) LIMIT 1`,
+    ).bind(o.base, o.msg.sender, lo, hi, at).first<{ id: number; extracted_json: string }>().catch(() => null);
+    if (photoOnly) {
+      let prev: Record<string, unknown> = {};
+      try { prev = JSON.parse(photoOnly.extracted_json); } catch { /* start fresh */ }
+      const merged = { ...prev, photo_only: false, message: text, supplier_name: read.supplier_name || prev.supplier_name, summary: read.summary || prev.summary, items: read.items, delivery_date: read.delivery_date };
+      await env.DB.prepare(
+        `UPDATE delivery_ticket_scans SET extracted_json = ?, summary = ?, supplier_name = COALESCE(?, supplier_name), delivery_date = ? WHERE id = ?`,
+      ).bind(JSON.stringify(merged), read.summary || null, read.supplier_name || null, read.delivery_date, photoOnly.id).run();
+      await marker(`Caption for report #${photoOnly.id}`);
+      return false;
+    }
+  }
+
   const attach = ownPhoto || read.photo_matches_message;
   const key = attach && photoUrl ? await archiveTicketPhoto(env, o.base, photoUrl) : null;
   const ex = {
@@ -1667,8 +1701,8 @@ export async function recordArrivalReport(env: Env, o: {
 
 /** A photo with no caption, sent around a pending text report by the same
  *  person: if it shows those goods, it becomes the report's picture. */
-async function attachPhotoToReport(env: Env, base: string, msg: ScanMsg): Promise<void> {
-  if (!msg.sender || !msg.media_url) return;
+async function attachPhotoToReport(env: Env, base: string, msg: ScanMsg): Promise<boolean> {
+  if (!msg.sender || !msg.media_url) return false;
   const at = msg.occurred_at || msg.created_at;
   const [lo, hi] = windowAround(at);
   const rep = await env.DB.prepare(
@@ -1677,15 +1711,75 @@ async function attachPhotoToReport(env: Env, base: string, msg: ScanMsg): Promis
         AND s.photo_key LIKE 'msg:%' AND u.sender = ? AND s.occurred_at BETWEEN ? AND ?
       ORDER BY ABS(julianday(s.occurred_at) - julianday(?)) LIMIT 1`,
   ).bind(base, msg.sender, lo, hi, at).first<{ id: number; extracted_json: string }>().catch(() => null);
-  if (!rep) return;
+  if (!rep) return false;
   let ex: Record<string, unknown> = {};
-  try { ex = JSON.parse(rep.extracted_json); } catch { return; }
+  try { ex = JSON.parse(rep.extracted_json); } catch { return false; }
   const read = await readArrivalReport(env, String(ex.message ?? ""), msg.media_url, at);
-  if (!read?.photo_matches_message) return;
+  if (!read?.photo_matches_message) return false;
   const key = await archiveTicketPhoto(env, base, msg.media_url);
-  if (!key) return;
+  if (!key) return false;
   await env.DB.prepare("UPDATE delivery_ticket_scans SET photo_key = ?, extracted_json = ? WHERE id = ?")
     .bind(key, JSON.stringify({ ...ex, has_photo: true }), rep.id).run().catch(() => {});
+  return true;
+}
+
+/** A photo with no words that plainly shows a delivery happening — the 4 Nov
+ *  rooflight strapped to a pallet on the back of the lorry. Filed as "photo
+ *  only" so nobody books it without asking site. One report per drop: a
+ *  second photo of the same delivery from the same person is not filed again,
+ *  and a delivery note from the same drop still wins. */
+export async function recordPhotoOnlyArrival(env: Env, o: {
+  base: string; msg: ScanMsg; goods: string; supplier: string; pos: ScanPo[]; actor: string; now: string;
+}): Promise<boolean> {
+  if (!o.msg.media_url) return false;
+  const at = o.msg.occurred_at || o.msg.created_at;
+  const [lo, hi] = windowAround(at);
+  const sameDrop = new Date(Date.parse(at) - 3_600_000).toISOString(), sameDropHi = new Date(Date.parse(at) + 3_600_000).toISOString();
+
+  // Already a pending report from this person within the hour — same drop.
+  if (o.msg.sender) {
+    const dup = await env.DB.prepare(
+      `SELECT s.id FROM delivery_ticket_scans s JOIN project_updates u ON u.id = s.update_id
+        WHERE s.project_id = ? AND s.status = 'pending' AND json_extract(s.extracted_json, '$.report') = 1
+          AND u.sender = ? AND s.occurred_at BETWEEN ? AND ? LIMIT 1`,
+    ).bind(o.base, o.msg.sender, sameDrop, sameDropHi).first<{ id: number }>().catch(() => null);
+    if (dup) return false;
+  }
+  // A delivery note from the same drop covers it.
+  const tickets = (await env.DB.prepare(
+    `SELECT s.id, s.supplier_name, u.sender FROM delivery_ticket_scans s LEFT JOIN project_updates u ON u.id = s.update_id
+      WHERE s.project_id = ? AND s.is_ticket = 1 AND COALESCE(json_extract(s.extracted_json, '$.report'), 0) = 0
+        AND s.occurred_at BETWEEN ? AND ?`,
+  ).bind(o.base, lo, hi).all<{ id: number; supplier_name: string | null; sender: string | null }>().catch(() => ({ results: [] }))).results;
+  if (tickets.some((t) => supplierOverlap(o.supplier, t.supplier_name) >= 0.5 || (!!o.msg.sender && t.sender === o.msg.sender))) return false;
+
+  let matchedId: string | null = null;
+  if (o.supplier) {
+    let best: { id: string; score: number } | null = null;
+    for (const po of o.pos) {
+      if (po.order_type === "framework") continue;
+      const sc = supplierOverlap(o.supplier, po.supplier);
+      if (sc >= 0.5 && (!best || sc > best.score)) best = { id: po.id, score: sc };
+    }
+    matchedId = best?.id ?? null;
+  }
+  const key = await archiveTicketPhoto(env, o.base, o.msg.media_url);
+  if (!key) return false;
+  const ex = {
+    is_delivery_ticket: false, report: true, photo_only: true, rotation_degrees: 0,
+    po_number: "", supplier_name: o.supplier, delivery_note_number: "", delivery_date: at.slice(0, 10),
+    supplier_invoice_ref: "", summary: o.goods, items: [], message: (o.msg.body ?? "").trim(), sender: o.msg.sender, has_photo: true,
+  };
+  await env.DB.prepare(
+    `INSERT INTO delivery_ticket_scans
+       (project_id, update_id, photo_key, is_ticket, supplier_name, delivery_date, summary, extracted_json,
+        matched_po_id, matched_by, status, occurred_at, scanned_at, scanned_by)
+     VALUES (?,?,?,1,?,?,?,?,?,?,'pending',?,?,?) ON CONFLICT(photo_key) DO NOTHING`,
+  ).bind(
+    o.base, o.msg.id, key, o.supplier || null, at.slice(0, 10), o.goods || "Delivery photo",
+    JSON.stringify(ex), matchedId, matchedId ? "supplier" : null, at, o.now, o.actor,
+  ).run();
+  return true;
 }
 
 /** A delivery note just came in: any pending text/photo report of the same
@@ -1826,8 +1920,8 @@ export async function scanWhatsappTicketBatch(
       } else if (at >= ARRIVAL_REPORTS_FROM && base !== "sandbox") {
         if (looksLikeArrivalText(p.body)) {
           if (await recordArrivalReport(env, { base, msg: p, photoUrl: p.media_url, pos: pos.results, actor, now })) tickets++;
-        } else {
-          await attachPhotoToReport(env, base, p);
+        } else if (!(await attachPhotoToReport(env, base, p)) && ex?.delivery_in_progress) {
+          if (await recordPhotoOnlyArrival(env, { base, msg: p, goods: ex.arriving_goods ?? "", supplier: ex.arriving_supplier ?? "", pos: pos.results, actor, now })) tickets++;
         }
       }
     } catch (e) {
@@ -2026,14 +2120,14 @@ operations.get("/deliveries-inbox", async (c) => {
       }
       // An arrival report (a WhatsApp message, not a delivery note) carries the
       // message itself; with no photo of the goods there's no file to show.
-      let report: { message: string; sender: string | null } | null = null;
+      let report: { message: string; sender: string | null; photoOnly: boolean } | null = null;
       try {
         const ex = row.extracted_json ? JSON.parse(row.extracted_json) as Record<string, unknown> : null;
-        if (ex?.report === true) report = { message: String(ex.message ?? ""), sender: ex.sender ? String(ex.sender) : null };
+        if (ex?.report === true) report = { message: String(ex.message ?? ""), sender: ex.sender ? String(ex.sender) : null, photoOnly: ex.photo_only === true };
       } catch { /* not a report */ }
       const ticket_url = key.startsWith("msg:") ? "" : /^https?:\/\//i.test(key) ? key : `/api/operations/file?key=${encodeURIComponent(key)}`;
       return { ...rest, scanned_qty, scanned_unit, items, method, conf, guess_po_id, guess_po_number, guess_project_code, ticket_url,
-        report: !!report, report_message: report?.message ?? null, report_sender: report?.sender ?? null };
+        report: !!report, report_message: report?.message || null, report_sender: report?.sender ?? null, report_photo_only: !!report?.photoOnly };
     });
 
     // Does what ARRIVED match what was ordered? The PO-number match above only

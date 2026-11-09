@@ -8,11 +8,11 @@
 // Cases are Andrew's real messages from the 26008 Block B group, 3 Nov 2026.
 import { test, describe, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { recordArrivalReport, supersedeArrivalReports } from "./routes/operations";
+import { recordArrivalReport, recordPhotoOnlyArrival, supersedeArrivalReports } from "./routes/operations";
 import type { Env } from "./env";
 
 type Row = Record<string, unknown>;
-function fakeDb(opts: { tickets?: Row[]; reports?: Row[] } = {}) {
+function fakeDb(opts: { tickets?: Row[]; reports?: Row[]; pendingFromSender?: Row | null; photoOnly?: Row | null } = {}) {
   const inserts: unknown[][] = [];
   const updates: unknown[][] = [];
   const db = {
@@ -21,7 +21,11 @@ function fakeDb(opts: { tickets?: Row[]; reports?: Row[] } = {}) {
       let bound: unknown[] = [];
       const stmt = {
         bind(...a: unknown[]) { bound = a; return stmt; },
-        async first() { return null; },
+        async first() {
+          if (q.includes("$.photo_only') = 1")) return opts.photoOnly ?? null;
+          if (q.includes("u.sender = ? AND s.occurred_at BETWEEN ? AND ? LIMIT 1")) return opts.pendingFromSender ?? null;
+          return null;
+        },
         async all() {
           if (q.includes("s.is_ticket = 1 AND COALESCE(json_extract")) return { results: opts.tickets ?? [] };
           if (q.includes("s.status = 'pending' AND json_extract")) return { results: opts.reports ?? [] };
@@ -29,7 +33,7 @@ function fakeDb(opts: { tickets?: Row[]; reports?: Row[] } = {}) {
         },
         async run() {
           if (q.startsWith("INSERT INTO delivery_ticket_scans")) inserts.push([q, ...bound]);
-          if (q.startsWith("UPDATE delivery_ticket_scans")) updates.push(bound);
+          if (q.startsWith("UPDATE delivery_ticket_scans")) updates.push([q, ...bound]);
           return { success: true, meta: {} };
         },
       };
@@ -112,6 +116,52 @@ describe("supersedeArrivalReports", () => {
       { id: 6, supplier_name: "Travis Perkins", sender: "Victor" },
     ] });
     await supersedeArrivalReports(env(db), "p8", { ...BOC_TEXT, id: 950, media_url: "https://x/y.jpg" }, "BOC Ltd", 950);
-    assert.deepEqual(updates.map((u) => u[1]), [5]);
+    assert.deepEqual(updates.map((u) => u[2]), [5]);
   });
+});
+
+const r2Env = (db: unknown) => ({ DB: db, ANTHROPIC_API_KEY: "test", R2: { put: async () => ({}) } }) as unknown as Env;
+const ROOFLIGHT = { id: 960, media_url: "https://media.example/rooflight.jpg", sender: "Andrew Law", body: null, occurred_at: "2026-11-04T09:54:00Z", created_at: "2026-11-04T09:54:00Z" };
+
+describe("recordPhotoOnlyArrival", () => {
+  // archiveTicketPhoto fetches the photo; let it succeed.
+  const photoFetch = () => { globalThis.fetch = (async () => new Response(new Uint8Array([1, 2, 3]), { headers: { "content-type": "image/jpeg" } })) as typeof fetch; };
+
+  test("a rooflight on the back of the lorry, no words: filed as photo only", async () => {
+    photoFetch();
+    const { db, inserts } = fakeDb();
+    const filed = await recordPhotoOnlyArrival(r2Env(db), { base: "p3", msg: ROOFLIGHT, goods: "Rooflight on a pallet on the back of a curtain-sider", supplier: "", pos, actor: "cron", now: "x" });
+    assert.equal(filed, true);
+    const ex = JSON.parse(String(inserts[0].find((v) => typeof v === "string" && v.startsWith("{\"is_delivery_ticket\""))));
+    assert.equal(ex.photo_only, true);
+    assert.match(String(inserts[0][0]), /'pending'/);
+  });
+
+  test("a second photo of the same drop within the hour isn't filed again", async () => {
+    photoFetch();
+    const { db, inserts } = fakeDb({ pendingFromSender: { id: 12 } });
+    const filed = await recordPhotoOnlyArrival(r2Env(db), { base: "p3", msg: { ...ROOFLIGHT, id: 961 }, goods: "telehandler carrying a pallet", supplier: "", pos, actor: "cron", now: "x" });
+    assert.equal(filed, false);
+    assert.equal(inserts.length, 0);
+  });
+
+  test("the same person's delivery note within 4 hours covers it — the Sertus pallets came with notes", async () => {
+    photoFetch();
+    const { db, inserts } = fakeDb({ tickets: [{ id: 3790, supplier_name: "Sertus", sender: "Andrew Law" }] });
+    const filed = await recordPhotoOnlyArrival(r2Env(db), { base: "p3", msg: ROOFLIGHT, goods: "pallet", supplier: "", pos, actor: "cron", now: "x" });
+    assert.equal(filed, false);
+    assert.equal(inserts.length, 0);
+  });
+});
+
+test("photo first, “delivered” text later: the text becomes that report's caption, not a second report", async () => {
+  claudeSays({ is_arrival_report: true, photo_matches_message: false, supplier_name: "Sertus", summary: "Smoke vent delivered", delivery_date: "2026-11-04" });
+  const { db, inserts, updates } = fakeDb({ photoOnly: { id: 44, extracted_json: JSON.stringify({ report: true, photo_only: true, summary: "pallet on lorry" }) } });
+  const filed = await recordArrivalReport(env(db), { base: "p3", msg: { ...BOC_TEXT, id: 970, body: "Sertus smoke vent delivered" }, photoUrl: null, pos, actor: "cron", now: "x" });
+  assert.equal(filed, false);
+  assert.equal(updates.length, 1);
+  const merged = JSON.parse(String(updates[0][1]));
+  assert.equal(merged.photo_only, false);
+  assert.equal(merged.message, "Sertus smoke vent delivered");
+  assert.ok(inserts.every((r) => /'dismissed'/.test(String(r[0]))), "only a marker for the text itself");
 });

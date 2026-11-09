@@ -469,7 +469,7 @@ function TicketDetail({ cand, projects, onActioned }: {
           <div style={{ display: "grid", gap: 10, maxWidth: 720 }}>
             {cand.report
               ? <div style={{ border: "1px solid var(--line)", borderRadius: 10, padding: "10px 12px", background: "var(--card-2)" }}>
-                  <div className="eyebrow" style={{ margin: 0 }}>What arrived — read from the message</div>
+                  <div className="eyebrow" style={{ margin: 0 }}>{cand.report_photo_only ? "What the photo shows" : "What arrived — read from the message"}</div>
                   <div style={{ marginTop: 4, fontWeight: 600 }}>{cand.summary || "—"}</div>
                   <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
                     No delivery note came with this — it's what {cand.report_sender || "site"} said on WhatsApp. Check it with site before booking it in;
@@ -802,7 +802,7 @@ function TicketSplit({ rows, projects, onReload, emptyHint, checkedIn = [], chip
                   <div style={{ minWidth: 0 }}>
                     <div className="isup">{r.supplier_name || (r.report ? "Delivery reported" : "Unknown supplier")}</div>
                     <div className="imeta">
-                      <span>{r.report ? `“${(r.report_message ?? "").slice(0, 48)}${(r.report_message ?? "").length > 48 ? "…" : ""}”` : r.delivery_note_number ? `DN ${r.delivery_note_number}` : "no DN"} · {fmtDate(r.delivery_date || r.occurred_at)}{r.items?.length ? ` · ${r.items.length} lines` : ""}</span>
+                      <span>{r.report ? (r.report_message ? `“${r.report_message.slice(0, 48)}${r.report_message.length > 48 ? "…" : ""}”` : `photo · ${(r.summary ?? "").slice(0, 40)}`) : r.delivery_note_number ? `DN ${r.delivery_note_number}` : "no DN"} · {fmtDate(r.delivery_date || r.occurred_at)}{r.items?.length ? ` · ${r.items.length} lines` : ""}</span>
                       {r.project_code && <span className="proj">{r.project_code}</span>}
                     </div>
                     <span className={`istatus ${dot}`}>{st === "po" ? `Matched · ${r.matched_po_number}`
@@ -810,8 +810,8 @@ function TicketSplit({ rows, projects, onReload, emptyHint, checkedIn = [], chip
                       : st === "line" ? `Inferred · ${r.guess_po_number}` : "Needs a PO"}</span>
                     {r.report && (
                       <span className="istatus" style={{ background: "var(--navy-soft)", color: "var(--navy)", marginLeft: 6 }}
-                        title="A WhatsApp message saying it arrived — no delivery note was sent">
-                        WhatsApp · no ticket
+                        title={r.report_photo_only ? "A photo of goods arriving, with no message and no delivery note" : "A WhatsApp message saying it arrived — no delivery note was sent"}>
+                        {r.report_photo_only ? "Photo only — check what this is" : "WhatsApp · no ticket"}
                       </span>
                     )}
                     {r.variance && !r.variance.ok && (
@@ -974,12 +974,12 @@ function ReportedArrival({ cand, onOpen }: { cand: DeliveryTicketCandidate; onOp
     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
       <div style={{ border: "1px solid var(--line)", borderRadius: 12, overflow: "hidden", background: "var(--card)" }}>
         <div style={{ padding: "8px 12px", background: "var(--navy-soft)", color: "var(--navy)", fontSize: 12, fontWeight: 700 }}>
-          WhatsApp · no delivery note
+          {cand.report_photo_only ? "Photo only — no message, no delivery note" : "WhatsApp · no delivery note"}
         </div>
         <div style={{ padding: 12 }}>
           <div className="muted" style={{ fontSize: 12 }}>{cand.report_sender || "Site"} · {fmtDate(cand.occurred_at)}</div>
           <div style={{ marginTop: 6, padding: "8px 12px", borderRadius: "4px 12px 12px 12px", background: "var(--card-2)", whiteSpace: "pre-wrap", fontSize: 13.5 }}>
-            {cand.report_message || "—"}
+            {cand.report_message || (cand.report_photo_only ? "(no words — just the photo below)" : "—")}
           </div>
         </div>
       </div>

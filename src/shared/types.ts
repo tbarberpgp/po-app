@@ -1672,6 +1672,8 @@ export type DeliveryTicketCandidate = {
   report?: boolean;
   report_message?: string | null;
   report_sender?: string | null;
+  /** A photo of goods arriving with no words at all — check with site. */
+  report_photo_only?: boolean;
 };
 
 /** Full reconciliation of one scanned ticket against a chosen (or best-guess) PO:
