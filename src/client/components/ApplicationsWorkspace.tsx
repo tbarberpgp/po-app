@@ -10,7 +10,8 @@ import { api, fmtDate, fmtMoney } from "../lib/api";
 import { Topbar } from "./Shell";
 import { useStickyCard } from "../lib/sticky";
 import { can } from "../../shared/permissions";
-import type { AfpStatus, ApplicationListItem, CurrentUser, InboundApplication, Supplier } from "../../shared/types";
+import type { AfpDetail, AfpStatus, ApplicationListItem, CurrentUser, InboundApplication, Supplier } from "../../shared/types";
+import type { AfpHistoryEntry } from "../lib/api";
 
 type ProjectOption = { id: string; code: string; name: string; active_snapshot_id: number | null };
 
@@ -46,6 +47,8 @@ export function ApplicationsWorkspace({ me }: { me: CurrentUser | null }) {
   const [unassignedOnly, setUnassignedOnly] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  // The application open in the side panel — clicking a row previews it in place.
+  const [openId, setOpenId] = useState<number | null>(null);
 
   function refresh() {
     setLoading(true);
@@ -101,7 +104,7 @@ export function ApplicationsWorkspace({ me }: { me: CurrentUser | null }) {
   // Tab badge counts (across both directions) for at-a-glance attention
   const filtered = projectFilter !== "" || (isLabour && supplierFilter !== "") || status !== "all" || unassignedOnly;
   function switchSpace(next: Space) {
-    setSpace(next); setStatus("all"); setProjectFilter(""); setSupplierFilter(""); setUnassignedOnly(false);
+    setSpace(next); setStatus("all"); setProjectFilter(""); setSupplierFilter(""); setUnassignedOnly(false); setOpenId(null);
   }
 
   const labourCount = rows.filter((r) => r.direction === "incoming_labour").length
@@ -166,7 +169,8 @@ export function ApplicationsWorkspace({ me }: { me: CurrentUser | null }) {
           />
         )}
 
-        <div className="card" ref={cardRef}>
+        <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
+        <div className="card" ref={cardRef} style={{ flex: 1, minWidth: 0 }}>
           <div className="card-hd sticky-bar" style={{ gap: 12, flexWrap: "wrap" }}>
             <h2 style={{ flex: 1 }}>{isLabour ? "Labour applications" : "Client applications"}</h2>
             <select value={projectFilter} onChange={(e) => setProjectFilter(e.target.value)} style={{ width: "auto", minWidth: 180 }} aria-label="Filter by project">
@@ -206,8 +210,18 @@ export function ApplicationsWorkspace({ me }: { me: CurrentUser | null }) {
               canEdit={canEdit}
               labourSuppliers={labourSuppliers}
               onAssign={assign}
+              openId={openId}
+              onOpen={(id) => setOpenId((cur) => (cur === id ? null : id))}
             />
           )}
+        </div>
+        {openId != null && (
+          <AfpPeek
+            id={openId}
+            row={rows.find((r) => r.id === openId) ?? null}
+            onClose={() => setOpenId(null)}
+          />
+        )}
         </div>
       </main>
     </>
@@ -216,11 +230,12 @@ export function ApplicationsWorkspace({ me }: { me: CurrentUser | null }) {
 
 /**
  * The applications table — shared by the portfolio workspace and a project's
- * Labour tab (which drops the Project column). A row opens its application; an
- * unassigned labour row offers the subcontractor picker inline.
+ * Labour tab (which drops the Project column). A row opens its application —
+ * or, given `onOpen`, previews it beside the list; an unassigned labour row
+ * offers the subcontractor picker inline.
  */
 export function ApplicationsTable({
-  rows, isLabour, canEdit, labourSuppliers, onAssign, showProject = true,
+  rows, isLabour, canEdit, labourSuppliers, onAssign, showProject = true, openId = null, onOpen,
 }: {
   rows: ApplicationListItem[];
   isLabour: boolean;
@@ -228,8 +243,15 @@ export function ApplicationsTable({
   labourSuppliers: Supplier[];
   onAssign: (afpId: number, supplierId: number) => void;
   showProject?: boolean;
+  /** The row previewed in the side panel, highlighted. */
+  openId?: number | null;
+  /** Row click previews instead of navigating; who/when moves to the panel. */
+  onOpen?: (afpId: number) => void;
 }) {
   const navigate = useNavigate();
+  // With the panel open the table loses ~440px, so Created (who/when) gives
+  // way — the panel's audit trail carries it.
+  const showCreated = openId == null;
   return (
     <table className="sticky-head">
       <thead>
@@ -240,7 +262,7 @@ export function ApplicationsTable({
           <th>Period</th>
           <th className="center">Status</th>
           <th className="num">Value</th>
-          <th>Created</th>
+          {showCreated && <th>Created</th>}
         </tr>
       </thead>
       <tbody>
@@ -253,8 +275,12 @@ export function ApplicationsTable({
             // The whole row opens the application — hunting for the
             // small "#n" link is needless precision. Inner links and the
             // assign dropdown stop the bubble so they still do their own job.
-            <tr key={r.id} className="rep-row" style={{ cursor: "pointer" }}
-              onClick={(e) => { if (!(e.target as HTMLElement).closest("a,select,button,input,label")) navigate(`/applications/${r.id}`); }}>
+            <tr key={r.id} className="rep-row"
+              style={{ cursor: "pointer", ...(openId === r.id ? { background: "var(--accent-soft)", boxShadow: "inset 3px 0 0 var(--accent)" } : {}) }}
+              onClick={(e) => {
+                if ((e.target as HTMLElement).closest("a,select,button,input,label")) return;
+                if (onOpen) onOpen(r.id); else navigate(`/applications/${r.id}`);
+              }}>
               <td className="center">
                 <Link to={`/applications/${r.id}`} onClick={(e) => e.stopPropagation()}>#{r.app_number}</Link>
               </td>
@@ -296,10 +322,12 @@ export function ApplicationsTable({
                 )}
               </td>
               <td className="num">{fmtMoney(value)}</td>
-              <td className="muted" style={{ fontSize: 12 }}>
-                {fmtDate(r.created_at)}
-                <div style={{ fontSize: 11 }}>{formatActor(r.created_by)}</div>
-              </td>
+              {showCreated && (
+                <td className="muted" style={{ fontSize: 12 }}>
+                  {fmtDate(r.created_at)}
+                  <div style={{ fontSize: 11 }}>{formatActor(r.created_by)}</div>
+                </td>
+              )}
             </tr>
           );
         })}
@@ -417,6 +445,137 @@ export function ProjectLabourApplications({
         />
       ))}
     </div>
+  );
+}
+
+/**
+ * One application previewed beside the list: who it's from, what it claims
+ * line by line, how the money adds up, and its history — enough to read it
+ * without opening it. Certifying and editing stay on the full page.
+ */
+function AfpPeek({ id, row, onClose }: { id: number; row: ApplicationListItem | null; onClose: () => void }) {
+  const [detail, setDetail] = useState<AfpDetail | null>(null);
+  const [history, setHistory] = useState<AfpHistoryEntry[]>([]);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    setDetail(null); setErr(null); setHistory([]);
+    api.getAfp(id)
+      .then((d) => { if (live) setDetail(d); })
+      .catch((e) => { if (live) setErr(e instanceof Error ? e.message : "failed to load"); });
+    api.getAfpHistory(id).then((h) => { if (live) setHistory(h); }).catch(() => {});
+    return () => { live = false; };
+  }, [id]);
+
+  const afp = detail?.afp;
+  const isLabour = afp ? afp.direction === "incoming_labour" : row?.direction === "incoming_labour";
+  const fact = (label: string, value: React.ReactNode) => (
+    <><span className="muted">{label}</span><span>{value}</span></>
+  );
+  // Only the lines with something claimed — a labour app carries the whole
+  // BOQ, most of it at nil.
+  const claimed = (detail?.lines ?? []).filter((l) => (l.cumulative_value ?? 0) !== 0);
+  const unmatched = (() => {
+    try { return afp?.unmatched_lines_json ? (JSON.parse(afp.unmatched_lines_json) as unknown[]).length : 0; }
+    catch { return 0; }
+  })();
+  const money: Array<[string, number | null | undefined, boolean?]> = afp ? [
+    ["Gross to date", afp.cumulative_value],
+    ["Less previously certified", afp.previous_certified != null ? -afp.previous_certified : null],
+    ["Expenses", afp.expenses_amount || null],
+    ["Dayworks", afp.dayworks_amount || null],
+    ["This period (net)", afp.this_period_net],
+    ["Retention", afp.retention_amount ? -afp.retention_amount : null],
+    ["Amount due", afp.amount_due],
+    ["VAT", afp.vat_amount || null],
+  ] : [];
+  const total = afp ? (afp.status === "certified" || afp.status === "paid" ? (afp.certified_amount ?? afp.total_invoice) : afp.total_invoice) : null;
+  const cta = afp?.status === "submitted" ? "Review & certify →"
+    : afp?.status === "pending_approval" ? "Review & approve →"
+    : afp?.status === "draft" ? "Open draft →"
+    : "Open full application →";
+
+  return (
+    <aside className="card" style={{ width: 420, flex: "0 0 420px", position: "sticky", top: 16, maxHeight: "calc(100vh - 32px)", overflow: "auto" }}>
+      <div className="card-hd" style={{ alignItems: "flex-start" }}>
+        <div style={{ flex: 1 }}>
+          <div className="muted" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".08em" }}>
+            {isLabour ? "Labour application" : "Client application"}
+          </div>
+          <h2 style={{ margin: "2px 0 6px" }}>#{afp?.app_number ?? row?.app_number}</h2>
+          {afp && <span className={`pill ${STATUS_PILL[afp.status]}`}>{STATUS_LABEL[afp.status]}</span>}
+          {unmatched > 0 && <span className="pill pending" style={{ marginLeft: 4 }}>{unmatched} line{unmatched === 1 ? "" : "s"} to review</span>}
+          {afp?.attention_note?.trim() && <span className="pill danger" style={{ marginLeft: 4 }} title={afp.attention_note}>⚑ attention</span>}
+        </div>
+        <button className="ghost tiny" onClick={onClose} title="Close">✕</button>
+      </div>
+      {err ? <div className="card-bd"><div className="flash error">{err}</div></div>
+        : !afp ? <div className="card-bd muted">Loading…</div> : (
+        <>
+          <div className="card-bd" style={{ display: "grid", gridTemplateColumns: "110px 1fr", gap: "6px 12px", fontSize: 13 }}>
+            {isLabour && fact("Subcontractor", row?.supplier_name ?? <span style={{ color: "var(--warn)" }}>Unassigned</span>)}
+            {row && fact("Project", `${row.project_code} · ${row.project_name}`)}
+            {fact("Period", fmtDate(afp.period_end))}
+            {afp.claim_basis && fact("Basis", afp.claim_basis === "period" ? "This period only" : "Cumulative to date")}
+            {afp.invoiced_days != null && fact("Days", `${afp.invoiced_days} invoiced${afp.signin_days != null ? ` · ${afp.signin_days} signed in` : ""}`)}
+            {afp.source_file_key && fact("Source", (
+              <a href={`/api/applications/${afp.id}/source-file`} target="_blank" rel="noreferrer">{afp.source_file_name ?? "document"} ↗</a>
+            ))}
+            {afp.attention_note?.trim() && fact("Attention", <span style={{ color: "var(--danger)" }}>{afp.attention_note}</span>)}
+          </div>
+
+          <div className="card-bd" style={{ borderTop: "1px solid var(--line)" }}>
+            {claimed.length === 0 ? (
+              <div className="muted" style={{ fontSize: 13 }}>No lines claimed{unmatched > 0 ? " yet — the uploaded lines still need matching" : ""}.</div>
+            ) : claimed.map((l) => {
+              const prev = l.previously_certified ?? 0;
+              const thisPeriod = afp.claim_basis === "period" ? l.cumulative_value : l.cumulative_value - prev;
+              return (
+                <div key={l.id} style={{ display: "flex", gap: 12, fontSize: 13, padding: "4px 0" }}>
+                  <span style={{ flex: 1, minWidth: 0 }}>
+                    {l.description}
+                    <div className="muted" style={{ fontSize: 12 }}>
+                      {l.is_adhoc ? "Ad hoc" : l.section ?? ""}
+                      {l.qty != null && l.unit ? `${l.is_adhoc || l.section ? " · " : ""}${l.qty} ${l.unit} × ${fmtMoney(l.rate)}` : ""}
+                      {afp.claim_basis !== "period" && prev !== 0 ? ` · ${fmtMoney(thisPeriod)} this period` : ""}
+                    </div>
+                  </span>
+                  <span className="num">{fmtMoney(l.cumulative_value)}</span>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="card-bd" style={{ borderTop: "1px solid var(--line)", fontSize: 13 }}>
+            {money.filter(([, v]) => v != null).map(([label, v]) => (
+              <div key={label} style={{ display: "flex", justifyContent: "space-between", padding: "2px 0" }}>
+                <span className="muted">{label}</span><span className="num">{fmtMoney(v as number)}</span>
+              </div>
+            ))}
+            <div style={{ display: "flex", justifyContent: "space-between", borderTop: "1.5px solid var(--ink)", marginTop: 8, paddingTop: 8, fontWeight: 700, fontSize: 14 }}>
+              <span>{afp.status === "certified" || afp.status === "paid" ? "Certified" : "Total"}</span><span>{fmtMoney(total ?? 0)}</span>
+            </div>
+          </div>
+
+          <div className="card-bd" style={{ borderTop: "1px solid var(--line)" }}>
+            <Link className="btn accent" to={`/applications/${afp.id}`} style={{ display: "block", textAlign: "center" }}>{cta}</Link>
+          </div>
+
+          <div className="card-hd" style={{ borderTop: "1px solid var(--line)" }}><h3>Audit trail</h3></div>
+          <div className="card-bd">
+            {(history.length > 0 ? history : [{ at: afp.created_at, what: "Created", by: afp.created_by }]).map((h, i) => (
+              <div key={i} style={{ display: "flex", gap: 8, fontSize: 13, padding: "5px 0" }}>
+                <span style={{ flex: 1 }}>
+                  <span className="muted">{h.what}</span>{h.by && <> <b>{formatActor(h.by)}</b></>}
+                  {h.detail && <div className="muted" style={{ fontSize: 12 }}>{h.detail}</div>}
+                </span>
+                <span className="muted" style={{ whiteSpace: "nowrap" }}>{fmtDate(h.at)}</span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </aside>
   );
 }
 
