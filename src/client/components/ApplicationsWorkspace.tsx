@@ -9,6 +9,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { api, fmtDate, fmtMoney } from "../lib/api";
 import { Topbar } from "./Shell";
 import { useStickyCard } from "../lib/sticky";
+import { useWideScreen } from "../lib/wide-screen";
 import { can } from "../../shared/permissions";
 import type { AfpDetail, AfpStatus, ApplicationListItem, CurrentUser, InboundApplication, Supplier } from "../../shared/types";
 import type { AfpHistoryEntry } from "../lib/api";
@@ -47,8 +48,11 @@ export function ApplicationsWorkspace({ me }: { me: CurrentUser | null }) {
   const [unassignedOnly, setUnassignedOnly] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  // The application open in the side panel — clicking a row previews it in place.
-  const [openId, setOpenId] = useState<number | null>(null);
+  // The application picked in the list. On a wide screen the panel is always
+  // open, as on Purchase orders: it shows the picked application, or the top
+  // of the list until one is picked.
+  const [pickedId, setPickedId] = useState<number | null>(null);
+  const wide = useWideScreen();
 
   function refresh() {
     setLoading(true);
@@ -91,6 +95,7 @@ export function ApplicationsWorkspace({ me }: { me: CurrentUser | null }) {
     .filter((r) => !isLabour || !supplierFilter || String(r.counterparty_supplier_id) === supplierFilter)
     .filter((r) => status === "all" || r.status === status)
     .filter((r) => !unassignedOnly || (isLabour && r.counterparty_supplier_id == null));
+  const openId = visible.some((r) => r.id === pickedId) ? pickedId : wide ? visible[0]?.id ?? null : null;
 
   // KPI counts within the active space
   const counts = useMemo(() => ({
@@ -104,7 +109,7 @@ export function ApplicationsWorkspace({ me }: { me: CurrentUser | null }) {
   // Tab badge counts (across both directions) for at-a-glance attention
   const filtered = projectFilter !== "" || (isLabour && supplierFilter !== "") || status !== "all" || unassignedOnly;
   function switchSpace(next: Space) {
-    setSpace(next); setStatus("all"); setProjectFilter(""); setSupplierFilter(""); setUnassignedOnly(false); setOpenId(null);
+    setSpace(next); setStatus("all"); setProjectFilter(""); setSupplierFilter(""); setUnassignedOnly(false); setPickedId(null);
   }
 
   const labourCount = rows.filter((r) => r.direction === "incoming_labour").length
@@ -211,7 +216,7 @@ export function ApplicationsWorkspace({ me }: { me: CurrentUser | null }) {
               labourSuppliers={labourSuppliers}
               onAssign={assign}
               openId={openId}
-              onOpen={(id) => setOpenId((cur) => (cur === id ? null : id))}
+              onOpen={(id) => setPickedId(!wide && openId === id ? null : id)}
             />
           )}
         </div>
@@ -219,7 +224,7 @@ export function ApplicationsWorkspace({ me }: { me: CurrentUser | null }) {
           <AfpPeek
             id={openId}
             row={rows.find((r) => r.id === openId) ?? null}
-            onClose={() => setOpenId(null)}
+            onClose={wide ? undefined : () => setPickedId(null)}
           />
         )}
         </div>
@@ -453,7 +458,7 @@ export function ProjectLabourApplications({
  * line by line, how the money adds up, and its history — enough to read it
  * without opening it. Certifying and editing stay on the full page.
  */
-function AfpPeek({ id, row, onClose }: { id: number; row: ApplicationListItem | null; onClose: () => void }) {
+function AfpPeek({ id, row, onClose }: { id: number; row: ApplicationListItem | null; onClose?: () => void }) {
   const [detail, setDetail] = useState<AfpDetail | null>(null);
   const [history, setHistory] = useState<AfpHistoryEntry[]>([]);
   const [err, setErr] = useState<string | null>(null);
@@ -466,8 +471,9 @@ function AfpPeek({ id, row, onClose }: { id: number; row: ApplicationListItem | 
     api.getAfpHistory(id).then((h) => { if (live) setHistory(h); }).catch(() => {});
     return () => { live = false; };
   }, [id]);
-  // Esc closes the panel, as ✕ does.
+  // Esc closes the panel, as ✕ does — only where it can close (narrow screens).
   useEffect(() => {
+    if (!onClose) return;
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -513,7 +519,7 @@ function AfpPeek({ id, row, onClose }: { id: number; row: ApplicationListItem | 
           {unmatched > 0 && <span className="pill pending" style={{ marginLeft: 4 }}>{unmatched} line{unmatched === 1 ? "" : "s"} to review</span>}
           {afp?.attention_note?.trim() && <span className="pill danger" style={{ marginLeft: 4 }} title={afp.attention_note}>⚑ attention</span>}
         </div>
-        <button className="ghost tiny" onClick={onClose} title="Close (Esc)">✕</button>
+        {onClose && <button className="ghost tiny" onClick={onClose} title="Close (Esc)">✕</button>}
       </div>
       {err ? <div className="card-bd"><div className="flash error">{err}</div></div>
         : !afp ? <div className="card-bd muted">Loading…</div> : (
