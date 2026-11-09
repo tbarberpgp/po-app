@@ -466,6 +466,12 @@ function AfpPeek({ id, row, onClose }: { id: number; row: ApplicationListItem | 
     api.getAfpHistory(id).then((h) => { if (live) setHistory(h); }).catch(() => {});
     return () => { live = false; };
   }, [id]);
+  // Esc closes the panel, as ✕ does.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
 
   const afp = detail?.afp;
   const isLabour = afp ? afp.direction === "incoming_labour" : row?.direction === "incoming_labour";
@@ -507,7 +513,7 @@ function AfpPeek({ id, row, onClose }: { id: number; row: ApplicationListItem | 
           {unmatched > 0 && <span className="pill pending" style={{ marginLeft: 4 }}>{unmatched} line{unmatched === 1 ? "" : "s"} to review</span>}
           {afp?.attention_note?.trim() && <span className="pill danger" style={{ marginLeft: 4 }} title={afp.attention_note}>⚑ attention</span>}
         </div>
-        <button className="ghost tiny" onClick={onClose} title="Close">✕</button>
+        <button className="ghost tiny" onClick={onClose} title="Close (Esc)">✕</button>
       </div>
       {err ? <div className="card-bd"><div className="flash error">{err}</div></div>
         : !afp ? <div className="card-bd muted">Loading…</div> : (
