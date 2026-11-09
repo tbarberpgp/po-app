@@ -11,7 +11,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, fmtDate, fmtMoney } from "../lib/api";
 import {
-  bucketArrivals, daysBetween, effectiveDate, UNCONFIRMED_WINDOW_DAYS,
+  bucketArrivals, daysBetween, effectiveDate, OVERDUE_CUTOFF_DAYS, UNCONFIRMED_WINDOW_DAYS,
   type AckCheck, type ArrivalRow, type OrderAckView, type PoArrival,
 } from "../../shared/order-acks";
 
@@ -155,6 +155,7 @@ export function ArrivalTracker({ rows, focus, onFocus, onSorChanged }: {
         : empty("No orders are marked for us to collect. Tick \"We'll collect it\" when raising the PO, or on its PO page."))}
       {focus === "overdue" && (b.overdue.length ? <div className="dl-due-list">{b.overdue.map((r) => <OrderRow key={r.id} r={r} today={today} />)}</div>
         : empty("Nothing overdue — every order past its date has had something received."))}
+      {focus === "overdue" && <StaleNote n={b.stale.length} />}
       {focus === "allsor" && (
         <div style={{ padding: 16 }}>
           <button className="btn ghost sm" style={{ marginBottom: 10 }} onClick={() => onFocus("confirm")}>← Back to To confirm</button>
@@ -654,7 +655,10 @@ function ArrivalBoard({ today, week, b, pendingSors, groups, onConfirm }: {
         ))}
         {!pendingSors.length && !groups.length && none("Every recent order has a date.")}
       </>, true)}
-      {col("Overdue", b.overdue.length, b.overdue.length ? b.overdue.map((r) => <MiniCard key={r.id} r={r} today={today} tone="warn" />) : none("Nothing overdue."), true)}
+      {col("Overdue", b.overdue.length, <>
+        {b.overdue.length ? b.overdue.map((r) => <MiniCard key={r.id} r={r} today={today} tone="warn" />) : none("Nothing overdue.")}
+        <StaleNote n={b.stale.length} />
+      </>, true)}
     </div>
   );
 }
@@ -707,6 +711,18 @@ function ArrivalCalendar({ today, rows, b, toConfirm, onFocusList }: {
           })}
         </div>
       ))}
+    </div>
+  );
+}
+
+/** Orders more than OVERDUE_CUTOFF_DAYS late are taken as arrived (or
+ *  collected) without a ticket, and left off the lists — said once, quietly,
+ *  so nobody wonders where they went. */
+function StaleNote({ n }: { n: number }) {
+  if (!n) return null;
+  return (
+    <div className="muted" style={{ fontSize: 12, padding: "10px 16px" }}>
+      {n} older order{n === 1 ? "" : "s"} more than {OVERDUE_CUTOFF_DAYS} days past {n === 1 ? "its" : "their"} date {n === 1 ? "isn't" : "aren't"} shown — taken as delivered or collected, just never booked in.
     </div>
   );
 }

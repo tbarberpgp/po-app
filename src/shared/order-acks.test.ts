@@ -63,6 +63,12 @@ describe("bucketArrivals", () => {
     row({ po_number: "PO-26008-0015", supplier: "Skyline", promised_date: "2026-11-06", promised_source: "manual" }),
     // We collect — never in the delivery lists.
     row({ po_number: "PO-26008-0014", supplier: "Toolstation", required_date: "2026-11-01", collect_by_us: 1 }),
+    // 31 days past its date, nothing booked: taken as arrived — off every list.
+    row({ po_number: "PO-26001-0016", supplier: "Quickfit", required_date: "2026-10-06", created_at: "2026-06-01T09:00:00Z" }),
+    // Exactly 30 days late: still overdue.
+    row({ po_number: "PO-26002-0007", supplier: "Fixfast Ltd", required_date: "2026-10-07", created_at: "2026-06-01T09:00:00Z" }),
+    // A collection 40 days late: collected long ago.
+    row({ po_number: "PO-26001-0015", supplier: "Kingsley", required_date: "2026-09-27", collect_by_us: 1, created_at: "2026-06-01T09:00:00Z" }),
     // Raised months ago with nothing received and no date: not "waiting to hear".
     row({ po_number: "PO-26003-0001", supplier: "Old Co", created_at: "2026-07-01T09:00:00Z" }),
     // Awaiting approval with NO date at all — flagged, that's ours to fix.
@@ -75,7 +81,8 @@ describe("bucketArrivals", () => {
   const b = bucketArrivals(rows, today);
   const nums = (rs: ArrivalRow[]) => rs.map((r) => r.po_number);
 
-  test("the promised date wins over ours", () => assert.deepEqual(nums(b.overdue), ["PO-26001-0100"]));
+  test("the promised date wins over ours; up to 30 days late stays overdue", () => assert.deepEqual(nums(b.overdue), ["PO-26002-0007", "PO-26001-0100"]));
+  test("more than 30 days late is taken as arrived or collected", () => assert.deepEqual(nums(b.stale).sort(), ["PO-26001-0015", "PO-26001-0016"]));
   test("due today includes phoned-in dates", () => assert.deepEqual(nums(b.today), ["PO-26008-0015"]));
   test("this week falls back to our required-by", () => assert.deepEqual(nums(b.week), ["PO-26001-0118"]));
   test("collections only ever sit in To collect", () => assert.deepEqual(nums(b.collect), ["PO-26008-0014"]));
