@@ -50,6 +50,9 @@ export type ArrivalRow = {
 
 export type ArrivalBuckets = {
   overdue: ArrivalRow[];
+  /** More than OVERDUE_CUTOFF_DAYS past their date with nothing booked: taken
+   *  as delivered or collected and never ticketed, so kept off every list. */
+  stale: ArrivalRow[];
   today: ArrivalRow[];
   week: ArrivalRow[];
   collect: ArrivalRow[];
@@ -61,6 +64,10 @@ export type ArrivalBuckets = {
  *  that came and were never booked (the missing-GRN pile), not orders anyone is
  *  still waiting to hear about — left alone by choice. */
 export const UNCONFIRMED_WINDOW_DAYS = 15;
+/** Past this many days late, an order with nothing booked has in practice
+ *  already arrived (or been collected) without its ticket being checked in —
+ *  the team's rule, 2026-11-09. Such orders leave Overdue and To collect. */
+export const OVERDUE_CUTOFF_DAYS = 30;
 /** Statuses that have gone (or are about to go) to the supplier. A PO still
  *  awaiting approval can't be chased for a confirmation. */
 const SENT = new Set(["approved", "issued"]);
@@ -77,10 +84,12 @@ export function daysBetween(from: string, to: string): number {
  *  An order can sit in a date list AND in "No confirmation" — due Friday on our
  *  own date, but the supplier hasn't said so — which is exactly the one to chase. */
 export function bucketArrivals(rows: ArrivalRow[], today: string): ArrivalBuckets {
-  const out: ArrivalBuckets = { overdue: [], today: [], week: [], collect: [], unconfirmed: [] };
+  const out: ArrivalBuckets = { overdue: [], today: [], week: [], collect: [], unconfirmed: [], stale: [] };
   const byDate = (a: ArrivalRow, b: ArrivalRow) =>
     (effectiveDate(a) ?? "9999").localeCompare(effectiveDate(b) ?? "9999") || a.po_number.localeCompare(b.po_number);
   for (const r of rows) {
+    const due = effectiveDate(r);
+    if (due && daysBetween(due, today) > OVERDUE_CUTOFF_DAYS) { out.stale.push(r); continue; }
     if (r.collect_by_us) { out.collect.push(r); continue; }
     const d = effectiveDate(r);
     if (d) {

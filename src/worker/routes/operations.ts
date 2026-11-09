@@ -13,7 +13,7 @@ import { deliveryNoteDigits, deliveryNoteFromNotes, deliveryNoteKey, isSameDeliv
 import { sendReportEmail, recipientsFor } from "./site-reports";
 import { buildHsPack } from "../../shared/hs-pack-pdf";
 import { fuzzyFindPo } from "../poRef";
-import { ackChecks, type ArrivalRow } from "../../shared/order-acks";
+import { ackChecks, daysBetween, OVERDUE_CUTOFF_DAYS, type ArrivalRow } from "../../shared/order-acks";
 import { learnAliases, aliasMapsBySupplier, normText } from "../matchMemory";
 import { deliveryVariance, matchItemToLine, type VarianceLine, type PriorReceipt } from "../../shared/delivery-variance";
 import { poRefCore, supplierNameOverlap, poNumbersMatch } from "../../shared/line-match";
@@ -1868,7 +1868,7 @@ operations.get("/deliveries-inbox", async (c) => {
     const d = r.promised_date || r.required_date;
     if (!d || r.collect_by_us) continue;
     if (d === today) kpi.expected_today++;
-    else if (d < today) kpi.overdue++;
+    else if (d < today && daysBetween(d, today) <= OVERDUE_CUTOFF_DAYS) kpi.overdue++;
   }
   try {
     const chk = await c.env.DB.prepare(
