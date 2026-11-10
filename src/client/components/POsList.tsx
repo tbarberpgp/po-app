@@ -110,11 +110,6 @@ export function POsList({ me }: { me: CurrentUser | null }) {
     q.trim() ? `search “${q.trim()}”` : "",
     shown.length === rows.length ? `${rows.length} orders` : `${shown.length} of ${rows.length} orders`,
   ].filter(Boolean).join(" · ");
-  // Independent of the search box / status filter — "Needs attention" always
-  // reflects the true current state, not whatever the user happens to be
-  // looking at right now.
-  const overdrawn = rows.filter((r) => r.is_overdrawn);
-
   const SortTh = ({ k, label, className }: { k: SortKey; label: string; className?: string }) => (
     <th className={className}
       onClick={() => sortBy(k)}
@@ -143,25 +138,6 @@ export function POsList({ me }: { me: CurrentUser | null }) {
       <main>
         {err && <div className="flash error">{err}</div>}
         {notice && <div className="flash info">{notice}</div>}
-
-        {overdrawn.length > 0 && (
-          <div className="card card-padded" style={{ marginBottom: 16, borderColor: "var(--danger)" }}>
-            <div className="card-hd" style={{ padding: 0, marginBottom: 8, alignItems: "center" }}>
-              <h3 style={{ margin: 0, fontSize: 14 }}>Needs attention</h3>
-              <span className="pill warn" style={{ marginLeft: "auto" }}>{overdrawn.length}</span>
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              {overdrawn.map((r) => (
-                <div key={r.id} className="row" style={{ alignItems: "center", gap: 10 }}>
-                  <span style={{ width: 8, height: 8, borderRadius: 999, background: "var(--danger)", flex: "0 0 auto" }} />
-                  <span style={{ flex: 1, fontSize: 13 }}>
-                    <Link to={`/pos/${r.id}`}>{r.po_number}</Link> — {r.project_code}, {r.supplier}: call-offs exceed the agreed qty or cost
-                  </span>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
 
         {picking && canCreate && (
           <div className="card" style={{ marginBottom: 16 }}>
@@ -243,6 +219,7 @@ export function POsList({ me }: { me: CurrentUser | null }) {
                       >
                         {r.status.replace("_", " ")}
                       </span>
+                      {r.is_overdrawn && <OverdrawnPill />}
                       <DeliveryPill po={r} />
                       {/* Stale beats not-issued: an amendment clears issued_at,
                           so a superseded order matches both, and only one of
@@ -268,11 +245,6 @@ export function POsList({ me }: { me: CurrentUser | null }) {
                       {r.order_type === "call_off" && <span className="pill neutral" style={{ fontSize: 10, marginLeft: 4 }}>call-off</span>}
                       {r.category === "prelims" && <span className="pill warn" style={{ fontSize: 10, marginLeft: 4 }}>prelim</span>}
                       <XeroPaidPill po={r} />
-                      {r.is_overdrawn && (
-                        <span className="badge over" style={{ marginLeft: 4 }} title="One or more lines have been called off past the agreed qty or cost">
-                          overdrawn
-                        </span>
-                      )}
                     </td>
                     {!openId && <td className="center"><XeroPaidCell po={r} /></td>}
                     {showingDeleted && (
@@ -292,6 +264,7 @@ export function POsList({ me }: { me: CurrentUser | null }) {
         {openId && (
           <POPeek
             id={openId}
+            overdrawn={!!rows.find((r) => r.id === openId)?.is_overdrawn}
             onClose={wide ? undefined : () => setPickedId(null)}
             onDelete={canDelete && !showingDeleted ? (r) => { setErr(null); setNotice(null); setDeleting(r); } : undefined}
           />
@@ -307,6 +280,20 @@ export function POsList({ me }: { me: CurrentUser | null }) {
         )}
       </main>
     </>
+  );
+}
+
+/**
+ * A framework line called off past its agreed qty or cost. Flagged on the
+ * framework and on the most recent call-off drawing on that line — the one
+ * that tipped it over (worked out server-side as `is_overdrawn`).
+ */
+function OverdrawnPill() {
+  return (
+    <span className="pill rejected" style={{ marginLeft: 4 }}
+      title="Call-offs exceed the agreed qty or cost on one or more framework lines">
+      ⚠ overdrawn
+    </span>
   );
 }
 
@@ -339,7 +326,7 @@ function DeliveryPill({ po }: { po: PurchaseOrder }) {
  * One order previewed beside the list: what was ordered, and its audit trail —
  * who raised it and when lives here rather than as columns on every row.
  */
-function POPeek({ id, onClose, onDelete }: { id: string; onClose?: () => void; onDelete?: (r: Row) => void }) {
+function POPeek({ id, overdrawn, onClose, onDelete }: { id: string; overdrawn?: boolean; onClose?: () => void; onDelete?: (r: Row) => void }) {
   const [po, setPo] = useState<Row & { lines: PurchaseOrder["lines"]; deliveries?: PoDeliveryDrop[] } | null>(null);
   const [activity, setActivity] = useState<Activity>([]);
   useEffect(() => {
@@ -359,6 +346,7 @@ function POPeek({ id, onClose, onDelete }: { id: string; onClose?: () => void; o
               <div className="muted" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".08em" }}>Purchase order</div>
               <h2 style={{ margin: "2px 0 6px" }}>{po.po_number}</h2>
               <span className={`pill ${po.status}`}>{po.status.replace("_", " ")}</span>
+              {overdrawn && <OverdrawnPill />}
               <DeliveryPill po={po} />
             </div>
             {onClose && <button className="ghost tiny" onClick={onClose} title="Close">✕</button>}
