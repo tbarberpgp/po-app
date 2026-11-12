@@ -2386,7 +2386,6 @@ html .sidebar nav a:hover, html .nav-viewas:hover { background: var(--card-2); }
 html .sidebar nav a.active { background: var(--card-2); color: var(--ink); font-weight: 600; }
 html .nav-ic { color: var(--muted); }
 html .sidebar nav a.active .nav-ic { color: var(--ink); }
-html .sidebar nav a .badge-count { background: var(--ink); color: var(--paper); }
 html .sidebar-user { border: 0; background: var(--card-2); border-radius: 14px; padding: 10px 12px; flex-shrink: 0; }
 
 /* Page title */
