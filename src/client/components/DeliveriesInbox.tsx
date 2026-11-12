@@ -12,6 +12,7 @@ import { RegionBoxes, FieldCrop } from "./ReadRegions";
 import { PdfHighlightViewer } from "./PdfHighlightViewer";
 import { poDeliveryLabel, type PoDeliverySummary } from "../../shared/po-delivery-status";
 import { ArrivalTracker, type ArrivalFocus } from "./ArrivalTracking";
+import { Topbar } from "./Shell";
 import { bucketArrivals, type ArrivalRow } from "../../shared/order-acks";
 
 type Kpi = { expected_today: number; overdue: number; checked_in_today: number; needs_po: number; variance?: number; sor_pending?: number };
@@ -880,48 +881,53 @@ export function DeliveriesWorkspace(_props: { me: CurrentUser | null }) {
   }, [arrival]);
 
   return (
-    <div className="acctx">
-      <div style={{ marginBottom: 16 }}>
-        <h1 style={{ margin: 0 }}>Deliveries</h1>
-        <div className="muted" style={{ fontSize: 13.5, marginTop: 2 }}>
-          {mode === "tracker"
-            ? "Orders still to arrive, on the supplier's confirmed date (SORs read from accounts@ › SOR) or the date set on the PO."
-            : "What has come to site — delivery notes and delivery photos from the site WhatsApp groups. Confirm each against its order."}
-        </div>
-      </div>
-
-      <div className="a-subtabs" style={{ padding: 0, margin: "0 0 16px", maxWidth: 560 }}>
-        <button className={mode === "tracker" ? "on" : ""} onClick={() => setMode("tracker")}>
-          Delivery tracker<span className="cnt">{dueThisWeek}</span>
-        </button>
-        <button className={mode === "arrived" ? "on" : ""} onClick={() => setMode("arrived")}>
-          Arrived deliveries<span className="cnt">{rows.length}</span>
-        </button>
-      </div>
-
-      {mode === "tracker" ? (
-        <ArrivalTracker rows={arrival} focus={dueFocus} onFocus={setDueFocus} onSorChanged={reload} />
-      ) : (
-        <>
-          {kpi && (
-            <div className="dl-kpis" style={{ gridTemplateColumns: "repeat(3, minmax(0, 1fr))" }}>
-              <KpiTile label="Checked in today" value={kpi.checked_in_today} sub="delivery lines logged"
-                active={chip === "done"} onClick={done.length ? () => openChip("done") : undefined} />
-              <KpiTile label="Needs a PO" value={kpi.needs_po} sub={kpi.needs_po ? "tickets with no order matched" : "all tickets matched"} alert
-                active={chip === "needs"} onClick={() => openChip("needs")} />
-              <KpiTile label="Doesn't match the PO" value={kpi.variance ?? 0}
-                sub={kpi.variance ? "order number right, goods don't agree" : "quantities agree where checkable"} alert
-                active={chip === "mismatch"} onClick={() => openChip("mismatch")} />
+    <>
+      <Topbar crumbs="Delivery" title="Deliveries" />
+      <main>
+        <div className="acctx">
+          {/* Same header as Accounts / Projects: the shared top bar, then
+              underlined page tabs — not a page-local title and boxed buttons. */}
+          <div className="a-tabsrow" style={{ marginBottom: 8 }}>
+            <div style={{ display: "flex", gap: 26, flexWrap: "wrap" }}>
+              <button className={`a-tab${mode === "tracker" ? " on" : ""}`} onClick={() => setMode("tracker")}>
+                Delivery tracker<span className="cnt">{dueThisWeek}</span>
+              </button>
+              <button className={`a-tab${mode === "arrived" ? " on" : ""}`} onClick={() => setMode("arrived")}>
+                Arrived deliveries<span className="cnt">{rows.length}</span>
+              </button>
             </div>
+          </div>
+          <div className="muted" style={{ fontSize: 13, margin: "0 0 16px" }}>
+            {mode === "tracker"
+              ? "Orders still to arrive, on the supplier's confirmed date (SORs read from accounts@ › SOR) or the date set on the PO."
+              : "What has come to site — delivery notes and delivery photos from the site WhatsApp groups. Confirm each against its order."}
+          </div>
+
+          {mode === "tracker" ? (
+            <ArrivalTracker rows={arrival} focus={dueFocus} onFocus={setDueFocus} onSorChanged={reload} />
+          ) : (
+            <>
+              {kpi && (
+                <div className="dl-kpis" style={{ gridTemplateColumns: "repeat(3, minmax(0, 1fr))" }}>
+                  <KpiTile label="Checked in today" value={kpi.checked_in_today} sub="delivery lines logged"
+                    active={chip === "done"} onClick={done.length ? () => openChip("done") : undefined} />
+                  <KpiTile label="Needs a PO" value={kpi.needs_po} sub={kpi.needs_po ? "tickets with no order matched" : "all tickets matched"} alert
+                    active={chip === "needs"} onClick={() => openChip("needs")} />
+                  <KpiTile label="Doesn't match the PO" value={kpi.variance ?? 0}
+                    sub={kpi.variance ? "order number right, goods don't agree" : "quantities agree where checkable"} alert
+                    active={chip === "mismatch"} onClick={() => openChip("mismatch")} />
+                </div>
+              )}
+              {loading
+                ? <div className="muted" style={{ fontSize: 13 }}>Loading the ticket inbox…</div>
+                : <TicketSplit rows={rows} projects={projects} onReload={reload} checkedIn={done}
+                    chip={chip} onChip={openChip}
+                    emptyHint="No pending tickets anywhere — new WhatsApp delivery photos appear here after each scan." />}
+            </>
           )}
-          {loading
-            ? <div className="muted" style={{ fontSize: 13 }}>Loading the ticket inbox…</div>
-            : <TicketSplit rows={rows} projects={projects} onReload={reload} checkedIn={done}
-                chip={chip} onChip={openChip}
-                emptyHint="No pending tickets anywhere — new WhatsApp delivery photos appear here after each scan." />}
-        </>
-      )}
-    </div>
+        </div>
+      </main>
+    </>
   );
 }
 
