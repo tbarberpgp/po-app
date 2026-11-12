@@ -2361,3 +2361,76 @@ body.rd-printing .rd-linedel, body.rd-printing .rd-addline, body.rd-printing .rd
   .hd-panel { right: 12px; bottom: 12px; height: calc(100vh - 24px); }
 }
 @media print { .hd-fab, .hd-panel { display: none; } }
+
+/* ═══ Plain look: system font, sentence case, one accent ════════════════
+ * Layout is untouched. Colour tokens change for the light theme only; the
+ * type, shape and status rules below apply to both themes through tokens. */
+:root {
+  --font-sans: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Inter', 'Segoe UI', Roboto, sans-serif;
+  --radius-sm: 8px; --radius-md: 10px; --radius-lg: 18px;
+}
+[data-theme="light"] {
+  --ink: #1d1d1f; --ink-2: #424245; --muted: #6e6e73;
+  --accent-soft: #f5f2eb;
+  --navy: #1d1d1f; --navy-soft: #f5f2eb;
+}
+html body { font-size: 14.5px; letter-spacing: -0.005em; }
+html a { color: var(--ink); }
+html td a { font-weight: 600; }
+
+/* Sidebar */
+html .sidebar { padding: 18px 14px; gap: 14px; }
+html .nav-sec-hd { text-transform: none; letter-spacing: 0; font-size: 12px; font-weight: 500; color: var(--muted); }
+html .sidebar nav a { font-size: 13.5px; padding: 7px 10px; color: var(--ink-2); }
+html .sidebar nav a:hover, html .nav-viewas:hover { background: var(--card-2); }
+html .sidebar nav a.active { background: var(--card-2); color: var(--ink); font-weight: 600; }
+html .nav-ic { color: var(--muted); }
+html .sidebar nav a.active .nav-ic { color: var(--ink); }
+html .sidebar nav a .badge-count { background: var(--ink); color: var(--paper); }
+html .sidebar-user { border: 0; background: var(--card-2); border-radius: 14px; padding: 10px 12px; flex-shrink: 0; }
+
+/* Page title */
+html .topbar { background: var(--paper); border-bottom: 0; }
+html .topbar .crumbs { font-size: 13px; }
+html .topbar h1 { font-size: 26px; font-weight: 600; letter-spacing: -0.022em; }
+
+html h2 { font-size: 21px; font-weight: 600; letter-spacing: -0.015em; }
+
+/* Number tiles */
+html .kpi { padding: 20px 22px; }
+html .kpi-label { text-transform: none; letter-spacing: 0; font-size: 13px; font-weight: 500; }
+html .kpi-value { font-size: 36px; font-weight: 600; letter-spacing: -0.025em; margin-top: 4px; }
+html .kpi.tone-warn .kpi-value, html .kpi.tone-danger .kpi-value { color: var(--accent); }
+html .kpi.tone-success .kpi-value { color: var(--ink); }
+
+/* Tables */
+html .card-hd { border-bottom: 0; padding: 22px 24px 10px; }
+html th { text-transform: none; letter-spacing: 0; font-size: 12.5px; font-weight: 500; }
+
+html tbody tr:hover td { background: var(--card-2); }
+
+/* Status: neutral pill with one small coloured dot */
+html .badge.badge, html .pill.pill { background: var(--card-2); color: var(--ink-2); font-weight: 500; font-size: 12px; padding: 2px 8px; gap: 5px; white-space: nowrap; text-transform: none; letter-spacing: 0; }
+html .pill::before, html .badge.approved::before, html .badge.pending_approval::before, html .badge.rejected::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--dot, var(--line-strong)); flex-shrink: 0; }
+html .approved, html .pill.ok { --dot: #34a853; }
+html .pending_approval, html .pending, html .pill.warn { --dot: #f5a623; }
+html .rejected, html .pill.danger { --dot: #e5484d; }
+html .issued, html .pill.info { --dot: var(--accent); }
+
+/* Buttons: pills for actions; orange stays on the one main action */
+html button { border-radius: var(--radius-md); }
+html :is(button.accent, button.primary, button.secondary, button.ghost, button.danger, button.tiny, .btn, .topbar button, td button, .theme-toggle, .theme-toggle button) { border-radius: 980px; padding-left: 16px; padding-right: 16px; }
+html button.tab-btn { border-radius: 0; padding: 10px 14px; font-size: 14.5px; }
+html .tab-btn.active { border-bottom-color: var(--ink); font-weight: 600; }
+html .tab-btn .count, html .tab-btn.active .count { background: var(--card-2); color: var(--ink-2); }
+html .hd-fab { background: var(--ink); color: var(--paper); }
+
+/* Roomier spacing and the large title only where there is room for them. */
+@media (min-width: 901px) {
+  html .topbar { padding: 28px 32px 6px; }
+  html .topbar h1 { font-size: 34px; }
+  html main { padding: 18px 32px 40px; }
+  html td a { white-space: nowrap; }
+  html th, html td { padding: 13px 10px; }
+  html th:first-child, html td:first-child { padding-left: 24px; }
+}
