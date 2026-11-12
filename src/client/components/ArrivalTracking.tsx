@@ -83,10 +83,12 @@ export function ArrivalTracker({ rows, focus, onFocus, onSorChanged }: {
   const week = useMemo(() => [...b.today, ...b.week], [b]);
   const [pendingSors, setPendingSors] = useState<OrderAckView[]>([]);
   const [openSor, setOpenSor] = useState<number | null>(null);
-  const [layout, setLayoutState] = useState<"list" | "board" | "week">(() => {
-    try { const v = localStorage.getItem("arrival.layout"); return v === "board" || v === "week" ? v : "list"; } catch { return "list"; }
-  });
-  const setLayout = (l: "list" | "board" | "week") => { setLayoutState(l); try { localStorage.setItem("arrival.layout", l); } catch { /* private mode */ } };
+  // Always opens on the Board. Clicking a card drops into the list for just
+  // that card, so remembering "list" would leave the next visit there.
+  const [layout, setLayout] = useState<"list" | "board" | "week">("board");
+  // Set when a To confirm card on the Board is opened: the list then shows
+  // that one SOR or that one supplier's orders, not the whole column.
+  const [only, setOnly] = useState<{ sor?: number; supplier?: string } | null>(null);
   const loadSors = () => api.opsOrderAcks("pending").then((r) => setPendingSors(r.acks)).catch(() => {});
   useEffect(() => { loadSors(); }, []);
   const sorChanged = () => { setOpenSor(null); loadSors(); onSorChanged?.(); };
@@ -99,7 +101,7 @@ export function ArrivalTracker({ rows, focus, onFocus, onSorChanged }: {
   const toConfirm = pendingSors.length + b.unconfirmed.length;
 
   const chip = (f: ArrivalFocus, label: string, count: number, warn = false) => (
-    <button className={focus === f ? "on" : ""} onClick={() => onFocus(f)}>
+    <button className={focus === f && !only ? "on" : ""} onClick={() => { setOnly(null); onFocus(f); }}>
       {label}<span className="cnt" style={warn && count && focus !== f ? { color: "var(--warn)", opacity: 1 } : undefined}>{count}</span>
     </button>
   );
@@ -113,14 +115,21 @@ export function ArrivalTracker({ rows, focus, onFocus, onSorChanged }: {
 
   const layoutSwitch = (
     <div className="dl-chips" title="How to lay the tracker out">
-      {(["list", "board", "week"] as const).map((l) => (
-        <button key={l} className={layout === l ? "on" : ""} onClick={() => setLayout(l)} style={{ padding: "4px 9px" }}>
+      {(["board", "list", "week"] as const).map((l) => (
+        <button key={l} className={layout === l ? "on" : ""} onClick={() => { setOnly(null); setLayout(l); }} style={{ padding: "4px 9px" }}>
           {l === "list" ? "☰ List" : l === "board" ? "▥ Board" : "▦ Calendar"}
         </button>
       ))}
     </div>
   );
-  const openConfirm = (sorId?: number) => { setLayout("list"); onFocus("confirm"); if (sorId) setOpenSor(sorId); };
+  const openConfirm = (o: { sor?: number; supplier?: string }) => {
+    setOnly(o); setLayout("list"); onFocus("confirm"); setOpenSor(o.sor ?? null);
+  };
+  const filtered = focus === "confirm" ? only : null;
+  const shownSors = filtered ? pendingSors.filter((a) => a.id === filtered.sor) : pendingSors;
+  const shownGroups = filtered ? groups.filter(([s]) => s === filtered.supplier) : groups;
+  const onlyName = filtered?.supplier
+    ?? (filtered?.sor != null ? (pendingSors.find((a) => a.id === filtered.sor)?.supplier_name || "this SOR") : null);
 
   if (layout !== "list") {
     return (
@@ -165,12 +174,20 @@ export function ArrivalTracker({ rows, focus, onFocus, onSorChanged }: {
 
       {focus === "confirm" && (
         <div className="dl-due-list">
-          {section(
-            `SOR received — match it to its order (${pendingSors.length})`,
+          {filtered && (
+            <div style={{ padding: "10px 16px", borderBottom: "1px solid var(--line)", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+              <button className="btn ghost sm" onClick={() => { setOnly(null); setLayout("board"); }}>← Back to board</button>
+              <span style={{ fontSize: 13 }}>Showing <b>{onlyName}</b> only</span>
+              <span style={{ flex: 1 }} />
+              <button className="btn ghost sm" onClick={() => setOnly(null)}>Show everything to confirm</button>
+            </div>
+          )}
+          {(!filtered || shownSors.length > 0) && section(
+            `SOR received — match it to its order (${shownSors.length})`,
             "The supplier confirmed, but didn't print one of our PO numbers. Pick the order and its date goes on the tracker.",
           )}
-          {pendingSors.length === 0 && empty("None — every SOR read so far matched its PO.")}
-          {pendingSors.map((a) => (
+          {!filtered && pendingSors.length === 0 && empty("None — every SOR read so far matched its PO.")}
+          {shownSors.map((a) => (
             <div key={a.id}>
               <button className="dl-due-row" style={{ width: "100%", border: 0, borderBottom: "1px solid var(--line)", background: openSor === a.id ? "var(--accent-soft)" : "transparent", textAlign: "left", cursor: "pointer", font: "inherit" }}
                 onClick={() => setOpenSor(openSor === a.id ? null : a.id)}>
@@ -194,15 +211,16 @@ export function ArrivalTracker({ rows, focus, onFocus, onSorChanged }: {
             </div>
           ))}
 
-          {section(
-            `Nothing from the supplier yet (${b.unconfirmed.length})`,
+          {(!filtered || shownGroups.length > 0) && section(
+            `Nothing from the supplier yet (${shownGroups.reduce((t, [, rs]) => t + rs.length, 0)})`,
             `Raised in the last ${UNCONFIRMED_WINDOW_DAYS} days with no SOR and no date phoned in. NO DATE = the PO has no delivery date at all — add one. Grouped by supplier, so one call covers several; then use "Set promised date" on the PO.`,
           )}
-          {groups.length === 0 && empty("Every order sent in the last few weeks has a date from its supplier.")}
-          {groups.map(([supplier, rs]) => {
+          {!filtered && groups.length === 0 && empty("Every order sent in the last few weeks has a date from its supplier.")}
+          {filtered && !shownSors.length && !shownGroups.length && empty("Nothing left to confirm here — it may have been matched already.")}
+          {shownGroups.map(([supplier, rs]) => {
             const total = rs.reduce((t, r) => t + (r.total_value || 0), 0);
             return (
-              <details key={supplier}>
+              <details key={supplier} open={filtered?.supplier === supplier || undefined}>
                 <summary className="dl-due-row" style={{ cursor: "pointer", listStyle: "none" }}>
                   <div style={{ minWidth: 0 }}>
                     <div className="isup" style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -236,9 +254,9 @@ export function ArrivalTracker({ rows, focus, onFocus, onSorChanged }: {
               </details>
             );
           })}
-          <div style={{ padding: "12px 16px" }}>
+          {!filtered && <div style={{ padding: "12px 16px" }}>
             <button className="btn ghost sm" onClick={() => onFocus("allsor")}>See every SOR read (matched and set aside) →</button>
-          </div>
+          </div>}
         </div>
       )}
     </div>
@@ -611,7 +629,7 @@ function MiniCard({ r, today, tone }: { r: ArrivalRow; today: string; tone?: "wa
 /** Four columns side by side — the whole picture without clicking a tab. */
 function ArrivalBoard({ today, week, b, pendingSors, groups, onConfirm }: {
   today: string; week: ArrivalRow[]; b: Buckets; pendingSors: OrderAckView[]; groups: Array<[string, ArrivalRow[]]>;
-  onConfirm: (sorId?: number) => void;
+  onConfirm: (o: { sor?: number; supplier?: string }) => void;
 }) {
   const col = (title: string, count: number, body: React.ReactNode, warn = false) => (
     <div style={{ background: "var(--card-2)", border: "1px solid var(--line)", borderRadius: 12, minWidth: 0, display: "flex", flexDirection: "column" }}>
@@ -631,7 +649,7 @@ function ArrivalBoard({ today, week, b, pendingSors, groups, onConfirm }: {
       {col("To collect", b.collect.length, b.collect.length ? b.collect.map((r) => <MiniCard key={r.id} r={r} today={today} />) : none("Nothing to collect."))}
       {col("To confirm", pendingSors.length + b.unconfirmed.length, <>
         {pendingSors.map((a) => (
-          <button key={a.id} onClick={() => onConfirm(a.id)} style={{ display: "block", width: "100%", textAlign: "left", font: "inherit", color: "inherit", cursor: "pointer", background: "var(--card)", border: "1px solid var(--line)", borderLeft: "3px solid var(--success)", borderRadius: 8, padding: "8px 10px" }}>
+          <button key={a.id} onClick={() => onConfirm({ sor: a.id })} style={{ display: "block", width: "100%", textAlign: "left", font: "inherit", color: "inherit", cursor: "pointer", background: "var(--card)", border: "1px solid var(--line)", borderLeft: "3px solid var(--success)", borderRadius: 8, padding: "8px 10px" }}>
             <div style={{ fontWeight: 600, fontSize: 13 }}>{a.supplier_name || "Unknown supplier"}</div>
             <div className="imeta" style={{ marginTop: 2 }}><span className="num">{a.supplier_order_ref}</span><span>· their ref “{a.our_po_ref || "—"}”</span></div>
             <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6 }}>
@@ -641,7 +659,7 @@ function ArrivalBoard({ today, week, b, pendingSors, groups, onConfirm }: {
           </button>
         ))}
         {groups.map(([supplier, rs]) => (
-          <button key={supplier} onClick={() => onConfirm()} style={{ display: "block", width: "100%", textAlign: "left", font: "inherit", color: "inherit", cursor: "pointer", background: "var(--card)", border: "1px solid var(--line)", borderLeft: "3px solid var(--line-strong)", borderRadius: 8, padding: "8px 10px" }}>
+          <button key={supplier} onClick={() => onConfirm({ supplier })} style={{ display: "block", width: "100%", textAlign: "left", font: "inherit", color: "inherit", cursor: "pointer", background: "var(--card)", border: "1px solid var(--line)", borderLeft: "3px solid var(--line-strong)", borderRadius: 8, padding: "8px 10px" }}>
             <div style={{ fontWeight: 600, fontSize: 13 }}>{supplier}</div>
             <div className="imeta" style={{ marginTop: 2 }}><span>{rs.length} order{rs.length === 1 ? "" : "s"}</span><span className="proj">{[...new Set(rs.map((r) => r.project_code))].join(" · ")}</span></div>
             <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6 }}>
