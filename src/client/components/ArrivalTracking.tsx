@@ -7,9 +7,11 @@
 //    matched to its PO or waiting for someone to pick one.
 //  • PoDeliveryCard: the same facts on one PO, with the phoned-in date and the
 //    "we collect this" switch for suppliers who never send an acknowledgement.
-import { useEffect, useMemo, useState } from "react";
+import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, fmtDate, fmtMoney } from "../lib/api";
+import { useWideScreen } from "../lib/wide-screen";
+import { POPeek } from "./POsList";
 import {
   bucketArrivals, daysBetween, effectiveDate, OVERDUE_CUTOFF_DAYS, UNCONFIRMED_WINDOW_DAYS,
   type AckCheck, type ArrivalRow, type OrderAckView, type PoArrival,
@@ -36,7 +38,30 @@ export type ArrivalFocus = "week" | "collect" | "confirm" | "overdue" | "allsor"
 
 const flag = (bg: string, fg: string) => ({ fontSize: 10.5, fontWeight: 700, letterSpacing: ".03em", textTransform: "uppercase" as const, borderRadius: 5, padding: "1px 6px", background: bg, color: fg, whiteSpace: "nowrap" as const });
 
+/* ── Order preview beside the tracker ───────────────────────────────────────
+ * Clicking an order opens the same panel the Purchase orders list uses (what's
+ * on it, its status, audit trail), beside the tracker rather than on a new
+ * page, so chasing a supplier doesn't mean opening every PO in turn. Clicking
+ * another order swaps it. Narrow screens, and cmd/ctrl/middle-click, still go
+ * to the PO page. */
+const PeekCtx = createContext<{ open: (id: string) => void; current: string | null } | null>(null);
+
+/** Spread on a <Link to={`/pos/${id}`}>: a plain click opens the side panel instead. */
+function usePeek(id: string) {
+  const ctx = useContext(PeekCtx);
+  const wide = useWideScreen();
+  return {
+    "aria-current": ctx?.current === id ? ("true" as const) : undefined,
+    onClick: (e: React.MouseEvent) => {
+      if (!ctx || !wide || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      e.preventDefault();
+      ctx.open(id);
+    },
+  };
+}
+
 function OrderRow({ r, today }: { r: ArrivalRow; today: string }) {
+  const peek = usePeek(r.id);
   const d = effectiveDate(r);
   const late = d ? daysBetween(d, today) : 0;
   const notSent = r.status === "pending_approval" ? "awaiting approval" : null;
@@ -46,7 +71,7 @@ function OrderRow({ r, today }: { r: ArrivalRow; today: string }) {
     : late === 0 ? (r.collect_by_us ? "collect today" : "today")
     : `in ${-late} day${late === -1 ? "" : "s"}`;
   return (
-    <Link className="dl-due-row" to={`/pos/${r.id}`}>
+    <Link className="dl-due-row" to={`/pos/${r.id}`} {...peek}>
       <div style={{ minWidth: 0 }}>
         <div className="isup" style={{ display: "flex", alignItems: "center", gap: 8 }}>
           {d === today && <span style={flag("var(--accent-soft)", "var(--accent-2)")}>Today</span>}
@@ -89,6 +114,18 @@ export function ArrivalTracker({ rows, focus, onFocus, onSorChanged }: {
   // Set when a To confirm card on the Board is opened: the list then shows
   // that one SOR or that one supplier's orders, not the whole column.
   const [only, setOnly] = useState<{ sor?: number; supplier?: string } | null>(null);
+  const [peekId, setPeekId] = useState<string | null>(null);
+  const peekCtx = useMemo(() => ({ open: setPeekId, current: peekId }), [peekId]);
+  const wide = useWideScreen();
+  // The tracker on the left, the picked order on the right — like Purchase orders.
+  const withPeek = (card: React.ReactNode) => (
+    <PeekCtx.Provider value={peekCtx}>
+      <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
+        <div style={{ flex: 1, minWidth: 0 }}>{card}</div>
+        {peekId && wide && <POPeek key={peekId} id={peekId} onClose={() => setPeekId(null)} />}
+      </div>
+    </PeekCtx.Provider>
+  );
   const loadSors = () => api.opsOrderAcks("pending").then((r) => setPendingSors(r.acks)).catch(() => {});
   useEffect(() => { loadSors(); }, []);
   const sorChanged = () => { setOpenSor(null); loadSors(); onSorChanged?.(); };
@@ -132,7 +169,7 @@ export function ArrivalTracker({ rows, focus, onFocus, onSorChanged }: {
     ?? (filtered?.sor != null ? (pendingSors.find((a) => a.id === filtered.sor)?.supplier_name || "this SOR") : null);
 
   if (layout !== "list") {
-    return (
+    return withPeek(
       <div className="a-card dl-due">
         <div className="dl-due-hd">
           <h2>Waiting on delivery</h2>
@@ -145,7 +182,7 @@ export function ArrivalTracker({ rows, focus, onFocus, onSorChanged }: {
     );
   }
 
-  return (
+  return withPeek(
     <div className="a-card dl-due">
       <div className="dl-due-hd">
         <h2>Waiting on delivery</h2>
@@ -239,7 +276,7 @@ export function ArrivalTracker({ rows, focus, onFocus, onSorChanged }: {
                   </div>
                 </summary>
                 {rs.map((r) => (
-                  <Link key={r.id} className="dl-due-row" to={`/pos/${r.id}`} style={{ paddingLeft: 32, background: "var(--card-2)" }}>
+                  <GroupOrderLink key={r.id} r={r}>
                     <div className="imeta" style={{ marginTop: 0 }}>
                       {r.required_date
                         ? <span style={flag("var(--card-2)", "var(--muted)")}>Required {fmtDate(r.required_date).replace(/ \d{4}$/, "")}</span>
@@ -249,7 +286,7 @@ export function ArrivalTracker({ rows, focus, onFocus, onSorChanged }: {
                       {r.status === "pending_approval" && <span>· awaiting approval</span>}
                     </div>
                     <div className="imeta" style={{ justifyContent: "flex-end", marginTop: 0 }}><span>{fmtMoney(r.total_value)}</span></div>
-                  </Link>
+                  </GroupOrderLink>
                 ))}
               </details>
             );
@@ -261,6 +298,11 @@ export function ArrivalTracker({ rows, focus, onFocus, onSorChanged }: {
       )}
     </div>
   );
+}
+
+function GroupOrderLink({ r, children }: { r: ArrivalRow; children: React.ReactNode }) {
+  const peek = usePeek(r.id);
+  return <Link className="dl-due-row" to={`/pos/${r.id}`} style={{ paddingLeft: 32, background: "var(--card-2)" }} {...peek}>{children}</Link>;
 }
 
 function Checks({ checks }: { checks: AckCheck[] }) {
@@ -604,10 +646,11 @@ export function PoDeliveryCard({ poId, canEdit }: { poId: string; canEdit: boole
 type Buckets = ReturnType<typeof bucketArrivals>;
 
 function MiniCard({ r, today, tone }: { r: ArrivalRow; today: string; tone?: "warn" | "today" }) {
+  const peek = usePeek(r.id);
   const d = effectiveDate(r);
   const late = d ? daysBetween(d, today) : 0;
   return (
-    <Link to={`/pos/${r.id}`} style={{
+    <Link to={`/pos/${r.id}`} {...peek} style={{
       display: "block", textDecoration: "none", color: "inherit", background: "var(--card)", border: "1px solid var(--line)",
       borderLeft: `3px solid ${tone === "warn" ? "var(--warn)" : tone === "today" ? "var(--accent)" : r.promised_date ? "var(--success)" : "var(--line-strong)"}`,
       borderRadius: 8, padding: "8px 10px",
