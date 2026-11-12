@@ -2433,3 +2433,6 @@ html .hd-fab { background: var(--ink); color: var(--paper); }
   html th, html td { padding: 13px 10px; }
   html th:first-child, html td:first-child { padding-left: 24px; }
 }
+/* A count waiting on you, next to a page title: orange, like the sidebar count. */
+html .topbar h1 .pill.pending { background: var(--accent); color: var(--accent-fg); }
+html .topbar h1 .pill.pending::before { background: var(--accent-fg); }
