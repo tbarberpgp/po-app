@@ -7,10 +7,11 @@
 //    matched to its PO or waiting for someone to pick one.
 //  • PoDeliveryCard: the same facts on one PO, with the phoned-in date and the
 //    "we collect this" switch for suppliers who never send an acknowledgement.
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { api, fmtDate, fmtMoney, fmtQty } from "../lib/api";
-import type { POLine } from "../../shared/types";
+import { api, fmtDate, fmtMoney } from "../lib/api";
+import { useWideScreen } from "../lib/wide-screen";
+import { POPeek } from "./POsList";
 import {
   bucketArrivals, daysBetween, effectiveDate, OVERDUE_CUTOFF_DAYS, UNCONFIRMED_WINDOW_DAYS,
   type AckCheck, type ArrivalRow, type OrderAckView, type PoArrival,
@@ -37,125 +38,30 @@ export type ArrivalFocus = "week" | "collect" | "confirm" | "overdue" | "allsor"
 
 const flag = (bg: string, fg: string) => ({ fontSize: 10.5, fontWeight: 700, letterSpacing: ".03em", textTransform: "uppercase" as const, borderRadius: 5, padding: "1px 6px", background: bg, color: fg, whiteSpace: "nowrap" as const });
 
-/* ── Materials pop-up ─────────────────────────────────────────────────────
- * Clicking an order on the tracker opens a slide-over with what's on it, so
- * chasing a supplier doesn't mean opening every PO in turn. ‹ › step through
- * the list the row came from; "Open PO" still goes to the full page, and a
- * cmd/ctrl/middle-click keeps opening the PO in a new tab. */
-type Peek = { list: ArrivalRow[]; i: number };
-const PeekCtx = createContext<((list: ArrivalRow[], id: string) => void) | null>(null);
+/* ── Order preview beside the tracker ───────────────────────────────────────
+ * Clicking an order opens the same panel the Purchase orders list uses (what's
+ * on it, its status, audit trail), beside the tracker rather than on a new
+ * page, so chasing a supplier doesn't mean opening every PO in turn. Clicking
+ * another order swaps it. Narrow screens, and cmd/ctrl/middle-click, still go
+ * to the PO page. */
+const PeekCtx = createContext<{ open: (id: string) => void; current: string | null } | null>(null);
 
-/** Spread on a <Link to={`/pos/${id}`}>: a plain click opens the pop-up instead. */
-function usePeek(list: ArrivalRow[], id: string) {
-  const open = useContext(PeekCtx);
+/** Spread on a <Link to={`/pos/${id}`}>: a plain click opens the side panel instead. */
+function usePeek(id: string) {
+  const ctx = useContext(PeekCtx);
+  const wide = useWideScreen();
   return {
+    "aria-current": ctx?.current === id ? ("true" as const) : undefined,
     onClick: (e: React.MouseEvent) => {
-      if (!open || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      if (!ctx || !wide || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
       e.preventDefault();
-      open(list, id);
+      ctx.open(id);
     },
   };
 }
 
-type PoForPeek = Awaited<ReturnType<typeof api.getPO>>;
-
-function PoLinesDrawer({ peek, onMove, onClose }: { peek: Peek | null; onMove: (i: number) => void; onClose: () => void }) {
-  const r = peek ? peek.list[peek.i] : null;
-  const [po, setPo] = useState<PoForPeek | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-  useEffect(() => {
-    if (!r) return;
-    let live = true;
-    setPo(null); setErr(null);
-    api.getPO(r.id).then((p) => { if (live) setPo(p); }).catch((e) => { if (live) setErr(e.message); });
-    return () => { live = false; };
-  }, [r?.id]);
-  useEffect(() => {
-    if (!peek) return;
-    const key = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-      else if (e.key === "ArrowLeft" && peek.i > 0) onMove(peek.i - 1);
-      else if (e.key === "ArrowRight" && peek.i < peek.list.length - 1) onMove(peek.i + 1);
-    };
-    window.addEventListener("keydown", key);
-    return () => window.removeEventListener("keydown", key);
-  }, [peek, onMove, onClose]);
-
-  const lines: POLine[] = po?.lines ?? [];
-  const total = lines.reduce((t, l) => t + (Number(l.line_total) || 0), 0);
-  const open = r != null;
-  return (
-    <>
-      <div className={`drill-scrim${open ? " show" : ""}`} aria-hidden onClick={onClose} />
-      <aside className={`od-drawer${open ? " open" : ""}`} role="dialog" aria-modal="false" aria-label={r ? `Materials on ${r.po_number}` : "Materials"}>
-        {r && peek && (
-          <div className="od-inner">
-            <div className="card-hd od-hd" style={{ alignItems: "flex-start", gap: 8 }}>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div className="muted" style={{ fontSize: 12.5 }}>{r.supplier}</div>
-                <h3 style={{ margin: "2px 0 0" }}>{r.po_number} <span className="muted" style={{ fontWeight: 500 }}>· {r.project_code}</span></h3>
-                <div className="muted" style={{ fontSize: 12.5, marginTop: 3 }}>
-                  Raised {fmtDate(r.created_at)}
-                  {r.status === "pending_approval" ? " · awaiting approval" : ""}
-                  {effectiveDate(r) ? ` · due ${fmtDate(effectiveDate(r)!)}` : " · no delivery date"}
-                </div>
-              </div>
-              {peek.list.length > 1 && (
-                <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                  <button className="ghost tiny" disabled={peek.i === 0} onClick={() => onMove(peek.i - 1)} aria-label="Previous order">‹</button>
-                  <span className="muted" style={{ fontSize: 12, whiteSpace: "nowrap" }}>{peek.i + 1} of {peek.list.length}</span>
-                  <button className="ghost tiny" disabled={peek.i === peek.list.length - 1} onClick={() => onMove(peek.i + 1)} aria-label="Next order">›</button>
-                </div>
-              )}
-              <button className="ghost tiny" onClick={onClose} aria-label="Close">✕</button>
-            </div>
-            <div style={{ padding: "4px 16px 24px" }}>
-              {err ? <div className="empty in-card"><p>Couldn't load this order: {err}</p></div>
-                : !po ? <div className="muted" style={{ padding: "14px 0", fontSize: 13 }}>Loading materials…</div>
-                : lines.length === 0 ? <div className="empty in-card"><p>This order has no lines.</p></div>
-                : (
-                  <table className="drill-table">
-                    <thead>
-                      <tr><th>Material</th><th className="num">Qty</th><th className="center">Unit</th><th className="num">Rate</th><th className="num">Total</th></tr>
-                    </thead>
-                    <tbody>
-                      {lines.map((l, i) => {
-                        // The maker is usually the supplier itself, and type is often "—": say only what adds something.
-                        const sub = [l.manufacturer !== r.supplier ? l.manufacturer : null, l.type]
-                          .filter((x) => x && x.trim() && !/^[-—–]+$/.test(x.trim())).join(" · ");
-                        return (
-                        <tr key={l.id ?? i}>
-                          <td>
-                            <div style={{ fontWeight: 600 }}>{l.item}</div>
-                            {sub && <div className="muted" style={{ fontSize: 12 }}>{sub}</div>}
-                          </td>
-                          <td className="num">{fmtQty(l.qty)}</td>
-                          <td className="center">{l.unit}</td>
-                          <td className="num">{fmtMoney(l.unit_cost)}</td>
-                          <td className="num">{fmtMoney(l.line_total)}</td>
-                        </tr>
-                        );
-                      })}
-                    </tbody>
-                    <tfoot>
-                      <tr><td colSpan={4} style={{ fontWeight: 700 }}>{lines.length} line{lines.length === 1 ? "" : "s"}</td><td className="num" style={{ fontWeight: 700 }}>{fmtMoney(total)}</td></tr>
-                    </tfoot>
-                  </table>
-                )}
-              {po?.notes && <div style={{ marginTop: 14, fontSize: 13 }}><div className="muted" style={{ fontSize: 11.5, textTransform: "uppercase", letterSpacing: ".04em", marginBottom: 3 }}>Notes on the PO</div>{po.notes}</div>}
-              <div style={{ marginTop: 16 }}>
-                <Link className="btn sm" to={`/pos/${r.id}`}>Open PO →</Link>
-              </div>
-            </div>
-          </div>
-        )}
-      </aside>
-    </>
-  );
-}
-
-function OrderRow({ r, today, list }: { r: ArrivalRow; today: string; list: ArrivalRow[] }) {
-  const peek = usePeek(list, r.id);
+function OrderRow({ r, today }: { r: ArrivalRow; today: string }) {
+  const peek = usePeek(r.id);
   const d = effectiveDate(r);
   const late = d ? daysBetween(d, today) : 0;
   const notSent = r.status === "pending_approval" ? "awaiting approval" : null;
@@ -208,11 +114,18 @@ export function ArrivalTracker({ rows, focus, onFocus, onSorChanged }: {
   // Set when a To confirm card on the Board is opened: the list then shows
   // that one SOR or that one supplier's orders, not the whole column.
   const [only, setOnly] = useState<{ sor?: number; supplier?: string } | null>(null);
-  const [peek, setPeek] = useState<Peek | null>(null);
-  const openPeek = useCallback((list: ArrivalRow[], id: string) => setPeek({ list, i: Math.max(0, list.findIndex((x) => x.id === id)) }), []);
-  const movePeek = useCallback((i: number) => setPeek((p) => (p ? { ...p, i } : p)), []);
-  const closePeek = useCallback(() => setPeek(null), []);
-  const drawer = <PoLinesDrawer peek={peek} onMove={movePeek} onClose={closePeek} />;
+  const [peekId, setPeekId] = useState<string | null>(null);
+  const peekCtx = useMemo(() => ({ open: setPeekId, current: peekId }), [peekId]);
+  const wide = useWideScreen();
+  // The tracker on the left, the picked order on the right — like Purchase orders.
+  const withPeek = (card: React.ReactNode) => (
+    <PeekCtx.Provider value={peekCtx}>
+      <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
+        <div style={{ flex: 1, minWidth: 0 }}>{card}</div>
+        {peekId && wide && <POPeek key={peekId} id={peekId} onClose={() => setPeekId(null)} />}
+      </div>
+    </PeekCtx.Provider>
+  );
   const loadSors = () => api.opsOrderAcks("pending").then((r) => setPendingSors(r.acks)).catch(() => {});
   useEffect(() => { loadSors(); }, []);
   const sorChanged = () => { setOpenSor(null); loadSors(); onSorChanged?.(); };
@@ -256,8 +169,7 @@ export function ArrivalTracker({ rows, focus, onFocus, onSorChanged }: {
     ?? (filtered?.sor != null ? (pendingSors.find((a) => a.id === filtered.sor)?.supplier_name || "this SOR") : null);
 
   if (layout !== "list") {
-    return (
-      <PeekCtx.Provider value={openPeek}>
+    return withPeek(
       <div className="a-card dl-due">
         <div className="dl-due-hd">
           <h2>Waiting on delivery</h2>
@@ -267,13 +179,10 @@ export function ArrivalTracker({ rows, focus, onFocus, onSorChanged }: {
           ? <ArrivalBoard today={today} week={week} b={b} pendingSors={pendingSors} groups={groups} onConfirm={openConfirm} />
           : <ArrivalCalendar today={today} rows={rows} b={b} toConfirm={toConfirm} onFocusList={(f) => { setLayout("list"); onFocus(f); }} />}
       </div>
-      {drawer}
-      </PeekCtx.Provider>
     );
   }
 
-  return (
-    <PeekCtx.Provider value={openPeek}>
+  return withPeek(
     <div className="a-card dl-due">
       <div className="dl-due-hd">
         <h2>Waiting on delivery</h2>
@@ -286,11 +195,11 @@ export function ArrivalTracker({ rows, focus, onFocus, onSorChanged }: {
         {layoutSwitch}
       </div>
 
-      {focus === "week" && (week.length ? <div className="dl-due-list">{week.map((r) => <OrderRow key={r.id} r={r} today={today} list={week} />)}</div>
+      {focus === "week" && (week.length ? <div className="dl-due-list">{week.map((r) => <OrderRow key={r.id} r={r} today={today} />)}</div>
         : empty("Nothing due in the next seven days."))}
-      {focus === "collect" && (b.collect.length ? <div className="dl-due-list">{b.collect.map((r) => <OrderRow key={r.id} r={r} today={today} list={b.collect} />)}</div>
+      {focus === "collect" && (b.collect.length ? <div className="dl-due-list">{b.collect.map((r) => <OrderRow key={r.id} r={r} today={today} />)}</div>
         : empty("No orders are marked for us to collect. Tick \"We'll collect it\" when raising the PO, or on its PO page."))}
-      {focus === "overdue" && (b.overdue.length ? <div className="dl-due-list">{b.overdue.map((r) => <OrderRow key={r.id} r={r} today={today} list={b.overdue} />)}</div>
+      {focus === "overdue" && (b.overdue.length ? <div className="dl-due-list">{b.overdue.map((r) => <OrderRow key={r.id} r={r} today={today} />)}</div>
         : empty("Nothing overdue — every order past its date has had something received."))}
       {focus === "overdue" && <StaleNote n={b.stale.length} />}
       {focus === "allsor" && (
@@ -367,7 +276,7 @@ export function ArrivalTracker({ rows, focus, onFocus, onSorChanged }: {
                   </div>
                 </summary>
                 {rs.map((r) => (
-                  <GroupOrderLink key={r.id} r={r} list={rs}>
+                  <GroupOrderLink key={r.id} r={r}>
                     <div className="imeta" style={{ marginTop: 0 }}>
                       {r.required_date
                         ? <span style={flag("var(--card-2)", "var(--muted)")}>Required {fmtDate(r.required_date).replace(/ \d{4}$/, "")}</span>
@@ -388,13 +297,11 @@ export function ArrivalTracker({ rows, focus, onFocus, onSorChanged }: {
         </div>
       )}
     </div>
-    {drawer}
-    </PeekCtx.Provider>
   );
 }
 
-function GroupOrderLink({ r, list, children }: { r: ArrivalRow; list: ArrivalRow[]; children: React.ReactNode }) {
-  const peek = usePeek(list, r.id);
+function GroupOrderLink({ r, children }: { r: ArrivalRow; children: React.ReactNode }) {
+  const peek = usePeek(r.id);
   return <Link className="dl-due-row" to={`/pos/${r.id}`} style={{ paddingLeft: 32, background: "var(--card-2)" }} {...peek}>{children}</Link>;
 }
 
@@ -738,8 +645,8 @@ export function PoDeliveryCard({ poId, canEdit }: { poId: string; canEdit: boole
 
 type Buckets = ReturnType<typeof bucketArrivals>;
 
-function MiniCard({ r, today, tone, list }: { r: ArrivalRow; today: string; tone?: "warn" | "today"; list: ArrivalRow[] }) {
-  const peek = usePeek(list, r.id);
+function MiniCard({ r, today, tone }: { r: ArrivalRow; today: string; tone?: "warn" | "today" }) {
+  const peek = usePeek(r.id);
   const d = effectiveDate(r);
   const late = d ? daysBetween(d, today) : 0;
   return (
@@ -781,8 +688,8 @@ function ArrivalBoard({ today, week, b, pendingSors, groups, onConfirm }: {
   const none = (t: string) => <div className="muted" style={{ fontSize: 12.5, padding: 4 }}>{t}</div>;
   return (
     <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 12, padding: 14 }}>
-      {col("Due this week", week.length, week.length ? week.map((r) => <MiniCard key={r.id} r={r} list={week} today={today} tone={effectiveDate(r) === today ? "today" : undefined} />) : none("Nothing due in the next 7 days."))}
-      {col("To collect", b.collect.length, b.collect.length ? b.collect.map((r) => <MiniCard key={r.id} r={r} list={b.collect} today={today} />) : none("Nothing to collect."))}
+      {col("Due this week", week.length, week.length ? week.map((r) => <MiniCard key={r.id} r={r} today={today} tone={effectiveDate(r) === today ? "today" : undefined} />) : none("Nothing due in the next 7 days."))}
+      {col("To collect", b.collect.length, b.collect.length ? b.collect.map((r) => <MiniCard key={r.id} r={r} today={today} />) : none("Nothing to collect."))}
       {col("To confirm", pendingSors.length + b.unconfirmed.length, <>
         {pendingSors.map((a) => (
           <button key={a.id} onClick={() => onConfirm({ sor: a.id })} style={{ display: "block", width: "100%", textAlign: "left", font: "inherit", color: "inherit", cursor: "pointer", background: "var(--card)", border: "1px solid var(--line)", borderLeft: "3px solid var(--success)", borderRadius: 8, padding: "8px 10px" }}>
@@ -810,7 +717,7 @@ function ArrivalBoard({ today, week, b, pendingSors, groups, onConfirm }: {
         {!pendingSors.length && !groups.length && none("Every recent order has a date.")}
       </>, true)}
       {col("Overdue", b.overdue.length, <>
-        {b.overdue.length ? b.overdue.map((r) => <MiniCard key={r.id} r={r} list={b.overdue} today={today} tone="warn" />) : none("Nothing overdue.")}
+        {b.overdue.length ? b.overdue.map((r) => <MiniCard key={r.id} r={r} today={today} tone="warn" />) : none("Nothing overdue.")}
         <StaleNote n={b.stale.length} />
       </>, true)}
     </div>
@@ -858,7 +765,7 @@ function ArrivalCalendar({ today, rows, b, toConfirm, onFocusList }: {
                   {isToday && <span>TODAY</span>}
                 </div>
                 <div style={{ padding: 6, display: "flex", flexDirection: "column", gap: 6 }}>
-                  {items.map((r) => <MiniCard key={r.id} r={r} list={items} today={today} tone={past ? "warn" : isToday ? "today" : undefined} />)}
+                  {items.map((r) => <MiniCard key={r.id} r={r} today={today} tone={past ? "warn" : isToday ? "today" : undefined} />)}
                 </div>
               </div>
             );

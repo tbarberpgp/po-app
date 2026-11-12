@@ -2436,3 +2436,6 @@ html .hd-fab { background: var(--ink); color: var(--paper); }
 /* A count waiting on you, next to a page title: orange, like the sidebar count. */
 html .topbar h1 .pill.pending { background: var(--accent); color: var(--accent-fg); }
 html .topbar h1 .pill.pending::before { background: var(--accent-fg); }
+
+/* Delivery tracker: the order open in the side panel (ArrivalTracking usePeek). */
+.dl-due a[aria-current="true"] { background: var(--accent-soft) !important; }

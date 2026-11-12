@@ -326,7 +326,7 @@ function DeliveryPill({ po }: { po: PurchaseOrder }) {
  * One order previewed beside the list: what was ordered, and its audit trail —
  * who raised it and when lives here rather than as columns on every row.
  */
-function POPeek({ id, overdrawn, onClose, onDelete }: { id: string; overdrawn?: boolean; onClose?: () => void; onDelete?: (r: Row) => void }) {
+export function POPeek({ id, overdrawn, onClose, onDelete }: { id: string; overdrawn?: boolean; onClose?: () => void; onDelete?: (r: Row) => void }) {
   const [po, setPo] = useState<Row & { lines: PurchaseOrder["lines"]; deliveries?: PoDeliveryDrop[] } | null>(null);
   const [activity, setActivity] = useState<Activity>([]);
   useEffect(() => {
